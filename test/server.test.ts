@@ -436,4 +436,270 @@ describe("LNURL Service", () => {
       expect(res.body.reason).toMatch(/session closed/i);
     });
   });
+
+  describe("Multiple sessions", () => {
+    it("should support multiple concurrent sessions independently", async () => {
+      const session1 = await openSession(ctx.baseUrl);
+      const session2 = await openSession(ctx.baseUrl);
+
+      try {
+        expect(session1.sessionId).not.toBe(session2.sessionId);
+
+        // Both sessions should return valid metadata
+        const [meta1, meta2] = await Promise.all([
+          jsonRequest(`${ctx.baseUrl}/lnurl/${session1.sessionId}`),
+          jsonRequest(`${ctx.baseUrl}/lnurl/${session2.sessionId}`),
+        ]);
+        expect(meta1.body.tag).toBe("payRequest");
+        expect(meta2.body.tag).toBe("payRequest");
+
+        // Closing one should not affect the other
+        session1.abort();
+        await new Promise((r) => setTimeout(r, 100));
+
+        const meta1After = await jsonRequest(
+          `${ctx.baseUrl}/lnurl/${session1.sessionId}`,
+        );
+        const meta2After = await jsonRequest(
+          `${ctx.baseUrl}/lnurl/${session2.sessionId}`,
+        );
+        expect(meta1After.body.status).toBe("ERROR");
+        expect(meta2After.body.tag).toBe("payRequest");
+      } finally {
+        session1.abort();
+        session2.abort();
+      }
+    });
+  });
+
+  describe("LNURL encoding", () => {
+    it("should produce a valid bech32-encoded LNURL", async () => {
+      const session = await openSession(ctx.baseUrl);
+      try {
+        // LNURL should be uppercase bech32 starting with LNURL1
+        expect(session.lnurl).toMatch(/^LNURL1[A-Z0-9]+$/);
+
+        // Decode and verify it points to our metadata endpoint
+        const { bech32: bech32Codec } = await import("@scure/base");
+        const decoded = bech32Codec.decode(session.lnurl.toLowerCase() as `lnurl1${string}`, 1023);
+        const url = new TextDecoder().decode(
+          bech32Codec.fromWords(decoded.words),
+        );
+        expect(url).toBe(`${ctx.baseUrl}/lnurl/${session.sessionId}`);
+      } finally {
+        session.abort();
+      }
+    });
+  });
+
+  describe("Metadata format", () => {
+    it("should return valid LUD-06 metadata JSON string", async () => {
+      const session = await openSession(ctx.baseUrl);
+      try {
+        const res = await jsonRequest(
+          `${ctx.baseUrl}/lnurl/${session.sessionId}`,
+        );
+        const metadata = JSON.parse(res.body.metadata as string);
+        expect(Array.isArray(metadata)).toBe(true);
+        expect(metadata[0][0]).toBe("text/plain");
+        expect(typeof metadata[0][1]).toBe("string");
+      } finally {
+        session.abort();
+      }
+    });
+  });
+
+  describe("Callback edge cases", () => {
+    it("should return error for non-numeric amount", async () => {
+      const session = await openSession(ctx.baseUrl);
+      try {
+        const res = await jsonRequest(
+          `${ctx.baseUrl}/lnurl/${session.sessionId}/callback?amount=abc`,
+        );
+        expect(res.body.status).toBe("ERROR");
+        expect(res.body.reason).toMatch(/missing|invalid/i);
+      } finally {
+        session.abort();
+      }
+    });
+
+    it("should return error for negative amount", async () => {
+      const session = await openSession(ctx.baseUrl);
+      try {
+        const res = await jsonRequest(
+          `${ctx.baseUrl}/lnurl/${session.sessionId}/callback?amount=-1000`,
+        );
+        expect(res.body.status).toBe("ERROR");
+        expect(res.body.reason).toMatch(/between/i);
+      } finally {
+        session.abort();
+      }
+    });
+
+    it("should return error for zero amount", async () => {
+      const session = await openSession(ctx.baseUrl);
+      try {
+        const res = await jsonRequest(
+          `${ctx.baseUrl}/lnurl/${session.sessionId}/callback?amount=0`,
+        );
+        expect(res.body.status).toBe("ERROR");
+        expect(res.body.reason).toMatch(/between/i);
+      } finally {
+        session.abort();
+      }
+    });
+
+    it("should pass comment through SSE event to wallet", async () => {
+      const session = await openSession(ctx.baseUrl);
+      try {
+        const eventPromise = nextSseEvent(session.response);
+        const payerPromise = jsonRequest(
+          `${ctx.baseUrl}/lnurl/${session.sessionId}/callback?amount=50000&comment=hello%20world`,
+        );
+
+        const event = await eventPromise;
+        expect(event.data.comment).toBe("hello world");
+
+        // Resolve so payer doesn't hang
+        await jsonRequest(
+          `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
+          "POST",
+          { pr: "lnbc1test" },
+        );
+        await payerPromise;
+      } finally {
+        session.abort();
+      }
+    });
+
+    it("should handle callback without comment", async () => {
+      const session = await openSession(ctx.baseUrl);
+      try {
+        const eventPromise = nextSseEvent(session.response);
+        const payerPromise = jsonRequest(
+          `${ctx.baseUrl}/lnurl/${session.sessionId}/callback?amount=50000`,
+        );
+
+        const event = await eventPromise;
+        expect(event.data.amountMsat).toBe(50000);
+        // comment should be undefined/absent
+        expect(event.data.comment).toBeUndefined();
+
+        await jsonRequest(
+          `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
+          "POST",
+          { pr: "lnbc1test" },
+        );
+        await payerPromise;
+      } finally {
+        session.abort();
+      }
+    });
+
+    it("should accept amount at exact minimum boundary", async () => {
+      const session = await openSession(ctx.baseUrl);
+      try {
+        const eventPromise = nextSseEvent(session.response);
+        const payerPromise = jsonRequest(
+          `${ctx.baseUrl}/lnurl/${session.sessionId}/callback?amount=${CONFIG.minSendable}`,
+        );
+
+        const event = await eventPromise;
+        expect(event.data.amountMsat).toBe(CONFIG.minSendable);
+
+        await jsonRequest(
+          `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
+          "POST",
+          { pr: "lnbc1min" },
+        );
+        const res = await payerPromise;
+        expect(res.body.pr).toBe("lnbc1min");
+      } finally {
+        session.abort();
+      }
+    });
+
+    it("should accept amount at exact maximum boundary", async () => {
+      const session = await openSession(ctx.baseUrl);
+      try {
+        const eventPromise = nextSseEvent(session.response);
+        const payerPromise = jsonRequest(
+          `${ctx.baseUrl}/lnurl/${session.sessionId}/callback?amount=${CONFIG.maxSendable}`,
+        );
+
+        const event = await eventPromise;
+        expect(event.data.amountMsat).toBe(CONFIG.maxSendable);
+
+        await jsonRequest(
+          `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
+          "POST",
+          { pr: "lnbc1max" },
+        );
+        const res = await payerPromise;
+        expect(res.body.pr).toBe("lnbc1max");
+      } finally {
+        session.abort();
+      }
+    });
+  });
+
+  describe("Invoice endpoint edge cases", () => {
+    it("should return 404 for unknown session id", async () => {
+      const res = await jsonRequest(
+        `${ctx.baseUrl}/lnurl/session/nonexistent/invoice`,
+        "POST",
+        { pr: "lnbc1test" },
+      );
+      expect(res.status).toBe(404);
+    });
+
+    it("should return 400 when pr is empty string", async () => {
+      const session = await openSession(ctx.baseUrl);
+      try {
+        const res = await jsonRequest(
+          `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
+          "POST",
+          { pr: "" },
+        );
+        expect(res.status).toBe(400);
+      } finally {
+        session.abort();
+      }
+    });
+
+    it("should allow a second invoice flow after the first completes", async () => {
+      const session = await openSession(ctx.baseUrl);
+      try {
+        // First flow
+        const event1Promise = nextSseEvent(session.response);
+        const payer1Promise = jsonRequest(
+          `${ctx.baseUrl}/lnurl/${session.sessionId}/callback?amount=10000`,
+        );
+        await event1Promise;
+        await jsonRequest(
+          `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
+          "POST",
+          { pr: "lnbc1first" },
+        );
+        const payer1Res = await payer1Promise;
+        expect(payer1Res.body.pr).toBe("lnbc1first");
+
+        // Second flow on same session
+        const event2Promise = nextSseEvent(session.response);
+        const payer2Promise = jsonRequest(
+          `${ctx.baseUrl}/lnurl/${session.sessionId}/callback?amount=20000`,
+        );
+        await event2Promise;
+        await jsonRequest(
+          `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
+          "POST",
+          { pr: "lnbc1second" },
+        );
+        const payer2Res = await payer2Promise;
+        expect(payer2Res.body.pr).toBe("lnbc1second");
+      } finally {
+        session.abort();
+      }
+    });
+  });
 });
