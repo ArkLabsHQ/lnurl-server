@@ -101,6 +101,14 @@ export class SessionManager {
     return true;
   }
 
+  /** Wallet rejects the invoice request — fails the pending payer request */
+  rejectInvoice(id: string, reason: string): boolean {
+    const session = this.sessions.get(id);
+    if (!session?.pendingInvoice) return false;
+    session.pendingInvoice.reject(new Error(reason));
+    return true;
+  }
+
   /** Destroy a session and reject any pending invoice request */
   destroy(id: string): void {
     const session = this.sessions.get(id);

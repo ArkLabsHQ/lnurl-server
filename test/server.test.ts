@@ -395,6 +395,34 @@ describe("LNURL Service", () => {
         session.abort();
       }
     });
+
+    it("should reject pending invoice request when wallet sends error", async () => {
+      const session = await openSession(ctx.baseUrl);
+      try {
+        const eventPromise = nextSseEvent(session.response);
+        const payerPromise = jsonRequest(
+          `${ctx.baseUrl}/lnurl/${session.sessionId}/callback?amount=50000`,
+        );
+
+        await eventPromise;
+
+        // Wallet rejects by sending error instead of pr
+        const rejectRes = await jsonRequest(
+          `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
+          "POST",
+          { error: "Amount outside Lightning receive limits" },
+        );
+        expect(rejectRes.status).toBe(200);
+        expect(rejectRes.body.ok).toBe(true);
+
+        // Payer should get an error
+        const payerRes = await payerPromise;
+        expect(payerRes.body.status).toBe("ERROR");
+        expect(payerRes.body.reason).toMatch(/outside/i);
+      } finally {
+        session.abort();
+      }
+    });
   });
 
   describe("Session lifecycle", () => {

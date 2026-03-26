@@ -135,10 +135,21 @@ export function createServer(config: LnurlServiceConfig): express.Express {
   });
 
   // ─── POST /lnurl/session/:id/invoice ─────────────────────────────────
-  // Wallet posts the bolt11 invoice back after creating a swap.
+  // Wallet posts the bolt11 invoice back, or an error to reject the request.
   app.post("/lnurl/session/:id/invoice", (req, res) => {
     const { id } = req.params;
-    const body = req.body as InvoiceResponse | undefined;
+    const body = req.body as (InvoiceResponse & { error?: string }) | undefined;
+
+    // Wallet is rejecting the invoice request
+    if (body?.error) {
+      const rejected = sessions.rejectInvoice(id, body.error);
+      if (!rejected) {
+        res.status(404).json({ error: "No pending invoice request for this session" });
+        return;
+      }
+      res.json({ ok: true });
+      return;
+    }
 
     if (!body?.pr) {
       res.status(400).json({ error: "Missing pr (bolt11 invoice)" });
