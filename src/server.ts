@@ -29,7 +29,12 @@ export function createServer(config: LnurlServiceConfig): express.Express {
   const invoiceTimeout =
     config.invoiceTimeoutMs ?? DEFAULT_INVOICE_TIMEOUT_MS;
 
-  app.use(cors());
+  app.use(
+    cors({
+      origin: true,
+      allowedHeaders: ["Content-Type", "Authorization"],
+    }),
+  );
   app.use(express.json());
 
   // ─── GET / ─────────────────────────────────────────────────────────
