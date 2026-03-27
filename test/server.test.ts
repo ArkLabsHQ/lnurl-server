@@ -54,6 +54,7 @@ function startServer() {
 async function openSession(baseUrl: string): Promise<{
   sessionId: string;
   lnurl: string;
+  token: string;
   response: http.IncomingMessage;
   abort: () => void;
 }> {
@@ -72,12 +73,13 @@ async function openSession(baseUrl: string): Promise<{
           const line = lines[i];
           if (line.startsWith("data: ")) {
             const data = JSON.parse(line.slice(6));
-            if (data.sessionId && data.lnurl) {
+            if (data.sessionId && data.lnurl && data.token) {
               // Stop listening for initial event, keep stream open
               res.removeListener("data", onData);
               resolve({
                 sessionId: data.sessionId,
                 lnurl: data.lnurl,
+                token: data.token,
                 response: res,
                 abort: () => {
                   res.destroy();
@@ -142,11 +144,14 @@ async function jsonRequest(
   url: string,
   method = "GET",
   body?: unknown,
+  token?: string,
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   return new Promise((resolve, reject) => {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
     const opts: http.RequestOptions = {
       method,
-      headers: { "Content-Type": "application/json" },
+      headers,
     };
 
     const req = http.request(url, opts, (res) => {
@@ -319,11 +324,12 @@ describe("LNURL Service", () => {
         expect(event.data.amountMsat).toBe(50000);
         expect(event.data.comment).toBe("test");
 
-        // Wallet creates swap and posts bolt11 back
+        // Wallet creates swap and posts bolt11 back (with auth token)
         const invoiceRes = await jsonRequest(
           `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
           "POST",
           { pr: fakeBolt11 },
+          session.token,
         );
         expect(invoiceRes.status).toBe(200);
         expect(invoiceRes.body.ok).toBe(true);
@@ -366,6 +372,36 @@ describe("LNURL Service", () => {
   });
 
   describe("POST /lnurl/session/:id/invoice", () => {
+    it("should return 401 without auth token", async () => {
+      const session = await openSession(ctx.baseUrl);
+      try {
+        const res = await jsonRequest(
+          `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
+          "POST",
+          { pr: "lnbc1test" },
+        );
+        expect(res.status).toBe(401);
+        expect(res.body.error).toMatch(/unauthorized/i);
+      } finally {
+        session.abort();
+      }
+    });
+
+    it("should return 401 with wrong token", async () => {
+      const session = await openSession(ctx.baseUrl);
+      try {
+        const res = await jsonRequest(
+          `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
+          "POST",
+          { pr: "lnbc1test" },
+          "wrong-token",
+        );
+        expect(res.status).toBe(401);
+      } finally {
+        session.abort();
+      }
+    });
+
     it("should return 400 when pr is missing", async () => {
       const session = await openSession(ctx.baseUrl);
       try {
@@ -373,6 +409,7 @@ describe("LNURL Service", () => {
           `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
           "POST",
           {},
+          session.token,
         );
         expect(res.status).toBe(400);
         expect(res.body.error).toMatch(/missing pr/i);
@@ -388,6 +425,7 @@ describe("LNURL Service", () => {
           `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
           "POST",
           { pr: "lnbc1whatever" },
+          session.token,
         );
         expect(res.status).toBe(404);
         expect(res.body.error).toMatch(/no pending/i);
@@ -411,6 +449,7 @@ describe("LNURL Service", () => {
           `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
           "POST",
           { error: "Amount outside Lightning receive limits" },
+          session.token,
         );
         expect(rejectRes.status).toBe(200);
         expect(rejectRes.body.ok).toBe(true);
@@ -593,6 +632,7 @@ describe("LNURL Service", () => {
           `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
           "POST",
           { pr: "lnbc1test" },
+          session.token,
         );
         await payerPromise;
       } finally {
@@ -617,6 +657,7 @@ describe("LNURL Service", () => {
           `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
           "POST",
           { pr: "lnbc1test" },
+          session.token,
         );
         await payerPromise;
       } finally {
@@ -639,6 +680,7 @@ describe("LNURL Service", () => {
           `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
           "POST",
           { pr: "lnbc1min" },
+          session.token,
         );
         const res = await payerPromise;
         expect(res.body.pr).toBe("lnbc1min");
@@ -662,6 +704,7 @@ describe("LNURL Service", () => {
           `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
           "POST",
           { pr: "lnbc1max" },
+          session.token,
         );
         const res = await payerPromise;
         expect(res.body.pr).toBe("lnbc1max");
@@ -672,13 +715,14 @@ describe("LNURL Service", () => {
   });
 
   describe("Invoice endpoint edge cases", () => {
-    it("should return 404 for unknown session id", async () => {
+    it("should return 401 for unknown session id", async () => {
       const res = await jsonRequest(
         `${ctx.baseUrl}/lnurl/session/nonexistent/invoice`,
         "POST",
         { pr: "lnbc1test" },
+        "some-token",
       );
-      expect(res.status).toBe(404);
+      expect(res.status).toBe(401);
     });
 
     it("should return 400 when pr is empty string", async () => {
@@ -688,6 +732,7 @@ describe("LNURL Service", () => {
           `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
           "POST",
           { pr: "" },
+          session.token,
         );
         expect(res.status).toBe(400);
       } finally {
@@ -708,6 +753,7 @@ describe("LNURL Service", () => {
           `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
           "POST",
           { pr: "lnbc1first" },
+          session.token,
         );
         const payer1Res = await payer1Promise;
         expect(payer1Res.body.pr).toBe("lnbc1first");
@@ -722,6 +768,7 @@ describe("LNURL Service", () => {
           `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
           "POST",
           { pr: "lnbc1second" },
+          session.token,
         );
         const payer2Res = await payer2Promise;
         expect(payer2Res.body.pr).toBe("lnbc1second");

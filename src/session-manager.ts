@@ -8,8 +8,10 @@ export class SessionManager {
   /** Create a new session and wire up the SSE response */
   create(sseRes: Response): Session {
     const id = randomBytes(16).toString("hex");
+    const token = randomBytes(32).toString("hex");
     const session: Session = {
       id,
+      token,
       createdAt: Date.now(),
       sseRes,
       pendingInvoice: null,
@@ -32,6 +34,12 @@ export class SessionManager {
   /** Check if a session is still active (SSE connected) */
   isActive(id: string): boolean {
     return this.sessions.has(id);
+  }
+
+  /** Verify the auth token for a session */
+  verifyToken(id: string, token: string): boolean {
+    const session = this.sessions.get(id);
+    return !!session && session.token === token;
   }
 
   /** Send an SSE event to the wallet */

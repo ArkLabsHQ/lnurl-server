@@ -46,10 +46,10 @@ export function createServer(config: LnurlServiceConfig): express.Express {
     const callbackUrl = `${config.baseUrl}/lnurl/${session.id}`;
     const lnurl = encodeLnurl(callbackUrl);
 
-    // Send the LNURL to the wallet as the first event
+    // Send the LNURL and auth token to the wallet as the first event
     sessions.sendEvent(session.id, {
       type: "session_created",
-      data: { sessionId: session.id, lnurl },
+      data: { sessionId: session.id, lnurl, token: session.token },
     });
   });
 
@@ -136,8 +136,17 @@ export function createServer(config: LnurlServiceConfig): express.Express {
 
   // ─── POST /lnurl/session/:id/invoice ─────────────────────────────────
   // Wallet posts the bolt11 invoice back, or an error to reject the request.
+  // Requires Authorization: Bearer <token> from session_created event.
   app.post("/lnurl/session/:id/invoice", (req, res) => {
     const { id } = req.params;
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : "";
+
+    if (!token || !sessions.verifyToken(id, token)) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
     const body = req.body as (InvoiceResponse & { error?: string }) | undefined;
 
     // Wallet is rejecting the invoice request

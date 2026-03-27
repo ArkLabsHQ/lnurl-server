@@ -44,6 +44,8 @@ export interface InvoiceResponse {
 /** Internal session state */
 export interface Session {
   id: string;
+  /** Secret token only the wallet knows (sent via SSE, required for invoice POSTs) */
+  token: string;
   createdAt: number;
   /** SSE response object for streaming events to wallet */
   sseRes: Response;
