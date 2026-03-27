@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import { bech32 } from "@scure/base";
 import { SessionManager } from "./session-manager.js";
+import { openApiSpec } from "./openapi.js";
 import type {
   LnurlServiceConfig,
   LnurlPayMetadata,
@@ -30,6 +31,35 @@ export function createServer(config: LnurlServiceConfig): express.Express {
 
   app.use(cors());
   app.use(express.json());
+
+  // ─── GET / ─────────────────────────────────────────────────────────
+  // Serves Redocly API docs as the home page.
+  app.get("/", (_req, res) => {
+    res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <title>LNURL Server - API Docs</title>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>body { margin: 0; }</style>
+</head>
+<body>
+  <div id="redoc-container"></div>
+  <script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"></script>
+  <script>
+    Redoc.init(${JSON.stringify(openApiSpec)}, {
+      scrollYOffset: 0,
+      hideDownloadButton: true,
+    }, document.getElementById('redoc-container'));
+  </script>
+</body>
+</html>`);
+  });
+
+  // ─── GET /openapi.json ────────────────────────────────────────────
+  app.get("/openapi.json", (_req, res) => {
+    res.json(openApiSpec);
+  });
 
   // ─── POST /lnurl/session ─────────────────────────────────────────────
   // Wallet opens an SSE stream. Returns the session ID and LNURL.
