@@ -73,12 +73,18 @@ export function createServer(config: LnurlServiceConfig): express.Express {
   app.post("/lnurl/session", (req, res) => {
     const { sessionId: providedId, token: providedToken } = req.body ?? {};
 
-    if (providedId != null && (typeof providedId !== "string" || providedId.length < 16)) {
-      res.status(400).json({ error: "sessionId must be a string of at least 16 characters" });
+    if ((providedId == null) !== (providedToken == null)) {
+      res.status(400).json({ error: "sessionId and token must both be provided or both omitted" });
       return;
     }
-    if (providedToken != null && (typeof providedToken !== "string" || providedToken.length < 32)) {
-      res.status(400).json({ error: "token must be a string of at least 32 characters" });
+
+    const HEX_RE = /^[0-9a-f]+$/i;
+    if (providedId != null && (typeof providedId !== "string" || providedId.length < 16 || !HEX_RE.test(providedId))) {
+      res.status(400).json({ error: "sessionId must be a hex string of at least 16 characters" });
+      return;
+    }
+    if (providedToken != null && (typeof providedToken !== "string" || providedToken.length < 32 || !HEX_RE.test(providedToken))) {
+      res.status(400).json({ error: "token must be a hex string of at least 32 characters" });
       return;
     }
 
@@ -90,6 +96,12 @@ export function createServer(config: LnurlServiceConfig): express.Express {
     });
 
     const session = sessions.create(res, providedId, providedToken);
+
+    if (!session) {
+      res.write(`event: error\ndata: ${JSON.stringify({ error: "Session ID already in use" })}\n\n`);
+      res.end();
+      return;
+    }
 
     const callbackUrl = `${config.baseUrl}/lnurl/${session.id}`;
     const lnurl = encodeLnurl(callbackUrl);

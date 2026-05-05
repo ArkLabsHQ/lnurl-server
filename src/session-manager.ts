@@ -13,13 +13,13 @@ export class SessionManager {
     sseRes: Response,
     providedId?: string,
     providedToken?: string,
-  ): Session {
+  ): Session | null {
     const id = providedId || randomBytes(16).toString("hex");
     const token = providedToken || randomBytes(32).toString("hex");
 
-    // If a session with this ID already exists (e.g. stale tab, reconnect)
-    // tear it down so the new SSE connection takes over.
-    if (this.sessions.has(id)) {
+    const existing = this.sessions.get(id);
+    if (existing) {
+      if (existing.token !== token) return null;
       this.destroy(id);
     }
 

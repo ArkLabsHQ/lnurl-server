@@ -809,7 +809,7 @@ describe("LNURL Service", () => {
       const res = await jsonRequest(
         `${ctx.baseUrl}/lnurl/session`,
         "POST",
-        { sessionId: "tooshort", token: creds.token },
+        { sessionId: "abcdef0123456", token: creds.token },
       );
       expect(res.status).toBe(400);
       expect(res.body.error).toMatch(/sessionId/i);
@@ -819,10 +819,91 @@ describe("LNURL Service", () => {
       const res = await jsonRequest(
         `${ctx.baseUrl}/lnurl/session`,
         "POST",
-        { sessionId: creds.sessionId, token: "tooshort" },
+        { sessionId: creds.sessionId, token: "abcdef0123456789abcdef012345678" },
       );
       expect(res.status).toBe(400);
       expect(res.body.error).toMatch(/token/i);
+    });
+
+    it("should reject non-hex sessionId", async () => {
+      const res = await jsonRequest(
+        `${ctx.baseUrl}/lnurl/session`,
+        "POST",
+        { sessionId: "zzzzzzzzzzzzzzzz", token: creds.token },
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/hex/i);
+    });
+
+    it("should reject non-hex token", async () => {
+      const res = await jsonRequest(
+        `${ctx.baseUrl}/lnurl/session`,
+        "POST",
+        { sessionId: creds.sessionId, token: "zz".repeat(32) },
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/hex/i);
+    });
+
+    it("should reject sessionId without token", async () => {
+      const res = await jsonRequest(
+        `${ctx.baseUrl}/lnurl/session`,
+        "POST",
+        { sessionId: creds.sessionId },
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/both/i);
+    });
+
+    it("should reject token without sessionId", async () => {
+      const res = await jsonRequest(
+        `${ctx.baseUrl}/lnurl/session`,
+        "POST",
+        { token: creds.token },
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/both/i);
+    });
+
+    it("should reject reconnect with wrong token (session hijack attempt)", async () => {
+      const session = await openSession(ctx.baseUrl, creds);
+      try {
+        const attackerCreds = {
+          sessionId: creds.sessionId,
+          token: "aa".repeat(32),
+        };
+
+        // Attacker tries to take over with same sessionId, different token
+        // This should fail — the SSE stream sends an error event and closes
+        const attackReq = new Promise<void>((resolve, reject) => {
+          const req = http.request(`${ctx.baseUrl}/lnurl/session`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+          });
+
+          req.on("response", (res) => {
+            let buffer = "";
+            res.on("data", (chunk: Buffer) => {
+              buffer += chunk.toString();
+              if (buffer.includes("error")) resolve();
+            });
+            res.on("end", resolve);
+          });
+          req.on("error", reject);
+          req.write(JSON.stringify(attackerCreds));
+          req.end();
+        });
+
+        await attackReq;
+
+        // Original session should still be active
+        const meta = await jsonRequest(
+          `${ctx.baseUrl}/lnurl/${creds.sessionId}`,
+        );
+        expect(meta.body.tag).toBe("payRequest");
+      } finally {
+        session.abort();
+      }
     });
   });
 
