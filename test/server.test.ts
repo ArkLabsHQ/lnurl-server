@@ -50,8 +50,12 @@ function startServer() {
 
 /**
  * Helper: open an SSE session and return session info.
+ * Pass `credentials` to create a deterministic/reusable session.
  */
-async function openSession(baseUrl: string): Promise<{
+async function openSession(
+  baseUrl: string,
+  credentials?: { sessionId: string; token: string },
+): Promise<{
   sessionId: string;
   lnurl: string;
   token: string;
@@ -59,7 +63,17 @@ async function openSession(baseUrl: string): Promise<{
   abort: () => void;
 }> {
   return new Promise((resolve, reject) => {
-    const req = http.request(`${baseUrl}/lnurl/session`, { method: "POST" });
+    const headers: Record<string, string> = {};
+    let body: string | undefined;
+    if (credentials) {
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify(credentials);
+    }
+
+    const req = http.request(`${baseUrl}/lnurl/session`, {
+      method: "POST",
+      headers,
+    });
 
     req.on("response", (res) => {
       let buffer = "";
@@ -97,6 +111,7 @@ async function openSession(baseUrl: string): Promise<{
     });
 
     req.on("error", reject);
+    if (body) req.write(body);
     req.end();
   });
 }
@@ -711,6 +726,103 @@ describe("LNURL Service", () => {
       } finally {
         session.abort();
       }
+    });
+  });
+
+  describe("Reusable sessions (client-provided credentials)", () => {
+    const creds = {
+      sessionId: "a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8",
+      token: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+    };
+
+    it("should use client-provided sessionId and token", async () => {
+      const session = await openSession(ctx.baseUrl, creds);
+      try {
+        expect(session.sessionId).toBe(creds.sessionId);
+        expect(session.token).toBe(creds.token);
+      } finally {
+        session.abort();
+      }
+    });
+
+    it("should produce the same LNURL for the same sessionId", async () => {
+      const session1 = await openSession(ctx.baseUrl, creds);
+      const lnurl1 = session1.lnurl;
+      session1.abort();
+      await new Promise((r) => setTimeout(r, 100));
+
+      const session2 = await openSession(ctx.baseUrl, creds);
+      try {
+        expect(session2.lnurl).toBe(lnurl1);
+      } finally {
+        session2.abort();
+      }
+    });
+
+    it("should allow reconnecting while old SSE is still open", async () => {
+      const session1 = await openSession(ctx.baseUrl, creds);
+      const lnurl1 = session1.lnurl;
+
+      // Reconnect with same ID — old connection should be replaced
+      const session2 = await openSession(ctx.baseUrl, creds);
+      try {
+        expect(session2.lnurl).toBe(lnurl1);
+
+        // New session should be active
+        const meta = await jsonRequest(
+          `${ctx.baseUrl}/lnurl/${creds.sessionId}`,
+        );
+        expect(meta.body.tag).toBe("payRequest");
+      } finally {
+        session1.abort();
+        session2.abort();
+      }
+    });
+
+    it("should authenticate with client-provided token", async () => {
+      const session = await openSession(ctx.baseUrl, creds);
+      try {
+        const eventPromise = nextSseEvent(session.response);
+        const payerPromise = jsonRequest(
+          `${ctx.baseUrl}/lnurl/${creds.sessionId}/callback?amount=50000`,
+        );
+
+        await eventPromise;
+
+        // Post invoice with the client-provided token
+        const invoiceRes = await jsonRequest(
+          `${ctx.baseUrl}/lnurl/session/${creds.sessionId}/invoice`,
+          "POST",
+          { pr: "lnbc1reusable" },
+          creds.token,
+        );
+        expect(invoiceRes.status).toBe(200);
+
+        const payerRes = await payerPromise;
+        expect(payerRes.body.pr).toBe("lnbc1reusable");
+      } finally {
+        session.abort();
+      }
+    });
+
+    it("should reject sessionId shorter than 16 characters", async () => {
+      const res = await jsonRequest(
+        `${ctx.baseUrl}/lnurl/session`,
+        "POST",
+        { sessionId: "tooshort", token: creds.token },
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/sessionId/i);
+    });
+
+    it("should reject token shorter than 32 characters", async () => {
+      const res = await jsonRequest(
+        `${ctx.baseUrl}/lnurl/session`,
+        "POST",
+        { sessionId: creds.sessionId, token: "tooshort" },
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/token/i);
     });
   });
 

@@ -5,10 +5,24 @@ import type { Session, SessionEvent } from "./types.js";
 export class SessionManager {
   private sessions = new Map<string, Session>();
 
-  /** Create a new session and wire up the SSE response */
-  create(sseRes: Response): Session {
-    const id = randomBytes(16).toString("hex");
-    const token = randomBytes(32).toString("hex");
+  /** Create a new session and wire up the SSE response.
+   *  When `providedId` and `providedToken` are supplied the session is
+   *  deterministic — reconnecting with the same pair produces the same
+   *  LNURL so the wallet can advertise a stable payment endpoint. */
+  create(
+    sseRes: Response,
+    providedId?: string,
+    providedToken?: string,
+  ): Session {
+    const id = providedId || randomBytes(16).toString("hex");
+    const token = providedToken || randomBytes(32).toString("hex");
+
+    // If a session with this ID already exists (e.g. stale tab, reconnect)
+    // tear it down so the new SSE connection takes over.
+    if (this.sessions.has(id)) {
+      this.destroy(id);
+    }
+
     const session: Session = {
       id,
       token,
