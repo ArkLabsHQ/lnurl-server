@@ -50,8 +50,12 @@ function startServer() {
 
 /**
  * Helper: open an SSE session and return session info.
+ * Pass `credentials` to create a deterministic/reusable session.
  */
-async function openSession(baseUrl: string): Promise<{
+async function openSession(
+  baseUrl: string,
+  token?: string,
+): Promise<{
   sessionId: string;
   lnurl: string;
   token: string;
@@ -59,7 +63,17 @@ async function openSession(baseUrl: string): Promise<{
   abort: () => void;
 }> {
   return new Promise((resolve, reject) => {
-    const req = http.request(`${baseUrl}/lnurl/session`, { method: "POST" });
+    const headers: Record<string, string> = {};
+    let body: string | undefined;
+    if (token) {
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify({ token });
+    }
+
+    const req = http.request(`${baseUrl}/lnurl/session`, {
+      method: "POST",
+      headers,
+    });
 
     req.on("response", (res) => {
       let buffer = "";
@@ -97,6 +111,7 @@ async function openSession(baseUrl: string): Promise<{
     });
 
     req.on("error", reject);
+    if (body) req.write(body);
     req.end();
   });
 }
@@ -708,6 +723,123 @@ describe("LNURL Service", () => {
         );
         const res = await payerPromise;
         expect(res.body.pr).toBe("lnbc1max");
+      } finally {
+        session.abort();
+      }
+    });
+  });
+
+  describe("Reusable sessions (client-provided token)", () => {
+    const reusableToken =
+      "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+
+    it("should derive sessionId from client-provided token", async () => {
+      const session = await openSession(ctx.baseUrl, reusableToken);
+      try {
+        expect(session.token).toBe(reusableToken);
+        expect(session.sessionId).toHaveLength(32);
+      } finally {
+        session.abort();
+      }
+    });
+
+    it("should produce the same LNURL for the same token", async () => {
+      const session1 = await openSession(ctx.baseUrl, reusableToken);
+      const lnurl1 = session1.lnurl;
+      const id1 = session1.sessionId;
+      session1.abort();
+      await new Promise((r) => setTimeout(r, 100));
+
+      const session2 = await openSession(ctx.baseUrl, reusableToken);
+      try {
+        expect(session2.lnurl).toBe(lnurl1);
+        expect(session2.sessionId).toBe(id1);
+      } finally {
+        session2.abort();
+      }
+    });
+
+    it("should allow reconnecting while old SSE is still open", async () => {
+      const session1 = await openSession(ctx.baseUrl, reusableToken);
+      const lnurl1 = session1.lnurl;
+
+      const session2 = await openSession(ctx.baseUrl, reusableToken);
+      try {
+        expect(session2.lnurl).toBe(lnurl1);
+
+        const meta = await jsonRequest(
+          `${ctx.baseUrl}/lnurl/${session2.sessionId}`,
+        );
+        expect(meta.body.tag).toBe("payRequest");
+      } finally {
+        session1.abort();
+        session2.abort();
+      }
+    });
+
+    it("should authenticate with client-provided token", async () => {
+      const session = await openSession(ctx.baseUrl, reusableToken);
+      try {
+        const eventPromise = nextSseEvent(session.response);
+        const payerPromise = jsonRequest(
+          `${ctx.baseUrl}/lnurl/${session.sessionId}/callback?amount=50000`,
+        );
+
+        await eventPromise;
+
+        const invoiceRes = await jsonRequest(
+          `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
+          "POST",
+          { pr: "lnbc1reusable" },
+          reusableToken,
+        );
+        expect(invoiceRes.status).toBe(200);
+
+        const payerRes = await payerPromise;
+        expect(payerRes.body.pr).toBe("lnbc1reusable");
+      } finally {
+        session.abort();
+      }
+    });
+
+    it("should reject token shorter than 32 characters", async () => {
+      const res = await jsonRequest(
+        `${ctx.baseUrl}/lnurl/session`,
+        "POST",
+        { token: "abcdef0123456789abcdef012345678" },
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/token/i);
+    });
+
+    it("should reject non-hex token", async () => {
+      const res = await jsonRequest(
+        `${ctx.baseUrl}/lnurl/session`,
+        "POST",
+        { token: "zz".repeat(32) },
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/hex/i);
+    });
+
+    it("should reject reconnect attempt — different tokens produce different sessionIds", async () => {
+      const session = await openSession(ctx.baseUrl, reusableToken);
+      try {
+        // A different token derives a different sessionId, so this is
+        // simply a new independent session — no hijack possible.
+        const attackerToken = "aa".repeat(32);
+        const attacker = await openSession(ctx.baseUrl, attackerToken);
+        try {
+          expect(attacker.sessionId).not.toBe(session.sessionId);
+        } finally {
+          attacker.abort();
+        }
+
+        // Original session should still be active
+        const meta = await jsonRequest(
+          `${ctx.baseUrl}/lnurl/${session.sessionId}`,
+        );
+        expect(meta.body.tag).toBe("payRequest");
       } finally {
         session.abort();
       }

@@ -68,7 +68,17 @@ export function createServer(config: LnurlServiceConfig): express.Express {
 
   // ─── POST /lnurl/session ─────────────────────────────────────────────
   // Wallet opens an SSE stream. Returns the session ID and LNURL.
-  app.post("/lnurl/session", (_req, res) => {
+  // Accepts optional JSON body { token } for deterministic sessions —
+  // the server derives sessionId from the token via SHA-256.
+  app.post("/lnurl/session", (req, res) => {
+    const { token: providedToken } = req.body ?? {};
+
+    const HEX_RE = /^[0-9a-f]+$/i;
+    if (providedToken != null && (typeof providedToken !== "string" || providedToken.length < 32 || !HEX_RE.test(providedToken))) {
+      res.status(400).json({ error: "token must be a hex string of at least 32 characters" });
+      return;
+    }
+
     // Set SSE headers
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -76,7 +86,13 @@ export function createServer(config: LnurlServiceConfig): express.Express {
       Connection: "keep-alive",
     });
 
-    const session = sessions.create(res);
+    const session = sessions.create(res, providedToken);
+
+    if (!session) {
+      res.write(`event: error\ndata: ${JSON.stringify({ error: "Session ID already in use" })}\n\n`);
+      res.end();
+      return;
+    }
 
     const callbackUrl = `${config.baseUrl}/lnurl/${session.id}`;
     const lnurl = encodeLnurl(callbackUrl);
