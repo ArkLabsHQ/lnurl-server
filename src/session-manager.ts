@@ -1,21 +1,26 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { Response } from "express";
 import type { Session, SessionEvent } from "./types.js";
 
 export class SessionManager {
   private sessions = new Map<string, Session>();
 
+  /** Derive a sessionId from a token: first 32 hex chars of SHA-256(token_bytes). */
+  private static deriveSessionId(tokenHex: string): string {
+    return createHash("sha256")
+      .update(Buffer.from(tokenHex, "hex"))
+      .digest("hex")
+      .slice(0, 32);
+  }
+
   /** Create a new session and wire up the SSE response.
-   *  When `providedId` and `providedToken` are supplied the session is
-   *  deterministic — reconnecting with the same pair produces the same
-   *  LNURL so the wallet can advertise a stable payment endpoint. */
-  create(
-    sseRes: Response,
-    providedId?: string,
-    providedToken?: string,
-  ): Session | null {
-    const id = providedId || randomBytes(16).toString("hex");
+   *  When `providedToken` is supplied the sessionId is derived from it
+   *  deterministically, so reconnecting produces the same LNURL. */
+  create(sseRes: Response, providedToken?: string): Session | null {
     const token = providedToken || randomBytes(32).toString("hex");
+    const id = providedToken
+      ? SessionManager.deriveSessionId(providedToken)
+      : randomBytes(16).toString("hex");
 
     const existing = this.sessions.get(id);
     if (existing) {

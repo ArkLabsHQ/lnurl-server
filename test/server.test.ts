@@ -54,7 +54,7 @@ function startServer() {
  */
 async function openSession(
   baseUrl: string,
-  credentials?: { sessionId: string; token: string },
+  token?: string,
 ): Promise<{
   sessionId: string;
   lnurl: string;
@@ -65,9 +65,9 @@ async function openSession(
   return new Promise((resolve, reject) => {
     const headers: Record<string, string> = {};
     let body: string | undefined;
-    if (credentials) {
+    if (token) {
       headers["Content-Type"] = "application/json";
-      body = JSON.stringify(credentials);
+      body = JSON.stringify({ token });
     }
 
     const req = http.request(`${baseUrl}/lnurl/session`, {
@@ -729,48 +729,46 @@ describe("LNURL Service", () => {
     });
   });
 
-  describe("Reusable sessions (client-provided credentials)", () => {
-    const creds = {
-      sessionId: "a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8",
-      token: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-    };
+  describe("Reusable sessions (client-provided token)", () => {
+    const reusableToken =
+      "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 
-    it("should use client-provided sessionId and token", async () => {
-      const session = await openSession(ctx.baseUrl, creds);
+    it("should derive sessionId from client-provided token", async () => {
+      const session = await openSession(ctx.baseUrl, reusableToken);
       try {
-        expect(session.sessionId).toBe(creds.sessionId);
-        expect(session.token).toBe(creds.token);
+        expect(session.token).toBe(reusableToken);
+        expect(session.sessionId).toHaveLength(32);
       } finally {
         session.abort();
       }
     });
 
-    it("should produce the same LNURL for the same sessionId", async () => {
-      const session1 = await openSession(ctx.baseUrl, creds);
+    it("should produce the same LNURL for the same token", async () => {
+      const session1 = await openSession(ctx.baseUrl, reusableToken);
       const lnurl1 = session1.lnurl;
+      const id1 = session1.sessionId;
       session1.abort();
       await new Promise((r) => setTimeout(r, 100));
 
-      const session2 = await openSession(ctx.baseUrl, creds);
+      const session2 = await openSession(ctx.baseUrl, reusableToken);
       try {
         expect(session2.lnurl).toBe(lnurl1);
+        expect(session2.sessionId).toBe(id1);
       } finally {
         session2.abort();
       }
     });
 
     it("should allow reconnecting while old SSE is still open", async () => {
-      const session1 = await openSession(ctx.baseUrl, creds);
+      const session1 = await openSession(ctx.baseUrl, reusableToken);
       const lnurl1 = session1.lnurl;
 
-      // Reconnect with same ID — old connection should be replaced
-      const session2 = await openSession(ctx.baseUrl, creds);
+      const session2 = await openSession(ctx.baseUrl, reusableToken);
       try {
         expect(session2.lnurl).toBe(lnurl1);
 
-        // New session should be active
         const meta = await jsonRequest(
-          `${ctx.baseUrl}/lnurl/${creds.sessionId}`,
+          `${ctx.baseUrl}/lnurl/${session2.sessionId}`,
         );
         expect(meta.body.tag).toBe("payRequest");
       } finally {
@@ -780,21 +778,20 @@ describe("LNURL Service", () => {
     });
 
     it("should authenticate with client-provided token", async () => {
-      const session = await openSession(ctx.baseUrl, creds);
+      const session = await openSession(ctx.baseUrl, reusableToken);
       try {
         const eventPromise = nextSseEvent(session.response);
         const payerPromise = jsonRequest(
-          `${ctx.baseUrl}/lnurl/${creds.sessionId}/callback?amount=50000`,
+          `${ctx.baseUrl}/lnurl/${session.sessionId}/callback?amount=50000`,
         );
 
         await eventPromise;
 
-        // Post invoice with the client-provided token
         const invoiceRes = await jsonRequest(
-          `${ctx.baseUrl}/lnurl/session/${creds.sessionId}/invoice`,
+          `${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`,
           "POST",
           { pr: "lnbc1reusable" },
-          creds.token,
+          reusableToken,
         );
         expect(invoiceRes.status).toBe(200);
 
@@ -805,100 +802,42 @@ describe("LNURL Service", () => {
       }
     });
 
-    it("should reject sessionId shorter than 16 characters", async () => {
-      const res = await jsonRequest(
-        `${ctx.baseUrl}/lnurl/session`,
-        "POST",
-        { sessionId: "abcdef0123456", token: creds.token },
-      );
-      expect(res.status).toBe(400);
-      expect(res.body.error).toMatch(/sessionId/i);
-    });
-
     it("should reject token shorter than 32 characters", async () => {
       const res = await jsonRequest(
         `${ctx.baseUrl}/lnurl/session`,
         "POST",
-        { sessionId: creds.sessionId, token: "abcdef0123456789abcdef012345678" },
+        { token: "abcdef0123456789abcdef012345678" },
       );
       expect(res.status).toBe(400);
       expect(res.body.error).toMatch(/token/i);
-    });
-
-    it("should reject non-hex sessionId", async () => {
-      const res = await jsonRequest(
-        `${ctx.baseUrl}/lnurl/session`,
-        "POST",
-        { sessionId: "zzzzzzzzzzzzzzzz", token: creds.token },
-      );
-      expect(res.status).toBe(400);
-      expect(res.body.error).toMatch(/hex/i);
     });
 
     it("should reject non-hex token", async () => {
       const res = await jsonRequest(
         `${ctx.baseUrl}/lnurl/session`,
         "POST",
-        { sessionId: creds.sessionId, token: "zz".repeat(32) },
+        { token: "zz".repeat(32) },
       );
       expect(res.status).toBe(400);
       expect(res.body.error).toMatch(/hex/i);
     });
 
-    it("should reject sessionId without token", async () => {
-      const res = await jsonRequest(
-        `${ctx.baseUrl}/lnurl/session`,
-        "POST",
-        { sessionId: creds.sessionId },
-      );
-      expect(res.status).toBe(400);
-      expect(res.body.error).toMatch(/both/i);
-    });
-
-    it("should reject token without sessionId", async () => {
-      const res = await jsonRequest(
-        `${ctx.baseUrl}/lnurl/session`,
-        "POST",
-        { token: creds.token },
-      );
-      expect(res.status).toBe(400);
-      expect(res.body.error).toMatch(/both/i);
-    });
-
-    it("should reject reconnect with wrong token (session hijack attempt)", async () => {
-      const session = await openSession(ctx.baseUrl, creds);
+    it("should reject reconnect attempt — different tokens produce different sessionIds", async () => {
+      const session = await openSession(ctx.baseUrl, reusableToken);
       try {
-        const attackerCreds = {
-          sessionId: creds.sessionId,
-          token: "aa".repeat(32),
-        };
-
-        // Attacker tries to take over with same sessionId, different token
-        // This should fail — the SSE stream sends an error event and closes
-        const attackReq = new Promise<void>((resolve, reject) => {
-          const req = http.request(`${ctx.baseUrl}/lnurl/session`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-          });
-
-          req.on("response", (res) => {
-            let buffer = "";
-            res.on("data", (chunk: Buffer) => {
-              buffer += chunk.toString();
-              if (buffer.includes("error")) resolve();
-            });
-            res.on("end", resolve);
-          });
-          req.on("error", reject);
-          req.write(JSON.stringify(attackerCreds));
-          req.end();
-        });
-
-        await attackReq;
+        // A different token derives a different sessionId, so this is
+        // simply a new independent session — no hijack possible.
+        const attackerToken = "aa".repeat(32);
+        const attacker = await openSession(ctx.baseUrl, attackerToken);
+        try {
+          expect(attacker.sessionId).not.toBe(session.sessionId);
+        } finally {
+          attacker.abort();
+        }
 
         // Original session should still be active
         const meta = await jsonRequest(
-          `${ctx.baseUrl}/lnurl/${creds.sessionId}`,
+          `${ctx.baseUrl}/lnurl/${session.sessionId}`,
         );
         expect(meta.body.tag).toBe("payRequest");
       } finally {
