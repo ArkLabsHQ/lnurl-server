@@ -17,21 +17,18 @@ Tests use vitest with real HTTP servers (no mocks). Each test starts a server on
 
 ## Releasing
 
-Releases are triggered by pushing a semver git tag:
+Releases are driven by the `version` field in `package.json`:
 
 ```bash
 # 1. Update version in package.json
 # 2. Update CHANGELOG.md with the new version's changes
-# 3. Commit: "release: v0.2.0"
-# 4. Tag and push:
-git tag v0.2.0
-git push origin main --tags
+# 3. Commit and push to main: "release: v0.2.0"
 ```
 
-This triggers the CI workflow which:
+On push to `main`, CI reads the version from `package.json` and checks if a matching git tag exists. If not, it automatically:
 - Builds and pushes Docker image to `ghcr.io/arklabshq/lnurl-server:{version}` + `latest`
+- Creates the `v{version}` git tag
 - Creates a GitHub Release with changelog content extracted from CHANGELOG.md
-- Verifies that `package.json` version matches the tag
 
 ## Changelog
 
