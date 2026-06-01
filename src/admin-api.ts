@@ -1,0 +1,99 @@
+import { Router } from "express";
+import type { Repositories } from "./db/repositories/index.js";
+import type { AddressService } from "./address-service.js";
+import { ProvisioningError } from "./address-service.js";
+import type { SessionManager } from "./session-manager.js";
+import type { AddressStatus } from "./db/types.js";
+import type { WithdrawalStatus } from "./db/repositories/withdrawals.js";
+
+export interface AdminDeps {
+  repos: Repositories;
+  addressService: AddressService;
+  sessions: SessionManager;
+}
+
+export function createAdminApi(deps: AdminDeps): Router {
+  const { repos, addressService, sessions } = deps;
+  const r = Router();
+
+  // ── Domains ───────────────────────────────────────────────
+  r.get("/domains", (_req, res) => res.json(repos.domains.list()));
+  r.post("/domains", (req, res) => {
+    const b = req.body ?? {};
+    if (!b.domain || !Array.isArray(b.allocationModes)) { res.status(400).json({ error: "domain and allocationModes are required" }); return; }
+    res.status(201).json(repos.domains.create(b));
+  });
+  r.patch("/domains/:id", (req, res) => {
+    try { repos.domains.update(Number(req.params.id), req.body ?? {}); res.json(repos.domains.getById(Number(req.params.id))); }
+    catch { res.status(404).json({ error: "domain not found" }); }
+  });
+  r.delete("/domains/:id", (req, res) => { repos.domains.delete(Number(req.params.id)); res.json({ ok: true }); });
+
+  // ── Addresses ─────────────────────────────────────────────
+  r.get("/addresses", (req, res) => {
+    const online = new Set(sessions.activeSessionIds());
+    const rows = repos.addresses.list({
+      domainId: req.query.domainId ? Number(req.query.domainId) : undefined,
+      status: req.query.status as AddressStatus | undefined,
+      q: req.query.q as string | undefined,
+    });
+    res.json(rows.map((a) => {
+      const domain = repos.domains.getById(a.domainId);
+      return {
+        id: a.id, username: a.username, domain: domain?.domain ?? null, status: a.status,
+        sessionId: a.sessionId, online: a.sessionId ? online.has(a.sessionId) : false, createdAt: a.createdAt,
+      };
+    }));
+  });
+  r.post("/addresses", (req, res) => {
+    const { domain: domainName, username, mode } = (req.body ?? {}) as { domain?: string; username?: string; mode?: string };
+    const domain = domainName ? repos.domains.getByDomain(domainName) : undefined;
+    if (!domain) { res.status(404).json({ error: "unknown domain" }); return; }
+    if (!username) { res.status(400).json({ error: "username required" }); return; }
+    try {
+      if (mode === "mint") {
+        const { address, secret } = addressService.mint(domain, username);
+        res.status(201).json({ id: address.id, username: address.username, domain: domain.domain, status: address.status, secret });
+      } else {
+        const { address, claimCode } = addressService.reserve(domain, username);
+        res.status(201).json({ id: address.id, username: address.username, domain: domain.domain, status: address.status, claimCode });
+      }
+    } catch (err) {
+      if (err instanceof ProvisioningError) { res.status(409).json({ error: err.message, code: err.code }); return; }
+      throw err;
+    }
+  });
+  r.patch("/addresses/:id", (req, res) => {
+    const status = (req.body ?? {}).status as AddressStatus | undefined;
+    if (status !== "active" && status !== "revoked") { res.status(400).json({ error: "status must be active or revoked" }); return; }
+    repos.addresses.updateStatus(Number(req.params.id), status);
+    res.json({ ok: true });
+  });
+  r.delete("/addresses/:id", (req, res) => { repos.addresses.delete(Number(req.params.id)); res.json({ ok: true }); });
+
+  // ── API keys ──────────────────────────────────────────────
+  r.get("/api-keys", (_req, res) => res.json(repos.apiKeys.list()));
+  r.post("/api-keys", (req, res) => {
+    const { label, domainId } = (req.body ?? {}) as { label?: string; domainId?: number };
+    const { raw, row } = repos.apiKeys.create({ label, domainId: domainId ?? null });
+    res.status(201).json({ ...row, key: raw });
+  });
+  r.delete("/api-keys/:id", (req, res) => { repos.apiKeys.revoke(Number(req.params.id)); res.json({ ok: true }); });
+
+  // ── Blacklist ─────────────────────────────────────────────
+  r.get("/blacklist", (req, res) => res.json(repos.blacklist.list(req.query.domainId ? Number(req.query.domainId) : null)));
+  r.post("/blacklist", (req, res) => {
+    const { username, domainId, reason } = (req.body ?? {}) as { username?: string; domainId?: number; reason?: string };
+    if (!username) { res.status(400).json({ error: "username required" }); return; }
+    res.status(201).json(repos.blacklist.add({ domainId: domainId ?? null, username, reason }));
+  });
+  r.delete("/blacklist/:id", (req, res) => { repos.blacklist.remove(Number(req.params.id)); res.json({ ok: true }); });
+
+  // ── Withdrawals (read-only) ───────────────────────────────
+  r.get("/withdrawals", (req, res) => res.json(repos.withdrawals.list({ status: req.query.status as WithdrawalStatus | undefined })));
+
+  // ── Live sessions ─────────────────────────────────────────
+  r.get("/sessions", (_req, res) => res.json(sessions.activeSessionIds().map((id) => ({ sessionId: id }))));
+
+  return r;
+}
