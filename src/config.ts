@@ -11,7 +11,7 @@ export interface AppConfig {
   allowInsecureTokenStorage: boolean;
   bootstrapDomain?: string;
   registrationRateLimitPerMin: number;
-  trustProxy: boolean;
+  trustProxy: number | boolean;
 }
 
 type Env = Record<string, string | undefined>;
@@ -50,6 +50,6 @@ export function loadConfig(env: Env = process.env): AppConfig {
     allowInsecureTokenStorage,
     bootstrapDomain: env.BOOTSTRAP_DOMAIN || undefined,
     registrationRateLimitPerMin: Number(env.REGISTRATION_RATE_LIMIT) || 10,
-    trustProxy: env.TRUST_PROXY !== "false",
+    trustProxy: /^\d+$/.test(env.TRUST_PROXY ?? "") ? Number(env.TRUST_PROXY) : env.TRUST_PROXY === "false" ? false : 1,
   };
 }

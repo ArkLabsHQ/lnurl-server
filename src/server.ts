@@ -71,7 +71,10 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
   const invoiceTimeout =
     config.invoiceTimeoutMs ?? DEFAULT_INVOICE_TIMEOUT_MS;
 
-  app.set("trust proxy", config.trustProxy ?? true);
+  // Default: trust exactly one proxy hop so req.ip reflects the real client IP behind
+  // a single LB/CDN. Set trustProxy to a higher number for deeper proxy stacks, or false
+  // to disable entirely (direct connections only).
+  app.set("trust proxy", config.trustProxy ?? 1);
 
   app.use(
     cors({
@@ -318,6 +321,8 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         const domain = domainName ? deps.repos.domains.getByDomain(domainName) : undefined;
         if (!domain || !domain.enabled) { res.status(404).json({ error: "Unknown or disabled domain" }); return; }
 
+        // Rate-limit keys on req.ip — only trustworthy when `trust proxy` matches the
+        // actual proxy hop count (see app.set("trust proxy", ...) above).
         if (limiter && !limiter.allow(req.ip ?? "unknown")) { res.status(429).json({ error: "Too many requests" }); return; }
 
         if (domain.requireApiKey) {

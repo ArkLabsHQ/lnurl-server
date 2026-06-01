@@ -28,6 +28,9 @@ async function main(): Promise<void> {
     const { RateLimiter } = await import("./rate-limit.js");
     const { hashSecret } = await import("./crypto.js");
     const repos = createRepositories(db);
+    if (!config.tokenEncryptionKey) {
+      console.warn("WARNING: ALLOW_INSECURE_TOKEN_STORAGE — using a static, source-readable encryption key. Do NOT use in production.");
+    }
     const key = config.tokenEncryptionKey ?? hashSecret("INSECURE-DEV-KEY"); // effective key (insecure dev fallback)
     deps = {
       repos,

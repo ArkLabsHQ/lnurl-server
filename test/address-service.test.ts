@@ -85,3 +85,20 @@ describe("list + revokeOwn", () => {
     expect(repos.addresses.getByDomainAndUsername(domainId, "mine")!.status).toBe("revoked");
   });
 });
+
+describe("edge cases", () => {
+  it("register with an invalid token throws ProvisioningError(invalid_token)", () => {
+    expect(() => svc.register({ domain: domain(), username: "x", token: "tooshort" }))
+      .toThrow(expect.objectContaining({ code: "invalid_token" }));
+  });
+
+  it("random allocation when random mode is disabled throws ProvisioningError(forbidden_mode)", () => {
+    repos.domains.update(domainId, { allocationModes: ["self"] });
+    expect(() => svc.register({ domain: domain(), token: TOKEN }))
+      .toThrow(expect.objectContaining({ code: "forbidden_mode" }));
+  });
+
+  it("listByToken with an invalid token returns empty array", () => {
+    expect(svc.listByToken("nothexa")).toEqual([]);
+  });
+});

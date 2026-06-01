@@ -7,7 +7,13 @@ export interface UsernameRules {
 }
 
 export function validateUsername(username: string, rules: UsernameRules): boolean {
-  const re = new RegExp(`^[${rules.usernamePattern}]{${rules.usernameMinLen},${rules.usernameMaxLen}}$`);
+  let re: RegExp;
+  try {
+    re = new RegExp(`^[${rules.usernamePattern}]{${rules.usernameMinLen},${rules.usernameMaxLen}}$`);
+  } catch {
+    // Malformed usernamePattern — treat as invalid rather than throwing a 500.
+    return false;
+  }
   return re.test(username);
 }
 

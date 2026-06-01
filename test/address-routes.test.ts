@@ -85,4 +85,50 @@ describe("address routes", () => {
     const ok = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "domain.com", apiKey: raw, body: { username: "x", token: TOKEN } });
     expect(ok.status).toBe(201);
   });
+
+  it("rate limit triggers 429 on the second request within the window", async () => {
+    // Start a fresh server constrained to 1 request per window
+    const limitedServer = http.createServer();
+    const limitedCtx = await new Promise<typeof ctx>((resolve) => {
+      limitedServer.listen(0, "127.0.0.1", () => {
+        const { port } = limitedServer.address() as { port: number };
+        const svc = new AddressService(repos, KEY);
+        limitedServer.on(
+          "request",
+          createServer(
+            { ...CONFIG, baseUrl: `http://127.0.0.1:${port}` },
+            { repos, addressService: svc, registrationLimiter: new RateLimiter(1, 60_000) },
+          ),
+        );
+        resolve({
+          baseUrl: `http://127.0.0.1:${port}`,
+          close: () => new Promise<void>((r) => { limitedServer.closeAllConnections(); limitedServer.close(() => r()); }),
+        });
+      });
+    });
+    try {
+      const first = await req("POST", `${limitedCtx.baseUrl}/lnurl/address`, { host: "domain.com", body: { username: "rla", token: TOKEN } });
+      expect(first.status).toBe(201);
+      const second = await req("POST", `${limitedCtx.baseUrl}/lnurl/address`, { host: "domain.com", body: { username: "rlb", token: "cd".repeat(32) } });
+      expect(second.status).toBe(429);
+    } finally {
+      await limitedCtx.close();
+    }
+  });
+
+  it("POST missing token returns 400", async () => {
+    const res = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "domain.com", body: { username: "notoken" } });
+    expect(res.status).toBe(400);
+  });
+
+  it("POST to unknown domain returns 404", async () => {
+    const res = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "unknown.example", body: { username: "x", token: TOKEN } });
+    expect(res.status).toBe(404);
+  });
+
+  it("DELETE with wrong token returns 404", async () => {
+    await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "domain.com", body: { username: "wrongtoken", token: TOKEN } });
+    const res = await req("DELETE", `${ctx.baseUrl}/lnurl/address/wrongtoken`, { host: "domain.com", bearer: "ff".repeat(32) });
+    expect(res.status).toBe(404);
+  });
 });
