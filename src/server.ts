@@ -3,6 +3,8 @@ import cors from "cors";
 import { bech32 } from "@scure/base";
 import { SessionManager } from "./session-manager.js";
 import { openApiSpec } from "./openapi.js";
+import type { Repositories } from "./db/repositories/index.js";
+import { originFromRequest, domainFromHost } from "./http-origin.js";
 import type {
   LnurlServiceConfig,
   LnurlPayMetadata,
@@ -14,20 +16,57 @@ import type {
 const DEFAULT_INVOICE_TIMEOUT_MS = 30_000;
 const METADATA_DESCRIPTION = "Arkade LNURL Receive";
 
+export interface ServerDeps {
+  repos: Repositories;
+}
+
 function encodeLnurl(url: string): string {
   const words = bech32.toWords(new TextEncoder().encode(url));
   return bech32.encode("lnurl", words, 1023).toUpperCase();
 }
 
-function buildMetadata(): string {
-  return JSON.stringify([["text/plain", METADATA_DESCRIPTION]]);
+function buildMetadata(identifier?: string): string {
+  const entries: [string, string][] = [["text/plain", METADATA_DESCRIPTION]];
+  if (identifier) entries.push(["text/identifier", identifier]);
+  return JSON.stringify(entries);
 }
 
-export function createServer(config: LnurlServiceConfig): express.Express {
+// Shared core: validate amount range, ensure session online, request bolt11, respond.
+async function requestInvoiceAndRespond(args: {
+  sessions: SessionManager;
+  sessionId: string;
+  amountMsat: number;
+  comment: string | undefined;
+  min: number;
+  max: number;
+  timeoutMs: number;
+  offlineReason: string;
+  res: express.Response;
+}): Promise<void> {
+  const { sessions, sessionId, amountMsat, comment, min, max, timeoutMs, offlineReason, res } = args;
+  if (amountMsat < min || amountMsat > max) {
+    res.json({ status: "ERROR", reason: `Amount must be between ${min} and ${max} millisats` } satisfies LnurlErrorResponse);
+    return;
+  }
+  if (!sessions.isActive(sessionId)) {
+    res.json({ status: "ERROR", reason: offlineReason } satisfies LnurlErrorResponse);
+    return;
+  }
+  try {
+    const pr = await sessions.requestInvoice(sessionId, amountMsat, comment, timeoutMs);
+    res.json({ pr, routes: [] } satisfies LnurlPayCallbackResponse);
+  } catch (err) {
+    res.json({ status: "ERROR", reason: err instanceof Error ? err.message : "Failed to get invoice" } satisfies LnurlErrorResponse);
+  }
+}
+
+export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): express.Express {
   const app = express();
   const sessions = new SessionManager();
   const invoiceTimeout =
     config.invoiceTimeoutMs ?? DEFAULT_INVOICE_TIMEOUT_MS;
+
+  app.set("trust proxy", true);
 
   app.use(
     cors({
@@ -138,51 +177,14 @@ export function createServer(config: LnurlServiceConfig): express.Express {
     const comment = req.query.comment as string | undefined;
 
     if (!amountStr || isNaN(Number(amountStr))) {
-      const err: LnurlErrorResponse = {
-        status: "ERROR",
-        reason: "Missing or invalid amount parameter",
-      };
-      res.json(err);
+      res.json({ status: "ERROR", reason: "Missing or invalid amount parameter" } satisfies LnurlErrorResponse);
       return;
     }
-
-    const amountMsat = Number(amountStr);
-
-    if (amountMsat < config.minSendable || amountMsat > config.maxSendable) {
-      const err: LnurlErrorResponse = {
-        status: "ERROR",
-        reason: `Amount must be between ${config.minSendable} and ${config.maxSendable} millisats`,
-      };
-      res.json(err);
-      return;
-    }
-
-    if (!sessions.isActive(id)) {
-      const err: LnurlErrorResponse = {
-        status: "ERROR",
-        reason: "This LNURL is no longer active",
-      };
-      res.json(err);
-      return;
-    }
-
-    try {
-      const pr = await sessions.requestInvoice(
-        id,
-        amountMsat,
-        comment,
-        invoiceTimeout,
-      );
-
-      const response: LnurlPayCallbackResponse = { pr, routes: [] };
-      res.json(response);
-    } catch (err) {
-      const errorResponse: LnurlErrorResponse = {
-        status: "ERROR",
-        reason: err instanceof Error ? err.message : "Failed to get invoice",
-      };
-      res.json(errorResponse);
-    }
+    await requestInvoiceAndRespond({
+      sessions, sessionId: id, amountMsat: Number(amountStr), comment,
+      min: config.minSendable, max: config.maxSendable, timeoutMs: invoiceTimeout,
+      offlineReason: "This LNURL is no longer active", res,
+    });
   });
 
   // ─── POST /lnurl/session/:id/invoice ─────────────────────────────────
@@ -225,6 +227,62 @@ export function createServer(config: LnurlServiceConfig): express.Express {
 
     res.json({ ok: true });
   });
+
+  // ─── LUD-16 routes (only when deps / DB are provided) ───────────────
+  if (deps) {
+    const { repos } = deps;
+
+    app.get("/.well-known/lnurlp/:username", (req, res) => {
+      const domainName = domainFromHost(req.get("host") ?? undefined);
+      const domain = domainName ? repos.domains.getByDomain(domainName) : undefined;
+      if (!domain || !domain.enabled) {
+        res.json({ status: "ERROR", reason: "Unknown or disabled domain" } satisfies LnurlErrorResponse);
+        return;
+      }
+      const username = req.params.username.toLowerCase();
+      const address = repos.addresses.getByDomainAndUsername(domain.id, username);
+      if (!address || address.status !== "active") {
+        res.json({ status: "ERROR", reason: "Unknown LN address" } satisfies LnurlErrorResponse);
+        return;
+      }
+      const origin = originFromRequest(req);
+      const response: LnurlPayMetadata = {
+        tag: "payRequest",
+        callback: `${origin}/.well-known/lnurlp/${username}/callback`,
+        minSendable: domain.minSendable ?? config.minSendable,
+        maxSendable: domain.maxSendable ?? config.maxSendable,
+        metadata: buildMetadata(`${username}@${domain.domain}`),
+        commentAllowed: 140,
+      };
+      res.json(response);
+    });
+
+    app.get("/.well-known/lnurlp/:username/callback", async (req, res) => {
+      const domainName = domainFromHost(req.get("host") ?? undefined);
+      const domain = domainName ? repos.domains.getByDomain(domainName) : undefined;
+      if (!domain || !domain.enabled) {
+        res.json({ status: "ERROR", reason: "Unknown or disabled domain" } satisfies LnurlErrorResponse);
+        return;
+      }
+      const username = req.params.username.toLowerCase();
+      const address = repos.addresses.getByDomainAndUsername(domain.id, username);
+      if (!address || address.status !== "active" || !address.sessionId) {
+        res.json({ status: "ERROR", reason: "Unknown LN address" } satisfies LnurlErrorResponse);
+        return;
+      }
+      const amountStr = req.query.amount as string | undefined;
+      const comment = req.query.comment as string | undefined;
+      if (!amountStr || isNaN(Number(amountStr))) {
+        res.json({ status: "ERROR", reason: "Missing or invalid amount parameter" } satisfies LnurlErrorResponse);
+        return;
+      }
+      await requestInvoiceAndRespond({
+        sessions, sessionId: address.sessionId, amountMsat: Number(amountStr), comment,
+        min: domain.minSendable ?? config.minSendable, max: domain.maxSendable ?? config.maxSendable,
+        timeoutMs: invoiceTimeout, offlineReason: `${username}@${domain.domain} is currently offline`, res,
+      });
+    });
+  }
 
   return app;
 }
