@@ -1,10 +1,10 @@
 import express from "express";
 import cors from "cors";
-import { bech32 } from "@scure/base";
 import { SessionManager } from "./session-manager.js";
 import { openApiSpec } from "./openapi.js";
 import type { Repositories } from "./db/repositories/index.js";
 import { originFromRequest, domainFromHost } from "./http-origin.js";
+import { encodeLnurl } from "./lnurl.js";
 import type {
   LnurlServiceConfig,
   LnurlPayMetadata,
@@ -18,11 +18,6 @@ const METADATA_DESCRIPTION = "Arkade LNURL Receive";
 
 export interface ServerDeps {
   repos: Repositories;
-}
-
-function encodeLnurl(url: string): string {
-  const words = bech32.toWords(new TextEncoder().encode(url));
-  return bech32.encode("lnurl", words, 1023).toUpperCase();
 }
 
 function buildMetadata(identifier?: string): string {
