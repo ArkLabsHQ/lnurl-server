@@ -9,6 +9,15 @@ describe("domainFromHost", () => {
   it("returns null for empty host", () => {
     expect(domainFromHost(undefined)).toBeNull();
   });
+  it("handles bracketed IPv6 with port", () => {
+    expect(domainFromHost("[::1]:3000")).toBe("::1");
+  });
+  it("handles bracketed IPv6 without port", () => {
+    expect(domainFromHost("[2001:db8::1]")).toBe("2001:db8::1");
+  });
+  it("returns null for malformed bracketed IPv6", () => {
+    expect(domainFromHost("[::1")).toBeNull();
+  });
 });
 
 describe("originFromRequest", () => {

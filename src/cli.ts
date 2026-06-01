@@ -37,6 +37,7 @@ async function main(): Promise<void> {
       minSendable: config.minSendable,
       maxSendable: config.maxSendable,
       invoiceTimeoutMs: config.invoiceTimeoutMs,
+      trustProxy: config.trustProxy,
     },
     deps,
   );

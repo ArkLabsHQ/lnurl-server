@@ -66,7 +66,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
   const invoiceTimeout =
     config.invoiceTimeoutMs ?? DEFAULT_INVOICE_TIMEOUT_MS;
 
-  app.set("trust proxy", true);
+  app.set("trust proxy", config.trustProxy ?? true);
 
   app.use(
     cors({

@@ -62,7 +62,7 @@ describe("GET /.well-known/lnurlp/:username/callback", () => {
     try {
       const payer = getJson(`${ctx.baseUrl}/.well-known/lnurlp/devious/callback?amount=50000`, "domain.com");
       // Wallet receives invoice_request and posts a bolt11 back
-      await new Promise((r) => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 100));
       await new Promise<void>((resolve, reject) => {
         const req = http.request(`${ctx.baseUrl}/lnurl/session/${sid(TOKEN)}/invoice`, {
           method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${TOKEN}` },
