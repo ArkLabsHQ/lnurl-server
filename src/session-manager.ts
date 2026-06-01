@@ -1,17 +1,10 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import type { Response } from "express";
 import type { Session, SessionEvent } from "./types.js";
+import { deriveSessionId } from "./session-id.js";
 
 export class SessionManager {
   private sessions = new Map<string, Session>();
-
-  /** Derive a sessionId from a token: first 32 hex chars of SHA-256(token_bytes). */
-  private static deriveSessionId(tokenHex: string): string {
-    return createHash("sha256")
-      .update(Buffer.from(tokenHex, "hex"))
-      .digest("hex")
-      .slice(0, 32);
-  }
 
   /** Create a new session and wire up the SSE response.
    *  When `providedToken` is supplied the sessionId is derived from it
@@ -19,7 +12,7 @@ export class SessionManager {
   create(sseRes: Response, providedToken?: string): Session | null {
     const token = providedToken || randomBytes(32).toString("hex");
     const id = providedToken
-      ? SessionManager.deriveSessionId(providedToken)
+      ? deriveSessionId(providedToken)
       : randomBytes(16).toString("hex");
 
     const existing = this.sessions.get(id);
