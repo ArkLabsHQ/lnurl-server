@@ -146,6 +146,11 @@ export class SessionManager {
     this.sessions.delete(id);
   }
 
+  /** All currently-connected session ids. */
+  activeSessionIds(): string[] {
+    return Array.from(this.sessions.keys());
+  }
+
   /** Relay a withdrawer's bolt11 to the funding wallet via SSE and wait for approval or rejection. */
   requestWithdraw(
     id: string,

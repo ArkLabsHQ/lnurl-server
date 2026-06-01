@@ -97,6 +97,20 @@ export class AddressesRepo {
     this.db.prepare("UPDATE addresses SET status = ?, updated_at = ? WHERE id = ?").run(status, Date.now(), id);
   }
 
+  list(filter: { domainId?: number; status?: AddressStatus; q?: string } = {}): AddressRow[] {
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    if (filter.domainId != null) { where.push("domain_id = ?"); params.push(filter.domainId); }
+    if (filter.status) { where.push("status = ?"); params.push(filter.status); }
+    if (filter.q) { where.push("username LIKE ?"); params.push(`%${filter.q.toLowerCase()}%`); }
+    const sql = `SELECT * FROM addresses ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC`;
+    return (this.db.prepare(sql).all(...params) as AddressRecord[]).map(rowToAddress);
+  }
+
+  delete(id: number): void {
+    this.db.prepare("DELETE FROM addresses WHERE id = ?").run(id);
+  }
+
   /** Bind a (reserved) address to a wallet: store token + session, clear claim code, activate. */
   bind(id: number, opts: { sessionId: string; encryptedToken: EncryptedToken }): void {
     this.db
