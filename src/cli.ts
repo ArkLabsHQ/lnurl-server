@@ -1,21 +1,49 @@
 import { createServer } from "./server.js";
+import { loadConfig } from "./config.js";
+import type { Db } from "./db/connection.js";
 
-const port = Number(process.env.PORT) || 3000;
-const baseUrl = process.env.BASE_URL || `http://localhost:${port}`;
-const minSendable = Number(process.env.MIN_SENDABLE) || 1_000;
-const maxSendable = Number(process.env.MAX_SENDABLE) || 100_000_000_000;
-const invoiceTimeoutMs = Number(process.env.INVOICE_TIMEOUT_MS) || 30_000;
+/** Open + migrate + bootstrap the DB when configured; null in in-memory mode. */
+export async function initPersistence(opts: {
+  dbPath?: string;
+  bootstrapDomain?: string;
+}): Promise<Db | null> {
+  if (!opts.dbPath) return null;
+  const { openDb } = await import("./db/connection.js");
+  const { runMigrations } = await import("./db/migrations.js");
+  const { bootstrap } = await import("./bootstrap.js");
+  const db = openDb(opts.dbPath);
+  runMigrations(db);
+  bootstrap(db, { bootstrapDomain: opts.bootstrapDomain });
+  return db;
+}
 
-const app = createServer({
-  port,
-  baseUrl,
-  minSendable,
-  maxSendable,
-  invoiceTimeoutMs,
-});
+async function main(): Promise<void> {
+  const config = loadConfig();
 
-app.listen(port, () => {
-  console.log(`arkade-lnurl listening on ${baseUrl}`);
-  console.log(`  min: ${minSendable} msat, max: ${maxSendable} msat`);
-  console.log(`  invoice timeout: ${invoiceTimeoutMs}ms`);
+  const db = await initPersistence({ dbPath: config.dbPath, bootstrapDomain: config.bootstrapDomain });
+  if (db) {
+    const { DomainsRepo } = await import("./db/repositories/domains.js");
+    console.log(`persistence: enabled at ${config.dbPath} (${new DomainsRepo(db).list().length} domain(s))`);
+  } else {
+    console.log("persistence: disabled (in-memory mode)");
+  }
+
+  const app = createServer({
+    port: config.port,
+    baseUrl: config.baseUrl,
+    minSendable: config.minSendable,
+    maxSendable: config.maxSendable,
+    invoiceTimeoutMs: config.invoiceTimeoutMs,
+  });
+
+  app.listen(config.port, () => {
+    console.log(`arkade-lnurl listening on ${config.baseUrl}`);
+    console.log(`  min: ${config.minSendable} msat, max: ${config.maxSendable} msat`);
+    console.log(`  invoice timeout: ${config.invoiceTimeoutMs}ms`);
+  });
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
 });

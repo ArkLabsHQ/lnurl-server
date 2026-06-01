@@ -78,7 +78,7 @@ export class DomainsRepo {
   }
 
   list(): DomainRow[] {
-    const rows = this.db.prepare("SELECT * FROM domains ORDER BY domain").all() as DomainRecord[];
+    const rows = this.db.prepare("SELECT * FROM domains ORDER BY domain").all() as unknown as DomainRecord[];
     return rows.map(rowToDomain);
   }
 

@@ -20,7 +20,7 @@ export class BlacklistRepo {
     const info = this.db
       .prepare("INSERT INTO blacklist (domain_id, username, reason, created_at) VALUES (?, ?, ?, ?)")
       .run(p.domainId ?? null, p.username.toLowerCase(), p.reason ?? null, Date.now());
-    const r = this.db.prepare("SELECT * FROM blacklist WHERE id = ?").get(Number(info.lastInsertRowid)) as BlacklistRecord;
+    const r = this.db.prepare("SELECT * FROM blacklist WHERE id = ?").get(Number(info.lastInsertRowid)) as unknown as BlacklistRecord;
     return rowTo(r);
   }
 
@@ -37,8 +37,8 @@ export class BlacklistRepo {
   list(domainId: number | null): BlacklistRow[] {
     const rows =
       domainId == null
-        ? (this.db.prepare("SELECT * FROM blacklist WHERE domain_id IS NULL ORDER BY username").all() as BlacklistRecord[])
-        : (this.db.prepare("SELECT * FROM blacklist WHERE domain_id = ? ORDER BY username").all(domainId) as BlacklistRecord[]);
+        ? (this.db.prepare("SELECT * FROM blacklist WHERE domain_id IS NULL ORDER BY username").all() as unknown as BlacklistRecord[])
+        : (this.db.prepare("SELECT * FROM blacklist WHERE domain_id = ? ORDER BY username").all(domainId) as unknown as BlacklistRecord[]);
     return rows.map(rowTo);
   }
 

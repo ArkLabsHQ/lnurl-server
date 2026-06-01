@@ -82,7 +82,7 @@ export class AddressesRepo {
   }
 
   listBySessionId(sessionId: string): AddressRow[] {
-    const rows = this.db.prepare("SELECT * FROM addresses WHERE session_id = ?").all(sessionId) as AddressRecord[];
+    const rows = this.db.prepare("SELECT * FROM addresses WHERE session_id = ?").all(sessionId) as unknown as AddressRecord[];
     return rows.map(rowToAddress);
   }
 

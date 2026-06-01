@@ -13,8 +13,8 @@
   },
   "scripts": {
     "build": "tsup src/index.ts src/cli.ts --format esm --dts",
-    "dev": "tsx watch src/cli.ts",
-    "start": "node dist/cli.js",
+    "dev": "cross-env NODE_OPTIONS=--experimental-sqlite tsx watch src/cli.ts",
+    "start": "node --experimental-sqlite dist/cli.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "type-check": "tsc --noEmit"
@@ -28,6 +28,7 @@
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
     "@types/supertest": "^7.2.0",
+    "cross-env": "^10.1.0",
     "supertest": "^7.2.2",
     "tsup": "^8.5.0",
     "tsx": "^4.19.0",

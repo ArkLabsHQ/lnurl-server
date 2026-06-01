@@ -27,4 +27,4 @@ ENV INVOICE_TIMEOUT_MS=30000
 
 EXPOSE 3000
 
-CMD ["node", "dist/cli.js"]
+CMD ["node", "--experimental-sqlite", "dist/cli.js"]
