@@ -24,7 +24,16 @@ async function main(): Promise<void> {
   let deps: import("./server.js").ServerDeps | undefined;
   if (db) {
     const { createRepositories } = await import("./db/repositories/index.js");
-    deps = { repos: createRepositories(db) };
+    const { AddressService } = await import("./address-service.js");
+    const { RateLimiter } = await import("./rate-limit.js");
+    const { hashSecret } = await import("./crypto.js");
+    const repos = createRepositories(db);
+    const key = config.tokenEncryptionKey ?? hashSecret("INSECURE-DEV-KEY"); // effective key (insecure dev fallback)
+    deps = {
+      repos,
+      addressService: new AddressService(repos, key),
+      registrationLimiter: new RateLimiter(config.registrationRateLimitPerMin, 60_000),
+    };
     console.log(`persistence: enabled at ${config.dbPath} (${deps.repos.domains.list().length} domain(s))`);
   } else {
     console.log("persistence: disabled (in-memory mode)");

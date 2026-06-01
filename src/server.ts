@@ -5,6 +5,9 @@ import { openApiSpec } from "./openapi.js";
 import type { Repositories } from "./db/repositories/index.js";
 import { originFromRequest, domainFromHost } from "./http-origin.js";
 import { encodeLnurl } from "./lnurl.js";
+import type { AddressService } from "./address-service.js";
+import { ProvisioningError } from "./address-service.js";
+import type { RateLimiter } from "./rate-limit.js";
 import type {
   LnurlServiceConfig,
   LnurlPayMetadata,
@@ -16,8 +19,15 @@ import type {
 const DEFAULT_INVOICE_TIMEOUT_MS = 30_000;
 const METADATA_DESCRIPTION = "Arkade LNURL Receive";
 
+const PROVISIONING_STATUS: Record<string, number> = {
+  invalid_token: 400, invalid_username: 400, forbidden_mode: 403,
+  blacklisted: 409, taken: 409, limit_reached: 429, invalid_claim: 401,
+};
+
 export interface ServerDeps {
   repos: Repositories;
+  addressService?: AddressService;
+  registrationLimiter?: RateLimiter;
 }
 
 function buildMetadata(identifier?: string): string {
@@ -136,6 +146,27 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       type: "session_created",
       data: { sessionId: session.id, lnurl, token: session.token },
     });
+  });
+
+  // ─── GET /lnurl/address ──────────────────────────────────────────────
+  // List addresses by token. Must be registered before /lnurl/:id to avoid
+  // "address" being captured as a session id param.
+  app.get("/lnurl/address", (req, res) => {
+    const addressService = deps?.addressService;
+    if (!addressService) { res.status(404).json({ error: "Not found" }); return; }
+    const auth = req.headers.authorization;
+    const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
+    if (!token) { res.status(401).json({ error: "Unauthorized" }); return; }
+    const origin = originFromRequest(req);
+    const list = addressService.listByToken(token).map((a) => {
+      const domain = deps!.repos.domains.getById(a.domainId)!;
+      return {
+        username: a.username, domain: domain.domain, status: a.status, createdAt: a.createdAt,
+        lightningAddress: `${a.username}@${domain.domain}`,
+        lnurl: encodeLnurl(`${origin}/.well-known/lnurlp/${a.username}`),
+      };
+    });
+    res.json(list);
   });
 
   // ─── GET /lnurl/:id ──────────────────────────────────────────────────
@@ -277,6 +308,48 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         timeoutMs: invoiceTimeout, offlineReason: `${username}@${domain.domain} is currently offline`, res,
       });
     });
+
+    const addressService = deps.addressService;
+    if (addressService) {
+      const limiter = deps.registrationLimiter;
+
+      app.post("/lnurl/address", (req, res) => {
+        const domainName = domainFromHost((req.body?.domain as string | undefined) ?? req.get("host") ?? undefined);
+        const domain = domainName ? deps.repos.domains.getByDomain(domainName) : undefined;
+        if (!domain || !domain.enabled) { res.status(404).json({ error: "Unknown or disabled domain" }); return; }
+
+        if (limiter && !limiter.allow(req.ip ?? "unknown")) { res.status(429).json({ error: "Too many requests" }); return; }
+
+        if (domain.requireApiKey) {
+          const key = req.get("x-api-key");
+          if (!key || !deps.repos.apiKeys.verify(key, domain.id)) { res.status(401).json({ error: "Valid X-API-Key required" }); return; }
+        }
+
+        const { token, username, claimCode } = (req.body ?? {}) as { token?: string; username?: string; claimCode?: string };
+        if (!token) { res.status(400).json({ error: "Missing token" }); return; }
+
+        try {
+          const { address, lightningAddress } = addressService.register({ domain, username, token, claimCode });
+          const lnurl = encodeLnurl(`${originFromRequest(req)}/.well-known/lnurlp/${address.username}`);
+          res.status(201).json({ lightningAddress, lnurl, username: address.username, domain: domain.domain, status: address.status });
+        } catch (err) {
+          if (err instanceof ProvisioningError) { res.status(PROVISIONING_STATUS[err.code] ?? 400).json({ error: err.message, code: err.code }); return; }
+          throw err;
+        }
+      });
+
+      app.delete("/lnurl/address/:username", (req, res) => {
+        const domainName = domainFromHost((req.query.domain as string | undefined) ?? req.get("host") ?? undefined);
+        const domain = domainName ? deps.repos.domains.getByDomain(domainName) : undefined;
+        if (!domain) { res.status(404).json({ error: "Unknown domain" }); return; }
+        const auth = req.headers.authorization;
+        const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
+        if (!token) { res.status(401).json({ error: "Unauthorized" }); return; }
+        const ok = addressService.revokeOwn(domain, req.params.username, token);
+        if (!ok) { res.status(404).json({ error: "Address not found or not owned by this token" }); return; }
+        res.json({ ok: true });
+      });
+    }
   }
 
   return app;
