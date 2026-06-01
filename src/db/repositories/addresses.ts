@@ -104,7 +104,7 @@ export class AddressesRepo {
     if (filter.status) { where.push("status = ?"); params.push(filter.status); }
     if (filter.q) { where.push("username LIKE ?"); params.push(`%${filter.q.toLowerCase()}%`); }
     const sql = `SELECT * FROM addresses ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC`;
-    return (this.db.prepare(sql).all(...params) as AddressRecord[]).map(rowToAddress);
+    return (this.db.prepare(sql).all(...params) as unknown as AddressRecord[]).map(rowToAddress);
   }
 
   delete(id: number): void {

@@ -88,7 +88,7 @@ export class WithdrawalsRepo {
     const sql = filter.status
       ? "SELECT * FROM withdrawals WHERE status = ? ORDER BY created_at DESC"
       : "SELECT * FROM withdrawals ORDER BY created_at DESC";
-    const rows = (filter.status ? this.db.prepare(sql).all(filter.status) : this.db.prepare(sql).all()) as WithdrawalRecord[];
+    const rows = (filter.status ? this.db.prepare(sql).all(filter.status) : this.db.prepare(sql).all()) as unknown as WithdrawalRecord[];
     return rows.map(rowTo);
   }
 }

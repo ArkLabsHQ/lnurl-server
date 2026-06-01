@@ -29,6 +29,7 @@ export interface ServerDeps {
   repos: Repositories;
   addressService?: AddressService;
   registrationLimiter?: RateLimiter;
+  sessions?: SessionManager;
 }
 
 function buildMetadata(identifier?: string): string {
@@ -68,7 +69,7 @@ async function requestInvoiceAndRespond(args: {
 
 export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): express.Express {
   const app = express();
-  const sessions = new SessionManager();
+  const sessions = deps?.sessions ?? new SessionManager();
   const invoiceTimeout =
     config.invoiceTimeoutMs ?? DEFAULT_INVOICE_TIMEOUT_MS;
 
@@ -259,7 +260,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
   });
 
   // ─── LUD-16 routes (only when deps / DB are provided) ───────────────
-  if (deps) {
+  if (deps?.repos) {
     const { repos } = deps;
 
     app.get("/.well-known/lnurlp/:username", (req, res) => {

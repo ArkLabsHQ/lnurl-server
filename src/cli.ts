@@ -1,5 +1,6 @@
 import { createServer } from "./server.js";
 import { loadConfig } from "./config.js";
+import { SessionManager } from "./session-manager.js";
 import type { Db } from "./db/connection.js";
 
 /** Open + migrate + bootstrap the DB when configured; null in in-memory mode. */
@@ -21,7 +22,9 @@ async function main(): Promise<void> {
   const config = loadConfig();
 
   const db = await initPersistence({ dbPath: config.dbPath, bootstrapDomain: config.bootstrapDomain });
+  const sessions = new SessionManager();
   let deps: import("./server.js").ServerDeps | undefined;
+
   if (db) {
     const { createRepositories } = await import("./db/repositories/index.js");
     const { AddressService } = await import("./address-service.js");
@@ -32,12 +35,19 @@ async function main(): Promise<void> {
       console.warn("WARNING: ALLOW_INSECURE_TOKEN_STORAGE — using a static, source-readable encryption key. Do NOT use in production.");
     }
     const key = config.tokenEncryptionKey ?? hashSecret("INSECURE-DEV-KEY"); // effective key (insecure dev fallback)
+    const addressService = new AddressService(repos, key);
     deps = {
       repos,
-      addressService: new AddressService(repos, key),
+      addressService,
       registrationLimiter: new RateLimiter(config.registrationRateLimitPerMin, 60_000),
+      sessions,
     };
     console.log(`persistence: enabled at ${config.dbPath} (${deps.repos.domains.list().length} domain(s))`);
+
+    const { createAdminServer } = await import("./admin-server.js");
+    createAdminServer({ repos, addressService, sessions }).listen(config.adminPort, config.adminBind, () => {
+      console.log(`admin server on http://${config.adminBind}:${config.adminPort} (front with a proxy)`);
+    });
   } else {
     console.log("persistence: disabled (in-memory mode)");
   }
