@@ -81,7 +81,7 @@ export class WithdrawalsRepo {
   }
 
   listBySession(sessionId: string): WithdrawalRow[] {
-    const rows = this.db.prepare("SELECT * FROM withdrawals WHERE session_id = ? ORDER BY created_at DESC").all(sessionId) as WithdrawalRecord[];
+    const rows = this.db.prepare("SELECT * FROM withdrawals WHERE session_id = ? ORDER BY created_at DESC").all(sessionId) as unknown as WithdrawalRecord[];
     return rows.map(rowTo);
   }
 }
