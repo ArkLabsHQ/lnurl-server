@@ -27,6 +27,7 @@ export class SessionManager {
       createdAt: Date.now(),
       sseRes,
       pendingInvoice: null,
+      pendingWithdraw: null,
     };
 
     this.sessions.set(id, session);
@@ -129,7 +130,7 @@ export class SessionManager {
     return true;
   }
 
-  /** Destroy a session and reject any pending invoice request */
+  /** Destroy a session and reject any pending invoice or withdraw request */
   destroy(id: string): void {
     const session = this.sessions.get(id);
     if (!session) return;
@@ -138,6 +139,58 @@ export class SessionManager {
       session.pendingInvoice.reject(new Error("Session closed"));
     }
 
+    if (session.pendingWithdraw) {
+      session.pendingWithdraw.reject(new Error("Session closed"));
+    }
+
     this.sessions.delete(id);
+  }
+
+  requestWithdraw(
+    id: string,
+    payload: { withdrawId: string; bolt11: string; minWithdrawable: number; maxWithdrawable: number; description?: string },
+    timeoutMs: number,
+  ): Promise<void> {
+    const session = this.sessions.get(id);
+    if (!session) return Promise.reject(new Error("Session not found"));
+    if (session.pendingWithdraw) return Promise.reject(new Error("Another withdraw is already pending"));
+
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        session.pendingWithdraw = null;
+        reject(new Error("Withdraw request timed out"));
+      }, timeoutMs);
+
+      session.pendingWithdraw = {
+        withdrawId: payload.withdrawId,
+        resolve: () => { clearTimeout(timer); session.pendingWithdraw = null; resolve(); },
+        reject: (err: Error) => { clearTimeout(timer); session.pendingWithdraw = null; reject(err); },
+      };
+
+      this.sendEvent(id, {
+        type: "withdraw_request",
+        data: {
+          withdrawId: payload.withdrawId,
+          bolt11: payload.bolt11,
+          minWithdrawable: payload.minWithdrawable,
+          maxWithdrawable: payload.maxWithdrawable,
+          description: payload.description,
+        },
+      });
+    });
+  }
+
+  resolveWithdraw(id: string, withdrawId: string): boolean {
+    const session = this.sessions.get(id);
+    if (!session?.pendingWithdraw || session.pendingWithdraw.withdrawId !== withdrawId) return false;
+    session.pendingWithdraw.resolve();
+    return true;
+  }
+
+  rejectWithdraw(id: string, withdrawId: string, reason: string): boolean {
+    const session = this.sessions.get(id);
+    if (!session?.pendingWithdraw || session.pendingWithdraw.withdrawId !== withdrawId) return false;
+    session.pendingWithdraw.reject(new Error(reason));
+    return true;
   }
 }
