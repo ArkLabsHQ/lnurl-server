@@ -59,10 +59,15 @@ function Card({ label, value }: { label: string; value: number }) {
 function Domains() {
   const { items, reload, err } = useList<Domain>("/domains");
   const [domain, setDomain] = useState("");
-  const add = async () => { await api.post("/domains", { domain, allocationModes: ["self", "random"] }); setDomain(""); reload(); };
+  const [mutErr, setMutErr] = useState<string>();
+  const add = async () => {
+    try { await api.post("/domains", { domain, allocationModes: ["self", "random"] }); setDomain(""); setMutErr(undefined); reload(); }
+    catch (e) { setMutErr(e instanceof Error ? e.message : String(e)); }
+  };
   return (
     <div>
       {err && <p style={{ color: "crimson" }}>{err}</p>}
+      {mutErr && <p style={{ color: "crimson" }}>{mutErr}</p>}
       <div style={{ marginBottom: 12 }}>
         <input placeholder="new-domain.com" value={domain} onChange={(e) => setDomain(e.target.value)} />
         <button onClick={add} disabled={!domain}>+ Add domain</button>
@@ -71,7 +76,7 @@ function Domains() {
         <thead><tr><Th>Domain</Th><Th>Modes</Th><Th>API key?</Th><Th>Enabled</Th><Th /></tr></thead>
         <tbody>{items.map((d) => (
           <tr key={d.id}><Td>{d.domain}</Td><Td>{d.allocationModes.join(", ")}</Td><Td>{d.requireApiKey ? "yes" : "no"}</Td><Td>{d.enabled ? "yes" : "no"}</Td>
-            <Td><button onClick={async () => { await api.del(`/domains/${d.id}`); reload(); }}>Delete</button></Td></tr>
+            <Td><button onClick={async () => { try { await api.del(`/domains/${d.id}`); reload(); } catch (e) { setMutErr(e instanceof Error ? e.message : String(e)); } }}>Delete</button></Td></tr>
         ))}</tbody>
       </table>
     </div>
@@ -81,13 +86,17 @@ function Domains() {
 function Addresses() {
   const { items, reload, err } = useList<Address>("/addresses");
   const [domain, setDomain] = useState(""); const [username, setUsername] = useState(""); const [reveal, setReveal] = useState<string>();
+  const [mutErr, setMutErr] = useState<string>();
   const create = async (mode: "reserve" | "mint") => {
-    const r = await api.post<{ claimCode?: string; secret?: string }>("/addresses", { domain, username, mode });
-    setReveal(r.claimCode ? `Claim code: ${r.claimCode}` : `Secret: ${r.secret}`); setUsername(""); reload();
+    try {
+      const r = await api.post<{ claimCode?: string; secret?: string }>("/addresses", { domain, username, mode });
+      setReveal(r.claimCode ? `Claim code: ${r.claimCode}` : `Secret: ${r.secret}`); setUsername(""); setMutErr(undefined); reload();
+    } catch (e) { setMutErr(e instanceof Error ? e.message : String(e)); }
   };
   return (
     <div>
       {err && <p style={{ color: "crimson" }}>{err}</p>}
+      {mutErr && <p style={{ color: "crimson" }}>{mutErr}</p>}
       {reveal && <p style={{ background: "#fffae6", padding: 8, borderRadius: 6 }}>{reveal} <button onClick={() => setReveal(undefined)}>dismiss</button></p>}
       <div style={{ marginBottom: 12, display: "flex", gap: 8 }}>
         <input placeholder="domain.com" value={domain} onChange={(e) => setDomain(e.target.value)} />
@@ -98,8 +107,8 @@ function Addresses() {
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <thead><tr><Th>Address</Th><Th>Status</Th><Th>Live</Th><Th /></tr></thead>
         <tbody>{items.map((a) => (
-          <tr key={a.id}><Td>{a.username}@{a.domain}</Td><Td>{a.status}</Td><Td>{a.online ? "🟢" : "⚪"}</Td>
-            <Td><button onClick={async () => { await api.patch(`/addresses/${a.id}`, { status: "revoked" }); reload(); }} disabled={a.status === "revoked"}>Revoke</button></Td></tr>
+          <tr key={a.id}><Td>{a.username}@{a.domain}</Td><Td>{a.status}</Td><Td>{a.online ? "online" : "offline"}</Td>
+            <Td><button onClick={async () => { try { await api.patch(`/addresses/${a.id}`, { status: "revoked" }); reload(); } catch (e) { setMutErr(e instanceof Error ? e.message : String(e)); } }} disabled={a.status === "revoked"}>Revoke</button></Td></tr>
         ))}</tbody>
       </table>
     </div>
@@ -107,17 +116,23 @@ function Addresses() {
 }
 
 function ApiKeys() {
-  const { items, reload } = useList<ApiKey>("/api-keys");
+  const { items, reload, err } = useList<ApiKey>("/api-keys");
   const [label, setLabel] = useState(""); const [reveal, setReveal] = useState<string>();
-  const create = async () => { const r = await api.post<{ key: string }>("/api-keys", { label }); setReveal(r.key); setLabel(""); reload(); };
+  const [mutErr, setMutErr] = useState<string>();
+  const create = async () => {
+    try { const r = await api.post<{ key: string }>("/api-keys", { label }); setReveal(r.key); setLabel(""); setMutErr(undefined); reload(); }
+    catch (e) { setMutErr(e instanceof Error ? e.message : String(e)); }
+  };
   return (
     <div>
+      {err && <p style={{ color: "crimson" }}>{err}</p>}
+      {mutErr && <p style={{ color: "crimson" }}>{mutErr}</p>}
       {reveal && <p style={{ background: "#fffae6", padding: 8, borderRadius: 6 }}>Key (copy now): <code>{reveal}</code> <button onClick={() => setReveal(undefined)}>dismiss</button></p>}
       <div style={{ marginBottom: 12 }}><input placeholder="label" value={label} onChange={(e) => setLabel(e.target.value)} /><button onClick={create}>+ Create key</button></div>
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <thead><tr><Th>Label</Th><Th>Status</Th><Th /></tr></thead>
         <tbody>{items.map((k) => (
-          <tr key={k.id}><Td>{k.label ?? "—"}</Td><Td>{k.status}</Td><Td><button onClick={async () => { await api.del(`/api-keys/${k.id}`); reload(); }} disabled={k.status === "revoked"}>Revoke</button></Td></tr>
+          <tr key={k.id}><Td>{k.label ?? "—"}</Td><Td>{k.status}</Td><Td><button onClick={async () => { try { await api.del(`/api-keys/${k.id}`); reload(); } catch (e) { setMutErr(e instanceof Error ? e.message : String(e)); } }} disabled={k.status === "revoked"}>Revoke</button></Td></tr>
         ))}</tbody>
       </table>
     </div>

@@ -1,8 +1,8 @@
 # @arkade-os/lnurl
 
-LNURL service that enables amountless Lightning receives for Arkade wallets. When a wallet wants to receive via Lightning without specifying an amount upfront, it opens an SSE session with this service and gets back an LNURL. When a payer scans the LNURL and chooses an amount, the service notifies the wallet to create a swap and returns the resulting bolt11 invoice to the payer.
+LNURL service that enables amountless Lightning receives for Arkade wallets, with optional SQLite persistence, LN Address (LUD-16) serving, and a React admin UI.
 
-## Flow
+## Flow — ephemeral LNURL-pay (always available)
 
 ```
 Wallet                    Service                     Payer
@@ -26,12 +26,33 @@ Wallet                    Service                     Payer
 
 ## Endpoints
 
+### Core SSE session (always available)
+
 | Method | Path | Caller | Purpose |
 |--------|------|--------|---------|
-| POST | `/lnurl/session` | Wallet | Opens SSE stream, returns `session_created` event with `sessionId` and `lnurl` |
-| GET | `/lnurl/:id` | Payer | LNURL-pay first call ([LUD-06](https://github.com/lnurl/luds/blob/luds/06.md)) — returns min/max amounts and metadata |
-| GET | `/lnurl/:id/callback?amount=<msat>` | Payer | Requests invoice — notifies wallet via SSE, holds response until wallet replies |
+| POST | `/lnurl/session` | Wallet | Opens SSE stream; returns `session_created` with `sessionId` and `lnurl` |
+| GET | `/lnurl/:id` | Payer | LNURL-pay first call (LUD-06) — returns pay metadata |
+| GET | `/lnurl/:id/callback?amount=<msat>` | Payer | Requests invoice; notifies wallet via SSE |
 | POST | `/lnurl/session/:id/invoice` | Wallet | Wallet posts `{ pr: "<bolt11>" }` to resolve the pending payer request |
+
+### LN Address / LUD-16 (requires `DB_PATH`)
+
+| Method | Path | Caller | Purpose |
+|--------|------|--------|---------|
+| GET | `/.well-known/lnurlp/:username` | Payer | LUD-16 resolution — returns pay metadata; error if wallet is offline |
+| GET | `/.well-known/lnurlp/:username/callback` | Payer | Invoice callback for LN address payments |
+| POST | `/lnurl/address` | Wallet | Register/claim a Lightning address |
+| GET | `/lnurl/address` | Wallet | List own addresses (`Authorization: Bearer <token>`) |
+| DELETE | `/lnurl/address/:username` | Wallet | Revoke own address (`Authorization: Bearer <token>`) |
+
+### LNURL-withdraw / LUD-03 (requires `DB_PATH`)
+
+| Method | Path | Caller | Purpose |
+|--------|------|--------|---------|
+| POST | `/lnurl/session/:id/withdraw` | Funding wallet | Create a withdraw link (auth: Bearer token) |
+| GET | `/lnurl/withdraw/:id` | Withdrawer | LUD-03 first request — returns withdrawRequest metadata |
+| GET | `/lnurl/withdraw/:id/callback` | Withdrawer | Relay bolt11 to funding wallet via SSE |
+| POST | `/lnurl/session/:id/withdraw/:wid` | Funding wallet | Report payout result (auth: Bearer token) |
 
 ## Usage
 
@@ -65,15 +86,20 @@ pnpm dev
 ### Docker
 
 ```bash
-docker build -t arkade-lnurl .
 docker run -p 3000:3000 \
   -e BASE_URL=https://lnurl.example.com \
-  arkade-lnurl
+  -e DB_PATH=/data/lnurl.db \
+  -e TOKEN_ENCRYPTION_KEY=<32-byte-hex> \
+  -e BOOTSTRAP_DOMAIN=pay.example.com \
+  -v /host/data:/data \
+  ghcr.io/arklabshq/lnurl-server:latest
 ```
+
+The admin port (3001) is **not** published in the example above. See [Admin backend](#admin-backend--port-3001) for how to expose it safely.
 
 ## Wallet Integration
 
-1. **Open session** — `POST /lnurl/session`. The response is an SSE stream. The first event is `session_created` with `{ sessionId, lnurl }`. Display the LNURL as a QR code.
+1. **Open session** — `POST /lnurl/session`. The response is an SSE stream. The first event is `session_created` with `{ sessionId, lnurl, token }`. Display the LNURL as a QR code.
 
 2. **Listen for invoice requests** — When the payer scans and selects an amount, the wallet receives an `invoice_request` event with `{ amountMsat, comment }`.
 
@@ -85,25 +111,136 @@ docker run -p 3000:3000 \
 
 | Event | Data | Description |
 |-------|------|-------------|
-| `session_created` | `{ sessionId, lnurl }` | Session is active, LNURL is ready to share |
+| `session_created` | `{ sessionId, lnurl, token }` | Session is active, LNURL is ready to share |
 | `invoice_request` | `{ amountMsat, comment? }` | Payer requested an invoice for this amount |
+| `withdraw_request` | `{ withdrawId, bolt11, minWithdrawable, maxWithdrawable, description? }` | Withdrawer submitted a bolt11 for the funding wallet to pay |
 | `error` | `{ message }` | Something went wrong |
+
+## Persistence (opt-in)
+
+Without `DB_PATH` the service runs fully in-memory and behaves exactly as the original single-binary library — no database, no LN address provisioning, no admin UI.
+
+Set `DB_PATH` to enable SQLite persistence:
+
+```bash
+DB_PATH=/data/lnurl.db \
+TOKEN_ENCRYPTION_KEY=<32-byte-hex-or-base64> \
+pnpm dev
+```
+
+The database uses Node's built-in `node:sqlite` module (requires `--experimental-sqlite`, wired automatically via the `NODE_OPTIONS` env var in the npm scripts).
+
+### Encryption at rest
+
+When `DB_PATH` is set, `TOKEN_ENCRYPTION_KEY` is **required**. Wallet session tokens are stored encrypted (AES-256-GCM) so a database dump cannot be used to impersonate wallets.
+
+- `TOKEN_ENCRYPTION_KEY` — 32-byte secret, encoded as hex (64 chars) or base64 (44 chars).  
+  Generate: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
+- `ALLOW_INSECURE_TOKEN_STORAGE=1` — **dev only** escape hatch that stores tokens in plaintext without requiring `TOKEN_ENCRYPTION_KEY`. Do not use in production.
+
+## LN Address (LUD-16)
+
+When persistence is enabled the service can serve Lightning addresses (`user@domain.com`). Resolution is host-based: the `Host` header of the incoming request selects the domain. Multi-domain setups are supported by routing different hostnames to the same server instance.
+
+- **Online** — `/.well-known/lnurlp/:username` returns pay metadata and the callback triggers an invoice request to the wallet's live SSE session.
+- **Offline** — if the wallet's SSE session is not active the callback returns an LNURL error (`status: "ERROR"`).
+
+### Address provisioning
+
+Wallets register a Lightning address via `POST /lnurl/address`. The request body must include a `token` (the wallet's session token). The `username` and `domain` fields determine which address is assigned:
+
+| Request | Behaviour |
+|---------|-----------|
+| `username` provided, domain allows `"self"` mode | Wallet claims that specific username |
+| no `username`, domain allows `"random"` mode | Server assigns a random username |
+| `username` + `claimCode` provided | Wallet claims a pre-reserved address |
+
+Constraints enforced per domain:
+- **`allocationModes`** — which of `"self"`, `"random"`, `"admin"` the domain permits.
+- **`requireApiKey`** — if true, requests must include a valid `X-API-Key` header.
+- **`max_per_session`** — cap on active addresses per wallet session.
+- **`username_min_len` / `username_max_len` / `username_pattern`** — username validation rules.
+- **Blacklist** — per-domain and global username blacklist enforced at registration time.
+- **Registration rate limit** — per-IP limit controlled by `REGISTRATION_RATE_LIMIT` (requests/min per IP).
+
+## LNURL-withdraw (LUD-03)
+
+A funding wallet (online via SSE) creates a withdraw link:
+
+```http
+POST /lnurl/session/:id/withdraw
+Authorization: Bearer <token>
+
+{
+  "minWithdrawable": 1000,
+  "maxWithdrawable": 500000,
+  "description": "Optional description",
+  "usesRemaining": 1,
+  "expiresAt": 1234567890000
+}
+```
+
+The response includes a `lnurl` that can be shown to the withdrawer. When the withdrawer scans it and submits a bolt11, the service relays a `withdraw_request` SSE event to the funding wallet. The funding wallet then pays the invoice and reports success or failure via `POST /lnurl/session/:id/withdraw/:wid`.
+
+## Admin backend — port 3001
+
+When `DB_PATH` is set an admin backend starts on `ADMIN_PORT` (default `3001`), bound to `ADMIN_BIND` (default `127.0.0.1` for the CLI).
+
+**The admin API has no built-in authentication.** Front it with Cloudflare Access, an nginx `auth_basic` block, or another authentication proxy. Do **not** publish port 3001 (`-p 3001:3001`) to the internet without a front proxy.
+
+The Docker image binds to `0.0.0.0` so isolation happens at the container/proxy boundary.
+
+### Admin API (`/admin/api/*`)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/admin/api/domains` | List domains |
+| POST | `/admin/api/domains` | Create domain |
+| PATCH | `/admin/api/domains/:id` | Update domain |
+| DELETE | `/admin/api/domains/:id` | Delete domain |
+| GET | `/admin/api/addresses` | List addresses (filter: `domainId`, `status`, `q`) |
+| POST | `/admin/api/addresses` | Reserve or mint an address |
+| PATCH | `/admin/api/addresses/:id` | Update address status (`active`/`revoked`) |
+| DELETE | `/admin/api/addresses/:id` | Delete address |
+| GET | `/admin/api/api-keys` | List API keys |
+| POST | `/admin/api/api-keys` | Create API key |
+| DELETE | `/admin/api/api-keys/:id` | Revoke API key |
+| GET | `/admin/api/blacklist` | List blacklist entries |
+| POST | `/admin/api/blacklist` | Add blacklist entry |
+| DELETE | `/admin/api/blacklist/:id` | Remove blacklist entry |
+| GET | `/admin/api/withdrawals` | List withdrawals (filter: `status`) |
+| GET | `/admin/api/sessions` | List active session IDs |
+
+The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
+
+### Reserve vs mint
+
+- **Reserve** — creates a `reserved` address with a one-time `claimCode`. Share the code with the wallet owner; the wallet uses it in a `POST /lnurl/address` request to claim and activate the address.
+- **Mint** — creates an `active` address pre-bound to a `secret` (the wallet token). The wallet can immediately use the address without claiming.
 
 ## Configuration
 
 | Env Variable | Default | Description |
 |-------------|---------|-------------|
-| `PORT` | `3000` | Server port |
+| `PORT` | `3000` | Public server port |
 | `BASE_URL` | `http://localhost:3000` | Public URL for generating LNURLs |
-| `MIN_SENDABLE` | `1000` | Minimum amount in millisats |
-| `MAX_SENDABLE` | `100000000000` | Maximum amount in millisats |
-| `INVOICE_TIMEOUT_MS` | `30000` | How long to wait for wallet to provide bolt11 |
+| `MIN_SENDABLE` | `1000` | Minimum sendable amount in millisats |
+| `MAX_SENDABLE` | `100000000000` | Maximum sendable amount in millisats |
+| `INVOICE_TIMEOUT_MS` | `30000` | How long to wait (ms) for the wallet to provide a bolt11 |
+| `DB_PATH` | — | Path to SQLite database file. Omit for in-memory-only mode. |
+| `TOKEN_ENCRYPTION_KEY` | — | 32-byte AES key (hex or base64). Required when `DB_PATH` is set. |
+| `ALLOW_INSECURE_TOKEN_STORAGE` | — | Set to `1` to skip token encryption in dev (plaintext storage). |
+| `ADMIN_PORT` | `3001` | Admin backend port |
+| `ADMIN_BIND` | `127.0.0.1` | Admin bind address (`0.0.0.0` in Docker) |
+| `BOOTSTRAP_DOMAIN` | — | Domain name to create on first startup if no domains exist |
+| `REGISTRATION_RATE_LIMIT` | `10` | Max address registration requests per minute per IP |
+| `TRUST_PROXY` | `1` | Express `trust proxy` value — number of hops or `false` |
 
 ## Development
 
 ```bash
 pnpm install
-pnpm test        # run tests
+pnpm test        # run tests (requires Node 22+ for node:sqlite)
 pnpm dev         # start with hot reload
 pnpm build       # build for production
 pnpm type-check  # typecheck without emitting

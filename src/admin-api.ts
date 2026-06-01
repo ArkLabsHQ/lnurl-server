@@ -21,11 +21,16 @@ export function createAdminApi(deps: AdminDeps): Router {
   r.post("/domains", (req, res) => {
     const b = req.body ?? {};
     if (!b.domain || !Array.isArray(b.allocationModes)) { res.status(400).json({ error: "domain and allocationModes are required" }); return; }
+    const validModes = new Set(["self", "random", "admin"]);
+    const badMode = (b.allocationModes as unknown[]).find((m) => typeof m !== "string" || !validModes.has(m));
+    if (badMode !== undefined) { res.status(400).json({ error: "allocationModes entries must each be 'self', 'random', or 'admin'" }); return; }
     res.status(201).json(repos.domains.create(b));
   });
   r.patch("/domains/:id", (req, res) => {
-    try { repos.domains.update(Number(req.params.id), req.body ?? {}); res.json(repos.domains.getById(Number(req.params.id))); }
-    catch { res.status(404).json({ error: "domain not found" }); }
+    const id = Number(req.params.id);
+    if (!repos.domains.getById(id)) { res.status(404).json({ error: "domain not found" }); return; }
+    repos.domains.update(id, req.body ?? {});
+    res.json(repos.domains.getById(id));
   });
   r.delete("/domains/:id", (req, res) => { repos.domains.delete(Number(req.params.id)); res.json({ ok: true }); });
 
@@ -50,6 +55,7 @@ export function createAdminApi(deps: AdminDeps): Router {
     const domain = domainName ? repos.domains.getByDomain(domainName) : undefined;
     if (!domain) { res.status(404).json({ error: "unknown domain" }); return; }
     if (!username) { res.status(400).json({ error: "username required" }); return; }
+    if (mode !== undefined && mode !== "reserve" && mode !== "mint") { res.status(400).json({ error: "mode must be 'reserve' or 'mint'" }); return; }
     try {
       if (mode === "mint") {
         const { address, secret } = addressService.mint(domain, username);

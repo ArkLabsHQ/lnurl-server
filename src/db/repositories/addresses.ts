@@ -102,7 +102,11 @@ export class AddressesRepo {
     const params: (string | number)[] = [];
     if (filter.domainId != null) { where.push("domain_id = ?"); params.push(filter.domainId); }
     if (filter.status) { where.push("status = ?"); params.push(filter.status); }
-    if (filter.q) { where.push("username LIKE ?"); params.push(`%${filter.q.toLowerCase()}%`); }
+    if (filter.q) {
+      const escaped = filter.q.toLowerCase().replace(/[%_\\]/g, "\\$&");
+      where.push("username LIKE ? ESCAPE '\\'");
+      params.push(`%${escaped}%`);
+    }
     const sql = `SELECT * FROM addresses ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC`;
     return (this.db.prepare(sql).all(...params) as unknown as AddressRecord[]).map(rowToAddress);
   }
