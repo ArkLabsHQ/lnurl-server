@@ -146,6 +146,7 @@ export class SessionManager {
     this.sessions.delete(id);
   }
 
+  /** Relay a withdrawer's bolt11 to the funding wallet via SSE and wait for approval or rejection. */
   requestWithdraw(
     id: string,
     payload: { withdrawId: string; bolt11: string; minWithdrawable: number; maxWithdrawable: number; description?: string },
@@ -180,6 +181,7 @@ export class SessionManager {
     });
   }
 
+  /** Funding wallet approved the withdraw — resolves the pending withdrawer request. */
   resolveWithdraw(id: string, withdrawId: string): boolean {
     const session = this.sessions.get(id);
     if (!session?.pendingWithdraw || session.pendingWithdraw.withdrawId !== withdrawId) return false;
@@ -187,6 +189,7 @@ export class SessionManager {
     return true;
   }
 
+  /** Funding wallet rejected the withdraw — fails the pending withdrawer request with the given reason. */
   rejectWithdraw(id: string, withdrawId: string, reason: string): boolean {
     const session = this.sessions.get(id);
     if (!session?.pendingWithdraw || session.pendingWithdraw.withdrawId !== withdrawId) return false;

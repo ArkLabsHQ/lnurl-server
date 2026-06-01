@@ -90,13 +90,51 @@ describe("withdraw", () => {
       const callbackPromise = getJson(`${ctx.baseUrl}/lnurl/withdraw/${wid}/callback?k1=${wid}&pr=lnbc1payme`);
 
       // Funding wallet receives withdraw_request via SSE, pays, and confirms
-      await new Promise((r) => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 100));
       const confirm = await jsonReq("POST", `${ctx.baseUrl}/lnurl/session/${sse.sessionId}/withdraw/${wid}`, { status: "paid" }, TOKEN);
       expect(confirm.status).toBe(200);
 
       const cb = await callbackPromise;
       expect(cb.status).toBe("OK");
       expect(repos.withdrawals.get(wid)!.status).toBe("used");
+    } finally { sse.abort(); }
+  });
+
+  it("wallet-reject: callback resolves with ERROR and withdrawal stays active", async () => {
+    const sse = await openSse(ctx.baseUrl, TOKEN);
+    try {
+      const created = await jsonReq("POST", `${ctx.baseUrl}/lnurl/session/${sse.sessionId}/withdraw`, { minWithdrawable: 1000, maxWithdrawable: 50000 }, TOKEN);
+      const wid = created.body.withdrawId as string;
+
+      // Withdrawer hits the callback (stays pending while wallet decides)
+      const callbackPromise = getJson(`${ctx.baseUrl}/lnurl/withdraw/${wid}/callback?k1=${wid}&pr=lnbc1payme`);
+
+      // Funding wallet rejects with an error
+      await new Promise((r) => setTimeout(r, 100));
+      const reject = await jsonReq("POST", `${ctx.baseUrl}/lnurl/session/${sse.sessionId}/withdraw/${wid}`, { error: "amount out of range" }, TOKEN);
+      expect(reject.status).toBe(200);
+
+      const cb = await callbackPromise;
+      expect(cb.status).toBe("ERROR");
+      expect(String(cb.reason)).toMatch(/amount out of range/);
+      // markUsed must NOT have been called — row stays active
+      expect(repos.withdrawals.get(wid)!.status).toBe("active");
+    } finally { sse.abort(); }
+  });
+
+  it("rejects create with usesRemaining 0", async () => {
+    const sse = await openSse(ctx.baseUrl, TOKEN);
+    try {
+      const res = await jsonReq("POST", `${ctx.baseUrl}/lnurl/session/${sse.sessionId}/withdraw`, { minWithdrawable: 1000, maxWithdrawable: 50000, usesRemaining: 0 }, TOKEN);
+      expect(res.status).toBe(400);
+    } finally { sse.abort(); }
+  });
+
+  it("rejects create with past expiresAt", async () => {
+    const sse = await openSse(ctx.baseUrl, TOKEN);
+    try {
+      const res = await jsonReq("POST", `${ctx.baseUrl}/lnurl/session/${sse.sessionId}/withdraw`, { minWithdrawable: 1000, maxWithdrawable: 50000, expiresAt: 1 }, TOKEN);
+      expect(res.status).toBe(400);
     } finally { sse.abort(); }
   });
 });

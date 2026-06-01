@@ -327,12 +327,24 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         res.status(400).json({ error: "minWithdrawable and maxWithdrawable must be positive with min <= max" });
         return;
       }
+      const uses = usesRemaining === undefined ? 1 : Number(usesRemaining);
+      if (!Number.isInteger(uses) || uses < 1) {
+        res.status(400).json({ error: "usesRemaining must be an integer >= 1" });
+        return;
+      }
+      if (expiresAt !== undefined && expiresAt !== null) {
+        const exp = Number(expiresAt);
+        if (!Number.isFinite(exp) || exp <= Date.now()) {
+          res.status(400).json({ error: "expiresAt must be a finite timestamp strictly in the future" });
+          return;
+        }
+      }
       const withdrawId = randomBytes(32).toString("hex");
       repos.withdrawals.create({
         id: withdrawId, sessionId: id, minWithdrawable: min, maxWithdrawable: max,
         description: typeof description === "string" ? description : undefined,
-        usesRemaining: Number.isFinite(Number(usesRemaining)) ? Number(usesRemaining) : 1,
-        expiresAt: Number.isFinite(Number(expiresAt)) ? Number(expiresAt) : null,
+        usesRemaining: uses,
+        expiresAt: expiresAt !== undefined && expiresAt !== null ? Number(expiresAt) : null,
       });
       const lnurl = encodeLnurl(`${originFromRequest(req)}/lnurl/withdraw/${withdrawId}`);
       res.status(201).json({ withdrawId, lnurl });

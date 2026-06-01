@@ -66,14 +66,13 @@ export class WithdrawalsRepo {
   }
 
   markUsed(id: string): void {
-    const row = this.get(id);
-    if (!row) return;
-    const remaining = row.usesRemaining - 1;
-    if (remaining <= 0) {
-      this.db.prepare("UPDATE withdrawals SET uses_remaining = 0, status = 'used', used_at = ? WHERE id = ?").run(Date.now(), id);
-    } else {
-      this.db.prepare("UPDATE withdrawals SET uses_remaining = ? WHERE id = ?").run(remaining, id);
-    }
+    this.db.prepare(
+      `UPDATE withdrawals
+         SET uses_remaining = uses_remaining - 1,
+             status   = CASE WHEN uses_remaining - 1 <= 0 THEN 'used' ELSE status END,
+             used_at  = CASE WHEN uses_remaining - 1 <= 0 THEN ?      ELSE used_at END
+       WHERE id = ? AND uses_remaining > 0`,
+    ).run(Date.now(), id);
   }
 
   markExpired(id: string): void {
