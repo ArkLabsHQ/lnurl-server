@@ -21,20 +21,25 @@ async function main(): Promise<void> {
   const config = loadConfig();
 
   const db = await initPersistence({ dbPath: config.dbPath, bootstrapDomain: config.bootstrapDomain });
+  let deps: import("./server.js").ServerDeps | undefined;
   if (db) {
-    const { DomainsRepo } = await import("./db/repositories/domains.js");
-    console.log(`persistence: enabled at ${config.dbPath} (${new DomainsRepo(db).list().length} domain(s))`);
+    const { createRepositories } = await import("./db/repositories/index.js");
+    deps = { repos: createRepositories(db) };
+    console.log(`persistence: enabled at ${config.dbPath} (${deps.repos.domains.list().length} domain(s))`);
   } else {
     console.log("persistence: disabled (in-memory mode)");
   }
 
-  const app = createServer({
-    port: config.port,
-    baseUrl: config.baseUrl,
-    minSendable: config.minSendable,
-    maxSendable: config.maxSendable,
-    invoiceTimeoutMs: config.invoiceTimeoutMs,
-  });
+  const app = createServer(
+    {
+      port: config.port,
+      baseUrl: config.baseUrl,
+      minSendable: config.minSendable,
+      maxSendable: config.maxSendable,
+      invoiceTimeoutMs: config.invoiceTimeoutMs,
+    },
+    deps,
+  );
 
   app.listen(config.port, () => {
     console.log(`arkade-lnurl listening on ${config.baseUrl}`);
