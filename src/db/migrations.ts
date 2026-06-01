@@ -50,6 +50,9 @@ const MIGRATIONS: Migration[] = [
         created_at INTEGER NOT NULL,
         UNIQUE(domain_id, username)
       );
+      -- UNIQUE(domain_id, username) does not constrain global rows (NULL domain_id is
+      -- distinct under SQLite), so enforce global-name uniqueness with a filtered index.
+      CREATE UNIQUE INDEX uq_blacklist_global ON blacklist(username) WHERE domain_id IS NULL;
 
       CREATE TABLE api_keys (
         id           INTEGER PRIMARY KEY,

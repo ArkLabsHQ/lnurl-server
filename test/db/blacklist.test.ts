@@ -35,4 +35,9 @@ describe("BlacklistRepo", () => {
     repo.remove(row.id);
     expect(repo.isBlocked(domainId, "root")).toBe(false);
   });
+
+  it("rejects a duplicate global username (filtered unique index)", () => {
+    repo.add({ domainId: null, username: "admin" });
+    expect(() => repo.add({ domainId: null, username: "admin" })).toThrow();
+  });
 });
