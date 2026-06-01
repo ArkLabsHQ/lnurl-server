@@ -1,0 +1,100 @@
+import type { Db } from "./connection.js";
+
+interface Migration {
+  version: number;
+  up: string;
+}
+
+const MIGRATIONS: Migration[] = [
+  {
+    version: 1,
+    up: `
+      CREATE TABLE domains (
+        id               INTEGER PRIMARY KEY,
+        domain           TEXT NOT NULL UNIQUE,
+        allocation_modes TEXT NOT NULL,
+        require_api_key  INTEGER NOT NULL DEFAULT 0,
+        max_per_session  INTEGER,
+        username_min_len INTEGER NOT NULL DEFAULT 1,
+        username_max_len INTEGER NOT NULL DEFAULT 32,
+        username_pattern TEXT NOT NULL DEFAULT 'a-z0-9._-',
+        min_sendable     INTEGER,
+        max_sendable     INTEGER,
+        enabled          INTEGER NOT NULL DEFAULT 1,
+        created_at       INTEGER NOT NULL,
+        updated_at       INTEGER NOT NULL
+      );
+
+      CREATE TABLE addresses (
+        id               INTEGER PRIMARY KEY,
+        domain_id        INTEGER NOT NULL REFERENCES domains(id) ON DELETE CASCADE,
+        username         TEXT NOT NULL,
+        session_id       TEXT,
+        token_ciphertext BLOB,
+        token_iv         BLOB,
+        token_tag        BLOB,
+        claim_code_hash  BLOB,
+        status           TEXT NOT NULL,
+        metadata         TEXT,
+        created_at       INTEGER NOT NULL,
+        updated_at       INTEGER NOT NULL,
+        UNIQUE(domain_id, username)
+      );
+      CREATE INDEX idx_addresses_session ON addresses(session_id);
+
+      CREATE TABLE blacklist (
+        id         INTEGER PRIMARY KEY,
+        domain_id  INTEGER REFERENCES domains(id) ON DELETE CASCADE,
+        username   TEXT NOT NULL,
+        reason     TEXT,
+        created_at INTEGER NOT NULL,
+        UNIQUE(domain_id, username)
+      );
+
+      CREATE TABLE api_keys (
+        id           INTEGER PRIMARY KEY,
+        key_hash     BLOB NOT NULL UNIQUE,
+        label        TEXT,
+        domain_id    INTEGER REFERENCES domains(id) ON DELETE CASCADE,
+        status       TEXT NOT NULL,
+        created_at   INTEGER NOT NULL,
+        last_used_at INTEGER
+      );
+
+      CREATE TABLE withdrawals (
+        id               TEXT PRIMARY KEY,
+        session_id       TEXT NOT NULL,
+        min_withdrawable INTEGER NOT NULL,
+        max_withdrawable INTEGER NOT NULL,
+        description      TEXT,
+        status           TEXT NOT NULL,
+        uses_remaining   INTEGER NOT NULL DEFAULT 1,
+        created_at       INTEGER NOT NULL,
+        expires_at       INTEGER,
+        used_at          INTEGER
+      );
+    `,
+  },
+];
+
+/** Apply all pending forward-only migrations inside a transaction each. */
+export function runMigrations(db: Db): void {
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);",
+  );
+  const row = db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number | null };
+  const current = row.v ?? 0;
+
+  for (const m of MIGRATIONS) {
+    if (m.version <= current) continue;
+    db.exec("BEGIN");
+    try {
+      db.exec(m.up);
+      db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)").run(m.version, Date.now());
+      db.exec("COMMIT");
+    } catch (err) {
+      db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+}
