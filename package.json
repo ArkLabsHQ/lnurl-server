@@ -17,7 +17,7 @@
     "start": "node --experimental-sqlite dist/cli.js",
     "test": "cross-env NODE_OPTIONS=--experimental-sqlite vitest run",
     "test:watch": "cross-env NODE_OPTIONS=--experimental-sqlite vitest",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit && tsc -p tsconfig.ui.json"
   },
   "dependencies": {
     "@scure/base": "^2.0.0",
