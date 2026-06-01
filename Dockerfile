@@ -9,7 +9,7 @@ RUN pnpm install --frozen-lockfile --prod=false
 
 # Build
 FROM deps AS build
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.ui.json vite.config.ts ./
 COPY src/ ./src/
 RUN pnpm build
 
@@ -20,11 +20,14 @@ RUN pnpm install --frozen-lockfile --prod
 COPY --from=build /app/dist ./dist
 
 ENV PORT=3000
+ENV ADMIN_PORT=3001
+ENV ADMIN_BIND=0.0.0.0
 ENV BASE_URL=http://localhost:3000
 ENV MIN_SENDABLE=1000
 ENV MAX_SENDABLE=100000000000
 ENV INVOICE_TIMEOUT_MS=30000
 
-EXPOSE 3000
+EXPOSE 3000 3001
+VOLUME ["/data"]
 
 CMD ["node", "--experimental-sqlite", "dist/cli.js"]
