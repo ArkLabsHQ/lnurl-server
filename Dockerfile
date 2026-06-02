@@ -1,5 +1,7 @@
 FROM node:22-slim AS base
-RUN corepack enable && corepack prepare pnpm@latest --activate
+# Pin pnpm to a version satisfying engines.pnpm (>=10.25.0 <11) and matching the
+# pnpm-10 lockfile format; `pnpm@latest` now resolves to 11.x which the engines field rejects.
+RUN corepack enable && corepack prepare pnpm@10.29.2 --activate
 WORKDIR /app
 
 # Install dependencies
