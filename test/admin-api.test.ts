@@ -49,6 +49,13 @@ describe("admin API", () => {
     expect(list.body[0].key).toBeUndefined();
   });
 
+  it("rejects PATCH /domains with invalid allocationModes", async () => {
+    const create = await request(app).post("/admin/api/domains").send({ domain: "domain.com", allocationModes: ["self"] });
+    const id = create.body.id;
+    const res = await request(app).patch(`/admin/api/domains/${id}`).send({ allocationModes: ["bogus"] });
+    expect(res.status).toBe(400);
+  });
+
   it("manages blacklist entries", async () => {
     const add = await request(app).post("/admin/api/blacklist").send({ username: "root" });
     expect(add.status).toBe(201);

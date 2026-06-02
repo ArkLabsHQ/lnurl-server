@@ -4,8 +4,9 @@ import { randomBytes } from "node:crypto";
 import { SessionManager } from "./session-manager.js";
 import { openApiSpec } from "./openapi.js";
 import type { Repositories } from "./db/repositories/index.js";
-import { originFromRequest, domainFromHost } from "./http-origin.js";
+import { domainFromHost } from "./http-origin.js";
 import { encodeLnurl } from "./lnurl.js";
+import { decodeInvoiceAmountMsat } from "./bolt11.js";
 import type { AddressService } from "./address-service.js";
 import { ProvisioningError } from "./address-service.js";
 import type { RateLimiter } from "./rate-limit.js";
@@ -128,6 +129,12 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       return;
     }
 
+    // Detect an id collision before committing the SSE 200 so we can return a clean 409.
+    if (providedToken && sessions.peekCollision(providedToken)) {
+      res.status(409).json({ error: "Session ID already in use" });
+      return;
+    }
+
     // Set SSE headers
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -162,13 +169,13 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     const auth = req.headers.authorization;
     const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
     if (!token) { res.status(401).json({ error: "Unauthorized" }); return; }
-    const origin = originFromRequest(req);
     const list = addressService.listByToken(token).map((a) => {
       const domain = deps!.repos.domains.getById(a.domainId)!;
       return {
         username: a.username, domain: domain.domain, status: a.status, createdAt: a.createdAt,
         lightningAddress: `${a.username}@${domain.domain}`,
-        lnurl: encodeLnurl(`${origin}/.well-known/lnurlp/${a.username}`),
+        // Build from the address's own domain (scheme from the trusted proxy), never the raw Host header.
+        lnurl: encodeLnurl(`${req.protocol}://${domain.domain}/.well-known/lnurlp/${a.username}`),
       };
     });
     res.json(list);
@@ -276,7 +283,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         res.json({ status: "ERROR", reason: "Unknown LN address" } satisfies LnurlErrorResponse);
         return;
       }
-      const origin = originFromRequest(req);
+      const origin = `${req.protocol}://${domain.domain}`;
       const response: LnurlPayMetadata = {
         tag: "payRequest",
         callback: `${origin}/.well-known/lnurlp/${username}/callback`,
@@ -347,7 +354,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         usesRemaining: uses,
         expiresAt: expiresAt !== undefined && expiresAt !== null ? Number(expiresAt) : null,
       });
-      const lnurl = encodeLnurl(`${originFromRequest(req)}/lnurl/withdraw/${withdrawId}`);
+      const lnurl = encodeLnurl(`${config.baseUrl}/lnurl/withdraw/${withdrawId}`);
       res.status(201).json({ withdrawId, lnurl });
     });
 
@@ -359,7 +366,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       if (w.expiresAt != null && Date.now() > w.expiresAt) { repos.withdrawals.markExpired(w.id); res.json({ status: "ERROR", reason: "This withdraw link has expired" } satisfies LnurlErrorResponse); return; }
       res.json({
         tag: "withdrawRequest",
-        callback: `${originFromRequest(req)}/lnurl/withdraw/${w.id}/callback`,
+        callback: `${config.baseUrl}/lnurl/withdraw/${w.id}/callback`,
         k1: w.id,
         defaultDescription: w.description ?? "Withdraw",
         minWithdrawable: w.minWithdrawable,
@@ -377,6 +384,14 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       if (w.expiresAt != null && Date.now() > w.expiresAt) { repos.withdrawals.markExpired(w.id); res.json({ status: "ERROR", reason: "This withdraw link has expired" } satisfies LnurlErrorResponse); return; }
       if (k1 !== w.id || !pr) { res.json({ status: "ERROR", reason: "Missing or invalid k1/pr" } satisfies LnurlErrorResponse); return; }
       if (!sessions.isActive(w.sessionId)) { res.json({ status: "ERROR", reason: "The funding wallet is currently offline" } satisfies LnurlErrorResponse); return; }
+
+      // LUD-03: the service MUST validate the invoice amount is within bounds before relaying.
+      const amt = decodeInvoiceAmountMsat(pr);
+      if (amt === null) { res.json({ status: "ERROR", reason: "Withdraw invoice must specify an amount" } satisfies LnurlErrorResponse); return; }
+      if (amt < w.minWithdrawable || amt > w.maxWithdrawable) {
+        res.json({ status: "ERROR", reason: `Amount must be between ${w.minWithdrawable} and ${w.maxWithdrawable} millisats` } satisfies LnurlErrorResponse);
+        return;
+      }
 
       try {
         await sessions.requestWithdraw(
@@ -430,7 +445,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
 
         try {
           const { address, lightningAddress } = addressService.register({ domain, username, token, claimCode });
-          const lnurl = encodeLnurl(`${originFromRequest(req)}/.well-known/lnurlp/${address.username}`);
+          const lnurl = encodeLnurl(`${req.protocol}://${domain.domain}/.well-known/lnurlp/${address.username}`);
           res.status(201).json({ lightningAddress, lnurl, username: address.username, domain: domain.domain, status: address.status });
         } catch (err) {
           if (err instanceof ProvisioningError) { res.status(PROVISIONING_STATUS[err.code] ?? 400).json({ error: err.message, code: err.code }); return; }

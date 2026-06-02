@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { domainFromHost, originFromRequest } from "../src/http-origin.js";
+import { domainFromHost } from "../src/http-origin.js";
 
 describe("domainFromHost", () => {
   it("strips port and lowercases", () => {
@@ -17,12 +17,5 @@ describe("domainFromHost", () => {
   });
   it("returns null for malformed bracketed IPv6", () => {
     expect(domainFromHost("[::1")).toBeNull();
-  });
-});
-
-describe("originFromRequest", () => {
-  it("uses protocol and host from the (trust-proxy-resolved) request", () => {
-    const req = { protocol: "https", get: (h: string) => (h.toLowerCase() === "host" ? "domain.com" : undefined) };
-    expect(originFromRequest(req as never)).toBe("https://domain.com");
   });
 });

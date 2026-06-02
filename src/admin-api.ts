@@ -12,6 +12,13 @@ export interface AdminDeps {
   sessions: SessionManager;
 }
 
+const VALID_ALLOCATION_MODES = new Set(["self", "random", "admin"]);
+
+/** True iff every entry is one of the allowed allocation modes. */
+function isValidAllocationModes(x: unknown): boolean {
+  return Array.isArray(x) && x.every((m) => typeof m === "string" && VALID_ALLOCATION_MODES.has(m));
+}
+
 export function createAdminApi(deps: AdminDeps): Router {
   const { repos, addressService, sessions } = deps;
   const r = Router();
@@ -21,15 +28,17 @@ export function createAdminApi(deps: AdminDeps): Router {
   r.post("/domains", (req, res) => {
     const b = req.body ?? {};
     if (!b.domain || !Array.isArray(b.allocationModes)) { res.status(400).json({ error: "domain and allocationModes are required" }); return; }
-    const validModes = new Set(["self", "random", "admin"]);
-    const badMode = (b.allocationModes as unknown[]).find((m) => typeof m !== "string" || !validModes.has(m));
-    if (badMode !== undefined) { res.status(400).json({ error: "allocationModes entries must each be 'self', 'random', or 'admin'" }); return; }
+    if (!isValidAllocationModes(b.allocationModes)) { res.status(400).json({ error: "allocationModes entries must each be 'self', 'random', or 'admin'" }); return; }
     res.status(201).json(repos.domains.create(b));
   });
   r.patch("/domains/:id", (req, res) => {
     const id = Number(req.params.id);
     if (!repos.domains.getById(id)) { res.status(404).json({ error: "domain not found" }); return; }
-    repos.domains.update(id, req.body ?? {});
+    const body = req.body ?? {};
+    if (body.allocationModes !== undefined && !isValidAllocationModes(body.allocationModes)) {
+      res.status(400).json({ error: "allocationModes entries must each be 'self', 'random', or 'admin'" }); return;
+    }
+    repos.domains.update(id, body);
     res.json(repos.domains.getById(id));
   });
   r.delete("/domains/:id", (req, res) => { repos.domains.delete(Number(req.params.id)); res.json({ ok: true }); });

@@ -87,7 +87,7 @@ describe("withdraw", () => {
       const wid = created.body.withdrawId as string;
 
       // Withdrawer hits the callback with a bolt11 (this HTTP call stays pending until the wallet confirms)
-      const callbackPromise = getJson(`${ctx.baseUrl}/lnurl/withdraw/${wid}/callback?k1=${wid}&pr=lnbc1payme`);
+      const callbackPromise = getJson(`${ctx.baseUrl}/lnurl/withdraw/${wid}/callback?k1=${wid}&pr=lnbc100n1payme`);
 
       // Funding wallet receives withdraw_request via SSE, pays, and confirms
       await new Promise((r) => setTimeout(r, 100));
@@ -107,7 +107,7 @@ describe("withdraw", () => {
       const wid = created.body.withdrawId as string;
 
       // Withdrawer hits the callback (stays pending while wallet decides)
-      const callbackPromise = getJson(`${ctx.baseUrl}/lnurl/withdraw/${wid}/callback?k1=${wid}&pr=lnbc1payme`);
+      const callbackPromise = getJson(`${ctx.baseUrl}/lnurl/withdraw/${wid}/callback?k1=${wid}&pr=lnbc100n1payme`);
 
       // Funding wallet rejects with an error
       await new Promise((r) => setTimeout(r, 100));
@@ -119,6 +119,29 @@ describe("withdraw", () => {
       expect(String(cb.reason)).toMatch(/amount out of range/);
       // markUsed must NOT have been called — row stays active
       expect(repos.withdrawals.get(wid)!.status).toBe("active");
+    } finally { sse.abort(); }
+  });
+
+  it("rejects a callback whose invoice is amountless", async () => {
+    const sse = await openSse(ctx.baseUrl, TOKEN);
+    try {
+      const created = await jsonReq("POST", `${ctx.baseUrl}/lnurl/session/${sse.sessionId}/withdraw`, { minWithdrawable: 1000, maxWithdrawable: 50000 }, TOKEN);
+      const wid = created.body.withdrawId as string;
+      const res = await getJson(`${ctx.baseUrl}/lnurl/withdraw/${wid}/callback?k1=${wid}&pr=lnbc1amountless`);
+      expect(res.status).toBe("ERROR");
+      expect(String(res.reason)).toMatch(/amount/i);
+    } finally { sse.abort(); }
+  });
+
+  it("rejects a callback whose invoice amount exceeds maxWithdrawable", async () => {
+    const sse = await openSse(ctx.baseUrl, TOKEN);
+    try {
+      const created = await jsonReq("POST", `${ctx.baseUrl}/lnurl/session/${sse.sessionId}/withdraw`, { minWithdrawable: 1000, maxWithdrawable: 50000 }, TOKEN);
+      const wid = created.body.withdrawId as string;
+      // lnbc100u… = 100 micro-BTC = 10,000,000 msat, far above the 50,000 max
+      const res = await getJson(`${ctx.baseUrl}/lnurl/withdraw/${wid}/callback?k1=${wid}&pr=lnbc100u1toobig`);
+      expect(res.status).toBe("ERROR");
+      expect(String(res.reason)).toMatch(/between/i);
     } finally { sse.abort(); }
   });
 
