@@ -909,4 +909,23 @@ describe("LNURL Service", () => {
       }
     });
   });
+
+  describe("OpenAPI spec", () => {
+    it("documents the public LN Address and LUD-16 endpoints", async () => {
+      const res = await jsonRequest(`${ctx.baseUrl}/openapi.json`);
+      expect(res.status).toBe(200);
+      const paths = Object.keys((res.body as { paths: Record<string, unknown> }).paths);
+      expect(paths).toEqual(
+        expect.arrayContaining([
+          "/lnurl/session",
+          "/lnurl/{id}",
+          "/lnurl/{id}/callback",
+          "/lnurl/address",
+          "/lnurl/address/{username}",
+          "/.well-known/lnurlp/{username}",
+          "/.well-known/lnurlp/{username}/callback",
+        ]),
+      );
+    });
+  });
 });
