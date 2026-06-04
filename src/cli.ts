@@ -29,6 +29,7 @@ async function main(): Promise<void> {
     const { createRepositories } = await import("./db/repositories/index.js");
     const { AddressService } = await import("./address-service.js");
     const { RateLimiter } = await import("./rate-limit.js");
+    const { SettingsService } = await import("./settings.js");
     const { hashSecret } = await import("./crypto.js");
     const repos = createRepositories(db);
     if (!config.tokenEncryptionKey) {
@@ -36,16 +37,24 @@ async function main(): Promise<void> {
     }
     const key = config.tokenEncryptionKey ?? hashSecret("INSECURE-DEV-KEY"); // effective key (insecure dev fallback)
     const addressService = new AddressService(repos, key);
+    const settings = new SettingsService(repos.settings, {
+      minSendable: config.minSendable,
+      maxSendable: config.maxSendable,
+      invoiceTimeoutMs: config.invoiceTimeoutMs,
+      baseUrl: config.baseUrl,
+      registrationRateLimitPerMin: config.registrationRateLimitPerMin,
+    });
     deps = {
       repos,
       addressService,
-      registrationLimiter: new RateLimiter(config.registrationRateLimitPerMin, 60_000),
+      registrationLimiter: new RateLimiter(() => settings.registrationRateLimitPerMin(), 60_000),
       sessions,
+      settings,
     };
     console.log(`persistence: enabled at ${config.dbPath} (${deps.repos.domains.list().length} domain(s))`);
 
     const { createAdminServer } = await import("./admin-server.js");
-    createAdminServer({ repos, addressService, sessions }).listen(config.adminPort, config.adminBind, () => {
+    createAdminServer({ repos, addressService, sessions, settings, config }).listen(config.adminPort, config.adminBind, () => {
       console.log(`admin server on http://${config.adminBind}:${config.adminPort} (front with a proxy)`);
     });
   } else {

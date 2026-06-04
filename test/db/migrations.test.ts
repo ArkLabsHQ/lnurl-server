@@ -11,7 +11,7 @@ function tableNames(db = openDb(":memory:")) {
 describe("runMigrations", () => {
   it("creates every table", () => {
     const { db, names } = tableNames();
-    for (const t of ["schema_migrations", "domains", "addresses", "blacklist", "api_keys"]) {
+    for (const t of ["schema_migrations", "domains", "addresses", "blacklist", "api_keys", "settings"]) {
       expect(names).toContain(t);
     }
     db.close();
@@ -21,7 +21,7 @@ describe("runMigrations", () => {
     const db = openDb(":memory:");
     runMigrations(db);
     const row = db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number };
-    expect(row.v).toBe(1);
+    expect(row.v).toBe(2);
     db.close();
   });
 
@@ -30,7 +30,7 @@ describe("runMigrations", () => {
     runMigrations(db);
     expect(() => runMigrations(db)).not.toThrow();
     const row = db.prepare("SELECT COUNT(*) AS c FROM schema_migrations").get() as { c: number };
-    expect(row.c).toBe(1);
+    expect(row.c).toBe(2);
     db.close();
   });
 });

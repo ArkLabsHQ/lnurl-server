@@ -6,7 +6,8 @@ export class RateLimiter {
   private calls = 0;
 
   constructor(
-    private limit: number,
+    // Number, or a getter so the limit can be changed at runtime (e.g. from editable settings).
+    private limit: number | (() => number),
     private windowMs: number,
     private now: () => number = () => Date.now(),
     private sweepEvery: number = 1000,
@@ -15,12 +16,13 @@ export class RateLimiter {
   allow(key: string): boolean {
     const t = this.now();
     if (++this.calls % this.sweepEvery === 0) this.sweep(t);
+    const limit = typeof this.limit === "function" ? this.limit() : this.limit;
     const entry = this.hits.get(key);
     if (!entry || t - entry.windowStart >= this.windowMs) {
       this.hits.set(key, { count: 1, windowStart: t });
       return true;
     }
-    if (entry.count >= this.limit) return false;
+    if (entry.count >= limit) return false;
     entry.count += 1;
     return true;
   }
