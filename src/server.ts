@@ -149,7 +149,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       Connection: "keep-alive",
     });
 
-    const session = sessions.create(res, providedToken);
+    const session = sessions.create(res, providedToken, req.ip);
 
     if (!session) {
       res.write(`event: error\ndata: ${JSON.stringify({ error: "Session ID already in use" })}\n\n`);

@@ -1,6 +1,6 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { Response } from "express";
-import type { Session, SessionEvent } from "./types.js";
+import type { Session, SessionEvent, SessionInfo } from "./types.js";
 import { deriveSessionId } from "./session-id.js";
 
 /** Constant-time comparison for secret tokens (avoids a byte-by-byte timing oracle). */
@@ -15,8 +15,9 @@ export class SessionManager {
 
   /** Create a new session and wire up the SSE response.
    *  When `providedToken` is supplied the sessionId is derived from it
-   *  deterministically, so reconnecting produces the same LNURL. */
-  create(sseRes: Response, providedToken?: string): Session | null {
+   *  deterministically, so reconnecting produces the same LNURL.
+   *  `ip` is the client address (post-`trust proxy`) recorded for admin visibility. */
+  create(sseRes: Response, providedToken?: string, ip?: string): Session | null {
     const token = providedToken || randomBytes(32).toString("hex");
     const id = providedToken
       ? deriveSessionId(providedToken)
@@ -32,6 +33,9 @@ export class SessionManager {
       id,
       token,
       createdAt: Date.now(),
+      ip,
+      reusable: !!providedToken,
+      invoicesIssued: 0,
       sseRes,
       pendingInvoice: null,
     };
@@ -108,9 +112,14 @@ export class SessionManager {
       }, timeoutMs);
 
       session.pendingInvoice = {
+        amountMsat,
+        comment,
+        since: Date.now(),
         resolve: (pr: string) => {
           clearTimeout(timer);
           session.pendingInvoice = null;
+          session.invoicesIssued += 1;
+          session.lastInvoiceAt = Date.now();
           resolve(pr);
         },
         reject: (err: Error) => {
@@ -156,8 +165,43 @@ export class SessionManager {
     this.sessions.delete(id);
   }
 
+  /** Admin-initiated close: notify the wallet, end its SSE stream, and drop the session.
+   *  Returns false if no such session is live. */
+  disconnect(id: string): boolean {
+    const session = this.sessions.get(id);
+    if (!session) return false;
+    // Best-effort heads-up to the wallet before we tear down (socket may already be dead).
+    try {
+      this.sendEvent(id, { type: "error", data: { error: "Session closed by admin" } });
+    } catch {
+      /* socket already gone */
+    }
+    this.destroy(id);
+    try {
+      session.sseRes.end();
+    } catch {
+      /* already closed */
+    }
+    return true;
+  }
+
   /** All currently-connected session ids. */
   activeSessionIds(): string[] {
     return Array.from(this.sessions.keys());
+  }
+
+  /** Safe snapshot of every live session for the admin API (no tokens, no sockets). */
+  listSessions(): SessionInfo[] {
+    return Array.from(this.sessions.values()).map((s) => ({
+      id: s.id,
+      createdAt: s.createdAt,
+      ip: s.ip,
+      reusable: s.reusable,
+      invoicesIssued: s.invoicesIssued,
+      lastInvoiceAt: s.lastInvoiceAt,
+      pending: s.pendingInvoice
+        ? { amountMsat: s.pendingInvoice.amountMsat, comment: s.pendingInvoice.comment, since: s.pendingInvoice.since }
+        : null,
+    }));
   }
 }

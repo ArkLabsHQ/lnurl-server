@@ -1,8 +1,8 @@
 import { Fragment, useEffect, useState } from "react";
 import { api } from "./api.js";
 
-type Tab = "Dashboard" | "Domains" | "Addresses" | "API Keys" | "Blacklist" | "Settings";
-const TABS: Tab[] = ["Dashboard", "Domains", "Addresses", "API Keys", "Blacklist", "Settings"];
+type Tab = "Dashboard" | "Sessions" | "Domains" | "Addresses" | "API Keys" | "Blacklist" | "Settings";
+const TABS: Tab[] = ["Dashboard", "Sessions", "Domains", "Addresses", "API Keys", "Blacklist", "Settings"];
 const ALLOCATION_MODES = ["self", "random", "admin"] as const;
 
 interface Domain {
@@ -21,6 +21,28 @@ interface Domain {
 interface Address { id: number; username: string; domain: string | null; status: string; online: boolean }
 interface ApiKey { id: number; label: string | null; status: string; domainId: number | null }
 interface BlacklistEntry { id: number; username: string; domainId: number | null; reason: string | null }
+interface SessionAddress { username: string; domain: string | null; status: string }
+interface SessionRow {
+  sessionId: string;
+  connectedAt: number;
+  ip: string | null;
+  reusable: boolean;
+  invoicesIssued: number;
+  lastInvoiceAt: number | null;
+  pending: { amountMsat: number; comment?: string; since: number } | null;
+  addresses: SessionAddress[];
+}
+
+/** Compact "Ns/Nm/Nh/Nd ago" from an epoch-ms timestamp. */
+function ago(ts: number): string {
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
 
 export function App() {
   const [tab, setTab] = useState<Tab>("Domains");
@@ -37,6 +59,7 @@ export function App() {
         ))}
       </nav>
       {tab === "Dashboard" && <Dashboard />}
+      {tab === "Sessions" && <Sessions />}
       {tab === "Domains" && <Domains />}
       {tab === "Addresses" && <Addresses />}
       {tab === "API Keys" && <ApiKeys />}
@@ -63,17 +86,71 @@ const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 function Dashboard() {
   const domains = useList<Domain>("/domains");
   const addresses = useList<Address>("/addresses");
+  const sessions = useList<SessionRow>("/sessions");
   const online = addresses.items.filter((a) => a.online).length;
   return (
-    <div style={{ display: "flex", gap: 16 }}>
+    <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
       <Card label="Domains" value={domains.items.length} />
       <Card label="Addresses" value={addresses.items.length} />
-      <Card label="Online now" value={online} />
+      <Card label="Online addresses" value={online} />
+      <Card label="Live sessions" value={sessions.items.length} />
     </div>
   );
 }
 function Card({ label, value }: { label: string; value: number }) {
   return <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 16, minWidth: 120 }}><div style={{ fontSize: 28 }}>{value}</div><div style={{ color: "#666" }}>{label}</div></div>;
+}
+
+function Sessions() {
+  const [items, setItems] = useState<SessionRow[]>([]);
+  const [err, setErr] = useState<string>();
+  const [mutErr, setMutErr] = useState<string>();
+  const reload = () => api.get<SessionRow[]>("/sessions").then((r) => { setItems(r); setErr(undefined); }).catch((e: Error) => setErr(e.message));
+  useEffect(() => {
+    reload();
+    const t = setInterval(reload, 5000); // live view: poll the in-memory session map
+    return () => clearInterval(t);
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, []);
+
+  const disconnect = async (id: string) => {
+    if (!confirm(`Disconnect session ${id.slice(0, 10)}…? The wallet's LNURL goes offline until it reconnects.`)) return;
+    try { await api.post(`/sessions/${id}/disconnect`, {}); setMutErr(undefined); reload(); }
+    catch (e) { setMutErr(errMsg(e)); }
+  };
+
+  const addressLabel = (a: SessionAddress) => `${a.username}@${a.domain ?? "?"}${a.status === "active" ? "" : ` (${a.status})`}`;
+
+  return (
+    <div>
+      {err && <p style={{ color: "crimson" }}>{err}</p>}
+      {mutErr && <p style={{ color: "crimson" }}>{mutErr}</p>}
+      <p style={{ color: "#666", marginTop: 0 }}>
+        {items.length} live session{items.length === 1 ? "" : "s"} · auto-refreshes every 5s{" "}
+        <button onClick={reload}>Refresh</button>
+      </p>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead><tr><Th>Session</Th><Th>Addresses</Th><Th>Type</Th><Th>Connected</Th><Th>IP</Th><Th>Invoices</Th><Th>Pending</Th><Th /></tr></thead>
+        <tbody>{items.map((s) => (
+          <tr key={s.sessionId}>
+            <Td><code title={s.sessionId}>{s.sessionId.slice(0, 10)}…</code></Td>
+            <Td>{s.addresses.length
+              ? s.addresses.map(addressLabel).join(", ")
+              : <span style={{ color: "#999" }}>—</span>}</Td>
+            <Td>{s.reusable ? "reusable" : "ephemeral"}</Td>
+            <Td><span title={new Date(s.connectedAt).toLocaleString()}>{ago(s.connectedAt)}</span></Td>
+            <Td>{s.ip ?? "—"}</Td>
+            <Td>{s.invoicesIssued}{s.lastInvoiceAt ? <span style={{ color: "#666" }}> (last {ago(s.lastInvoiceAt)})</span> : null}</Td>
+            <Td>{s.pending
+              ? <span title={s.pending.comment ?? ""}>{s.pending.amountMsat.toLocaleString()} msat · {ago(s.pending.since)}</span>
+              : "—"}</Td>
+            <Td><button onClick={() => disconnect(s.sessionId)}>Disconnect</button></Td>
+          </tr>
+        ))}</tbody>
+      </table>
+      {items.length === 0 && <p style={{ color: "#999" }}>No wallets connected.</p>}
+    </div>
+  );
 }
 
 function Domains() {

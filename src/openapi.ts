@@ -7,7 +7,7 @@ export const openApiSpec = {
       "Wallets open an SSE session to get an LNURL, and payers use " +
       "standard LNURL-pay (LUD-06) to request invoices. The wallet " +
       "creates reverse swaps on-the-fly and returns bolt11 invoices.",
-    version: "0.2.3",
+    version: "0.2.4",
     license: { name: "MIT" },
   },
   servers: [{ url: "/" }],

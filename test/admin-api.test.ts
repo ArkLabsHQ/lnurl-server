@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach } from "vitest";
 import express from "express";
 import request from "supertest";
 import { randomBytes } from "node:crypto";
+import { PassThrough } from "node:stream";
+import type { Response } from "express";
 import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
@@ -11,10 +13,10 @@ import { createAdminApi } from "../src/admin-api.js";
 import { loadConfig } from "../src/config.js";
 import { SettingsService } from "../src/settings.js";
 
-let db: Db; let repos: Repositories; let app: express.Express;
+let db: Db; let repos: Repositories; let app: express.Express; let sessions: SessionManager;
 beforeEach(() => {
   db = openDb(":memory:"); runMigrations(db); repos = createRepositories(db);
-  const sessions = new SessionManager();
+  sessions = new SessionManager();
   const svc = new AddressService(repos, randomBytes(32));
   const config = loadConfig({ PORT: "3000", BASE_URL: "http://localhost:3000" });
   const settings = new SettingsService(repos.settings, {
@@ -70,6 +72,26 @@ describe("admin API", () => {
     expect(list.body.map((b: { username: string }) => b.username)).toContain("root");
     const del = await request(app).delete(`/admin/api/blacklist/${add.body.id}`);
     expect(del.status).toBe(200);
+  });
+
+  it("lists live sessions joined to bound addresses, and disconnects them", async () => {
+    await request(app).post("/admin/api/domains").send({ domain: "domain.com", allocationModes: ["self"] });
+    const domain = repos.domains.getByDomain("domain.com")!;
+    const sess = sessions.create(new PassThrough() as unknown as Response, "aa".repeat(32), "9.9.9.9")!;
+    repos.addresses.create({ domainId: domain.id, username: "alice", sessionId: sess.id, status: "active" });
+
+    const list = await request(app).get("/admin/api/sessions");
+    expect(list.body).toHaveLength(1);
+    expect(list.body[0]).toMatchObject({ sessionId: sess.id, ip: "9.9.9.9", reusable: true, invoicesIssued: 0, pending: null });
+    expect(list.body[0].addresses).toEqual([{ username: "alice", domain: "domain.com", status: "active" }]);
+    expect(list.body[0]).not.toHaveProperty("token"); // never leaks the secret
+
+    const dc = await request(app).post(`/admin/api/sessions/${sess.id}/disconnect`);
+    expect(dc.status).toBe(200);
+    expect(sessions.isActive(sess.id)).toBe(false);
+
+    const missing = await request(app).post("/admin/api/sessions/deadbeef/disconnect");
+    expect(missing.status).toBe(404);
   });
 
   it("gets, overrides, validates, and resets settings", async () => {

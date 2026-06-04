@@ -111,7 +111,28 @@ export function createAdminApi(deps: AdminDeps): Router {
   r.delete("/blacklist/:id", (req, res) => { repos.blacklist.remove(Number(req.params.id)); res.json({ ok: true }); });
 
   // ── Live sessions ─────────────────────────────────────────
-  r.get("/sessions", (_req, res) => res.json(sessions.activeSessionIds().map((id) => ({ sessionId: id }))));
+  // Live read of the in-memory SessionManager, joined to the addresses table so each
+  // connection shows who it belongs to. Never exposes the session token or socket.
+  r.get("/sessions", (_req, res) => res.json(
+    sessions.listSessions().map((s) => ({
+      sessionId: s.id,
+      connectedAt: s.createdAt,
+      ip: s.ip ?? null,
+      reusable: s.reusable,
+      invoicesIssued: s.invoicesIssued,
+      lastInvoiceAt: s.lastInvoiceAt ?? null,
+      pending: s.pending,
+      addresses: repos.addresses.listBySessionId(s.id).map((a) => ({
+        username: a.username,
+        domain: repos.domains.getById(a.domainId)?.domain ?? null,
+        status: a.status,
+      })),
+    })),
+  ));
+  r.post("/sessions/:id/disconnect", (req, res) => {
+    if (!sessions.disconnect(req.params.id)) { res.status(404).json({ error: "session not found" }); return; }
+    res.json({ ok: true });
+  });
 
   // ── Settings ──────────────────────────────────────────────
   // Editable "soft" settings (env default + DB override) plus a read-only view of the
