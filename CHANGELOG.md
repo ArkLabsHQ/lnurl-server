@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.2 - 2026-06-04
+
+### Added
+- Admin SPA editing across all tabs: a domain editor (allocation modes, require-API-key, enabled, username rules, max-per-wallet, per-domain amount limits) saved via `PATCH /admin/api/domains/:id`; reactivate + delete addresses (not just revoke) with search and status filters; API-key creation scoped to a domain (and scope shown in the list); and a new **Blacklist** tab to list/add/remove global and per-domain entries.
+
+### Fixed
+- Admin `GET /admin/api/blacklist` returned only global entries when unfiltered; it now returns all entries (global + per-domain) via a new `listAll()`.
+
 ## 0.2.1 - 2026-06-04
 
 ### Fixed
