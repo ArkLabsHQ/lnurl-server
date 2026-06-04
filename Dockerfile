@@ -11,8 +11,9 @@ RUN pnpm install --frozen-lockfile --prod=false
 
 # Build
 FROM deps AS build
-COPY tsconfig.json tsconfig.ui.json vite.config.ts ./
+COPY tsconfig.json tsconfig.ui.json vite.config.ts tsup.config.ts ./
 COPY src/ ./src/
+COPY scripts/ ./scripts/
 RUN pnpm build
 
 # Production
