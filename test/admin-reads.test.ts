@@ -27,3 +27,12 @@ describe("AddressesRepo.list / delete", () => {
     expect(repos.addresses.getByDomainAndUsername(domainId, "gone")).toBeUndefined();
   });
 });
+
+describe("BlacklistRepo.listAll", () => {
+  it("returns global and per-domain entries together (unlike list())", () => {
+    repos.blacklist.add({ domainId: null, username: "admin" });
+    repos.blacklist.add({ domainId, username: "boss" });
+    expect(repos.blacklist.list(null)).toHaveLength(1); // global only
+    expect(repos.blacklist.listAll().map((b) => b.username).sort()).toEqual(["admin", "boss"]);
+  });
+});

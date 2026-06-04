@@ -95,7 +95,9 @@ export function createAdminApi(deps: AdminDeps): Router {
   r.delete("/api-keys/:id", (req, res) => { repos.apiKeys.revoke(Number(req.params.id)); res.json({ ok: true }); });
 
   // ── Blacklist ─────────────────────────────────────────────
-  r.get("/blacklist", (req, res) => res.json(repos.blacklist.list(req.query.domainId ? Number(req.query.domainId) : null)));
+  r.get("/blacklist", (req, res) =>
+    res.json(req.query.domainId ? repos.blacklist.list(Number(req.query.domainId)) : repos.blacklist.listAll()),
+  );
   r.post("/blacklist", (req, res) => {
     const { username, domainId, reason } = (req.body ?? {}) as { username?: string; domainId?: number; reason?: string };
     if (!username) { res.status(400).json({ error: "username required" }); return; }

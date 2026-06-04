@@ -42,6 +42,12 @@ export class BlacklistRepo {
     return rows.map(rowTo);
   }
 
+  /** All entries (global + every domain), for the admin "all" view. */
+  listAll(): BlacklistRow[] {
+    const rows = this.db.prepare("SELECT * FROM blacklist ORDER BY domain_id IS NOT NULL, username").all() as unknown as BlacklistRecord[];
+    return rows.map(rowTo);
+  }
+
   remove(id: number): void {
     this.db.prepare("DELETE FROM blacklist WHERE id = ?").run(id);
   }
