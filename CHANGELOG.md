@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.1 - 2026-06-04
+
+### Fixed
+- Server crashed at startup with `ERR_MODULE_NOT_FOUND: Cannot find package 'sqlite'` whenever `DB_PATH` was set: tsup's `removeNodeProtocol` stripped the `node:` prefix from the bundled `node:sqlite` import, and `node:sqlite` is a prefix-only builtin (there is no bare `sqlite`). Disabled prefix stripping (`tsup.config.ts`) and added a build-time smoke test that boots the bundled CLI with persistence enabled, so a mangled builtin import fails the build/release instead of reaching production.
+
 ## 0.2.0 - 2026-06-04
 
 ### Added
