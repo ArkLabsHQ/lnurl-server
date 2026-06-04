@@ -1,21 +1,77 @@
 import { createServer } from "./server.js";
+import { loadConfig } from "./config.js";
+import { SessionManager } from "./session-manager.js";
+import type { Db } from "./db/connection.js";
 
-const port = Number(process.env.PORT) || 3000;
-const baseUrl = process.env.BASE_URL || `http://localhost:${port}`;
-const minSendable = Number(process.env.MIN_SENDABLE) || 1_000;
-const maxSendable = Number(process.env.MAX_SENDABLE) || 100_000_000_000;
-const invoiceTimeoutMs = Number(process.env.INVOICE_TIMEOUT_MS) || 30_000;
+/** Open + migrate + bootstrap the DB when configured; null in in-memory mode. */
+export async function initPersistence(opts: {
+  dbPath?: string;
+  bootstrapDomain?: string;
+}): Promise<Db | null> {
+  if (!opts.dbPath) return null;
+  const { openDb } = await import("./db/connection.js");
+  const { runMigrations } = await import("./db/migrations.js");
+  const { bootstrap } = await import("./bootstrap.js");
+  const db = openDb(opts.dbPath);
+  runMigrations(db);
+  bootstrap(db, { bootstrapDomain: opts.bootstrapDomain });
+  return db;
+}
 
-const app = createServer({
-  port,
-  baseUrl,
-  minSendable,
-  maxSendable,
-  invoiceTimeoutMs,
-});
+async function main(): Promise<void> {
+  const config = loadConfig();
 
-app.listen(port, () => {
-  console.log(`arkade-lnurl listening on ${baseUrl}`);
-  console.log(`  min: ${minSendable} msat, max: ${maxSendable} msat`);
-  console.log(`  invoice timeout: ${invoiceTimeoutMs}ms`);
+  const db = await initPersistence({ dbPath: config.dbPath, bootstrapDomain: config.bootstrapDomain });
+  const sessions = new SessionManager();
+  let deps: import("./server.js").ServerDeps | undefined;
+
+  if (db) {
+    const { createRepositories } = await import("./db/repositories/index.js");
+    const { AddressService } = await import("./address-service.js");
+    const { RateLimiter } = await import("./rate-limit.js");
+    const { hashSecret } = await import("./crypto.js");
+    const repos = createRepositories(db);
+    if (!config.tokenEncryptionKey) {
+      console.warn("WARNING: ALLOW_INSECURE_TOKEN_STORAGE — using a static, source-readable encryption key. Do NOT use in production.");
+    }
+    const key = config.tokenEncryptionKey ?? hashSecret("INSECURE-DEV-KEY"); // effective key (insecure dev fallback)
+    const addressService = new AddressService(repos, key);
+    deps = {
+      repos,
+      addressService,
+      registrationLimiter: new RateLimiter(config.registrationRateLimitPerMin, 60_000),
+      sessions,
+    };
+    console.log(`persistence: enabled at ${config.dbPath} (${deps.repos.domains.list().length} domain(s))`);
+
+    const { createAdminServer } = await import("./admin-server.js");
+    createAdminServer({ repos, addressService, sessions }).listen(config.adminPort, config.adminBind, () => {
+      console.log(`admin server on http://${config.adminBind}:${config.adminPort} (front with a proxy)`);
+    });
+  } else {
+    console.log("persistence: disabled (in-memory mode)");
+  }
+
+  const app = createServer(
+    {
+      port: config.port,
+      baseUrl: config.baseUrl,
+      minSendable: config.minSendable,
+      maxSendable: config.maxSendable,
+      invoiceTimeoutMs: config.invoiceTimeoutMs,
+      trustProxy: config.trustProxy,
+    },
+    deps,
+  );
+
+  app.listen(config.port, () => {
+    console.log(`arkade-lnurl listening on ${config.baseUrl}`);
+    console.log(`  min: ${config.minSendable} msat, max: ${config.maxSendable} msat`);
+    console.log(`  invoice timeout: ${config.invoiceTimeoutMs}ms`);
+  });
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
 });

@@ -12,6 +12,9 @@ export interface LnurlServiceConfig {
   maxSendable: number;
   /** Timeout in ms for waiting for wallet to provide bolt11 (default: 30000) */
   invoiceTimeoutMs?: number;
+  /** Trust X-Forwarded-* headers from a reverse proxy (default: 1 hop). Pass a number for
+   *  the hop count, true to trust all, or false to disable. */
+  trustProxy?: number | boolean;
 }
 
 /** SSE event types sent to the wallet */

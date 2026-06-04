@@ -1,17 +1,17 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { Response } from "express";
 import type { Session, SessionEvent } from "./types.js";
+import { deriveSessionId } from "./session-id.js";
+
+/** Constant-time comparison for secret tokens (avoids a byte-by-byte timing oracle). */
+function tokensEqual(a: string, b: string): boolean {
+  const ba = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  return ba.length === bb.length && timingSafeEqual(ba, bb);
+}
 
 export class SessionManager {
   private sessions = new Map<string, Session>();
-
-  /** Derive a sessionId from a token: first 32 hex chars of SHA-256(token_bytes). */
-  private static deriveSessionId(tokenHex: string): string {
-    return createHash("sha256")
-      .update(Buffer.from(tokenHex, "hex"))
-      .digest("hex")
-      .slice(0, 32);
-  }
 
   /** Create a new session and wire up the SSE response.
    *  When `providedToken` is supplied the sessionId is derived from it
@@ -19,12 +19,12 @@ export class SessionManager {
   create(sseRes: Response, providedToken?: string): Session | null {
     const token = providedToken || randomBytes(32).toString("hex");
     const id = providedToken
-      ? SessionManager.deriveSessionId(providedToken)
+      ? deriveSessionId(providedToken)
       : randomBytes(16).toString("hex");
 
     const existing = this.sessions.get(id);
     if (existing) {
-      if (existing.token !== token) return null;
+      if (!tokensEqual(existing.token, token)) return null;
       this.destroy(id);
     }
 
@@ -55,10 +55,18 @@ export class SessionManager {
     return this.sessions.has(id);
   }
 
-  /** Verify the auth token for a session */
+  /** Verify the auth token for a session (constant-time). */
   verifyToken(id: string, token: string): boolean {
     const session = this.sessions.get(id);
-    return !!session && session.token === token;
+    return !!session && tokensEqual(session.token, token);
+  }
+
+  /** True iff a session already exists for this token's derived id but with a different
+   *  token. Checked before committing the SSE 200 so a collision returns a clean 409
+   *  rather than an in-stream error. (A real collision is a SHA-256 break — unreachable.) */
+  peekCollision(token: string): boolean {
+    const existing = this.sessions.get(deriveSessionId(token));
+    return !!existing && !tokensEqual(existing.token, token);
   }
 
   /** Send an SSE event to the wallet */
@@ -146,5 +154,10 @@ export class SessionManager {
     }
 
     this.sessions.delete(id);
+  }
+
+  /** All currently-connected session ids. */
+  activeSessionIds(): string[] {
+    return Array.from(this.sessions.keys());
   }
 }
