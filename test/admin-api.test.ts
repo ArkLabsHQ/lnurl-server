@@ -8,14 +8,21 @@ import { createRepositories, type Repositories } from "../src/db/repositories/in
 import { AddressService } from "../src/address-service.js";
 import { SessionManager } from "../src/session-manager.js";
 import { createAdminApi } from "../src/admin-api.js";
+import { loadConfig } from "../src/config.js";
+import { SettingsService } from "../src/settings.js";
 
 let db: Db; let repos: Repositories; let app: express.Express;
 beforeEach(() => {
   db = openDb(":memory:"); runMigrations(db); repos = createRepositories(db);
   const sessions = new SessionManager();
   const svc = new AddressService(repos, randomBytes(32));
+  const config = loadConfig({ PORT: "3000", BASE_URL: "http://localhost:3000" });
+  const settings = new SettingsService(repos.settings, {
+    minSendable: config.minSendable, maxSendable: config.maxSendable, invoiceTimeoutMs: config.invoiceTimeoutMs,
+    baseUrl: config.baseUrl, registrationRateLimitPerMin: config.registrationRateLimitPerMin,
+  });
   app = express(); app.use(express.json());
-  app.use("/admin/api", createAdminApi({ repos, addressService: svc, sessions }));
+  app.use("/admin/api", createAdminApi({ repos, addressService: svc, sessions, settings, config }));
 });
 
 describe("admin API", () => {
@@ -63,5 +70,23 @@ describe("admin API", () => {
     expect(list.body.map((b: { username: string }) => b.username)).toContain("root");
     const del = await request(app).delete(`/admin/api/blacklist/${add.body.id}`);
     expect(del.status).toBe(200);
+  });
+
+  it("gets, overrides, validates, and resets settings", async () => {
+    const got = await request(app).get("/admin/api/settings");
+    expect(got.body.editable.minSendable).toMatchObject({ value: 1000, overridden: false });
+    expect(got.body.readOnly.adminPort).toBe(3001);
+    expect(got.body.readOnly.tokenEncryptionKey).toBe("unset"); // never leaks a value
+
+    const patched = await request(app).patch("/admin/api/settings").send({ minSendable: 5000 });
+    expect(patched.status).toBe(200);
+    expect(patched.body.minSendable).toMatchObject({ value: 5000, overridden: true });
+
+    const bad = await request(app).patch("/admin/api/settings").send({ baseUrl: "not-a-url" });
+    expect(bad.status).toBe(400);
+
+    const reset = await request(app).delete("/admin/api/settings/minSendable");
+    expect(reset.status).toBe(200);
+    expect(reset.body.minSendable).toMatchObject({ value: 1000, overridden: false });
   });
 });

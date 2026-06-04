@@ -8,6 +8,7 @@ import { encodeLnurl } from "./lnurl.js";
 import type { AddressService } from "./address-service.js";
 import { ProvisioningError } from "./address-service.js";
 import type { RateLimiter } from "./rate-limit.js";
+import { staticSettings, type RuntimeSettings } from "./settings.js";
 import type {
   LnurlServiceConfig,
   LnurlPayMetadata,
@@ -29,6 +30,7 @@ export interface ServerDeps {
   addressService?: AddressService;
   registrationLimiter?: RateLimiter;
   sessions?: SessionManager;
+  settings?: RuntimeSettings;
 }
 
 function buildMetadata(identifier?: string): string {
@@ -69,8 +71,15 @@ async function requestInvoiceAndRespond(args: {
 export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): express.Express {
   const app = express();
   const sessions = deps?.sessions ?? new SessionManager();
-  const invoiceTimeout =
-    config.invoiceTimeoutMs ?? DEFAULT_INVOICE_TIMEOUT_MS;
+  // Soft settings are read per-request so DB-backed overrides take effect without a restart.
+  // No DB (library/in-memory mode) → fall back to the static config values.
+  const settings: RuntimeSettings = deps?.settings ?? staticSettings({
+    minSendable: config.minSendable,
+    maxSendable: config.maxSendable,
+    invoiceTimeoutMs: config.invoiceTimeoutMs ?? DEFAULT_INVOICE_TIMEOUT_MS,
+    baseUrl: config.baseUrl,
+    registrationRateLimitPerMin: 10,
+  });
 
   // Default: trust exactly one proxy hop so req.ip reflects the real client IP behind
   // a single LB/CDN. Set trustProxy to a higher number for deeper proxy stacks, or false
@@ -148,7 +157,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       return;
     }
 
-    const callbackUrl = `${config.baseUrl}/lnurl/${session.id}`;
+    const callbackUrl = `${settings.baseUrl()}/lnurl/${session.id}`;
     const lnurl = encodeLnurl(callbackUrl);
 
     // Send the LNURL and auth token to the wallet as the first event
@@ -195,9 +204,9 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
 
     const response: LnurlPayMetadata = {
       tag: "payRequest",
-      callback: `${config.baseUrl}/lnurl/${id}/callback`,
-      minSendable: config.minSendable,
-      maxSendable: config.maxSendable,
+      callback: `${settings.baseUrl()}/lnurl/${id}/callback`,
+      minSendable: settings.minSendable(),
+      maxSendable: settings.maxSendable(),
       metadata: buildMetadata(),
       commentAllowed: 140,
     };
@@ -218,7 +227,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     }
     await requestInvoiceAndRespond({
       sessions, sessionId: id, amountMsat: Number(amountStr), comment,
-      min: config.minSendable, max: config.maxSendable, timeoutMs: invoiceTimeout,
+      min: settings.minSendable(), max: settings.maxSendable(), timeoutMs: settings.invoiceTimeoutMs(),
       offlineReason: "This LNURL is no longer active", res,
     });
   });
@@ -285,8 +294,8 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       const response: LnurlPayMetadata = {
         tag: "payRequest",
         callback: `${origin}/.well-known/lnurlp/${username}/callback`,
-        minSendable: domain.minSendable ?? config.minSendable,
-        maxSendable: domain.maxSendable ?? config.maxSendable,
+        minSendable: domain.minSendable ?? settings.minSendable(),
+        maxSendable: domain.maxSendable ?? settings.maxSendable(),
         metadata: buildMetadata(`${username}@${domain.domain}`),
         commentAllowed: 140,
       };
@@ -314,8 +323,8 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       }
       await requestInvoiceAndRespond({
         sessions, sessionId: address.sessionId, amountMsat: Number(amountStr), comment,
-        min: domain.minSendable ?? config.minSendable, max: domain.maxSendable ?? config.maxSendable,
-        timeoutMs: invoiceTimeout, offlineReason: `${username}@${domain.domain} is currently offline`, res,
+        min: domain.minSendable ?? settings.minSendable(), max: domain.maxSendable ?? settings.maxSendable(),
+        timeoutMs: settings.invoiceTimeoutMs(), offlineReason: `${username}@${domain.domain} is currently offline`, res,
       });
     });
 

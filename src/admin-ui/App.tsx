@@ -1,8 +1,8 @@
 import { Fragment, useEffect, useState } from "react";
 import { api } from "./api.js";
 
-type Tab = "Dashboard" | "Domains" | "Addresses" | "API Keys" | "Blacklist";
-const TABS: Tab[] = ["Dashboard", "Domains", "Addresses", "API Keys", "Blacklist"];
+type Tab = "Dashboard" | "Domains" | "Addresses" | "API Keys" | "Blacklist" | "Settings";
+const TABS: Tab[] = ["Dashboard", "Domains", "Addresses", "API Keys", "Blacklist", "Settings"];
 const ALLOCATION_MODES = ["self", "random", "admin"] as const;
 
 interface Domain {
@@ -41,6 +41,7 @@ export function App() {
       {tab === "Addresses" && <Addresses />}
       {tab === "API Keys" && <ApiKeys />}
       {tab === "Blacklist" && <Blacklist />}
+      {tab === "Settings" && <Settings />}
     </div>
   );
 }
@@ -327,6 +328,74 @@ function Blacklist() {
         <tbody>{items.map((b) => (
           <tr key={b.id}><Td>{b.username}</Td><Td>{scopeOf(b.domainId)}</Td><Td>{b.reason ?? "—"}</Td>
             <Td><button onClick={() => remove(b.id)}>Remove</button></Td></tr>
+        ))}</tbody>
+      </table>
+    </div>
+  );
+}
+
+interface SettingView { value: number | string; default: number | string; overridden: boolean }
+interface SettingsResponse { editable: Record<string, SettingView>; readOnly: Record<string, unknown> }
+const SETTING_ORDER = ["minSendable", "maxSendable", "invoiceTimeoutMs", "baseUrl", "registrationRateLimitPerMin"] as const;
+const SETTING_LABELS: Record<string, string> = {
+  minSendable: "Min sendable (msat)",
+  maxSendable: "Max sendable (msat)",
+  invoiceTimeoutMs: "Invoice timeout (ms)",
+  baseUrl: "Base URL",
+  registrationRateLimitPerMin: "Registration rate limit (/min/IP)",
+};
+
+function Settings() {
+  const [data, setData] = useState<SettingsResponse>();
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [err, setErr] = useState<string>();
+  const [mutErr, setMutErr] = useState<string>();
+  const load = () => api.get<SettingsResponse>("/settings").then((d) => { setData(d); setDrafts({}); }).catch((e: Error) => setErr(e.message));
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
+  if (err) return <p style={{ color: "crimson" }}>{err}</p>;
+  if (!data) return <p>Loading…</p>;
+
+  const save = async (key: string) => {
+    const raw = drafts[key];
+    if (raw === undefined || raw === "") return;
+    try { await api.patch("/settings", { [key]: key === "baseUrl" ? raw : Number(raw) }); setMutErr(undefined); load(); }
+    catch (e) { setMutErr(errMsg(e)); }
+  };
+  const reset = async (key: string) => {
+    try { await api.del(`/settings/${key}`); setMutErr(undefined); load(); } catch (e) { setMutErr(errMsg(e)); }
+  };
+
+  return (
+    <div>
+      {mutErr && <p style={{ color: "crimson" }}>{mutErr}</p>}
+      <h3 style={{ fontSize: 15, marginBottom: 4 }}>Editable</h3>
+      <p style={{ color: "#666", marginTop: 0 }}>Env value is the default; an override here takes effect live (no restart).</p>
+      <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 24 }}>
+        <thead><tr><Th>Setting</Th><Th>Effective</Th><Th>Default</Th><Th>New value</Th><Th /></tr></thead>
+        <tbody>{SETTING_ORDER.map((key) => {
+          const s = data.editable[key];
+          if (!s) return null;
+          return (
+            <tr key={key}>
+              <Td>{SETTING_LABELS[key] ?? key}</Td>
+              <Td>{String(s.value)}{s.overridden && <span style={{ color: "#a60" }}> (override)</span>}</Td>
+              <Td>{String(s.default)}</Td>
+              <Td><input value={drafts[key] ?? ""} placeholder={String(s.value)} onChange={(e) => setDrafts({ ...drafts, [key]: e.target.value })} style={{ width: 160 }} /></Td>
+              <Td>
+                <button onClick={() => save(key)} disabled={!drafts[key]}>Save</button>{" "}
+                {s.overridden && <button onClick={() => reset(key)}>Reset</button>}
+              </Td>
+            </tr>
+          );
+        })}</tbody>
+      </table>
+      <h3 style={{ fontSize: 15, marginBottom: 4 }}>Read-only</h3>
+      <p style={{ color: "#666", marginTop: 0 }}>Set via env vars; changing these needs a redeploy/restart.</p>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead><tr><Th>Setting</Th><Th>Value</Th></tr></thead>
+        <tbody>{Object.entries(data.readOnly).map(([k, v]) => (
+          <tr key={k}><Td>{k}</Td><Td>{v === null ? "—" : String(v)}</Td></tr>
         ))}</tbody>
       </table>
     </div>

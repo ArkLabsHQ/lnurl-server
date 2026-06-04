@@ -4,11 +4,16 @@ import type { AddressService } from "./address-service.js";
 import { ProvisioningError } from "./address-service.js";
 import type { SessionManager } from "./session-manager.js";
 import type { AddressStatus } from "./db/types.js";
+import type { SettingsService } from "./settings.js";
+import { isSettingKey, SettingsError } from "./settings.js";
+import type { AppConfig } from "./config.js";
 
 export interface AdminDeps {
   repos: Repositories;
   addressService: AddressService;
   sessions: SessionManager;
+  settings: SettingsService;
+  config: AppConfig;
 }
 
 const VALID_ALLOCATION_MODES = new Set(["self", "random", "admin"]);
@@ -19,7 +24,7 @@ function isValidAllocationModes(x: unknown): boolean {
 }
 
 export function createAdminApi(deps: AdminDeps): Router {
-  const { repos, addressService, sessions } = deps;
+  const { repos, addressService, sessions, settings, config } = deps;
   const r = Router();
 
   // ── Domains ───────────────────────────────────────────────
@@ -107,6 +112,40 @@ export function createAdminApi(deps: AdminDeps): Router {
 
   // ── Live sessions ─────────────────────────────────────────
   r.get("/sessions", (_req, res) => res.json(sessions.activeSessionIds().map((id) => ({ sessionId: id }))));
+
+  // ── Settings ──────────────────────────────────────────────
+  // Editable "soft" settings (env default + DB override) plus a read-only view of the
+  // process/secret config that can only change via env + restart.
+  r.get("/settings", (_req, res) => res.json({
+    editable: settings.view(),
+    readOnly: {
+      port: config.port,
+      adminPort: config.adminPort,
+      adminBind: config.adminBind,
+      dbPath: config.dbPath ?? null,
+      trustProxy: config.trustProxy,
+      bootstrapDomain: config.bootstrapDomain ?? null,
+      tokenEncryptionKey: config.tokenEncryptionKey ? "set" : config.allowInsecureTokenStorage ? "insecure (plaintext)" : "unset",
+    },
+  }));
+  r.patch("/settings", (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    try {
+      for (const [k, v] of Object.entries(body)) {
+        if (!isSettingKey(k)) { res.status(400).json({ error: `unknown setting: ${k}` }); return; }
+        settings.set(k, v);
+      }
+    } catch (e) {
+      if (e instanceof SettingsError) { res.status(400).json({ error: e.message }); return; }
+      throw e;
+    }
+    res.json(settings.view());
+  });
+  r.delete("/settings/:key", (req, res) => {
+    if (!isSettingKey(req.params.key)) { res.status(400).json({ error: "unknown setting" }); return; }
+    settings.clear(req.params.key);
+    res.json(settings.view());
+  });
 
   return r;
 }
