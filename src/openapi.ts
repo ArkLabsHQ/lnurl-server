@@ -6,8 +6,10 @@ export const openApiSpec = {
       "SSE-based LNURL service for amountless Lightning receives. " +
       "Wallets open an SSE session to get an LNURL, and payers use " +
       "standard LNURL-pay (LUD-06) to request invoices. The wallet " +
-      "creates reverse swaps on-the-fly and returns bolt11 invoices.",
-    version: "0.2.4",
+      "creates reverse swaps on-the-fly and returns bolt11 invoices. " +
+      "When persistence is enabled, wallets can also register " +
+      "Lightning Addresses (LUD-16) served from the `.well-known` routes.",
+    version: "0.2.5",
     license: { name: "MIT" },
   },
   servers: [{ url: "/" }],
@@ -194,6 +196,198 @@ export const openApiSpec = {
                         status: { type: "string", enum: ["ERROR"] },
                         reason: { type: "string" },
                       },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    "/lnurl/address": {
+      post: {
+        summary: "Register or claim an LN address (LUD-16)",
+        description:
+          "Provisions a Lightning Address bound to the wallet's session token. The " +
+          "domain comes from the `domain` body field or the Host header. Behaviour " +
+          "follows the domain's allocation policy: send a `username` to self-claim " +
+          "(when `self` is allowed), omit it for a random username (when `random` is " +
+          "allowed), or send `username` + `claimCode` to claim an admin-reserved one. " +
+          "Include `X-API-Key` when the domain requires one.",
+        tags: ["LN Address"],
+        parameters: [
+          {
+            name: "X-API-Key",
+            in: "header",
+            required: false,
+            schema: { type: "string" },
+            description: "Required only when the domain has require-API-key enabled",
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  token: { type: "string", description: "Wallet session token (hex, ≥32 chars)" },
+                  username: { type: "string", description: "Desired username; omit for random allocation" },
+                  claimCode: { type: "string", description: "Claim code for an admin-reserved username" },
+                  domain: { type: "string", description: "Target domain (defaults to the Host header)" },
+                },
+                required: ["token"],
+              },
+            },
+          },
+        },
+        responses: {
+          "201": {
+            description: "Address registered",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    lightningAddress: { type: "string" },
+                    lnurl: { type: "string" },
+                    username: { type: "string" },
+                    domain: { type: "string" },
+                    status: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          "400": { description: "Missing token, or invalid token/username" },
+          "401": { description: "Missing/invalid X-API-Key, or invalid claim code" },
+          "403": { description: "Allocation mode not permitted for this domain" },
+          "404": { description: "Unknown or disabled domain" },
+          "409": { description: "Username already taken or blacklisted" },
+          "429": { description: "Rate limited, or per-wallet address limit reached" },
+        },
+      },
+      get: {
+        summary: "List your LN addresses",
+        description: "Returns the addresses owned by the bearer token.",
+        tags: ["LN Address"],
+        security: [{ bearerAuth: [] }],
+        responses: {
+          "200": {
+            description: "Owned addresses",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      username: { type: "string" },
+                      domain: { type: "string" },
+                      status: { type: "string" },
+                      createdAt: { type: "number" },
+                      lightningAddress: { type: "string" },
+                      lnurl: { type: "string" },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "401": { description: "Missing or invalid auth token" },
+          "404": { description: "Address provisioning not enabled (no persistence configured)" },
+        },
+      },
+    },
+    "/lnurl/address/{username}": {
+      delete: {
+        summary: "Revoke one of your LN addresses",
+        tags: ["LN Address"],
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: "username", in: "path", required: true, schema: { type: "string" }, description: "Username to revoke" },
+          { name: "domain", in: "query", required: false, schema: { type: "string" }, description: "Target domain (defaults to the Host header)" },
+        ],
+        responses: {
+          "200": {
+            description: "Address revoked",
+            content: { "application/json": { schema: { type: "object", properties: { ok: { type: "boolean" } } } } },
+          },
+          "401": { description: "Missing or invalid auth token" },
+          "404": { description: "Unknown domain, or address not found / not owned by this token" },
+        },
+      },
+    },
+    "/.well-known/lnurlp/{username}": {
+      get: {
+        summary: "LN Address pay metadata (LUD-16)",
+        description:
+          "LUD-16 well-known endpoint. The Host header selects the domain. Returns " +
+          "LNURL-pay metadata for the address, or an error if it is unknown or disabled.",
+        tags: ["LN Address"],
+        parameters: [
+          { name: "username", in: "path", required: true, schema: { type: "string" }, description: "LN address local part" },
+        ],
+        responses: {
+          "200": {
+            description: "LNURL-pay metadata or error",
+            content: {
+              "application/json": {
+                schema: {
+                  oneOf: [
+                    {
+                      type: "object",
+                      properties: {
+                        tag: { type: "string", enum: ["payRequest"] },
+                        callback: { type: "string" },
+                        minSendable: { type: "number" },
+                        maxSendable: { type: "number" },
+                        metadata: { type: "string" },
+                        commentAllowed: { type: "number" },
+                      },
+                    },
+                    {
+                      type: "object",
+                      properties: {
+                        status: { type: "string", enum: ["ERROR"] },
+                        reason: { type: "string" },
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    "/.well-known/lnurlp/{username}/callback": {
+      get: {
+        summary: "LN Address pay callback (LUD-16)",
+        description:
+          "Requests a bolt11 invoice for the address. The wallet must have an active " +
+          "SSE session; returns an error when the wallet is offline.",
+        tags: ["LN Address"],
+        parameters: [
+          { name: "username", in: "path", required: true, schema: { type: "string" }, description: "LN address local part" },
+          { name: "amount", in: "query", required: true, schema: { type: "number" }, description: "Amount in millisatoshis" },
+          { name: "comment", in: "query", required: false, schema: { type: "string" }, description: "Optional payer comment" },
+        ],
+        responses: {
+          "200": {
+            description: "BOLT11 invoice or error",
+            content: {
+              "application/json": {
+                schema: {
+                  oneOf: [
+                    {
+                      type: "object",
+                      properties: { pr: { type: "string", description: "BOLT11 invoice" }, routes: { type: "array", items: {} } },
+                    },
+                    {
+                      type: "object",
+                      properties: { status: { type: "string", enum: ["ERROR"] }, reason: { type: "string" } },
                     },
                   ],
                 },

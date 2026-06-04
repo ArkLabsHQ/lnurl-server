@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.5 - 2026-06-04
+
+### Fixed
+- The OpenAPI/Swagger docs (served at `/`) only listed the original four relay endpoints — the public endpoints added in 0.2.0 were never documented, so the page looked unchanged across releases despite the version bump. Documented the missing public endpoints: `POST /lnurl/address` (register/claim), `GET /lnurl/address` (list own), `DELETE /lnurl/address/{username}` (revoke own), and the LUD-16 `GET /.well-known/lnurlp/{username}` + `/callback` routes, with request/response shapes and error codes. (The admin API stays out of the public spec by design — it runs on the separate admin port.)
+
 ## 0.2.4 - 2026-06-04
 
 ### Added
