@@ -1,6 +1,6 @@
 {
   "name": "@arkade-os/lnurl",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "LNURL service for amountless Lightning receives via Arkade swaps",
   "type": "module",
   "main": "dist/index.js",
