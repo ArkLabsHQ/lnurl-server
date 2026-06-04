@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.4 - 2026-06-04
+
+### Added
+- Admin **Sessions** tab: a live view of every connected wallet (the in-memory SSE session map, polled every 5s), joined to the `addresses` table so each connection shows the LN address(es) it belongs to. Per session: bound addresses, reusable-vs-ephemeral type, connected-since, client IP (as seen through `trust proxy`), invoices issued (+ last-issued time), and the in-flight payer request (amount + how long it's been waiting). A **Disconnect** action force-closes a session (`POST /admin/api/sessions/:id/disconnect`). The session token is never exposed. The Dashboard gains a "Live sessions" count.
+
 ## 0.2.3 - 2026-06-04
 
 ### Added
