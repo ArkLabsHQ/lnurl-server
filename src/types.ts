@@ -22,7 +22,6 @@ export type SessionEventType =
   | "session_created"
   | "invoice_request"
   | "invoice_settled"
-  | "withdraw_request"
   | "error";
 
 /** Event sent over SSE to the wallet */
@@ -56,12 +55,6 @@ export interface Session {
   /** Pending invoice request resolver — set when payer is waiting */
   pendingInvoice: {
     resolve: (pr: string) => void;
-    reject: (err: Error) => void;
-  } | null;
-  /** Pending withdraw payout resolver — set while a withdrawer is waiting */
-  pendingWithdraw: {
-    withdrawId: string;
-    resolve: () => void;
     reject: (err: Error) => void;
   } | null;
 }

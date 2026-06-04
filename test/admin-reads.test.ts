@@ -27,13 +27,3 @@ describe("AddressesRepo.list / delete", () => {
     expect(repos.addresses.getByDomainAndUsername(domainId, "gone")).toBeUndefined();
   });
 });
-
-describe("WithdrawalsRepo.list", () => {
-  it("filters by status", () => {
-    repos.withdrawals.create({ id: "w1", sessionId: "s", minWithdrawable: 1, maxWithdrawable: 2 });
-    repos.withdrawals.create({ id: "w2", sessionId: "s", minWithdrawable: 1, maxWithdrawable: 2 });
-    repos.withdrawals.markUsed("w2");
-    expect(repos.withdrawals.list()).toHaveLength(2);
-    expect(repos.withdrawals.list({ status: "used" })).toHaveLength(1);
-  });
-});

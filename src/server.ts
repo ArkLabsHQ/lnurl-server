@@ -1,12 +1,10 @@
 import express from "express";
 import cors from "cors";
-import { randomBytes } from "node:crypto";
 import { SessionManager } from "./session-manager.js";
 import { openApiSpec } from "./openapi.js";
 import type { Repositories } from "./db/repositories/index.js";
 import { domainFromHost } from "./http-origin.js";
 import { encodeLnurl } from "./lnurl.js";
-import { decodeInvoiceAmountMsat } from "./bolt11.js";
 import type { AddressService } from "./address-service.js";
 import { ProvisioningError } from "./address-service.js";
 import type { RateLimiter } from "./rate-limit.js";
@@ -319,107 +317,6 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         min: domain.minSendable ?? config.minSendable, max: domain.maxSendable ?? config.maxSendable,
         timeoutMs: invoiceTimeout, offlineReason: `${username}@${domain.domain} is currently offline`, res,
       });
-    });
-
-    // ─── POST /lnurl/session/:id/withdraw ────────────────────────────────
-    // Funding wallet creates a withdraw link (auth: Bearer token).
-    app.post("/lnurl/session/:id/withdraw", (req, res) => {
-      const { id } = req.params;
-      const auth = req.headers.authorization;
-      const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
-      if (!token || !sessions.verifyToken(id, token)) { res.status(401).json({ error: "Unauthorized" }); return; }
-
-      const { minWithdrawable, maxWithdrawable, description, usesRemaining, expiresAt } = (req.body ?? {}) as Record<string, unknown>;
-      const min = Number(minWithdrawable), max = Number(maxWithdrawable);
-      if (!Number.isFinite(min) || !Number.isFinite(max) || min <= 0 || max < min) {
-        res.status(400).json({ error: "minWithdrawable and maxWithdrawable must be positive with min <= max" });
-        return;
-      }
-      const uses = usesRemaining === undefined ? 1 : Number(usesRemaining);
-      if (!Number.isInteger(uses) || uses < 1) {
-        res.status(400).json({ error: "usesRemaining must be an integer >= 1" });
-        return;
-      }
-      if (expiresAt !== undefined && expiresAt !== null) {
-        const exp = Number(expiresAt);
-        if (!Number.isFinite(exp) || exp <= Date.now()) {
-          res.status(400).json({ error: "expiresAt must be a finite timestamp strictly in the future" });
-          return;
-        }
-      }
-      const withdrawId = randomBytes(32).toString("hex");
-      repos.withdrawals.create({
-        id: withdrawId, sessionId: id, minWithdrawable: min, maxWithdrawable: max,
-        description: typeof description === "string" ? description : undefined,
-        usesRemaining: uses,
-        expiresAt: expiresAt !== undefined && expiresAt !== null ? Number(expiresAt) : null,
-      });
-      const lnurl = encodeLnurl(`${config.baseUrl}/lnurl/withdraw/${withdrawId}`);
-      res.status(201).json({ withdrawId, lnurl });
-    });
-
-    // ─── GET /lnurl/withdraw/:id ─────────────────────────────────────────
-    // LUD-03 first request — returns withdrawRequest metadata.
-    app.get("/lnurl/withdraw/:id", (req, res) => {
-      const w = repos.withdrawals.get(req.params.id);
-      if (!w || w.status !== "active") { res.json({ status: "ERROR", reason: "This withdraw link is no longer active" } satisfies LnurlErrorResponse); return; }
-      if (w.expiresAt != null && Date.now() > w.expiresAt) { repos.withdrawals.markExpired(w.id); res.json({ status: "ERROR", reason: "This withdraw link has expired" } satisfies LnurlErrorResponse); return; }
-      res.json({
-        tag: "withdrawRequest",
-        callback: `${config.baseUrl}/lnurl/withdraw/${w.id}/callback`,
-        k1: w.id,
-        defaultDescription: w.description ?? "Withdraw",
-        minWithdrawable: w.minWithdrawable,
-        maxWithdrawable: w.maxWithdrawable,
-      });
-    });
-
-    // ─── GET /lnurl/withdraw/:id/callback?k1=&pr= ────────────────────────
-    // Withdrawer supplies bolt11; relay to funding wallet via SSE and wait.
-    app.get("/lnurl/withdraw/:id/callback", async (req, res) => {
-      const w = repos.withdrawals.get(req.params.id);
-      const k1 = req.query.k1 as string | undefined;
-      const pr = req.query.pr as string | undefined;
-      if (!w || w.status !== "active") { res.json({ status: "ERROR", reason: "This withdraw link is no longer active" } satisfies LnurlErrorResponse); return; }
-      if (w.expiresAt != null && Date.now() > w.expiresAt) { repos.withdrawals.markExpired(w.id); res.json({ status: "ERROR", reason: "This withdraw link has expired" } satisfies LnurlErrorResponse); return; }
-      if (k1 !== w.id || !pr) { res.json({ status: "ERROR", reason: "Missing or invalid k1/pr" } satisfies LnurlErrorResponse); return; }
-      if (!sessions.isActive(w.sessionId)) { res.json({ status: "ERROR", reason: "The funding wallet is currently offline" } satisfies LnurlErrorResponse); return; }
-
-      // LUD-03: the service MUST validate the invoice amount is within bounds before relaying.
-      const amt = decodeInvoiceAmountMsat(pr);
-      if (amt === null) { res.json({ status: "ERROR", reason: "Withdraw invoice must specify an amount" } satisfies LnurlErrorResponse); return; }
-      if (amt < w.minWithdrawable || amt > w.maxWithdrawable) {
-        res.json({ status: "ERROR", reason: `Amount must be between ${w.minWithdrawable} and ${w.maxWithdrawable} millisats` } satisfies LnurlErrorResponse);
-        return;
-      }
-
-      try {
-        await sessions.requestWithdraw(
-          w.sessionId,
-          { withdrawId: w.id, bolt11: pr, minWithdrawable: w.minWithdrawable, maxWithdrawable: w.maxWithdrawable, description: w.description ?? undefined },
-          invoiceTimeout,
-        );
-        repos.withdrawals.markUsed(w.id);
-        res.json({ status: "OK" });
-      } catch (err) {
-        res.json({ status: "ERROR", reason: err instanceof Error ? err.message : "Withdraw failed" } satisfies LnurlErrorResponse);
-      }
-    });
-
-    // ─── POST /lnurl/session/:id/withdraw/:wid ───────────────────────────
-    // Funding wallet reports payout result (auth: Bearer token).
-    app.post("/lnurl/session/:id/withdraw/:wid", (req, res) => {
-      const { id, wid } = req.params;
-      const auth = req.headers.authorization;
-      const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
-      if (!token || !sessions.verifyToken(id, token)) { res.status(401).json({ error: "Unauthorized" }); return; }
-
-      const body = (req.body ?? {}) as { status?: string; error?: string };
-      const handled = body.error
-        ? sessions.rejectWithdraw(id, wid, body.error)
-        : sessions.resolveWithdraw(id, wid);
-      if (!handled) { res.status(404).json({ error: "No pending withdraw for this session/id" }); return; }
-      res.json({ ok: true });
     });
 
     const addressService = deps.addressService;

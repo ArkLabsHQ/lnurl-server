@@ -1,13 +1,12 @@
 import { useEffect, useState } from "react";
 import { api } from "./api.js";
 
-type Tab = "Dashboard" | "Domains" | "Addresses" | "API Keys" | "Withdrawals";
-const TABS: Tab[] = ["Dashboard", "Domains", "Addresses", "API Keys", "Withdrawals"];
+type Tab = "Dashboard" | "Domains" | "Addresses" | "API Keys";
+const TABS: Tab[] = ["Dashboard", "Domains", "Addresses", "API Keys"];
 
 interface Domain { id: number; domain: string; allocationModes: string[]; requireApiKey: boolean; enabled: boolean }
 interface Address { id: number; username: string; domain: string | null; status: string; online: boolean }
 interface ApiKey { id: number; label: string | null; status: string }
-interface Withdrawal { id: string; status: string; minWithdrawable: number; maxWithdrawable: number }
 
 export function App() {
   const [tab, setTab] = useState<Tab>("Addresses");
@@ -27,7 +26,6 @@ export function App() {
       {tab === "Domains" && <Domains />}
       {tab === "Addresses" && <Addresses />}
       {tab === "API Keys" && <ApiKeys />}
-      {tab === "Withdrawals" && <Withdrawals />}
     </div>
   );
 }
@@ -136,16 +134,6 @@ function ApiKeys() {
         ))}</tbody>
       </table>
     </div>
-  );
-}
-
-function Withdrawals() {
-  const { items } = useList<Withdrawal>("/withdrawals");
-  return (
-    <table style={{ width: "100%", borderCollapse: "collapse" }}>
-      <thead><tr><Th>Id</Th><Th>Status</Th><Th>Min</Th><Th>Max</Th></tr></thead>
-      <tbody>{items.map((w) => (<tr key={w.id}><Td>{w.id.slice(0, 12)}…</Td><Td>{w.status}</Td><Td>{w.minWithdrawable}</Td><Td>{w.maxWithdrawable}</Td></tr>))}</tbody>
-    </table>
   );
 }
 

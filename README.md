@@ -45,15 +45,6 @@ Wallet                    Service                     Payer
 | GET | `/lnurl/address` | Wallet | List own addresses (`Authorization: Bearer <token>`) |
 | DELETE | `/lnurl/address/:username` | Wallet | Revoke own address (`Authorization: Bearer <token>`) |
 
-### LNURL-withdraw / LUD-03 (requires `DB_PATH`)
-
-| Method | Path | Caller | Purpose |
-|--------|------|--------|---------|
-| POST | `/lnurl/session/:id/withdraw` | Funding wallet | Create a withdraw link (auth: Bearer token) |
-| GET | `/lnurl/withdraw/:id` | Withdrawer | LUD-03 first request — returns withdrawRequest metadata |
-| GET | `/lnurl/withdraw/:id/callback` | Withdrawer | Relay bolt11 to funding wallet via SSE |
-| POST | `/lnurl/session/:id/withdraw/:wid` | Funding wallet | Report payout result (auth: Bearer token) |
-
 ## Usage
 
 ### As a library
@@ -113,7 +104,6 @@ The admin port (3001) is **not** published in the example above. See [Admin back
 |-------|------|-------------|
 | `session_created` | `{ sessionId, lnurl, token }` | Session is active, LNURL is ready to share |
 | `invoice_request` | `{ amountMsat, comment? }` | Payer requested an invoice for this amount |
-| `withdraw_request` | `{ withdrawId, bolt11, minWithdrawable, maxWithdrawable, description? }` | Withdrawer submitted a bolt11 for the funding wallet to pay |
 | `error` | `{ message }` | Something went wrong |
 
 ## Persistence (opt-in)
@@ -163,25 +153,6 @@ Constraints enforced per domain:
 - **Blacklist** — per-domain and global username blacklist enforced at registration time.
 - **Registration rate limit** — per-IP limit controlled by `REGISTRATION_RATE_LIMIT` (requests/min per IP).
 
-## LNURL-withdraw (LUD-03)
-
-A funding wallet (online via SSE) creates a withdraw link:
-
-```http
-POST /lnurl/session/:id/withdraw
-Authorization: Bearer <token>
-
-{
-  "minWithdrawable": 1000,
-  "maxWithdrawable": 500000,
-  "description": "Optional description",
-  "usesRemaining": 1,
-  "expiresAt": 1234567890000
-}
-```
-
-The response includes a `lnurl` that can be shown to the withdrawer. When the withdrawer scans it and submits a bolt11, the service relays a `withdraw_request` SSE event to the funding wallet. The funding wallet then pays the invoice and reports success or failure via `POST /lnurl/session/:id/withdraw/:wid`.
-
 ## Admin backend — port 3001
 
 When `DB_PATH` is set an admin backend starts on `ADMIN_PORT` (default `3001`), bound to `ADMIN_BIND` (default `127.0.0.1` for the CLI).
@@ -208,7 +179,6 @@ The Docker image binds to `0.0.0.0` so isolation happens at the container/proxy 
 | GET | `/admin/api/blacklist` | List blacklist entries |
 | POST | `/admin/api/blacklist` | Add blacklist entry |
 | DELETE | `/admin/api/blacklist/:id` | Remove blacklist entry |
-| GET | `/admin/api/withdrawals` | List withdrawals (filter: `status`) |
 | GET | `/admin/api/sessions` | List active session IDs |
 
 The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).

@@ -63,19 +63,6 @@ const MIGRATIONS: Migration[] = [
         created_at   INTEGER NOT NULL,
         last_used_at INTEGER
       );
-
-      CREATE TABLE withdrawals (
-        id               TEXT PRIMARY KEY,
-        session_id       TEXT NOT NULL,
-        min_withdrawable INTEGER NOT NULL,
-        max_withdrawable INTEGER NOT NULL,
-        description      TEXT,
-        status           TEXT NOT NULL,
-        uses_remaining   INTEGER NOT NULL DEFAULT 1,
-        created_at       INTEGER NOT NULL,
-        expires_at       INTEGER,
-        used_at          INTEGER
-      );
     `,
   },
 ];

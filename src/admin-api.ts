@@ -4,7 +4,6 @@ import type { AddressService } from "./address-service.js";
 import { ProvisioningError } from "./address-service.js";
 import type { SessionManager } from "./session-manager.js";
 import type { AddressStatus } from "./db/types.js";
-import type { WithdrawalStatus } from "./db/repositories/withdrawals.js";
 
 export interface AdminDeps {
   repos: Repositories;
@@ -103,9 +102,6 @@ export function createAdminApi(deps: AdminDeps): Router {
     res.status(201).json(repos.blacklist.add({ domainId: domainId ?? null, username, reason }));
   });
   r.delete("/blacklist/:id", (req, res) => { repos.blacklist.remove(Number(req.params.id)); res.json({ ok: true }); });
-
-  // ── Withdrawals (read-only) ───────────────────────────────
-  r.get("/withdrawals", (req, res) => res.json(repos.withdrawals.list({ status: req.query.status as WithdrawalStatus | undefined })));
 
   // ── Live sessions ─────────────────────────────────────────
   r.get("/sessions", (_req, res) => res.json(sessions.activeSessionIds().map((id) => ({ sessionId: id }))));

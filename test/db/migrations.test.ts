@@ -11,7 +11,7 @@ function tableNames(db = openDb(":memory:")) {
 describe("runMigrations", () => {
   it("creates every table", () => {
     const { db, names } = tableNames();
-    for (const t of ["schema_migrations", "domains", "addresses", "blacklist", "api_keys", "withdrawals"]) {
+    for (const t of ["schema_migrations", "domains", "addresses", "blacklist", "api_keys"]) {
       expect(names).toContain(t);
     }
     db.close();

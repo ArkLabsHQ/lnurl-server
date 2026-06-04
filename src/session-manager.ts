@@ -34,7 +34,6 @@ export class SessionManager {
       createdAt: Date.now(),
       sseRes,
       pendingInvoice: null,
-      pendingWithdraw: null,
     };
 
     this.sessions.set(id, session);
@@ -145,7 +144,7 @@ export class SessionManager {
     return true;
   }
 
-  /** Destroy a session and reject any pending invoice or withdraw request */
+  /** Destroy a session and reject any pending invoice request */
   destroy(id: string): void {
     const session = this.sessions.get(id);
     if (!session) return;
@@ -154,66 +153,11 @@ export class SessionManager {
       session.pendingInvoice.reject(new Error("Session closed"));
     }
 
-    if (session.pendingWithdraw) {
-      session.pendingWithdraw.reject(new Error("Session closed"));
-    }
-
     this.sessions.delete(id);
   }
 
   /** All currently-connected session ids. */
   activeSessionIds(): string[] {
     return Array.from(this.sessions.keys());
-  }
-
-  /** Relay a withdrawer's bolt11 to the funding wallet via SSE and wait for approval or rejection. */
-  requestWithdraw(
-    id: string,
-    payload: { withdrawId: string; bolt11: string; minWithdrawable: number; maxWithdrawable: number; description?: string },
-    timeoutMs: number,
-  ): Promise<void> {
-    const session = this.sessions.get(id);
-    if (!session) return Promise.reject(new Error("Session not found"));
-    if (session.pendingWithdraw) return Promise.reject(new Error("Another withdraw is already pending"));
-
-    return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        session.pendingWithdraw = null;
-        reject(new Error("Withdraw request timed out"));
-      }, timeoutMs);
-
-      session.pendingWithdraw = {
-        withdrawId: payload.withdrawId,
-        resolve: () => { clearTimeout(timer); session.pendingWithdraw = null; resolve(); },
-        reject: (err: Error) => { clearTimeout(timer); session.pendingWithdraw = null; reject(err); },
-      };
-
-      this.sendEvent(id, {
-        type: "withdraw_request",
-        data: {
-          withdrawId: payload.withdrawId,
-          bolt11: payload.bolt11,
-          minWithdrawable: payload.minWithdrawable,
-          maxWithdrawable: payload.maxWithdrawable,
-          description: payload.description,
-        },
-      });
-    });
-  }
-
-  /** Funding wallet approved the withdraw — resolves the pending withdrawer request. */
-  resolveWithdraw(id: string, withdrawId: string): boolean {
-    const session = this.sessions.get(id);
-    if (!session?.pendingWithdraw || session.pendingWithdraw.withdrawId !== withdrawId) return false;
-    session.pendingWithdraw.resolve();
-    return true;
-  }
-
-  /** Funding wallet rejected the withdraw — fails the pending withdrawer request with the given reason. */
-  rejectWithdraw(id: string, withdrawId: string, reason: string): boolean {
-    const session = this.sessions.get(id);
-    if (!session?.pendingWithdraw || session.pendingWithdraw.withdrawId !== withdrawId) return false;
-    session.pendingWithdraw.reject(new Error(reason));
-    return true;
   }
 }
