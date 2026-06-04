@@ -9,7 +9,7 @@ export const openApiSpec = {
       "creates reverse swaps on-the-fly and returns bolt11 invoices. " +
       "When persistence is enabled, wallets can also register " +
       "Lightning Addresses (LUD-16) served from the `.well-known` routes.",
-    version: "0.2.5",
+    version: "0.2.6",
     license: { name: "MIT" },
   },
   servers: [{ url: "/" }],

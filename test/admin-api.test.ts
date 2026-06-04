@@ -94,6 +94,20 @@ describe("admin API", () => {
     expect(missing.status).toBe(404);
   });
 
+  it("serves the admin OpenAPI spec and Redoc docs page", async () => {
+    const spec = await request(app).get("/admin/api/openapi.json");
+    expect(spec.status).toBe(200);
+    expect(spec.body.info.title).toMatch(/admin/i);
+    expect(Object.keys(spec.body.paths)).toEqual(
+      expect.arrayContaining(["/domains", "/addresses", "/api-keys", "/blacklist", "/sessions", "/settings"]),
+    );
+
+    const docs = await request(app).get("/admin/api/docs");
+    expect(docs.status).toBe(200);
+    expect(docs.headers["content-type"]).toMatch(/html/);
+    expect(docs.text).toMatch(/redoc/i);
+  });
+
   it("gets, overrides, validates, and resets settings", async () => {
     const got = await request(app).get("/admin/api/settings");
     expect(got.body.editable.minSendable).toMatchObject({ value: 1000, overridden: false });

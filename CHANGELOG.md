@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.6 - 2026-06-04
+
+### Added
+- **Admin API documentation** — a dedicated OpenAPI/Swagger spec for the admin API, served on the admin port at `GET /admin/api/docs` (Redoc page) and `GET /admin/api/openapi.json`. Documents every admin endpoint (domains, addresses, API keys, blacklist, sessions, settings) with request/response shapes and error codes. The admin SPA nav gained an "API Docs ↗" link. The spec's version is sourced from the public spec so the two can't drift. (Kept separate from the public spec by design — the admin API runs on the loopback-bound admin port behind your auth proxy.)
+
 ## 0.2.5 - 2026-06-04
 
 ### Fixed

@@ -57,6 +57,10 @@ export function App() {
             {t}
           </button>
         ))}
+        <a href="/admin/api/docs" target="_blank" rel="noreferrer"
+          style={{ marginLeft: "auto", padding: "8px 4px", color: "#06c", textDecoration: "none" }}>
+          API Docs ↗
+        </a>
       </nav>
       {tab === "Dashboard" && <Dashboard />}
       {tab === "Sessions" && <Sessions />}
