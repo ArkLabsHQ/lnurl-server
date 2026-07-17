@@ -1,3 +1,12 @@
+/** Server-orchestrated offline receive (Boltz reverse swap + covclaimd non-interactive claim).
+ *  Enabled only when all three of BOLTZ_URL, COVCLAIMD_URL, ARK_NETWORK are set. */
+export interface OfflineReceiveConfig {
+  enabled: boolean;
+  boltzUrl?: string;
+  covclaimdUrl?: string;
+  arkNetwork?: string;
+}
+
 export interface AppConfig {
   port: number;
   baseUrl: string;
@@ -13,6 +22,7 @@ export interface AppConfig {
   bootstrapDomain?: string;
   registrationRateLimitPerMin: number;
   trustProxy: number | boolean;
+  offlineReceive: OfflineReceiveConfig;
 }
 
 type Env = Record<string, string | undefined>;
@@ -53,5 +63,18 @@ export function loadConfig(env: Env = process.env): AppConfig {
     bootstrapDomain: env.BOOTSTRAP_DOMAIN || undefined,
     registrationRateLimitPerMin: Number(env.REGISTRATION_RATE_LIMIT) || 10,
     trustProxy: /^\d+$/.test(env.TRUST_PROXY ?? "") ? Number(env.TRUST_PROXY) : env.TRUST_PROXY === "false" ? false : 1,
+    offlineReceive: buildOfflineReceive(env),
+  };
+}
+
+function buildOfflineReceive(env: Env): OfflineReceiveConfig {
+  const boltzUrl = env.BOLTZ_URL || undefined;
+  const covclaimdUrl = env.COVCLAIMD_URL || undefined;
+  const arkNetwork = env.ARK_NETWORK || undefined;
+  return {
+    enabled: Boolean(boltzUrl && covclaimdUrl && arkNetwork),
+    ...(boltzUrl ? { boltzUrl } : {}),
+    ...(covclaimdUrl ? { covclaimdUrl } : {}),
+    ...(arkNetwork ? { arkNetwork } : {}),
   };
 }

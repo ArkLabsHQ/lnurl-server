@@ -35,4 +35,25 @@ describe("loadConfig", () => {
     expect(loadConfig({ ...base }).verifyTtlMs).toBe(86_400_000);
     expect(loadConfig({ ...base, VERIFY_TTL_MS: "1000" }).verifyTtlMs).toBe(1000);
   });
+
+  it("reads offline-receive config and reports enabled only when all three are set", () => {
+    const off = loadConfig({ ...base });
+    expect(off.offlineReceive.enabled).toBe(false);
+
+    const on = loadConfig({
+      ...base,
+      BOLTZ_URL: "https://boltz.example",
+      COVCLAIMD_URL: "https://covclaimd.example:7071",
+      ARK_NETWORK: "mutinynet",
+    });
+    expect(on.offlineReceive).toEqual({
+      enabled: true,
+      boltzUrl: "https://boltz.example",
+      covclaimdUrl: "https://covclaimd.example:7071",
+      arkNetwork: "mutinynet",
+    });
+
+    // partial config → disabled (missing covclaimd + network)
+    expect(loadConfig({ ...base, BOLTZ_URL: "https://boltz.example" }).offlineReceive.enabled).toBe(false);
+  });
 });
