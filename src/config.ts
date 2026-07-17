@@ -4,6 +4,7 @@ export interface AppConfig {
   minSendable: number;
   maxSendable: number;
   invoiceTimeoutMs: number;
+  verifyTtlMs: number;
   dbPath?: string;
   adminPort: number;
   adminBind: string;
@@ -43,6 +44,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
     minSendable: Number(env.MIN_SENDABLE) || 1_000,
     maxSendable: Number(env.MAX_SENDABLE) || 100_000_000_000,
     invoiceTimeoutMs: Number(env.INVOICE_TIMEOUT_MS) || 30_000,
+    verifyTtlMs: Number(env.VERIFY_TTL_MS) || 86_400_000,
     dbPath,
     adminPort: Number(env.ADMIN_PORT) || 3001,
     adminBind: env.ADMIN_BIND || "127.0.0.1",

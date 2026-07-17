@@ -31,6 +31,7 @@ async function main(): Promise<void> {
     const { RateLimiter } = await import("./rate-limit.js");
     const { SettingsService } = await import("./settings.js");
     const { hashSecret } = await import("./crypto.js");
+    const { DbSettlementStore } = await import("./settlement-store.js");
     const repos = createRepositories(db);
     if (!config.tokenEncryptionKey) {
       console.warn("WARNING: ALLOW_INSECURE_TOKEN_STORAGE — using a static, source-readable encryption key. Do NOT use in production.");
@@ -50,6 +51,7 @@ async function main(): Promise<void> {
       registrationLimiter: new RateLimiter(() => settings.registrationRateLimitPerMin(), 60_000),
       sessions,
       settings,
+      settlements: new DbSettlementStore(db, config.verifyTtlMs),
     };
     console.log(`persistence: enabled at ${config.dbPath} (${deps.repos.domains.list().length} domain(s))`);
 
@@ -68,6 +70,7 @@ async function main(): Promise<void> {
       minSendable: config.minSendable,
       maxSendable: config.maxSendable,
       invoiceTimeoutMs: config.invoiceTimeoutMs,
+      verifyTtlMs: config.verifyTtlMs,
       trustProxy: config.trustProxy,
     },
     deps,
