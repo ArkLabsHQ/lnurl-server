@@ -34,6 +34,8 @@ Wallet                    Service                     Payer
 | GET | `/lnurl/:id` | Payer | LNURL-pay first call (LUD-06) — returns pay metadata |
 | GET | `/lnurl/:id/callback?amount=<msat>` | Payer | Requests invoice; notifies wallet via SSE |
 | POST | `/lnurl/session/:id/invoice` | Wallet | Wallet posts `{ pr: "<bolt11>" }` to resolve the pending payer request |
+| GET | `/lnurl/verify/:paymentHash` | Payer | LUD-21 — poll settlement; returns `{ settled, preimage, pr }` |
+| POST | `/lnurl/session/:id/settled` | Wallet | Wallet reports `{ preimage }` once its invoice settled (feeds `verify`) |
 
 ### LN Address / LUD-16 (requires `DB_PATH`)
 
@@ -96,7 +98,9 @@ The admin port (3001) is **not** published in the example above. See [Admin back
 
 3. **Create swap and reply** — Use `@arkade-os/boltz-swap` to create a reverse swap for the requested amount, then `POST /lnurl/session/:id/invoice` with `{ pr: "<bolt11>" }`.
 
-4. **Close session** — When done, close the SSE connection. The LNURL is immediately deactivated.
+4. **Report settlement (LUD-21, optional)** — After your invoice settles, `POST /lnurl/session/:id/settled` with `{ preimage }` (Bearer token). The server verifies `sha256(preimage)` matches the invoice's payment hash and flips the `verify` URL to `settled: true`, letting payers confirm the payment. Report while the session is still connected (or reconnect the reusable session first).
+
+5. **Close session** — When done, close the SSE connection. The LNURL is immediately deactivated.
 
 ## SSE Events
 
@@ -197,6 +201,7 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `MIN_SENDABLE` | `1000` | Minimum sendable amount in millisats |
 | `MAX_SENDABLE` | `100000000000` | Maximum sendable amount in millisats |
 | `INVOICE_TIMEOUT_MS` | `30000` | How long to wait (ms) for the wallet to provide a bolt11 |
+| `VERIFY_TTL_MS` | `86400000` | How long (ms) LUD-21 settlement records are retained for `verify` polling |
 | `DB_PATH` | — | Path to SQLite database file. Omit for in-memory-only mode. |
 | `TOKEN_ENCRYPTION_KEY` | — | 32-byte AES key (hex or base64). Required when `DB_PATH` is set. |
 | `ALLOW_INSECURE_TOKEN_STORAGE` | — | Set to `1` to skip token encryption in dev (plaintext storage). |
