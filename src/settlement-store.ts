@@ -1,3 +1,5 @@
+import type { Db } from "./db/connection.js";
+
 /** A record of one invoice handed to a payer, tracking LUD-21 settlement state. */
 export interface SettlementRecord {
   /** bolt11 payment hash (hex) — the verify URL key. */
@@ -64,5 +66,57 @@ export class MemorySettlementStore implements SettlementStore {
   private sweep(): void {
     const t = this.now();
     for (const [k, r] of this.map) if (t - r.createdAt >= this.ttlMs) this.map.delete(k);
+  }
+}
+
+interface SettlementRow {
+  payment_hash: string;
+  pr: string;
+  session_id: string;
+  settled: number;
+  preimage: string | null;
+  created_at: number;
+  settled_at: number | null;
+}
+
+/** SQLite-backed store (migration 003). Survives restart and outlives the SSE
+ *  session — a payer may poll `verify` after the wallet disconnects. Expiry is
+ *  lazy on read. */
+export class DbSettlementStore implements SettlementStore {
+  constructor(private db: Db, private ttlMs: number, private now: () => number = () => Date.now()) {}
+
+  create(rec: { paymentHash: string; pr: string; sessionId: string }): void {
+    this.db
+      .prepare(
+        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, created_at, settled_at) VALUES (?, ?, ?, 0, NULL, ?, NULL)",
+      )
+      .run(rec.paymentHash, rec.pr, rec.sessionId, this.now());
+  }
+
+  markSettled(paymentHash: string, preimage: string): boolean {
+    const info = this.db
+      .prepare("UPDATE settlements SET settled = 1, preimage = ?, settled_at = ? WHERE payment_hash = ?")
+      .run(preimage, this.now(), paymentHash);
+    return info.changes > 0;
+  }
+
+  get(paymentHash: string): SettlementRecord | undefined {
+    const row = this.db.prepare("SELECT * FROM settlements WHERE payment_hash = ?").get(paymentHash) as unknown as
+      | SettlementRow
+      | undefined;
+    if (!row) return undefined;
+    if (this.now() - row.created_at >= this.ttlMs) {
+      this.db.prepare("DELETE FROM settlements WHERE payment_hash = ?").run(paymentHash);
+      return undefined;
+    }
+    return {
+      paymentHash: row.payment_hash,
+      pr: row.pr,
+      sessionId: row.session_id,
+      settled: !!row.settled,
+      preimage: row.preimage ?? null,
+      createdAt: row.created_at,
+      settledAt: row.settled_at ?? null,
+    };
   }
 }
