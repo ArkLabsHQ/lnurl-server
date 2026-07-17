@@ -12,6 +12,8 @@ export interface LnurlServiceConfig {
   maxSendable: number;
   /** Timeout in ms for waiting for wallet to provide bolt11 (default: 30000) */
   invoiceTimeoutMs?: number;
+  /** How long (ms) a LUD-21 settlement record is retained for `verify` polling (default: 24h) */
+  verifyTtlMs?: number;
   /** Trust X-Forwarded-* headers from a reverse proxy (default: 1 hop). Pass a number for
    *  the hop count, true to trust all, or false to disable. */
   trustProxy?: number | boolean;
@@ -99,6 +101,8 @@ export interface LnurlPayMetadata {
 export interface LnurlPayCallbackResponse {
   pr: string;
   routes: never[];
+  /** LUD-21: URL the payer can poll to confirm settlement. Omitted if the bolt11 can't be decoded. */
+  verify?: string;
 }
 
 /** LNURL error response */

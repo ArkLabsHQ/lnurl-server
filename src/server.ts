@@ -7,7 +7,9 @@ import { domainFromHost } from "./http-origin.js";
 import { encodeLnurl } from "./lnurl.js";
 import type { AddressService } from "./address-service.js";
 import { ProvisioningError } from "./address-service.js";
-import type { RateLimiter } from "./rate-limit.js";
+import { RateLimiter } from "./rate-limit.js";
+import { paymentHashFromBolt11 } from "./bolt11.js";
+import { MemorySettlementStore, type SettlementStore } from "./settlement-store.js";
 import { staticSettings, type RuntimeSettings } from "./settings.js";
 import type {
   LnurlServiceConfig,
@@ -31,6 +33,7 @@ export interface ServerDeps {
   registrationLimiter?: RateLimiter;
   sessions?: SessionManager;
   settings?: RuntimeSettings;
+  settlements?: SettlementStore;
 }
 
 function buildMetadata(identifier?: string): string {
@@ -49,9 +52,11 @@ async function requestInvoiceAndRespond(args: {
   max: number;
   timeoutMs: number;
   offlineReason: string;
+  store: SettlementStore;
+  baseUrl: string;
   res: express.Response;
 }): Promise<void> {
-  const { sessions, sessionId, amountMsat, comment, min, max, timeoutMs, offlineReason, res } = args;
+  const { sessions, sessionId, amountMsat, comment, min, max, timeoutMs, offlineReason, store, baseUrl, res } = args;
   if (amountMsat < min || amountMsat > max) {
     res.json({ status: "ERROR", reason: `Amount must be between ${min} and ${max} millisats` } satisfies LnurlErrorResponse);
     return;
@@ -62,7 +67,15 @@ async function requestInvoiceAndRespond(args: {
   }
   try {
     const pr = await sessions.requestInvoice(sessionId, amountMsat, comment, timeoutMs);
-    res.json({ pr, routes: [] } satisfies LnurlPayCallbackResponse);
+    // LUD-21: record the invoice and hand the payer a verify URL. If the bolt11 can't be
+    // decoded we can't key a record, so we omit verify but still return the pr.
+    const paymentHash = paymentHashFromBolt11(pr);
+    if (paymentHash) {
+      store.create({ paymentHash, pr, sessionId });
+      res.json({ pr, routes: [], verify: `${baseUrl}/lnurl/verify/${paymentHash}` } satisfies LnurlPayCallbackResponse);
+    } else {
+      res.json({ pr, routes: [] } satisfies LnurlPayCallbackResponse);
+    }
   } catch (err) {
     res.json({ status: "ERROR", reason: err instanceof Error ? err.message : "Failed to get invoice" } satisfies LnurlErrorResponse);
   }
@@ -71,6 +84,10 @@ async function requestInvoiceAndRespond(args: {
 export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): express.Express {
   const app = express();
   const sessions = deps?.sessions ?? new SessionManager();
+  // LUD-21 settlement records. DB-backed when provided, else in-memory with TTL.
+  const store: SettlementStore = deps?.settlements ?? new MemorySettlementStore(config.verifyTtlMs ?? 86_400_000);
+  // Light per-IP guard for the public verify-polling endpoint.
+  const verifyLimiter = new RateLimiter(120, 60_000);
   // Soft settings are read per-request so DB-backed overrides take effect without a restart.
   // No DB (library/in-memory mode) → fall back to the static config values.
   const settings: RuntimeSettings = deps?.settings ?? staticSettings({
@@ -188,6 +205,22 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     res.json(list);
   });
 
+  // ─── GET /lnurl/verify/:paymentHash ──────────────────────────────────
+  // LUD-21: the payer polls this to learn whether their invoice settled.
+  // Public + unauthed (payment_hash is not secret). Registered before /lnurl/:id.
+  app.get("/lnurl/verify/:paymentHash", (req, res) => {
+    if (!verifyLimiter.allow(req.ip ?? "unknown")) {
+      res.status(429).json({ status: "ERROR", reason: "Too many requests" } satisfies LnurlErrorResponse);
+      return;
+    }
+    const rec = store.get(req.params.paymentHash.toLowerCase());
+    if (!rec) {
+      res.json({ status: "ERROR", reason: "Not found" } satisfies LnurlErrorResponse);
+      return;
+    }
+    res.json({ status: "OK", settled: rec.settled, preimage: rec.settled ? rec.preimage : null, pr: rec.pr });
+  });
+
   // ─── GET /lnurl/:id ──────────────────────────────────────────────────
   // LNURL-pay first call (LUD-06). Returns pay metadata.
   app.get("/lnurl/:id", (req, res) => {
@@ -228,7 +261,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     await requestInvoiceAndRespond({
       sessions, sessionId: id, amountMsat: Number(amountStr), comment,
       min: settings.minSendable(), max: settings.maxSendable(), timeoutMs: settings.invoiceTimeoutMs(),
-      offlineReason: "This LNURL is no longer active", res,
+      offlineReason: "This LNURL is no longer active", store, baseUrl: settings.baseUrl(), res,
     });
   });
 
@@ -324,7 +357,8 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       await requestInvoiceAndRespond({
         sessions, sessionId: address.sessionId, amountMsat: Number(amountStr), comment,
         min: domain.minSendable ?? settings.minSendable(), max: domain.maxSendable ?? settings.maxSendable(),
-        timeoutMs: settings.invoiceTimeoutMs(), offlineReason: `${username}@${domain.domain} is currently offline`, res,
+        timeoutMs: settings.invoiceTimeoutMs(), offlineReason: `${username}@${domain.domain} is currently offline`,
+        store, baseUrl: settings.baseUrl(), res,
       });
     });
 
