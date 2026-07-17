@@ -124,4 +124,67 @@ describe("LUD-21 verify — emission", () => {
   });
 });
 
+type Session = Awaited<ReturnType<typeof openSession>>;
+
+/** Drive the full callback → invoice flow so the server records a settlement for `pr`. */
+async function requestInvoice(baseUrl: string, session: Session, pr: string) {
+  const evt = nextSseEvent(session.response);
+  const payer = jsonRequest(`${baseUrl}/lnurl/${session.sessionId}/callback?amount=50000`);
+  await evt;
+  await jsonRequest(`${baseUrl}/lnurl/session/${session.sessionId}/invoice`, "POST", { pr }, session.token);
+  return payer;
+}
+
+describe("LUD-21 verify — settled report", () => {
+  let ctx: Awaited<ReturnType<typeof startServer>>;
+  beforeEach(async () => { ctx = await startServer(); });
+  afterEach(async () => { await ctx.close(); });
+
+  const preimage = "22".repeat(32);
+  const hash = createHash("sha256").update(Buffer.from(preimage, "hex")).digest("hex");
+  const invoice = () => buildInvoice(hash);
+
+  it("flips settled with the correct preimage", async () => {
+    const session = await openSession(ctx.baseUrl);
+    try {
+      await requestInvoice(ctx.baseUrl, session, invoice());
+      const ok = await jsonRequest(`${ctx.baseUrl}/lnurl/session/${session.sessionId}/settled`, "POST", { preimage }, session.token);
+      expect(ok.status).toBe(200);
+      expect(ok.body.ok).toBe(true);
+      const v = await jsonRequest(`${ctx.baseUrl}/lnurl/verify/${hash}`);
+      expect(v.body).toMatchObject({ status: "OK", settled: true, preimage });
+    } finally { session.abort(); }
+  });
+
+  it("rejects a wrong preimage (404) and stays unsettled", async () => {
+    const session = await openSession(ctx.baseUrl);
+    try {
+      await requestInvoice(ctx.baseUrl, session, invoice());
+      const res = await jsonRequest(`${ctx.baseUrl}/lnurl/session/${session.sessionId}/settled`, "POST", { preimage: "33".repeat(32) }, session.token);
+      expect(res.status).toBe(404);
+      const v = await jsonRequest(`${ctx.baseUrl}/lnurl/verify/${hash}`);
+      expect(v.body.settled).toBe(false);
+    } finally { session.abort(); }
+  });
+
+  it("requires a valid token (401)", async () => {
+    const session = await openSession(ctx.baseUrl);
+    try {
+      await requestInvoice(ctx.baseUrl, session, invoice());
+      const res = await jsonRequest(`${ctx.baseUrl}/lnurl/session/${session.sessionId}/settled`, "POST", { preimage }, "deadbeef");
+      expect(res.status).toBe(401);
+    } finally { session.abort(); }
+  });
+
+  it("won't settle another session's invoice (404)", async () => {
+    const a = await openSession(ctx.baseUrl);
+    const b = await openSession(ctx.baseUrl);
+    try {
+      await requestInvoice(ctx.baseUrl, a, invoice()); // record owned by session a
+      const res = await jsonRequest(`${ctx.baseUrl}/lnurl/session/${b.sessionId}/settled`, "POST", { preimage }, b.token);
+      expect(res.status).toBe(404);
+    } finally { a.abort(); b.abort(); }
+  });
+});
+
 export { buildInvoice, startServer, openSession, nextSseEvent, jsonRequest };

@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import { createHash } from "node:crypto";
 import { SessionManager } from "./session-manager.js";
 import { openApiSpec } from "./openapi.js";
 import type { Repositories } from "./db/repositories/index.js";
@@ -303,6 +304,33 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       return;
     }
 
+    res.json({ ok: true });
+  });
+
+  // ─── POST /lnurl/session/:id/settled ─────────────────────────────────
+  // LUD-21: the wallet reports the preimage once its invoice settles. Authed by the
+  // session token; the record is keyed by sha256(preimage), which must match a payment
+  // hash this session issued (so a wallet can only settle its own invoices).
+  app.post("/lnurl/session/:id/settled", (req, res) => {
+    const { id } = req.params;
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : "";
+    if (!token || !sessions.verifyToken(id, token)) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    const preimage = (req.body as { preimage?: string } | undefined)?.preimage;
+    if (!preimage || !/^[0-9a-f]{64}$/i.test(preimage)) {
+      res.status(400).json({ error: "Missing or invalid preimage" });
+      return;
+    }
+    const hash = createHash("sha256").update(Buffer.from(preimage, "hex")).digest("hex");
+    const rec = store.get(hash);
+    if (!rec || rec.sessionId !== id) {
+      res.status(404).json({ error: "No settlement record for this session" });
+      return;
+    }
+    store.markSettled(hash, preimage);
     res.json({ ok: true });
   });
 
