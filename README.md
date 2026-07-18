@@ -46,6 +46,7 @@ Wallet                    Service                     Payer
 | POST | `/lnurl/address` | Wallet | Register/claim a Lightning address |
 | GET | `/lnurl/address` | Wallet | List own addresses (`Authorization: Bearer <token>`) |
 | DELETE | `/lnurl/address/:username` | Wallet | Revoke own address (`Authorization: Bearer <token>`) |
+| POST | `/lnurl/address/:username/arkade` | Wallet | Register Arkade receive identity for offline receive (`Authorization: Bearer <token>`) |
 
 ## Usage
 
@@ -157,6 +158,23 @@ Constraints enforced per domain:
 - **Blacklist** — per-domain and global username blacklist enforced at registration time.
 - **Registration rate limit** — per-IP limit controlled by `REGISTRATION_RATE_LIMIT` (requests/min per IP).
 
+## Offline receive (opt-in)
+
+Normally an LN address only resolves while the wallet's SSE session is connected. With offline receive, a wallet can receive while disconnected: the server creates a **non-interactive Boltz reverse swap** paying the user's Arkade address, and a **covclaimd** daemon claims the resulting VHTLC on the user's behalf — constrained by covenant to pay only that address, so the daemon cannot redirect funds.
+
+Enable it by setting `BOLTZ_URL`, `COVCLAIMD_URL`, and `ARK_NETWORK`. A wallet then registers its receive identity on an owned address:
+
+```bash
+curl -X POST https://pay.example.com/lnurl/address/alice/arkade \
+  -H "Authorization: Bearer <session-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"arkadeAddress":"tark1...","claimPublicKey":"02..."}'
+```
+
+After that, if a payer pays `alice@pay.example.com` while the wallet is offline, the server returns a swap invoice and reports settlement through the LUD-21 `verify` URL (polled from Boltz). The server never holds the user's keys or funds — it generates the swap preimage and hands it to covclaimd encrypted.
+
+> Depends on `@arkade-os/boltz-swap`'s non-interactive helper ([ts-sdk#625](https://github.com/arkade-os/ts-sdk/pull/625), pending publish) and covclaimd, which currently runs on mutinynet. The on-chain path is not exercised by the test suite.
+
 ## Admin backend — port 3001
 
 When `DB_PATH` is set an admin backend starts on `ADMIN_PORT` (default `3001`), bound to `ADMIN_BIND` (default `127.0.0.1` for the CLI).
@@ -202,6 +220,9 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `MAX_SENDABLE` | `100000000000` | Maximum sendable amount in millisats |
 | `INVOICE_TIMEOUT_MS` | `30000` | How long to wait (ms) for the wallet to provide a bolt11 |
 | `VERIFY_TTL_MS` | `86400000` | How long (ms) LUD-21 settlement records are retained for `verify` polling |
+| `BOLTZ_URL` | — | Boltz API base URL. Set together with `COVCLAIMD_URL` + `ARK_NETWORK` to enable offline receive. |
+| `COVCLAIMD_URL` | — | covclaimd daemon base URL (non-interactive VHTLC claims). |
+| `ARK_NETWORK` | — | Arkade network for offline-receive swaps (e.g. `mutinynet`). |
 | `DB_PATH` | — | Path to SQLite database file. Omit for in-memory-only mode. |
 | `TOKEN_ENCRYPTION_KEY` | — | 32-byte AES key (hex or base64). Required when `DB_PATH` is set. |
 | `ALLOW_INSECURE_TOKEN_STORAGE` | — | Set to `1` to skip token encryption in dev (plaintext storage). |

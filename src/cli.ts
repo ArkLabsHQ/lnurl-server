@@ -45,14 +45,30 @@ async function main(): Promise<void> {
       baseUrl: config.baseUrl,
       registrationRateLimitPerMin: config.registrationRateLimitPerMin,
     });
+    const settlements = new DbSettlementStore(db, config.verifyTtlMs);
+    let reverseSwapCreator: import("./reverse-swap.js").ReverseSwapCreator | undefined;
+    if (config.offlineReceive.enabled) {
+      const { createBoltzReverseSwapCreator } = await import("./reverse-swap.js");
+      reverseSwapCreator = createBoltzReverseSwapCreator({
+        boltzUrl: config.offlineReceive.boltzUrl!,
+        covclaimdUrl: config.offlineReceive.covclaimdUrl!,
+        arkNetwork: config.offlineReceive.arkNetwork!,
+      });
+    }
     deps = {
       repos,
       addressService,
       registrationLimiter: new RateLimiter(() => settings.registrationRateLimitPerMin(), 60_000),
       sessions,
       settings,
-      settlements: new DbSettlementStore(db, config.verifyTtlMs),
+      settlements,
+      reverseSwapCreator,
     };
+    if (reverseSwapCreator) {
+      const { startOfflineSettlementPoller } = await import("./offline-poller.js");
+      startOfflineSettlementPoller(settlements, reverseSwapCreator, 15_000);
+      console.log(`offline receive: enabled (network=${config.offlineReceive.arkNetwork})`);
+    }
     console.log(`persistence: enabled at ${config.dbPath} (${deps.repos.domains.list().length} domain(s))`);
 
     const { createAdminServer } = await import("./admin-server.js");
