@@ -1,6 +1,6 @@
 import express from "express";
 import cors from "cors";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { SessionManager } from "./session-manager.js";
 import { openApiSpec } from "./openapi.js";
 import type { Repositories } from "./db/repositories/index.js";
@@ -13,11 +13,13 @@ import { paymentHashFromBolt11 } from "./bolt11.js";
 import { MemorySettlementStore, type SettlementStore } from "./settlement-store.js";
 import type { OfflineSwapCreator } from "./intent-swap.js";
 import { ArkAddress } from "@arkade-os/sdk";
+import { advertisedOptions, resolvePaymentOption } from "./payment-options.js";
 import { staticSettings, type RuntimeSettings } from "./settings.js";
 import type {
   LnurlServiceConfig,
   LnurlPayMetadata,
   LnurlPayCallbackResponse,
+  LnurlPayDestinationResponse,
   LnurlErrorResponse,
   InvoiceResponse,
 } from "./types.js";
@@ -261,6 +263,18 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       res.json({ status: "ERROR", reason: "Not found" } satisfies LnurlErrorResponse);
       return;
     }
+    // LUD-XX: non-`pr` options report the destination + a method-specific reference
+    // (e.g. a txid, once observed) instead of a preimage/bolt11.
+    if (rec.paymentOption !== "lightning") {
+      res.json({
+        status: "OK",
+        settled: rec.settled,
+        paymentOption: rec.paymentOption,
+        ...(rec.paymentDestination ? { paymentDestination: rec.paymentDestination } : {}),
+        paymentReference: rec.paymentReference,
+      });
+      return;
+    }
     res.json({ status: "OK", settled: rec.settled, preimage: rec.settled ? rec.preimage : null, pr: rec.pr });
   });
 
@@ -394,6 +408,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         return;
       }
       const origin = `${req.protocol}://${domain.domain}`;
+      const options = advertisedOptions(address);
       const response: LnurlPayMetadata = {
         tag: "payRequest",
         callback: `${origin}/.well-known/lnurlp/${username}/callback`,
@@ -401,6 +416,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         maxSendable: domain.maxSendable ?? settings.maxSendable(),
         metadata: buildMetadata(`${username}@${domain.domain}`),
         commentAllowed: 140,
+        ...(options.length ? { paymentOptions: options } : {}),
       };
       res.json(response);
     });
@@ -427,6 +443,39 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       const amountMsat = Number(amountStr);
       const min = domain.minSendable ?? settings.minSendable();
       const max = domain.maxSendable ?? settings.maxSendable();
+
+      // LUD-XX paymentOptions: resolve the wallet's selected rail. "lightning" (or absent)
+      // falls through to the BOLT11 flow below; a destination rail (arkade) returns the
+      // registered address + a non-`pr` verify record.
+      const resolved = resolvePaymentOption(req.query.paymentOption as string | undefined, address);
+      if (resolved.kind === "error") {
+        res.json({ status: "ERROR", reason: resolved.reason } satisfies LnurlErrorResponse);
+        return;
+      }
+      if (resolved.kind === "destination") {
+        if (amountMsat < min || amountMsat > max) {
+          res.json({ status: "ERROR", reason: `Amount must be between ${min} and ${max} millisats` } satisfies LnurlErrorResponse);
+          return;
+        }
+        // The payer pays the destination directly, so the server isn't in the payment path:
+        // `verify` records the session, but `settled` only flips once an Arkade watcher
+        // observes the payment (follow-up). Keyed by an opaque verify id (not a payment hash).
+        const verifyId = randomBytes(16).toString("hex");
+        store.create({
+          paymentHash: verifyId,
+          pr: "",
+          sessionId: address.sessionId ?? `addr:${address.id}`,
+          paymentOption: resolved.paymentOption,
+          paymentDestination: resolved.paymentDestination,
+        });
+        res.json({
+          status: "OK",
+          paymentOption: resolved.paymentOption,
+          paymentDestination: resolved.paymentDestination,
+          verify: `${settings.baseUrl()}/lnurl/verify/${verifyId}`,
+        } satisfies LnurlPayDestinationResponse);
+        return;
+      }
 
       // Offline receive: the wallet's SSE session is gone, but this address opted in with an
       // Arkade identity, so the server quotes a corridor swap paying it (covclaimd claims it).
