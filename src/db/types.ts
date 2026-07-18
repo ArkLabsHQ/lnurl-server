@@ -41,6 +41,10 @@ export interface AddressRow {
   claimCodeHash: Buffer | null;
   status: AddressStatus;
   metadata: string | null;
+  /** Arkade address to receive offline swaps to; null if offline receive isn't configured. */
+  arkadeAddress: string | null;
+  /** Compressed claim public key (hex) for offline reverse swaps; null if unset. */
+  claimPublicKey: string | null;
   createdAt: number;
   updatedAt: number;
 }
