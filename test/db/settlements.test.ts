@@ -29,6 +29,19 @@ describe("DbSettlementStore", () => {
     db.close();
   });
 
+  it("holds an offline swap's preimage + swapId and lists pending across instances", () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    const a = new DbSettlementStore(db, 60_000);
+    a.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "off:1", preimage: "beef", swapId: "swap-1" });
+    const b = new DbSettlementStore(db, 60_000);
+    expect(b.listPendingSwaps()).toEqual([{ swapId: "swap-1", paymentHash: "aa", preimage: "beef" }]);
+    expect(b.get("aa")).toMatchObject({ settled: false, preimage: "beef", swapId: "swap-1" });
+    b.markSettled("aa", "beef");
+    expect(b.listPendingSwaps()).toEqual([]);
+    db.close();
+  });
+
   it("expires records past the ttl", () => {
     const db = openDb(":memory:");
     runMigrations(db);

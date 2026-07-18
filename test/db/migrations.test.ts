@@ -21,7 +21,7 @@ describe("runMigrations", () => {
     const db = openDb(":memory:");
     runMigrations(db);
     const row = db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number };
-    expect(row.v).toBe(3);
+    expect(row.v).toBe(4);
     db.close();
   });
 
@@ -30,7 +30,7 @@ describe("runMigrations", () => {
     runMigrations(db);
     expect(() => runMigrations(db)).not.toThrow();
     const row = db.prepare("SELECT COUNT(*) AS c FROM schema_migrations").get() as { c: number };
-    expect(row.c).toBe(3);
+    expect(row.c).toBe(4);
     db.close();
   });
 });

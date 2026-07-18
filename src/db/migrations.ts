@@ -90,6 +90,15 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_settlements_created ON settlements(created_at);
     `,
   },
+  {
+    version: 4,
+    // Offline-receive swaps: the server holds the preimage from swap creation and
+    // records the Boltz swap id so the settlement poller can flip `verify` when paid.
+    up: `
+      ALTER TABLE settlements ADD COLUMN swap_id TEXT;
+      CREATE INDEX idx_settlements_pending_swaps ON settlements(swap_id) WHERE swap_id IS NOT NULL AND settled = 0;
+    `,
+  },
 ];
 
 /** Apply all pending forward-only migrations inside a transaction each. */
