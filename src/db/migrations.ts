@@ -109,6 +109,18 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE addresses ADD COLUMN claim_public_key TEXT;
     `,
   },
+  {
+    version: 6,
+    // LUD-XX paymentOptions: non-`pr` records (e.g. a direct Arkade destination). For
+    // these the payment_hash column holds an opaque verify id and pr is "". payment_option
+    // is null for legacy lightning records. payment_reference is filled once the service
+    // observes settlement (via a follow-up Arkade watcher).
+    up: `
+      ALTER TABLE settlements ADD COLUMN payment_option TEXT;
+      ALTER TABLE settlements ADD COLUMN payment_destination TEXT;
+      ALTER TABLE settlements ADD COLUMN payment_reference TEXT;
+    `,
+  },
 ];
 
 /** Apply all pending forward-only migrations inside a transaction each. */

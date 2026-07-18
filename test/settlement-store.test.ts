@@ -39,4 +39,18 @@ describe("MemorySettlementStore", () => {
     t = 1000 + 5000;
     expect(s.listPendingSwaps()).toEqual([]);
   });
+
+  it("holds a non-pr (destination) record and defaults lightning records to `lightning`", () => {
+    const s = new MemorySettlementStore(60_000, () => 1000);
+    s.create({ paymentHash: "vid1", pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination: "ark1xyz" });
+    expect(s.get("vid1")).toMatchObject({
+      settled: false,
+      paymentOption: "arkade",
+      paymentDestination: "ark1xyz",
+      paymentReference: null,
+    });
+    // Records without an explicit option are lightning.
+    s.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "sess" });
+    expect(s.get("aa")).toMatchObject({ paymentOption: "lightning", paymentDestination: null });
+  });
 });

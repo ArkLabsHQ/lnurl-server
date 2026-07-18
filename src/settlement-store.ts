@@ -14,6 +14,12 @@ export interface SettlementRecord {
   preimage: string | null;
   /** RFQ id of a server-created offline-receive swap; null for relay invoices. */
   swapId: string | null;
+  /** LUD-XX payment rail. "lightning" (BOLT11) is the default; e.g. "arkade" for a direct destination. */
+  paymentOption: string;
+  /** Non-`pr` destination (e.g. an Arkade address) for a destination-based option; null for lightning. */
+  paymentDestination: string | null;
+  /** Method-specific settlement reference (e.g. a txid) once the service observes it; null until then. */
+  paymentReference: string | null;
   createdAt: number;
   settledAt: number | null;
 }
@@ -28,7 +34,7 @@ export interface PendingSwap {
 export interface SettlementStore {
   /** Record a new invoice. Idempotent: a repeated paymentHash is ignored (never resets settled).
    *  Offline swaps pass `preimage` + `swapId` up front (held privately until settled). */
-  create(rec: { paymentHash: string; pr: string; sessionId: string; preimage?: string; swapId?: string }): void;
+  create(rec: { paymentHash: string; pr: string; sessionId: string; preimage?: string; swapId?: string; paymentOption?: string; paymentDestination?: string }): void;
   /** Mark an invoice settled with its preimage. Returns false if the hash is unknown. */
   markSettled(paymentHash: string, preimage: string): boolean;
   /** Fetch a record, or undefined if unknown or expired. */
@@ -45,7 +51,7 @@ export class MemorySettlementStore implements SettlementStore {
 
   constructor(private ttlMs: number, private now: () => number = () => Date.now()) {}
 
-  create(rec: { paymentHash: string; pr: string; sessionId: string; preimage?: string; swapId?: string }): void {
+  create(rec: { paymentHash: string; pr: string; sessionId: string; preimage?: string; swapId?: string; paymentOption?: string; paymentDestination?: string }): void {
     if (++this.calls % 1000 === 0) this.sweep();
     if (this.map.has(rec.paymentHash)) return;
     this.map.set(rec.paymentHash, {
@@ -55,6 +61,9 @@ export class MemorySettlementStore implements SettlementStore {
       settled: false,
       preimage: rec.preimage ?? null,
       swapId: rec.swapId ?? null,
+      paymentOption: rec.paymentOption ?? "lightning",
+      paymentDestination: rec.paymentDestination ?? null,
+      paymentReference: null,
       createdAt: this.now(),
       settledAt: null,
     });
@@ -105,6 +114,9 @@ interface SettlementRow {
   settled: number;
   preimage: string | null;
   swap_id: string | null;
+  payment_option: string | null;
+  payment_destination: string | null;
+  payment_reference: string | null;
   created_at: number;
   settled_at: number | null;
 }
@@ -115,12 +127,21 @@ interface SettlementRow {
 export class DbSettlementStore implements SettlementStore {
   constructor(private db: Db, private ttlMs: number, private now: () => number = () => Date.now()) {}
 
-  create(rec: { paymentHash: string; pr: string; sessionId: string; preimage?: string; swapId?: string }): void {
+  create(rec: { paymentHash: string; pr: string; sessionId: string; preimage?: string; swapId?: string; paymentOption?: string; paymentDestination?: string }): void {
     const info = this.db
       .prepare(
-        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, created_at, settled_at) VALUES (?, ?, ?, 0, ?, ?, ?, NULL)",
+        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, created_at, settled_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, NULL)",
       )
-      .run(rec.paymentHash, rec.pr, rec.sessionId, rec.preimage ?? null, rec.swapId ?? null, this.now());
+      .run(
+        rec.paymentHash,
+        rec.pr,
+        rec.sessionId,
+        rec.preimage ?? null,
+        rec.swapId ?? null,
+        rec.paymentOption ?? "lightning",
+        rec.paymentDestination ?? null,
+        this.now(),
+      );
     // A paymentHash collision on the offline path would leave `verify` polling the
     // OLD record while the payer got the NEW invoice — cryptographically negligible,
     // but loud if it ever happens.
@@ -152,6 +173,9 @@ export class DbSettlementStore implements SettlementStore {
       settled: !!row.settled,
       preimage: row.preimage ?? null,
       swapId: row.swap_id ?? null,
+      paymentOption: row.payment_option ?? "lightning",
+      paymentDestination: row.payment_destination ?? null,
+      paymentReference: row.payment_reference ?? null,
       createdAt: row.created_at,
       settledAt: row.settled_at ?? null,
     };
