@@ -20,6 +20,9 @@ import { createIntentSwapCreator } from "../src/intent-swap.js";
 const solverPubkey = process.argv[2] ?? "3f831510a6d7678d0c90d7d6fbc4057720517e2e30681ef4c87cc57aaf57e8d5";
 const relay = process.argv[3] ?? "wss://nostr.arkade.sh";
 const arkServerUrl = process.argv[4] ?? "https://mutinynet.arkade.sh";
+// With COVCLAIMD_URL set, the real daemon's keys are used (full three-party check:
+// solver, covclaimd, operator). Otherwise a local fake serves the pinned emulator key.
+const realCovclaimdUrl = process.env.COVCLAIMD_URL;
 
 const dummyCovclaimdKey = hex.encode(secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true));
 const emulatorKey = resolveEmulatorPubkey(getNetwork("mutinynet"));
@@ -35,11 +38,12 @@ const covclaimd = http.createServer((req, res) => {
 });
 
 await new Promise<void>((r) => covclaimd.listen(0, "127.0.0.1", r));
-const covclaimdUrl = `http://127.0.0.1:${(covclaimd.address() as { port: number }).port}`;
+const covclaimdUrl = realCovclaimdUrl ?? `http://127.0.0.1:${(covclaimd.address() as { port: number }).port}`;
 
 console.log(`solver   ${solverPubkey}`);
 console.log(`relay    ${relay}`);
 console.log(`operator ${arkServerUrl}`);
+console.log(`covclaimd ${covclaimdUrl}${realCovclaimdUrl ? " (real daemon)" : " (local fake, pinned emulator key)"}`);
 
 const creator = await createIntentSwapCreator({ solverPubkey, nostrRelays: [relay], covclaimdUrl, arkServerUrl });
 // Arkade address keys are x-only 32-byte keys, not raw scalars.
