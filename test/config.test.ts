@@ -100,4 +100,17 @@ describe("loadConfig", () => {
       }),
     ).toThrow(/ws\(s\):\/\//);
   });
+
+  it("enables offline receive via a solver registry index URL", () => {
+    const on = loadConfig({
+      ...base,
+      SOLVER_REGISTRY_URL: "https://arkade-os.github.io/solver-registry/mutinynet.json",
+      COVCLAIMD_URL: "https://covclaimd.example:7071",
+      ARK_SERVER_URL: "https://mutinynet.arkade.sh",
+    });
+    expect(on.offlineReceive).toMatchObject({
+      enabled: true,
+      registryUrl: "https://arkade-os.github.io/solver-registry/mutinynet.json",
+    });
+  });
 });

@@ -5,18 +5,30 @@ import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
 import { MemorySettlementStore } from "../src/settlement-store.js";
+import type { OfflineSwapCreator } from "../src/intent-swap.js";
 import type { LnurlServiceConfig } from "../src/types.js";
 
 const CONFIG: LnurlServiceConfig = { port: 0, baseUrl: "", minSendable: 1000, maxSendable: 100_000_000, invoiceTimeoutMs: 3000 };
 const ARK = "ark1qexampledestination";
 const CLAIMPK = "02" + "ab".repeat(32); // 33-byte compressed pubkey (66 hex chars)
 
-function start(repos: Repositories, settlements?: MemorySettlementStore) {
+const fakeSwapCreator: OfflineSwapCreator = {
+  create: async () => ({ swapId: "swap-1", invoice: "lnbc1offline", preimage: "ab".repeat(32), preimageHash: "cd".repeat(32), lockupAddress: ARK }),
+  isSettled: async () => false,
+};
+
+function start(repos: Repositories, settlements?: MemorySettlementStore, offlineSwapCreator?: OfflineSwapCreator) {
   const server = http.createServer();
   return new Promise<{ baseUrl: string; close: () => Promise<void> }>((resolve) => {
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address() as { port: number };
-      server.on("request", createServer({ ...CONFIG, baseUrl: `http://127.0.0.1:${port}` }, { repos, ...(settlements ? { settlements } : {}) }));
+      server.on(
+        "request",
+        createServer(
+          { ...CONFIG, baseUrl: `http://127.0.0.1:${port}` },
+          { repos, ...(settlements ? { settlements } : {}), ...(offlineSwapCreator ? { offlineSwapCreator } : {}) },
+        ),
+      );
       resolve({ baseUrl: `http://127.0.0.1:${port}`, close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }) });
     });
   });
@@ -136,5 +148,16 @@ describe("LUD-XX paymentOptions", () => {
       }).on("error", reject);
     });
     expect(res.status).toBe(429);
+  });
+
+  it("echoes paymentOption on the pr response only when explicitly selected", async () => {
+    await ctx.close();
+    ctx = await start(repos, new MemorySettlementStore(60_000), fakeSwapCreator);
+    addr("alice", true); // wallet session exists but is offline → corridor swap serves
+    const explicit = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000&paymentOption=lightning`, "domain.com");
+    expect(explicit).toMatchObject({ pr: "lnbc1offline", paymentOption: "lightning" });
+    const implicit = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000`, "domain.com");
+    expect(implicit.pr).toBe("lnbc1offline");
+    expect(implicit.paymentOption).toBeUndefined();
   });
 });

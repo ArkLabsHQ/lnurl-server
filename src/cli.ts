@@ -50,11 +50,12 @@ async function main(): Promise<void> {
     if (config.offlineReceive.enabled) {
       const { createIntentSwapCreator } = await import("./intent-swap.js");
       const off = config.offlineReceive;
-      offlineSwapCreator = createIntentSwapCreator({
+      offlineSwapCreator = await createIntentSwapCreator({
         solverUrl: off.solverUrl,
         solverPubkey: off.solverPubkey,
         nostrRelays: off.nostrRelays,
         nostrSecretKey: off.nostrSecretKey,
+        registryUrl: off.registryUrl,
         covclaimdUrl: off.covclaimdUrl!,
         arkServerUrl: off.arkServerUrl!,
       });
@@ -73,7 +74,7 @@ async function main(): Promise<void> {
     if (offlineSwapCreator) {
       const { startOfflineSettlementPoller } = await import("./offline-poller.js");
       startOfflineSettlementPoller(settlements, offlineSwapCreator, 15_000);
-      const via = config.offlineReceive.solverUrl ?? `nostr:${config.offlineReceive.solverPubkey}`;
+      const via = config.offlineReceive.solverUrl ?? (config.offlineReceive.solverPubkey ? `nostr:${config.offlineReceive.solverPubkey}` : `registry:${config.offlineReceive.registryUrl}`);
       console.log(`offline receive: enabled (solver=${via})`);
     }
     // The destination rail (paymentOptions: arkade) settles by observation, not by

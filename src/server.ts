@@ -65,9 +65,11 @@ async function createOfflineSwapAndRespond(args: {
   claimPublicKey: string;
   addressId: number;
   paymentQuote?: PaymentQuote;
+  /** LUD-XX: echo the explicitly-selected lightning option on the pr response. */
+  echoLightningOption?: boolean;
   res: express.Response;
 }): Promise<void> {
-  const { creator, store, baseUrl, amountMsat, receiveAddress, claimPublicKey, addressId, paymentQuote, res } = args;
+  const { creator, store, baseUrl, amountMsat, receiveAddress, claimPublicKey, addressId, paymentQuote, echoLightningOption, res } = args;
   try {
     // Caller guarantees whole satoshis (rejected at the route otherwise).
     const swap = await creator.create({ amountSat: amountMsat / 1000, receiveAddress, claimPublicKey });
@@ -84,6 +86,7 @@ async function createOfflineSwapAndRespond(args: {
       routes: [],
       verify: `${baseUrl}/lnurl/verify/${swap.preimageHash}`,
       ...(paymentQuote ? { paymentQuote } : {}),
+      ...(echoLightningOption ? { paymentOption: "lightning" } : {}),
     } satisfies LnurlPayCallbackResponse);
   } catch (err) {
     res.json({ status: "ERROR", reason: err instanceof Error ? err.message : "Failed to create swap" } satisfies LnurlErrorResponse);
@@ -109,9 +112,11 @@ async function requestInvoiceAndRespond(args: {
   store: SettlementStore;
   baseUrl: string;
   paymentQuote?: PaymentQuote;
+  /** LUD-XX: echo the explicitly-selected lightning option on the pr response. */
+  echoLightningOption?: boolean;
   res: express.Response;
 }): Promise<void> {
-  const { sessions, sessionId, amountMsat, comment, min, max, timeoutMs, offlineReason, store, baseUrl, paymentQuote, res } = args;
+  const { sessions, sessionId, amountMsat, comment, min, max, timeoutMs, offlineReason, store, baseUrl, paymentQuote, echoLightningOption, res } = args;
   if (amountMsat < min || amountMsat > max) {
     res.json({ status: "ERROR", reason: `Amount must be between ${min} and ${max} millisats` } satisfies LnurlErrorResponse);
     return;
@@ -125,11 +130,12 @@ async function requestInvoiceAndRespond(args: {
     // LUD-21: record the invoice and hand the payer a verify URL. If the bolt11 can't be
     // decoded we can't key a record, so we omit verify but still return the pr.
     const paymentHash = paymentHashFromBolt11(pr);
+    const echo = echoLightningOption ? { paymentOption: "lightning" } : {};
     if (paymentHash) {
       store.create({ paymentHash, pr, sessionId, amountMsat });
-      res.json({ pr, routes: [], verify: `${baseUrl}/lnurl/verify/${paymentHash}`, ...(paymentQuote ? { paymentQuote } : {}) } satisfies LnurlPayCallbackResponse);
+      res.json({ pr, routes: [], verify: `${baseUrl}/lnurl/verify/${paymentHash}`, ...(paymentQuote ? { paymentQuote } : {}), ...echo } satisfies LnurlPayCallbackResponse);
     } else {
-      res.json({ pr, routes: [], ...(paymentQuote ? { paymentQuote } : {}) } satisfies LnurlPayCallbackResponse);
+      res.json({ pr, routes: [], ...(paymentQuote ? { paymentQuote } : {}), ...echo } satisfies LnurlPayCallbackResponse);
     }
   } catch (err) {
     res.json({ status: "ERROR", reason: err instanceof Error ? err.message : "Failed to get invoice" } satisfies LnurlErrorResponse);
@@ -562,7 +568,8 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         }
         await createOfflineSwapAndRespond({
           creator, store, baseUrl: settings.baseUrl(), amountMsat,
-          receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, paymentQuote, res,
+          receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, paymentQuote,
+          echoLightningOption: paymentOptionId !== undefined, res,
         });
         return;
       }
@@ -577,7 +584,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         sessions, sessionId: address.sessionId, amountMsat, comment,
         min, max, timeoutMs: settings.invoiceTimeoutMs(),
         offlineReason: `${username}@${domain.domain} is currently offline`,
-        store, baseUrl: settings.baseUrl(), paymentQuote, res,
+        store, baseUrl: settings.baseUrl(), paymentQuote, echoLightningOption: paymentOptionId !== undefined, res,
       });
     });
 
