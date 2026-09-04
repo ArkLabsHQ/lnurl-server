@@ -464,6 +464,13 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           res.json({ status: "ERROR", reason: `Amount must be between ${min} and ${max} millisats` } satisfies LnurlErrorResponse);
           return;
         }
+        // LUD-XX (lnurl/luds#303): a non-pr option MUST honor the requested amount
+        // exactly and MUST NOT round — a sub-satoshi amount is not exactly
+        // representable in a whole-sat destination payment, so reject it.
+        if (amountMsat % 1000 !== 0) {
+          res.json({ status: "ERROR", reason: "Amount must be a whole number of satoshis" } satisfies LnurlErrorResponse);
+          return;
+        }
         // The payer pays the destination directly, so the server isn't in the payment path:
         // `verify` records the agreed amount, but `settled` only flips once an Arkade watcher
         // observes the payment (follow-up). Keyed by an opaque verify id (not a payment hash).

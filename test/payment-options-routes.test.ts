@@ -116,6 +116,13 @@ describe("LUD-XX paymentOptions", () => {
     expect(cb).toMatchObject({ status: "OK", paymentOption: "arkade" });
   });
 
+  it("rejects sub-satoshi amounts on the destination rail (LUD-XX: no rounding)", async () => {
+    addr("alice", true);
+    const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50500&paymentOption=arkade`, "domain.com");
+    expect(cb.status).toBe("ERROR");
+    expect(String(cb.reason)).toMatch(/whole number of satoshis/i);
+  });
+
   it("rate-limits the destination branch per IP", async () => {
     addr("alice", true);
     let last: Record<string, unknown> = {};
