@@ -28,6 +28,7 @@ import {
   type RfqTransport,
 } from "./vendor/arkade-swap/rfq.js";
 import { sealClaimPacket } from "./vendor/arkade-swap/claimPacket.js";
+import { nostrRfqTransport } from "./vendor/arkade-swap/nostr.js";
 import { paymentHashOf } from "./vendor/arkade-swap/onchainHtlc.js";
 import { invoiceFactsFromBolt11 } from "./bolt11.js";
 
@@ -61,8 +62,14 @@ export interface OfflineSwapCreator {
 }
 
 export interface IntentSwapSettings {
-  /** Intent solver's RFQ HTTP base URL (`POST /v1/swap`, `GET /v1/rfq/:id`). */
-  solverUrl: string;
+  /** Intent solver's RFQ HTTP base URL (`POST /v1/swap`, `GET /v1/rfq/:id`) — dev/custom solvers. */
+  solverUrl?: string;
+  /** Solver's x-only discovery pubkey (hex) — Nostr RFQ, the production transport. */
+  solverPubkey?: string;
+  /** Nostr relays (wss://…) the solver listens on. */
+  nostrRelays?: string[];
+  /** 32-byte hex Nostr identity for the transport; ephemeral per boot when unset. */
+  nostrSecretKey?: string;
   /** covclaimd base URL — its pubkey endpoint keys the sealed claim packet. */
   covclaimdUrl: string;
   /** Arkade operator URL — signer key, exit delay and network come from its getInfo. */
@@ -80,6 +87,26 @@ interface CorridorContext {
 }
 
 const CONTEXT_TTL_MS = 5 * 60_000;
+
+/** HTTP when a solver URL is configured (dev/custom), Nostr directed-RFQ otherwise —
+ *  the production transport deployed solvers actually listen on. */
+function buildTransport(settings: IntentSwapSettings): RfqTransport {
+  if (settings.solverUrl) return httpTransport(settings.solverUrl);
+  if (!settings.solverPubkey || !settings.nostrRelays?.length) {
+    throw new Error("offline receive needs a solver transport: SOLVER_URL, or SOLVER_PUBKEY + NOSTR_RELAYS");
+  }
+  if (!/^[0-9a-f]{64}$/i.test(settings.solverPubkey)) {
+    throw new Error("SOLVER_PUBKEY must be a 64-char hex (x-only) pubkey");
+  }
+  if (settings.nostrSecretKey && !/^[0-9a-f]{64}$/i.test(settings.nostrSecretKey)) {
+    throw new Error("NOSTR_SECRET_KEY must be 64-char hex");
+  }
+  return nostrRfqTransport({
+    relays: settings.nostrRelays,
+    solverPubkey: settings.solverPubkey.toLowerCase(),
+    ...(settings.nostrSecretKey ? { secretKey: hex.decode(settings.nostrSecretKey.toLowerCase()) } : {}),
+  });
+}
 
 function compressedKey(v: unknown, name: string): Uint8Array {
   if (typeof v !== "string" || !/^0[23][0-9a-f]{64}$/i.test(v)) {
@@ -105,7 +132,7 @@ async function fetchCovclaimdKeys(covclaimdUrl: string): Promise<{ covclaimdPubk
  * contracts. Mutinynet/mainnet verification is the deployment's to do once.
  */
 export function createIntentSwapCreator(settings: IntentSwapSettings): OfflineSwapCreator {
-  const transport: RfqTransport = httpTransport(settings.solverUrl);
+  const transport: RfqTransport = buildTransport(settings);
   const arkProvider = new RestArkProvider(settings.arkServerUrl);
 
   let cached: { at: number; ctx: Promise<CorridorContext> } | null = null;

@@ -13,9 +13,10 @@ gh api repos/arkade-os/ts-sdk/git/trees/2cc527cbb57fa8956df5760fb2b191ae00829746
 ```
 
 Only the lightning-receive slice is exercised: `lightningReceiveRequest`,
-`httpTransport`, `deriveLightningReceive`, `verifyReceiveInvoice`, `assertReceivable`,
-`assertQuotedAmount`, `sealClaimPacket`. The rest rides along verbatim so the swap to
-the published package is a delete-and-reimport.
+`httpTransport` / `nostrRfqTransport` (`nostr.ts`), `deriveLightningReceive`,
+`verifyReceiveInvoice`, `assertReceivable`, `assertQuotedAmount`, `sealClaimPacket`.
+The rest rides along verbatim so the swap to the published package is a
+delete-and-reimport.
 
 **Exit plan:** once `@arkade-os/swap` ships a release carrying the receive corridors
 (>= the 0.1.0 rc line), delete this directory and import from the package.
