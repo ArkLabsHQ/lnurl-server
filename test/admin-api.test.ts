@@ -12,11 +12,13 @@ import { SessionManager } from "../src/session-manager.js";
 import { createAdminApi } from "../src/admin-api.js";
 import { loadConfig } from "../src/config.js";
 import { SettingsService } from "../src/settings.js";
+import { DbSettlementStore } from "../src/settlement-store.js";
 
-let db: Db; let repos: Repositories; let app: express.Express; let sessions: SessionManager;
+let db: Db; let repos: Repositories; let app: express.Express; let sessions: SessionManager; let settlements: DbSettlementStore;
 beforeEach(() => {
   db = openDb(":memory:"); runMigrations(db); repos = createRepositories(db);
   sessions = new SessionManager();
+  settlements = new DbSettlementStore(db, 86_400_000);
   const svc = new AddressService(repos, randomBytes(32));
   const config = loadConfig({ PORT: "3000", BASE_URL: "http://localhost:3000" });
   const settings = new SettingsService(repos.settings, {
@@ -24,7 +26,7 @@ beforeEach(() => {
     baseUrl: config.baseUrl, registrationRateLimitPerMin: config.registrationRateLimitPerMin,
   });
   app = express(); app.use(express.json());
-  app.use("/admin/api", createAdminApi({ repos, addressService: svc, sessions, settings, config }));
+  app.use("/admin/api", createAdminApi({ repos, addressService: svc, sessions, settings, config, settlements }));
 });
 
 describe("admin API", () => {
@@ -99,7 +101,7 @@ describe("admin API", () => {
     expect(spec.status).toBe(200);
     expect(spec.body.info.title).toMatch(/admin/i);
     expect(Object.keys(spec.body.paths)).toEqual(
-      expect.arrayContaining(["/domains", "/addresses", "/api-keys", "/blacklist", "/sessions", "/settings"]),
+      expect.arrayContaining(["/domains", "/addresses", "/api-keys", "/blacklist", "/sessions", "/settings", "/settlements"]),
     );
 
     const docs = await request(app).get("/admin/api/docs");
@@ -124,5 +126,25 @@ describe("admin API", () => {
     const reset = await request(app).delete("/admin/api/settings/minSendable");
     expect(reset.status).toBe(200);
     expect(reset.body.minSendable).toMatchObject({ value: 1000, overridden: false });
+  });
+
+  it("lists settlement records without ever exposing the preimage or pr", async () => {
+    settlements.create({ paymentHash: "ph1", pr: "lnbc1x", sessionId: "sess", preimage: "beef".repeat(16), swapId: "rfq-1", amountMsat: 50000 });
+    settlements.create({ paymentHash: "vid2", pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination: "ark1xyz", amountMsat: 25000 });
+    settlements.markSettled("ph1", "beef".repeat(16));
+
+    const all = await request(app).get("/admin/api/settlements");
+    expect(all.status).toBe(200);
+    expect(all.body).toHaveLength(2);
+    expect(all.body[0]).toMatchObject({ paymentHash: "vid2", paymentOption: "arkade", paymentDestination: "ark1xyz", settled: false });
+    const swapRow = all.body.find((r: { swapId: string | null }) => r.swapId === "rfq-1");
+    expect(swapRow).toMatchObject({ settled: true, hasPreimage: true, amountMsat: 50000 });
+    expect(JSON.stringify(all.body)).not.toContain("beef".repeat(16));
+    expect(JSON.stringify(all.body)).not.toContain("lnbc1x");
+
+    const settledOnly = await request(app).get("/admin/api/settlements?settled=true");
+    expect(settledOnly.body.map((r: { paymentHash: string }) => r.paymentHash)).toEqual(["ph1"]);
+    const arkadeOnly = await request(app).get("/admin/api/settlements?option=arkade");
+    expect(arkadeOnly.body.map((r: { paymentHash: string }) => r.paymentHash)).toEqual(["vid2"]);
   });
 });

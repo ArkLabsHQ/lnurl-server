@@ -245,6 +245,7 @@ The Docker image binds to `0.0.0.0` so isolation happens at the container/proxy 
 | POST | `/admin/api/blacklist` | Add blacklist entry |
 | DELETE | `/admin/api/blacklist/:id` | Remove blacklist entry |
 | GET | `/admin/api/sessions` | List active session IDs |
+| GET | `/admin/api/settlements` | List settlement records (filter: `settled`, `option`, `limit`) — preimages/pr never exposed |
 
 The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 

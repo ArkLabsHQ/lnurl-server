@@ -144,6 +144,21 @@ describe("DbSettlementStore", () => {
     db.close();
   });
 
+  it("lists recent records newest-first (admin view), including preimage/swap fields", () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    let t = 1000;
+    const s = new DbSettlementStore(db, 60_000, () => t);
+    s.create({ paymentHash: "a1", pr: "ln1", sessionId: "sess" });
+    t = 2000;
+    s.create({ paymentHash: "a2", pr: "ln2", sessionId: "off:1", preimage: "beef", swapId: "swap-1" });
+    const rows = s.listRecent(10);
+    expect(rows.map((r) => r.paymentHash)).toEqual(["a2", "a1"]);
+    expect(rows[0]).toMatchObject({ preimage: "beef", swapId: "swap-1", paymentOption: "lightning" });
+    expect(s.listRecent(1).map((r) => r.paymentHash)).toEqual(["a2"]);
+    db.close();
+  });
+
   it("expires records past the ttl", () => {
     const db = openDb(":memory:");
     runMigrations(db);

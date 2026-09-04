@@ -87,7 +87,7 @@ async function main(): Promise<void> {
     console.log(`persistence: enabled at ${config.dbPath} (${deps.repos.domains.list().length} domain(s))`);
 
     const { createAdminServer } = await import("./admin-server.js");
-    createAdminServer({ repos, addressService, sessions, settings, config }).listen(config.adminPort, config.adminBind, () => {
+    createAdminServer({ repos, addressService, sessions, settings, config, settlements }).listen(config.adminPort, config.adminBind, () => {
       console.log(`admin server on http://${config.adminBind}:${config.adminPort} (front with a proxy)`);
     });
   } else {
