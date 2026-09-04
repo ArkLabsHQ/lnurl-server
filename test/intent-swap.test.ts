@@ -6,7 +6,7 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { ArkAddress, toXOnly } from "@arkade-os/sdk";
 import { createIntentSwapCreator, type OfflineSwapCreator } from "../src/intent-swap.js";
 import { receiveVtxoScript, unilateralClaimDelay } from "../src/vendor/arkade-swap/rfq.js";
-import { buildInvoice } from "./bolt11.test.js";
+import { buildInvoice } from "./helpers/bolt11.js";
 
 // Integration test of the real corridor creator against fake solver / covclaimd /
 // operator services over real HTTP (repo style, no module mocks). The fake solver

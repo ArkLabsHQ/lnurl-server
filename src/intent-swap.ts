@@ -162,6 +162,9 @@ export function createIntentSwapCreator(settings: IntentSwapSettings): OfflineSw
       );
       // Upstream's assertQuotedAmount is module-private; these are its two checks
       // for amountSide "from" — the invoice must ask exactly what the payer chose.
+      // TRACKING DEBT: when the vendor exit plan lands (@arkade-os/swap release),
+      // switch to the package's public receive API rather than hand-replicating
+      // the guard — a third upstream check would silently pass us by until then.
       if (quote.from_amount !== params.amountSat) {
         throw new Error(`solver quoted from_amount ${quote.from_amount}, not the requested ${params.amountSat}`);
       }
