@@ -20,6 +20,9 @@ export interface SettlementRecord {
   paymentDestination: string | null;
   /** Method-specific settlement reference (e.g. a txid) once the service observes it; null until then. */
   paymentReference: string | null;
+  /** The agreed amount. Recorded so a future Arkade watcher can correlate the observed
+   *  payment against it — without it an under-payment would flip settled just the same. */
+  amountMsat: number | null;
   createdAt: number;
   settledAt: number | null;
 }
@@ -34,7 +37,7 @@ export interface PendingSwap {
 export interface SettlementStore {
   /** Record a new invoice. Idempotent: a repeated paymentHash is ignored (never resets settled).
    *  Offline swaps pass `preimage` + `swapId` up front (held privately until settled). */
-  create(rec: { paymentHash: string; pr: string; sessionId: string; preimage?: string; swapId?: string; paymentOption?: string; paymentDestination?: string }): void;
+  create(rec: { paymentHash: string; pr: string; sessionId: string; preimage?: string; swapId?: string; paymentOption?: string; paymentDestination?: string; amountMsat?: number }): void;
   /** Mark an invoice settled with its preimage. Returns false if the hash is unknown. */
   markSettled(paymentHash: string, preimage: string): boolean;
   /** Fetch a record, or undefined if unknown or expired. */
@@ -51,7 +54,7 @@ export class MemorySettlementStore implements SettlementStore {
 
   constructor(private ttlMs: number, private now: () => number = () => Date.now()) {}
 
-  create(rec: { paymentHash: string; pr: string; sessionId: string; preimage?: string; swapId?: string; paymentOption?: string; paymentDestination?: string }): void {
+  create(rec: { paymentHash: string; pr: string; sessionId: string; preimage?: string; swapId?: string; paymentOption?: string; paymentDestination?: string; amountMsat?: number }): void {
     if (++this.calls % 1000 === 0) this.sweep();
     if (this.map.has(rec.paymentHash)) return;
     this.map.set(rec.paymentHash, {
@@ -64,6 +67,7 @@ export class MemorySettlementStore implements SettlementStore {
       paymentOption: rec.paymentOption ?? "lightning",
       paymentDestination: rec.paymentDestination ?? null,
       paymentReference: null,
+      amountMsat: rec.amountMsat ?? null,
       createdAt: this.now(),
       settledAt: null,
     });
@@ -117,6 +121,7 @@ interface SettlementRow {
   payment_option: string | null;
   payment_destination: string | null;
   payment_reference: string | null;
+  amount_msat: number | null;
   created_at: number;
   settled_at: number | null;
 }
@@ -127,10 +132,10 @@ interface SettlementRow {
 export class DbSettlementStore implements SettlementStore {
   constructor(private db: Db, private ttlMs: number, private now: () => number = () => Date.now()) {}
 
-  create(rec: { paymentHash: string; pr: string; sessionId: string; preimage?: string; swapId?: string; paymentOption?: string; paymentDestination?: string }): void {
+  create(rec: { paymentHash: string; pr: string; sessionId: string; preimage?: string; swapId?: string; paymentOption?: string; paymentDestination?: string; amountMsat?: number }): void {
     const info = this.db
       .prepare(
-        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, created_at, settled_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, NULL)",
+        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, created_at, settled_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, NULL)",
       )
       .run(
         rec.paymentHash,
@@ -140,6 +145,7 @@ export class DbSettlementStore implements SettlementStore {
         rec.swapId ?? null,
         rec.paymentOption ?? "lightning",
         rec.paymentDestination ?? null,
+        rec.amountMsat ?? null,
         this.now(),
       );
     // A paymentHash collision on the offline path would leave `verify` polling the
@@ -176,6 +182,7 @@ export class DbSettlementStore implements SettlementStore {
       paymentOption: row.payment_option ?? "lightning",
       paymentDestination: row.payment_destination ?? null,
       paymentReference: row.payment_reference ?? null,
+      amountMsat: row.amount_msat ?? null,
       createdAt: row.created_at,
       settledAt: row.settled_at ?? null,
     };

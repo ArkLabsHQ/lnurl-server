@@ -35,4 +35,13 @@ describe("resolvePaymentOption", () => {
     expect(resolvePaymentOption("arkade", noArkade)).toEqual({ kind: "error", reason: "Unsupported paymentOption" });
     expect(resolvePaymentOption("onchain", withArkade)).toEqual({ kind: "error", reason: "Unsupported paymentOption" });
   });
+
+  it("normalizes option id case (ids are canonical lowercase)", () => {
+    expect(resolvePaymentOption("Arkade", withArkade)).toEqual({
+      kind: "destination",
+      paymentOption: "arkade",
+      paymentDestination: "ark1xyz",
+    });
+    expect(resolvePaymentOption("LIGHTNING", noArkade)).toEqual({ kind: "lightning" });
+  });
 });

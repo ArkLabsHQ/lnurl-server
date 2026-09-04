@@ -69,6 +69,7 @@ async function createOfflineSwapAndRespond(args: {
       sessionId: `offline:${addressId}`,
       preimage: swap.preimage,
       swapId: swap.swapId,
+      amountMsat,
     });
     res.json({ pr: swap.invoice, routes: [], verify: `${baseUrl}/lnurl/verify/${swap.preimageHash}` } satisfies LnurlPayCallbackResponse);
   } catch (err) {
@@ -111,7 +112,7 @@ async function requestInvoiceAndRespond(args: {
     // decoded we can't key a record, so we omit verify but still return the pr.
     const paymentHash = paymentHashFromBolt11(pr);
     if (paymentHash) {
-      store.create({ paymentHash, pr, sessionId });
+      store.create({ paymentHash, pr, sessionId, amountMsat });
       res.json({ pr, routes: [], verify: `${baseUrl}/lnurl/verify/${paymentHash}` } satisfies LnurlPayCallbackResponse);
     } else {
       res.json({ pr, routes: [] } satisfies LnurlPayCallbackResponse);
@@ -128,9 +129,10 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
   const store: SettlementStore = deps?.settlements ?? new MemorySettlementStore(config.verifyTtlMs ?? 86_400_000);
   // Light per-IP guard for the public verify-polling endpoint.
   const verifyLimiter = new RateLimiter(120, 60_000);
-  // Tighter per-IP guard on the offline-swap branch: each hit there asks the solver
-  // for a fresh quote, so it costs an external round-trip, not just a store write.
-  const offlineCallbackLimiter = new RateLimiter(30, 60_000);
+  // Tighter per-IP guard on callback branches that cost resources without a live
+  // wallet session: each offline-swap hit asks the solver for a fresh quote, and
+  // each destination hit writes a store record.
+  const addressCallbackLimiter = new RateLimiter(30, 60_000);
   // When configured, offline LN addresses receive via a solver-mediated corridor swap.
   const creator = deps?.offlineSwapCreator;
   // Soft settings are read per-request so DB-backed overrides take effect without a restart.
@@ -430,7 +432,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       }
       const username = req.params.username.toLowerCase();
       const address = repos.addresses.getByDomainAndUsername(domain.id, username);
-      if (!address || address.status !== "active" || !address.sessionId) {
+      if (!address || address.status !== "active") {
         res.json({ status: "ERROR", reason: "Unknown LN address" } satisfies LnurlErrorResponse);
         return;
       }
@@ -453,13 +455,19 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         return;
       }
       if (resolved.kind === "destination") {
+        // Unauthed store-writing branch — same per-IP guard as the offline-swap branch.
+        if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) {
+          res.status(429).json({ status: "ERROR", reason: "Too many requests" } satisfies LnurlErrorResponse);
+          return;
+        }
         if (amountMsat < min || amountMsat > max) {
           res.json({ status: "ERROR", reason: `Amount must be between ${min} and ${max} millisats` } satisfies LnurlErrorResponse);
           return;
         }
         // The payer pays the destination directly, so the server isn't in the payment path:
-        // `verify` records the session, but `settled` only flips once an Arkade watcher
+        // `verify` records the agreed amount, but `settled` only flips once an Arkade watcher
         // observes the payment (follow-up). Keyed by an opaque verify id (not a payment hash).
+        // No SSE session needed on a destination rail — the record keeps one only for shape.
         const verifyId = randomBytes(16).toString("hex");
         store.create({
           paymentHash: verifyId,
@@ -467,6 +475,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           sessionId: address.sessionId ?? `addr:${address.id}`,
           paymentOption: resolved.paymentOption,
           paymentDestination: resolved.paymentDestination,
+          amountMsat,
         });
         res.json({
           status: "OK",
@@ -477,10 +486,11 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         return;
       }
 
-      // Offline receive: the wallet's SSE session is gone, but this address opted in with an
+      // Offline receive: no live SSE session for this address, but it opted in with an
       // Arkade identity, so the server quotes a corridor swap paying it (covclaimd claims it).
-      if (!sessions.isActive(address.sessionId) && creator && address.arkadeAddress && address.claimPublicKey) {
-        if (!offlineCallbackLimiter.allow(req.ip ?? "unknown")) {
+      // The corridor never touches the session, so a sessionless address is served too.
+      if (creator && address.arkadeAddress && address.claimPublicKey && (!address.sessionId || !sessions.isActive(address.sessionId))) {
+        if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) {
           res.status(429).json({ status: "ERROR", reason: "Too many requests" } satisfies LnurlErrorResponse);
           return;
         }
@@ -497,6 +507,12 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           creator, store, baseUrl: settings.baseUrl(), amountMsat,
           receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, res,
         });
+        return;
+      }
+
+      // The lightning relay needs a live session to request the invoice from.
+      if (!address.sessionId) {
+        res.json({ status: "ERROR", reason: `${username}@${domain.domain} is currently offline` } satisfies LnurlErrorResponse);
         return;
       }
 

@@ -46,13 +46,14 @@ describe("DbSettlementStore", () => {
     const db = openDb(":memory:");
     runMigrations(db);
     const a = new DbSettlementStore(db, 60_000);
-    a.create({ paymentHash: "vid1", pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination: "ark1xyz" });
+    a.create({ paymentHash: "vid1", pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination: "ark1xyz", amountMsat: 50000 });
     const b = new DbSettlementStore(db, 60_000);
     expect(b.get("vid1")).toMatchObject({
       settled: false,
       paymentOption: "arkade",
       paymentDestination: "ark1xyz",
       paymentReference: null,
+      amountMsat: 50000,
     });
     // A legacy lightning record (no option column) reads back as "lightning".
     a.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "sess" });

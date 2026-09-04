@@ -106,8 +106,6 @@ export interface LnurlPayCallbackResponse {
   routes: never[];
   /** LUD-21: URL the payer can poll to confirm settlement. Omitted if the bolt11 can't be decoded. */
   verify?: string;
-  /** LUD-XX: the selected payment option id (optional for legacy lightning). */
-  paymentOption?: string;
 }
 
 /** LUD-XX callback response for a non-`pr` payment option (e.g. a direct Arkade destination). */
@@ -115,7 +113,6 @@ export interface LnurlPayDestinationResponse {
   status: "OK";
   paymentOption: string;
   paymentDestination?: string;
-  paymentURI?: string;
   verify?: string;
 }
 

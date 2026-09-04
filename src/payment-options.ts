@@ -39,8 +39,10 @@ export type ResolvedPaymentOption =
 
 /** Resolve the wallet's `paymentOption` query value. Extend with new rails here. */
 export function resolvePaymentOption(optionId: string | undefined, address: OptionAddress): ResolvedPaymentOption {
-  if (optionId === undefined || optionId === "lightning") return { kind: "lightning" };
-  if (optionId === "arkade") {
+  // Ids are canonical lowercase; be liberal about the case payers send.
+  const id = optionId?.toLowerCase();
+  if (id === undefined || id === "lightning") return { kind: "lightning" };
+  if (id === "arkade") {
     return address.arkadeAddress
       ? { kind: "destination", paymentOption: "arkade", paymentDestination: address.arkadeAddress }
       : { kind: "error", reason: "Unsupported paymentOption" };
