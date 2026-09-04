@@ -46,3 +46,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/):
 - `src/session-manager.ts` — Session lifecycle, SSE streaming, invoice request/response flow
 - `src/types.ts` — Shared TypeScript types
 - `src/cli.ts` — CLI entrypoint reading config from env vars
+- `src/intent-swap.ts` — Offline receive: solver-quoted `lightning:BTC -> arkade:BTC` corridor swaps (config `SOLVER_URL` or `SOLVER_PUBKEY` + `NOSTR_RELAYS`, plus `COVCLAIMD_URL` + `ARK_SERVER_URL`)
+- `src/arkade-watcher.ts` — Destination-rail settlement watcher (indexer polling for `paymentOptions: arkade` records)
+- `src/payment-options.ts` — LUD-XX paymentOptions rail registry (advertise + resolve)
+- `src/quote-provider.ts` — LUD-XX paymentQuote framework (injected rate oracle seam)
+- `src/settlement-store.ts` + `src/offline-poller.ts` — LUD-21 settlement records (memory/SQLite) and the offline-swap status poller
+- `src/vendor/arkade-swap/` — byte-exact vendored corridor client from arkade-os/ts-sdk (see its README; delete once `@arkade-os/swap` ships receive corridors)
+- `scripts/probe-solver.ts` — live solver quote probe (operator diagnostic; funds nothing)
