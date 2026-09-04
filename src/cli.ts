@@ -46,13 +46,13 @@ async function main(): Promise<void> {
       registrationRateLimitPerMin: config.registrationRateLimitPerMin,
     });
     const settlements = new DbSettlementStore(db, config.verifyTtlMs);
-    let reverseSwapCreator: import("./reverse-swap.js").ReverseSwapCreator | undefined;
+    let offlineSwapCreator: import("./intent-swap.js").OfflineSwapCreator | undefined;
     if (config.offlineReceive.enabled) {
-      const { createBoltzReverseSwapCreator } = await import("./reverse-swap.js");
-      reverseSwapCreator = createBoltzReverseSwapCreator({
-        boltzUrl: config.offlineReceive.boltzUrl!,
+      const { createIntentSwapCreator } = await import("./intent-swap.js");
+      offlineSwapCreator = createIntentSwapCreator({
+        solverUrl: config.offlineReceive.solverUrl!,
         covclaimdUrl: config.offlineReceive.covclaimdUrl!,
-        arkNetwork: config.offlineReceive.arkNetwork!,
+        arkServerUrl: config.offlineReceive.arkServerUrl!,
       });
     }
     deps = {
@@ -62,12 +62,12 @@ async function main(): Promise<void> {
       sessions,
       settings,
       settlements,
-      reverseSwapCreator,
+      offlineSwapCreator,
     };
-    if (reverseSwapCreator) {
+    if (offlineSwapCreator) {
       const { startOfflineSettlementPoller } = await import("./offline-poller.js");
-      startOfflineSettlementPoller(settlements, reverseSwapCreator, 15_000);
-      console.log(`offline receive: enabled (network=${config.offlineReceive.arkNetwork})`);
+      startOfflineSettlementPoller(settlements, offlineSwapCreator, 15_000);
+      console.log(`offline receive: enabled (solver=${config.offlineReceive.solverUrl})`);
     }
     console.log(`persistence: enabled at ${config.dbPath} (${deps.repos.domains.list().length} domain(s))`);
 

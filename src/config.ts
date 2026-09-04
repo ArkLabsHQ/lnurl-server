@@ -1,10 +1,11 @@
-/** Server-orchestrated offline receive (Boltz reverse swap + covclaimd non-interactive claim).
- *  Enabled only when all three of BOLTZ_URL, COVCLAIMD_URL, ARK_NETWORK are set. */
+/** Server-orchestrated offline receive over the Arkade intents corridor
+ *  (`lightning:BTC -> arkade:BTC` solver quote + covclaimd claim).
+ *  Enabled only when SOLVER_URL, COVCLAIMD_URL and ARK_SERVER_URL are all set. */
 export interface OfflineReceiveConfig {
   enabled: boolean;
-  boltzUrl?: string;
+  solverUrl?: string;
   covclaimdUrl?: string;
-  arkNetwork?: string;
+  arkServerUrl?: string;
 }
 
 export interface AppConfig {
@@ -68,13 +69,13 @@ export function loadConfig(env: Env = process.env): AppConfig {
 }
 
 function buildOfflineReceive(env: Env): OfflineReceiveConfig {
-  const boltzUrl = env.BOLTZ_URL || undefined;
+  const solverUrl = env.SOLVER_URL || undefined;
   const covclaimdUrl = env.COVCLAIMD_URL || undefined;
-  const arkNetwork = env.ARK_NETWORK || undefined;
+  const arkServerUrl = env.ARK_SERVER_URL || undefined;
   return {
-    enabled: Boolean(boltzUrl && covclaimdUrl && arkNetwork),
-    ...(boltzUrl ? { boltzUrl } : {}),
+    enabled: Boolean(solverUrl && covclaimdUrl && arkServerUrl),
+    ...(solverUrl ? { solverUrl } : {}),
     ...(covclaimdUrl ? { covclaimdUrl } : {}),
-    ...(arkNetwork ? { arkNetwork } : {}),
+    ...(arkServerUrl ? { arkServerUrl } : {}),
   };
 }

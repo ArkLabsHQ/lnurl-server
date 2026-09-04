@@ -93,7 +93,8 @@ const MIGRATIONS: Migration[] = [
   {
     version: 4,
     // Offline-receive swaps: the server holds the preimage from swap creation and
-    // records the Boltz swap id so the settlement poller can flip `verify` when paid.
+    // records the swap's RFQ id so the settlement poller can flip `verify` when the
+    // solver reports it settled.
     up: `
       ALTER TABLE settlements ADD COLUMN swap_id TEXT;
       CREATE INDEX idx_settlements_pending_swaps ON settlements(swap_id) WHERE swap_id IS NOT NULL AND settled = 0;
@@ -102,7 +103,7 @@ const MIGRATIONS: Migration[] = [
   {
     version: 5,
     // Per-address Arkade receive identity for offline receive: the public info the
-    // server needs to create a reverse swap paying an offline user (no user secret).
+    // server needs to quote a corridor swap paying an offline user (no user secret).
     up: `
       ALTER TABLE addresses ADD COLUMN arkade_address TEXT;
       ALTER TABLE addresses ADD COLUMN claim_public_key TEXT;

@@ -98,7 +98,7 @@ export class AddressService {
   ): boolean {
     if (!isValidToken(token)) return false;
     const a = this.repos.addresses.getByDomainAndUsername(domain.id, username.toLowerCase());
-    if (!a || a.sessionId !== deriveSessionId(token)) return false;
+    if (!a || a.sessionId !== deriveSessionId(token) || a.status !== "active") return false;
     this.repos.addresses.setOfflineReceive(a.id, cfg.arkadeAddress, cfg.claimPublicKey);
     return true;
   }

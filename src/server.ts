@@ -11,7 +11,8 @@ import { ProvisioningError } from "./address-service.js";
 import { RateLimiter } from "./rate-limit.js";
 import { paymentHashFromBolt11 } from "./bolt11.js";
 import { MemorySettlementStore, type SettlementStore } from "./settlement-store.js";
-import type { ReverseSwapCreator } from "./reverse-swap.js";
+import type { OfflineSwapCreator } from "./intent-swap.js";
+import { ArkAddress } from "@arkade-os/sdk";
 import { staticSettings, type RuntimeSettings } from "./settings.js";
 import type {
   LnurlServiceConfig,
@@ -37,15 +38,17 @@ export interface ServerDeps {
   settings?: RuntimeSettings;
   settlements?: SettlementStore;
   /** When set, an offline LN address with a registered Arkade identity gets a
-   *  server-created reverse swap instead of an "offline" error. */
-  reverseSwapCreator?: ReverseSwapCreator;
+   *  server-orchestrated corridor swap instead of an "offline" error. */
+  offlineSwapCreator?: OfflineSwapCreator;
 }
 
-// Create a server-orchestrated reverse swap for an offline receiver and return the
-// hold invoice + a LUD-21 verify URL. The preimage is held in the store (unrevealed
-// until the settlement poller flips it) keyed by the swap's payment hash.
+// Create a solver-mediated receive swap for an offline receiver and return the hold
+// invoice + a LUD-21 verify URL. The preimage is held in the store (unrevealed until
+// the settlement poller flips it) keyed by the swap's payment hash. It is safe at
+// rest because the covenant's `enforcePayTo` pins the claim to the user's address —
+// learning the preimage cannot redirect funds.
 async function createOfflineSwapAndRespond(args: {
-  creator: ReverseSwapCreator;
+  creator: OfflineSwapCreator;
   store: SettlementStore;
   baseUrl: string;
   amountMsat: number;
@@ -56,7 +59,8 @@ async function createOfflineSwapAndRespond(args: {
 }): Promise<void> {
   const { creator, store, baseUrl, amountMsat, receiveAddress, claimPublicKey, addressId, res } = args;
   try {
-    const swap = await creator.create({ amountSat: Math.floor(amountMsat / 1000), receiveAddress, claimPublicKey });
+    // Caller guarantees whole satoshis (rejected at the route otherwise).
+    const swap = await creator.create({ amountSat: amountMsat / 1000, receiveAddress, claimPublicKey });
     store.create({
       paymentHash: swap.preimageHash,
       pr: swap.invoice,
@@ -122,8 +126,11 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
   const store: SettlementStore = deps?.settlements ?? new MemorySettlementStore(config.verifyTtlMs ?? 86_400_000);
   // Light per-IP guard for the public verify-polling endpoint.
   const verifyLimiter = new RateLimiter(120, 60_000);
-  // When configured, offline LN addresses receive via a server-created reverse swap.
-  const creator = deps?.reverseSwapCreator;
+  // Tighter per-IP guard on the offline-swap branch: each hit there asks the solver
+  // for a fresh quote, so it costs an external round-trip, not just a store write.
+  const offlineCallbackLimiter = new RateLimiter(30, 60_000);
+  // When configured, offline LN addresses receive via a solver-mediated corridor swap.
+  const creator = deps?.offlineSwapCreator;
   // Soft settings are read per-request so DB-backed overrides take effect without a restart.
   // No DB (library/in-memory mode) → fall back to the static config values.
   const settings: RuntimeSettings = deps?.settings ?? staticSettings({
@@ -422,10 +429,19 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       const max = domain.maxSendable ?? settings.maxSendable();
 
       // Offline receive: the wallet's SSE session is gone, but this address opted in with an
-      // Arkade identity, so the server creates a reverse swap paying it (covclaimd claims it).
+      // Arkade identity, so the server quotes a corridor swap paying it (covclaimd claims it).
       if (!sessions.isActive(address.sessionId) && creator && address.arkadeAddress && address.claimPublicKey) {
+        if (!offlineCallbackLimiter.allow(req.ip ?? "unknown")) {
+          res.status(429).json({ status: "ERROR", reason: "Too many requests" } satisfies LnurlErrorResponse);
+          return;
+        }
         if (amountMsat < min || amountMsat > max) {
           res.json({ status: "ERROR", reason: `Amount must be between ${min} and ${max} millisats` } satisfies LnurlErrorResponse);
+          return;
+        }
+        // The corridor deals in whole sats; sub-sat amounts would truncate silently.
+        if (amountMsat % 1000 !== 0) {
+          res.json({ status: "ERROR", reason: "Amount must be a whole number of satoshis" } satisfies LnurlErrorResponse);
           return;
         }
         await createOfflineSwapAndRespond({
@@ -496,8 +512,15 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
         if (!token) { res.status(401).json({ error: "Unauthorized" }); return; }
         const { arkadeAddress, claimPublicKey } = (req.body ?? {}) as { arkadeAddress?: string; claimPublicKey?: string };
-        if (!arkadeAddress || typeof arkadeAddress !== "string" || !claimPublicKey || !/^[0-9a-f]{66}$/i.test(claimPublicKey)) {
-          res.status(400).json({ error: "arkadeAddress and a 66-char-hex claimPublicKey are required" });
+        // Compressed 33-byte key (02/03 prefix) — the covenant's receiver role.
+        if (!arkadeAddress || typeof arkadeAddress !== "string" || !claimPublicKey || !/^0[23][0-9a-f]{64}$/i.test(claimPublicKey)) {
+          res.status(400).json({ error: "arkadeAddress and a compressed-hex claimPublicKey (02/03 + 64 hex) are required" });
+          return;
+        }
+        try {
+          ArkAddress.decode(arkadeAddress);
+        } catch {
+          res.status(400).json({ error: "arkadeAddress is not a valid Arkade address" });
           return;
         }
         const ok = addressService.setOfflineReceive(domain, req.params.username, token, { arkadeAddress, claimPublicKey });

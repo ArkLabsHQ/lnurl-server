@@ -12,13 +12,13 @@ export interface SettlementRecord {
   /** For relay invoices, revealed only once settled. For offline swaps the server
    *  holds it from creation, but the verify route still gates exposure on `settled`. */
   preimage: string | null;
-  /** Boltz swap id for a server-created offline-receive swap; null for relay invoices. */
+  /** RFQ id of a server-created offline-receive swap; null for relay invoices. */
   swapId: string | null;
   createdAt: number;
   settledAt: number | null;
 }
 
-/** A pending offline-receive swap awaiting Boltz settlement, for the poller. */
+/** A pending offline-receive swap awaiting solver settlement, for the poller. */
 export interface PendingSwap {
   swapId: string;
   paymentHash: string;
@@ -81,7 +81,10 @@ export class MemorySettlementStore implements SettlementStore {
 
   listPendingSwaps(): PendingSwap[] {
     const out: PendingSwap[] = [];
+    const t = this.now();
     for (const r of this.map.values()) {
+      // Past-TTL records stop being polled — their invoices expired long ago.
+      if (t - r.createdAt >= this.ttlMs) continue;
       if (r.swapId && !r.settled && r.preimage) {
         out.push({ swapId: r.swapId, paymentHash: r.paymentHash, preimage: r.preimage });
       }
@@ -113,11 +116,17 @@ export class DbSettlementStore implements SettlementStore {
   constructor(private db: Db, private ttlMs: number, private now: () => number = () => Date.now()) {}
 
   create(rec: { paymentHash: string; pr: string; sessionId: string; preimage?: string; swapId?: string }): void {
-    this.db
+    const info = this.db
       .prepare(
         "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, created_at, settled_at) VALUES (?, ?, ?, 0, ?, ?, ?, NULL)",
       )
       .run(rec.paymentHash, rec.pr, rec.sessionId, rec.preimage ?? null, rec.swapId ?? null, this.now());
+    // A paymentHash collision on the offline path would leave `verify` polling the
+    // OLD record while the payer got the NEW invoice — cryptographically negligible,
+    // but loud if it ever happens.
+    if (info.changes === 0 && rec.swapId) {
+      console.warn(`settlements: insert ignored for existing paymentHash ${rec.paymentHash} (offline swap ${rec.swapId})`);
+    }
   }
 
   markSettled(paymentHash: string, preimage: string): boolean {
@@ -151,9 +160,10 @@ export class DbSettlementStore implements SettlementStore {
   listPendingSwaps(): PendingSwap[] {
     const rows = this.db
       .prepare(
-        "SELECT payment_hash, preimage, swap_id FROM settlements WHERE swap_id IS NOT NULL AND settled = 0 AND preimage IS NOT NULL",
+        // Past-TTL records stop being polled — their invoices expired long ago.
+        "SELECT payment_hash, preimage, swap_id FROM settlements WHERE swap_id IS NOT NULL AND settled = 0 AND preimage IS NOT NULL AND created_at > ?",
       )
-      .all() as unknown as { payment_hash: string; preimage: string; swap_id: string }[];
+      .all(this.now() - this.ttlMs) as unknown as { payment_hash: string; preimage: string; swap_id: string }[];
     return rows.map((r) => ({ swapId: r.swap_id, paymentHash: r.payment_hash, preimage: r.preimage }));
   }
 }

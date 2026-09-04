@@ -401,8 +401,8 @@ export const openApiSpec = {
       post: {
         summary: "Register Arkade receive identity (offline receive)",
         description:
-          "Sets the Arkade address + claim public key the server uses to create a reverse " +
-          "swap for this address when the wallet is offline. Requires the owning session token.",
+          "Sets the Arkade address + claim public key the server uses to quote a solver-mediated " +
+          "corridor swap for this address when the wallet is offline. Requires the owning session token.",
         tags: ["LN Address"],
         security: [{ bearerAuth: [] }],
         parameters: [

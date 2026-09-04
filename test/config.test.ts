@@ -42,18 +42,18 @@ describe("loadConfig", () => {
 
     const on = loadConfig({
       ...base,
-      BOLTZ_URL: "https://boltz.example",
+      SOLVER_URL: "https://solver.example",
       COVCLAIMD_URL: "https://covclaimd.example:7071",
-      ARK_NETWORK: "mutinynet",
+      ARK_SERVER_URL: "https://mutinynet.arkade.sh",
     });
     expect(on.offlineReceive).toEqual({
       enabled: true,
-      boltzUrl: "https://boltz.example",
+      solverUrl: "https://solver.example",
       covclaimdUrl: "https://covclaimd.example:7071",
-      arkNetwork: "mutinynet",
+      arkServerUrl: "https://mutinynet.arkade.sh",
     });
 
-    // partial config → disabled (missing covclaimd + network)
-    expect(loadConfig({ ...base, BOLTZ_URL: "https://boltz.example" }).offlineReceive.enabled).toBe(false);
+    // partial config → disabled (missing covclaimd + operator)
+    expect(loadConfig({ ...base, SOLVER_URL: "https://solver.example" }).offlineReceive.enabled).toBe(false);
   });
 });

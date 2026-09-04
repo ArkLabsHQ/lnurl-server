@@ -160,9 +160,9 @@ Constraints enforced per domain:
 
 ## Offline receive (opt-in)
 
-Normally an LN address only resolves while the wallet's SSE session is connected. With offline receive, a wallet can receive while disconnected: the server creates a **non-interactive Boltz reverse swap** paying the user's Arkade address, and a **covclaimd** daemon claims the resulting VHTLC on the user's behalf — constrained by covenant to pay only that address, so the daemon cannot redirect funds.
+Normally an LN address only resolves while the wallet's SSE session is connected. With offline receive, a wallet can receive while disconnected: the server quotes a **solver-mediated swap over the Arkade intents corridor** (`lightning:BTC -> arkade:BTC`) and hands the payer the solver's hold invoice. When the payer pays, the solver funds a VHTLC pinned to the user's Arkade address, and a **covclaimd** daemon claims it on the user's behalf — constrained by covenant (`enforcePayTo`) to pay only that address, so neither the solver nor the daemon can redirect funds.
 
-Enable it by setting `BOLTZ_URL`, `COVCLAIMD_URL`, and `ARK_NETWORK`. A wallet then registers its receive identity on an owned address:
+Enable it by setting `SOLVER_URL`, `COVCLAIMD_URL`, and `ARK_SERVER_URL`. A wallet then registers its receive identity on an owned address:
 
 ```bash
 curl -X POST https://pay.example.com/lnurl/address/alice/arkade \
@@ -171,9 +171,9 @@ curl -X POST https://pay.example.com/lnurl/address/alice/arkade \
   -d '{"arkadeAddress":"tark1...","claimPublicKey":"02..."}'
 ```
 
-After that, if a payer pays `alice@pay.example.com` while the wallet is offline, the server returns a swap invoice and reports settlement through the LUD-21 `verify` URL (polled from Boltz). The server never holds the user's keys or funds — it generates the swap preimage and hands it to covclaimd encrypted.
+After that, if a payer pays `alice@pay.example.com` while the wallet is offline, the server returns the solver's hold invoice and reports settlement through the LUD-21 `verify` URL (polled from the solver's RFQ status). The server never holds the user's keys or funds — it generates the swap preimage and hands it to covclaimd encrypted (sealed into the quote request, so it never touches the solver in plaintext).
 
-> Depends on `@arkade-os/boltz-swap`'s non-interactive helper ([ts-sdk#625](https://github.com/arkade-os/ts-sdk/pull/625), pending publish) and covclaimd, which currently runs on mutinynet. The on-chain path is not exercised by the test suite.
+> The corridor client is vendored at `src/vendor/arkade-swap/` (byte-exact from `arkade-os/ts-sdk` — see its README for the exit plan) until `@arkade-os/swap` ships a release carrying the receive corridors. The live path (real solver + covclaimd + operator) is not exercised by the test suite; the integration test drives the same wire contracts against fake HTTP services.
 
 ## Admin backend — port 3001
 
@@ -220,9 +220,9 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `MAX_SENDABLE` | `100000000000` | Maximum sendable amount in millisats |
 | `INVOICE_TIMEOUT_MS` | `30000` | How long to wait (ms) for the wallet to provide a bolt11 |
 | `VERIFY_TTL_MS` | `86400000` | How long (ms) LUD-21 settlement records are retained for `verify` polling |
-| `BOLTZ_URL` | — | Boltz API base URL. Set together with `COVCLAIMD_URL` + `ARK_NETWORK` to enable offline receive. |
+| `SOLVER_URL` | — | Intent-solver RFQ base URL. Set together with `COVCLAIMD_URL` + `ARK_SERVER_URL` to enable offline receive. |
 | `COVCLAIMD_URL` | — | covclaimd daemon base URL (non-interactive VHTLC claims). |
-| `ARK_NETWORK` | — | Arkade network for offline-receive swaps (e.g. `mutinynet`). |
+| `ARK_SERVER_URL` | — | Arkade operator URL (e.g. `https://mutinynet.arkade.sh`) — signer key, exit delay and network are read from it. |
 | `DB_PATH` | — | Path to SQLite database file. Omit for in-memory-only mode. |
 | `TOKEN_ENCRYPTION_KEY` | — | 32-byte AES key (hex or base64). Required when `DB_PATH` is set. |
 | `ALLOW_INSECURE_TOKEN_STORAGE` | — | Set to `1` to skip token encryption in dev (plaintext storage). |

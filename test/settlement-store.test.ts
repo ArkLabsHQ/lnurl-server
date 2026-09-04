@@ -30,4 +30,13 @@ describe("MemorySettlementStore", () => {
     s.markSettled("aa", "beef");
     expect(s.listPendingSwaps()).toEqual([]);
   });
+
+  it("stops listing pending swaps once their record is past TTL", () => {
+    let t = 1000;
+    const s = new MemorySettlementStore(5000, () => t);
+    s.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "off:1", preimage: "beef", swapId: "swap-1" });
+    expect(s.listPendingSwaps()).toHaveLength(1);
+    t = 1000 + 5000;
+    expect(s.listPendingSwaps()).toEqual([]);
+  });
 });
