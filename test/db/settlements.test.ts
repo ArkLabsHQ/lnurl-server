@@ -61,6 +61,28 @@ describe("DbSettlementStore", () => {
     db.close();
   });
 
+  it("lists pending destinations and marks them observed, across instances", () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    let t = 1000;
+    const a = new DbSettlementStore(db, 5000, () => t);
+    a.create({ paymentHash: "vid1", pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination: "ark1xyz", amountMsat: 50000 });
+    a.create({ paymentHash: "vid2", pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination: "ark1xyz" }); // no amount
+    a.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "sess" });
+    const b = new DbSettlementStore(db, 5000, () => t);
+    expect(b.listPendingDestinations()).toEqual([{ paymentHash: "vid1", paymentDestination: "ark1xyz", amountMsat: 50000, createdAt: 1000 }]);
+    expect(b.markObserved("vid1", "txid1")).toBe(true);
+    expect(b.get("vid1")).toMatchObject({ settled: true, paymentReference: "txid1", preimage: null });
+    expect(b.listPendingDestinations()).toEqual([]);
+    t = 1000 + 5000;
+    const c = new DbSettlementStore(db, 5000, () => t);
+    c.create({ paymentHash: "vid9", pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination: "ark1xyz", amountMsat: 1, });
+    expect(c.listPendingDestinations().map((d) => d.paymentHash)).toEqual(["vid9"]);
+    t += 5001;
+    expect(c.listPendingDestinations()).toEqual([]);
+    db.close();
+  });
+
   it("expires records past the ttl", () => {
     const db = openDb(":memory:");
     runMigrations(db);

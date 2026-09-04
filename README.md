@@ -196,7 +196,7 @@ A payer selects one with `?paymentOption=<id>` on the callback:
 
 The `verify` URL then reports the non-`pr` LUD-21 shape: `{ status, settled, paymentOption, paymentDestination, paymentReference }`. Unknown or unavailable options return `{ "status": "ERROR", "reason": "Unsupported paymentOption" }`.
 
-> Because the payer pays the Arkade address **directly**, the server isn't in the payment path and can't observe settlement itself, so arkade `settled` stays `false` until a server-side Arkade watcher is added (follow-up). Addresses without an Arkade identity stay pure LUD-06 (no `paymentOptions`). New rails/assets are added in `src/payment-options.ts`.
+> The payer pays the Arkade address **directly**, so settlement is observed, not reported: when `ARK_SERVER_URL` is set, a background watcher polls the Arkade indexer and flips `settled` (with `paymentReference` = the Arkade txid) once a payment covering the agreed amount arrives at the destination. Correlation is by address + amount + arrival time — an unrelated same-amount payment in the same window can flip a record; that fuzziness is inherent to reference-less address payments. Addresses without an Arkade identity stay pure LUD-06 (no `paymentOptions`). New rails/assets are added in `src/payment-options.ts`.
 
 ## Payment quote (LUD-XX)
 

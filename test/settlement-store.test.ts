@@ -54,4 +54,25 @@ describe("MemorySettlementStore", () => {
     s.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "sess" });
     expect(s.get("aa")).toMatchObject({ paymentOption: "lightning", paymentDestination: null, amountMsat: null });
   });
+
+  it("lists pending destination records and marks them observed with a reference", () => {
+    let t = 1000;
+    const s = new MemorySettlementStore(5000, () => t);
+    s.create({ paymentHash: "vid1", pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination: "ark1xyz", amountMsat: 50000 });
+    s.create({ paymentHash: "vid2", pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination: "ark1xyz" }); // no amount
+    s.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "sess" }); // lightning
+
+    expect(s.listPendingDestinations()).toEqual([{ paymentHash: "vid1", paymentDestination: "ark1xyz", amountMsat: 50000, createdAt: 1000 }]);
+
+    expect(s.markObserved("missing", "tx")).toBe(false);
+    expect(s.markObserved("vid1", "txid1")).toBe(true);
+    expect(s.get("vid1")).toMatchObject({ settled: true, paymentReference: "txid1", preimage: null });
+    expect(s.listPendingDestinations()).toEqual([]);
+
+    // expired records are not listed
+    const s2 = new MemorySettlementStore(5000, () => t);
+    s2.create({ paymentHash: "vid9", pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination: "ark1xyz", amountMsat: 1 });
+    t = 1000 + 5000;
+    expect(s2.listPendingDestinations()).toEqual([]);
+  });
 });
