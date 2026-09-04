@@ -188,6 +188,7 @@ export const openApiSpec = {
                       properties: {
                         pr: { type: "string", description: "BOLT11 invoice" },
                         routes: { type: "array", items: {} },
+                        verify: { type: "string", description: "LUD-21 verify URL (present when the bolt11 could be decoded)" },
                       },
                     },
                     {
@@ -202,6 +203,83 @@ export const openApiSpec = {
               },
             },
           },
+        },
+      },
+    },
+    "/lnurl/verify/{paymentHash}": {
+      get: {
+        summary: "Verify settlement (LUD-21)",
+        description:
+          "Payer polls this to learn whether the invoice settled. Public and unauthed — " +
+          "the payment hash is not secret. `preimage` is revealed only once `settled` is true.",
+        tags: ["LNURL-pay"],
+        parameters: [
+          { name: "paymentHash", in: "path", required: true, schema: { type: "string" }, description: "bolt11 payment hash (hex)" },
+        ],
+        responses: {
+          "200": {
+            description: "Settlement status or error",
+            content: {
+              "application/json": {
+                schema: {
+                  oneOf: [
+                    {
+                      type: "object",
+                      properties: {
+                        status: { type: "string", enum: ["OK"] },
+                        settled: { type: "boolean" },
+                        preimage: { type: "string", nullable: true },
+                        pr: { type: "string", description: "BOLT11 invoice" },
+                      },
+                    },
+                    {
+                      type: "object",
+                      properties: {
+                        status: { type: "string", enum: ["ERROR"] },
+                        reason: { type: "string" },
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+          "429": { description: "Rate limited" },
+        },
+      },
+    },
+    "/lnurl/session/{id}/settled": {
+      post: {
+        summary: "Report settlement (LUD-21)",
+        description:
+          "Wallet reports the preimage once its invoice settles. Authed by the session " +
+          "token. The server checks `sha256(preimage)` against a payment hash the session " +
+          "issued, then flips the matching verify record to settled.",
+        tags: ["Session"],
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: "id", in: "path", required: true, schema: { type: "string" }, description: "Session ID" },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: { preimage: { type: "string", description: "32-byte payment preimage (hex)" } },
+                required: ["preimage"],
+              },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "Settlement recorded",
+            content: { "application/json": { schema: { type: "object", properties: { ok: { type: "boolean" } } } } },
+          },
+          "400": { description: "Missing or invalid preimage" },
+          "401": { description: "Missing or invalid auth token" },
+          "404": { description: "No settlement record for this session matches the preimage" },
         },
       },
     },
@@ -383,7 +461,7 @@ export const openApiSpec = {
                   oneOf: [
                     {
                       type: "object",
-                      properties: { pr: { type: "string", description: "BOLT11 invoice" }, routes: { type: "array", items: {} } },
+                      properties: { pr: { type: "string", description: "BOLT11 invoice" }, routes: { type: "array", items: {} }, verify: { type: "string", description: "LUD-21 verify URL (present when the bolt11 could be decoded)" } },
                     },
                     {
                       type: "object",

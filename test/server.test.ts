@@ -920,6 +920,8 @@ describe("LNURL Service", () => {
           "/lnurl/session",
           "/lnurl/{id}",
           "/lnurl/{id}/callback",
+          "/lnurl/verify/{paymentHash}",
+          "/lnurl/session/{id}/settled",
           "/lnurl/address",
           "/lnurl/address/{username}",
           "/.well-known/lnurlp/{username}",

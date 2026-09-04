@@ -30,4 +30,9 @@ describe("loadConfig", () => {
   it("rejects a key that is not 32 bytes", () => {
     expect(() => loadConfig({ ...base, DB_PATH: "/data/x.db", TOKEN_ENCRYPTION_KEY: "abcd" })).toThrow(/32 bytes/);
   });
+
+  it("reads VERIFY_TTL_MS with a 24h default", () => {
+    expect(loadConfig({ ...base }).verifyTtlMs).toBe(86_400_000);
+    expect(loadConfig({ ...base, VERIFY_TTL_MS: "1000" }).verifyTtlMs).toBe(1000);
+  });
 });

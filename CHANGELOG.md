@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+- **LUD-21 (`verify`)** — LNURL-pay callback responses now carry a `verify` URL, and a new `GET /lnurl/verify/:paymentHash` lets payers poll settlement status (`{ status, settled, preimage, pr }`). Because this server is a relay with no Lightning node, wallets report settlement via the new authenticated `POST /lnurl/session/:id/settled` with `{ preimage }` — the server checks `sha256(preimage)` against a payment hash the session issued (decoded locally from the bolt11, no new dependency) before flipping the record to settled. Settlement records live in a new `settlements` table (migration 003) when `DB_PATH` is set, or in an in-memory store with a `VERIFY_TTL_MS` (default 24h) lifetime otherwise, so a payer can still poll `verify` after the wallet disconnects. Available on both the ephemeral LNURL and the LN-address (LUD-16) flows.
+
 ## 0.2.6 - 2026-06-04
 
 ### Added

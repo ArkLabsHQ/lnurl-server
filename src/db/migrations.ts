@@ -75,6 +75,21 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 3,
+    up: `
+      CREATE TABLE settlements (
+        payment_hash TEXT PRIMARY KEY,
+        pr           TEXT NOT NULL,
+        session_id   TEXT NOT NULL,
+        settled      INTEGER NOT NULL DEFAULT 0,
+        preimage     TEXT,
+        created_at   INTEGER NOT NULL,
+        settled_at   INTEGER
+      );
+      CREATE INDEX idx_settlements_created ON settlements(created_at);
+    `,
+  },
 ];
 
 /** Apply all pending forward-only migrations inside a transaction each. */
