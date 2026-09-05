@@ -20,6 +20,8 @@ export interface ClaimPacket {
 }
 
 const encodeTlv = (type: number, value: Uint8Array): Uint8Array => {
+  // The shift below wraps rather than throws: a short length, a full buffer.
+  if (value.length > 0xffff) throw new Error(`TLV value too long: ${value.length} bytes`);
   const out = new Uint8Array(3 + value.length);
   out[0] = type;
   out[1] = (value.length >> 8) & 0xff;
