@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { MemorySettlementStore } from "../src/settlement-store.js";
 import { settleOfflineSwaps } from "../src/offline-poller.js";
 import type { OfflineSwapCreator } from "../src/intent-swap.js";
@@ -24,17 +24,20 @@ describe("settleOfflineSwaps", () => {
     expect(store.listPendingSwaps().map((p) => p.swapId)).toEqual(["swap-2"]);
   });
 
-  it("leaves a swap pending when the status check throws (transient)", async () => {
+  it("leaves a swap pending when the status check throws, and names it in a warning", async () => {
     const store = new MemorySettlementStore(60_000);
     store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
     const creator: OfflineSwapCreator = {
       create: async () => { throw new Error("not used"); },
       isSettled: async () => { throw new Error("solver down"); },
     };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const n = await settleOfflineSwaps(store, creator);
 
     expect(n).toBe(0);
     expect(store.get("aa")!.settled).toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("swap-1"), expect.any(Error));
+    warn.mockRestore();
   });
 });

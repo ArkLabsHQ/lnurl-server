@@ -13,8 +13,10 @@ export async function settleOfflineSwaps(store: SettlementStore, creator: Offlin
         store.markSettled(p.paymentHash, p.preimage);
         settled++;
       }
-    } catch {
-      // Transient (e.g. solver unreachable) — leave pending for the next tick.
+    } catch (err) {
+      // Left pending for the next tick, but not silently: this also catches a
+      // solver that answers and refuses, which no later tick resolves.
+      console.warn(`offline settlement: status check failed for swap ${p.swapId}:`, err);
     }
   }
   return settled;
