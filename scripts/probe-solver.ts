@@ -42,7 +42,12 @@ console.log(`relay    ${relay}`);
 console.log(`operator ${arkServerUrl}`);
 
 const creator = createIntentSwapCreator({ solverPubkey, nostrRelays: [relay], covclaimdUrl, arkServerUrl });
-const receiveAddress = new ArkAddress(secp256k1.utils.randomSecretKey(), secp256k1.utils.randomSecretKey(), "tark").encode();
+// Arkade address keys are x-only 32-byte keys, not raw scalars.
+const receiveAddress = new ArkAddress(
+  secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true).slice(1),
+  secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true).slice(1),
+  "tark",
+).encode();
 const claimPublicKey = hex.encode(secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true));
 
 try {
