@@ -36,8 +36,8 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # The harness brings the stack up itself (arkade-regtest at ./regtest) and
-      # builds the intent-solver image from upstream master (applying
-      # test/e2e/intent-solver-covclaimd.patch until that wiring ships upstream).
+      # builds the intent-solver image from upstream master, which carries the
+      # covclaimd wiring since arkade-os/intent-solver#38.
       - name: E2E — offline receive via the intents corridor
         run: pnpm test:e2e
 

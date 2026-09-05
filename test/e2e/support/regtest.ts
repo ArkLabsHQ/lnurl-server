@@ -89,10 +89,6 @@ export async function ensureIntentSolverImage(log: (s: string) => void = console
   if (!existsSync(join(dir, "packages"))) {
     await run("git", ["clone", "--depth", "1", INTENT_SOLVER_REPO, dir], { timeout: 300_000 });
   }
-  // Upstream's createServices deliberately leaves the covclaimd client unset
-  // (written before rc.4 was live-verified) — apply the wiring patch, then build.
-  // Drop this once the patch (or equivalent) ships upstream.
-  await run("git", ["apply", join(HERE, "..", "intent-solver-covclaimd.patch")], { cwd: dir, timeout: 30_000 });
   await run("docker", ["build", "-f", "packages/solver-app/Dockerfile", "-t", INTENT_SOLVER_IMAGE, "."], {
     cwd: dir,
     timeout: 1_800_000,
