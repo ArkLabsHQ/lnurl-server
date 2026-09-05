@@ -104,8 +104,10 @@ export async function ensureStack(log: (s: string) => void = console.log): Promi
     throw new Error("arkade-regtest submodule missing — run: git submodule update --init");
   }
   await ensureIntentSolverImage(log);
-  await applySolverOverlay(); // image may have been rebuilt since the stack came up
   if (await stackIsUp()) {
+    // A running stack may carry a solver from before the current image/overlay —
+    // refresh it, then reuse the stack.
+    await applySolverOverlay();
     log("regtest stack already healthy; reusing it");
     return;
   }
