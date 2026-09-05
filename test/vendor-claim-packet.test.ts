@@ -39,7 +39,7 @@ describe("sealClaimPacket (vendored) vs covclaimd's wire scheme", () => {
     const preimage = secp256k1.utils.randomSecretKey();
     const { ciphertext } = await sealClaimPacket({ preimage, covclaimdPubkey: covPub });
     const blob = base64.decode(ciphertext);
-    blob[40] ^= 1; // inside the ciphertext+tag region
+    blob[40] ^= 1; // inside the nonce+ciphertext region (any AEAD-covered byte)
     expect(() => covclaimdDecrypt(covPriv, base64.encode(blob))).toThrow();
   });
 
