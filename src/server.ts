@@ -33,6 +33,10 @@ const PROVISIONING_STATUS: Record<string, number> = {
   blacklisted: 409, taken: 409, limit_reached: 429, invalid_claim: 401,
 };
 
+/** Express types query values as string | string[] | ...; an array (`?a=1&a=2`)
+ *  is never meaningful for our params — take them only when they're a string. */
+const strParam = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+
 export interface ServerDeps {
   repos: Repositories;
   addressService?: AddressService;
@@ -322,11 +326,17 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
   // LNURL-pay callback (LUD-06). Requests bolt11 from wallet via SSE.
   app.get("/lnurl/:id/callback", async (req, res) => {
     const { id } = req.params;
-    const amountStr = req.query.amount as string | undefined;
-    const comment = req.query.comment as string | undefined;
+    const amountStr = strParam(req.query.amount);
+    const comment = strParam(req.query.comment);
 
     if (!amountStr || isNaN(Number(amountStr))) {
       res.json({ status: "ERROR", reason: "Missing or invalid amount parameter" } satisfies LnurlErrorResponse);
+      return;
+    }
+    // Non-positive amounts are refused before anything downstream (a provider must
+    // never see them) — with the same bounds phrasing the relay has always used.
+    if (Number(amountStr) <= 0) {
+      res.json({ status: "ERROR", reason: `Amount must be between ${settings.minSendable()} and ${settings.maxSendable()} millisats` } satisfies LnurlErrorResponse);
       return;
     }
     await requestInvoiceAndRespond({
@@ -450,16 +460,21 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         res.json({ status: "ERROR", reason: "Unknown LN address" } satisfies LnurlErrorResponse);
         return;
       }
-      const amountStr = req.query.amount as string | undefined;
-      const comment = req.query.comment as string | undefined;
-      if (!amountStr || isNaN(Number(amountStr))) {
+      const amountStr = strParam(req.query.amount);
+      const comment = strParam(req.query.comment);
+      if (!amountStr || isNaN(Number(amountStr)) || Number(amountStr) <= 0) {
         res.json({ status: "ERROR", reason: "Missing or invalid amount parameter" } satisfies LnurlErrorResponse);
         return;
       }
       let amountMsat = Number(amountStr);
       const min = domain.minSendable ?? settings.minSendable();
       const max = domain.maxSendable ?? settings.maxSendable();
-      const paymentOptionId = req.query.paymentOption as string | undefined;
+      const paymentOptionId = strParam(req.query.paymentOption);
+      // Non-positive amounts are refused before the quote/provider path.
+      if (amountMsat <= 0) {
+        res.json({ status: "ERROR", reason: `Amount must be between ${min} and ${max} millisats` } satisfies LnurlErrorResponse);
+        return;
+      }
 
       // LUD-XX paymentOptions: resolve the wallet's selected rail. "lightning" (or absent)
       // falls through to the BOLT11 flow below; a destination rail (arkade) returns the
@@ -472,8 +487,8 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
 
       // LUD-XX paymentQuote: a unit-denominated request is quoted to a msat amount by the
       // injected provider (lightning path only). Absent unit ⇒ amount stays msat.
-      const unit = req.query.unit as string | undefined;
-      const receiveUnit = req.query.receiveUnit as string | undefined;
+      const unit = strParam(req.query.unit);
+      const receiveUnit = strParam(req.query.receiveUnit);
       let paymentQuote: PaymentQuote | undefined;
       if (unit !== undefined || receiveUnit !== undefined) {
         if (resolved.kind === "destination") {

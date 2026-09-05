@@ -6,6 +6,9 @@ import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
 import { QuoteError, type QuoteProvider, type PaymentQuote } from "../src/quote-provider.js";
 import type { OfflineSwapCreator, OfflineSwapParams } from "../src/intent-swap.js";
+import { SessionManager } from "../src/session-manager.js";
+import { deriveSessionId } from "../src/session-id.js";
+import { buildInvoice } from "./helpers/bolt11.js";
 import type { LnurlServiceConfig } from "../src/types.js";
 
 const CONFIG: LnurlServiceConfig = { port: 0, baseUrl: "", minSendable: 1000, maxSendable: 100_000_000, invoiceTimeoutMs: 3000 };
@@ -16,7 +19,8 @@ const CLAIMPK = "02" + "ab".repeat(32);
 const usd: QuoteProvider = {
   units: () => [{ code: "USD", decimals: 2, symbol: "$" }],
   quote: (req): PaymentQuote => {
-    if (req.unit !== "USD") throw new QuoteError("Unsupported unit");
+    if (req.unit !== undefined && req.unit !== "USD") throw new QuoteError("Unsupported unit");
+    if (req.receiveUnit !== undefined && req.receiveUnit !== "USD") throw new QuoteError("Unsupported unit");
     return { requested: { amount: String(req.amount), unit: "USD" }, payment: { amount: String(req.amount * 1000), unit: "msat" } };
   },
 };
@@ -40,6 +44,58 @@ function start(deps: ServerDeps) {
 function getJson(url: string, host: string) {
   return new Promise<Record<string, unknown>>((resolve, reject) => {
     http.get(url, { headers: { Host: host } }, (res) => { let d = ""; res.on("data", (c) => (d += c)); res.on("end", () => resolve(JSON.parse(d))); }).on("error", reject);
+  });
+}
+
+// Minimal SSE wallet session (same pattern as verify.test.ts).
+function openSession(baseUrl: string, token?: string) {
+  return new Promise<{ sessionId: string; token: string; response: http.IncomingMessage; abort: () => void }>((resolve, reject) => {
+    const req = http.request(`${baseUrl}/lnurl/session`, { method: "POST", headers: { "Content-Type": "application/json" } });
+    req.on("response", (res) => {
+      let buf = "";
+      const onData = (c: Buffer) => {
+        buf += c.toString();
+        for (const line of buf.split("\n")) {
+          if (line.startsWith("data: ")) {
+            const d = JSON.parse(line.slice(6));
+            if (d.sessionId && d.token) {
+              res.removeListener("data", onData);
+              resolve({ sessionId: d.sessionId, token: d.token, response: res, abort: () => { res.destroy(); req.destroy(); } });
+              return;
+            }
+          }
+        }
+      };
+      res.on("data", onData); res.on("error", reject);
+    });
+    req.on("error", reject);
+    if (token) req.write(JSON.stringify({ token }));
+    req.end();
+  });
+}
+
+function nextSseEvent(res: http.IncomingMessage, timeoutMs = 5000) {
+  return new Promise<{ event: string; data: Record<string, unknown> }>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Timed out waiting for SSE event")), timeoutMs);
+    let buf = "";
+    const onData = (c: Buffer) => {
+      buf += c.toString();
+      let evt = "";
+      for (const line of buf.split("\n")) {
+        if (line.startsWith("event: ")) evt = line.slice(7).trim();
+        if (line.startsWith("data: ") && evt) { clearTimeout(timer); res.removeListener("data", onData); resolve({ event: evt, data: JSON.parse(line.slice(6)) }); return; }
+      }
+    };
+    res.on("data", onData);
+  });
+}
+
+function postJson(url: string, body: unknown, token?: string) {
+  return new Promise<{ status: number }>((resolve, reject) => {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const req = http.request(url, { method: "POST", headers }, (res) => { res.resume(); res.on("end", () => resolve({ status: res.statusCode ?? 0 })); });
+    req.on("error", reject); req.write(JSON.stringify(body)); req.end();
   });
 }
 
@@ -80,6 +136,91 @@ describe("LUD-XX paymentQuote", () => {
         payment: { amount: "100000", unit: "msat" },
       });
     } finally { await ctx.close(); }
+  });
+
+  it("rejects unit+arkade composition, and a non-positive amount before any provider call", async () => {
+    let calls = 0;
+    const counting: QuoteProvider = { units: usd.units, quote: (r) => { calls++; return usd.quote(r); } };
+    addr("alice");
+    const ctx = await start({ repos, quoteProvider: counting, offlineSwapCreator: fakeCreator });
+    try {
+      const guard = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000&unit=USD&paymentOption=arkade`, "domain.com");
+      expect(String(guard.reason)).toMatch(/not supported for this paymentOption/i);
+      const zero = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=0&unit=USD`, "domain.com");
+      expect(zero.status).toBe("ERROR");
+      const neg = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=-5&unit=USD`, "domain.com");
+      expect(neg.status).toBe("ERROR");
+      expect(calls).toBe(0); // every rejection happened before the provider
+    } finally { await ctx.close(); }
+  });
+
+  it("ignores an array-typed unit param (never type-lies to the provider)", async () => {
+    addr("alice");
+    const ctx = await start({ repos, quoteProvider: usd, offlineSwapCreator: fakeCreator });
+    try {
+      // Express parses unit[]=USD as an array — treated as absent, plain msat flow
+      const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000&unit[]=USD`, "domain.com");
+      expect(cb.pr).toBe("lnbc1quoted");
+      expect(cb.paymentQuote).toBeUndefined();
+    } finally { await ctx.close(); }
+  });
+
+  it("quotes a receiveUnit-only callback (no unit)", async () => {
+    addr("alice");
+    const ctx = await start({ repos, quoteProvider: usd, offlineSwapCreator: fakeCreator });
+    try {
+      const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=100&receiveUnit=USD`, "domain.com");
+      expect(cb.pr).toBe("lnbc1quoted");
+      expect(cb.paymentQuote).toBeDefined();
+    } finally { await ctx.close(); }
+  });
+
+  it("rejects a quote landing outside the sendable range after conversion", async () => {
+    const tiny: QuoteProvider = { units: usd.units, quote: () => ({ requested: { amount: "1", unit: "USD" }, payment: { amount: "1", unit: "msat" } }) };
+    addr("alice");
+    const ctx = await start({ repos, quoteProvider: tiny, offlineSwapCreator: fakeCreator });
+    try {
+      const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=1&unit=USD`, "domain.com");
+      expect(cb.status).toBe("ERROR");
+      expect(String(cb.reason)).toMatch(/between/i);
+    } finally { await ctx.close(); }
+  });
+
+  it("maps a provider crash to a distinct reason (not 'Unsupported unit')", async () => {
+    const buggy: QuoteProvider = {
+      units: () => [{ code: "USD", decimals: 2 }],
+      quote: () => { throw new TypeError("oops"); },
+    };
+    addr("alice");
+    const ctx = await start({ repos, quoteProvider: buggy, offlineSwapCreator: fakeCreator });
+    try {
+      const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=100&unit=USD`, "domain.com");
+      expect(cb.status).toBe("ERROR");
+      expect(String(cb.reason)).toBe("Quote failed");
+    } finally { await ctx.close(); }
+  });
+
+  it("quotes the online relay path (live SSE session) with the quoted amount", async () => {
+    const sessions = new SessionManager();
+    const ctx = await start({ repos, quoteProvider: usd, sessions });
+    const walletToken = "ef".repeat(32);
+    const a = repos.addresses.create({ domainId, username: "alice", status: "active", sessionId: deriveSessionId(walletToken) });
+    repos.addresses.setOfflineReceive(a.id, ARK, CLAIMPK);
+    const session = await openSession(ctx.baseUrl, walletToken);
+    try {
+      const hash = "cd".repeat(32);
+      const evt = nextSseEvent(session.response);
+      const payer = getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=100&unit=USD`, "domain.com");
+      const invoiceReq = await evt;
+      expect(invoiceReq.data.amountMsat).toBe(100000); // 100 USD cents -> 100000 msat relayed to the wallet
+      await postJson(`${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`, { pr: buildInvoice(hash) }, session.token);
+      const cb = await payer;
+      expect(cb.pr).toContain("lnbc");
+      expect(cb.paymentQuote).toMatchObject({ requested: { amount: "100", unit: "USD" }, payment: { amount: "100000", unit: "msat" } });
+    } finally {
+      session.abort();
+      await ctx.close();
+    }
   });
 
   it("errors on an unsupported unit", async () => {

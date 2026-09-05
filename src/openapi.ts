@@ -492,6 +492,9 @@ export const openApiSpec = {
                               decimals: { type: "number" },
                               name: { type: "string" },
                               symbol: { type: "string" },
+                              assetId: { type: "string", description: "Asset identifier, when the unit is a non-BTC asset" },
+                              minAmount: { type: "string", description: "Smallest quotable amount in the unit's smallest unit" },
+                              maxAmount: { type: "string", description: "Largest quotable amount in the unit's smallest unit" },
                             },
                           },
                         },
@@ -540,7 +543,23 @@ export const openApiSpec = {
                   oneOf: [
                     {
                       type: "object",
-                      properties: { pr: { type: "string", description: "BOLT11 invoice" }, routes: { type: "array", items: {} }, verify: { type: "string", description: "LUD-21 verify URL (present when the bolt11 could be decoded)" }, paymentQuote: { type: "object", description: "LUD-XX quote (present when the request was unit-denominated)" } },
+                      properties: {
+                        pr: { type: "string", description: "BOLT11 invoice" },
+                        routes: { type: "array", items: {} },
+                        verify: { type: "string", description: "LUD-21 verify URL (present when the bolt11 could be decoded)" },
+                        paymentQuote: {
+                          type: "object",
+                          description: "LUD-XX quote (present when the request was unit-denominated)",
+                          properties: {
+                            id: { type: "string" },
+                            expiresAt: { type: "string", description: "ISO 8601" },
+                            requested: { $ref: "#/components/schemas/AmountObject" },
+                            payment: { $ref: "#/components/schemas/AmountObject" },
+                            receive: { $ref: "#/components/schemas/AmountObject" },
+                            fees: { type: "array", items: { type: "object", properties: { amount: { type: "string" }, unit: { type: "string" }, description: { type: "string" } } } },
+                          },
+                        },
+                      },
                     },
                     {
                       type: "object",
@@ -566,6 +585,14 @@ export const openApiSpec = {
     },
   },
   components: {
+    schemas: {
+      AmountObject: {
+        type: "object",
+        description: "An amount denominated in a unit; strings avoid JSON integer-precision loss",
+        properties: { amount: { type: "string" }, unit: { type: "string", description: "e.g. msat, USD" } },
+        required: ["amount", "unit"],
+      },
+    },
     securitySchemes: {
       bearerAuth: {
         type: "http" as const,

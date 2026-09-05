@@ -38,4 +38,32 @@ describe("applyQuote", () => {
     };
     expect(applyQuote(asset, { amount: 100, unit: "USDT" })).toMatchObject({ ok: false });
   });
+
+  it("rejects quoted amounts beyond Number's safe integer range (no float precision loss)", () => {
+    const huge: QuoteProvider = {
+      units: () => [{ code: "USD", decimals: 2 }],
+      quote: () => ({ requested: { amount: "1", unit: "USD" }, payment: { amount: "9007199254740993", unit: "msat" } }),
+    };
+    expect(applyQuote(huge, { amount: 1, unit: "USD" })).toMatchObject({ ok: false, reason: "Invalid quoted amount" });
+  });
+
+  it("collapses a non-QuoteError provider crash to a distinct 'Quote failed' (not 'Unsupported unit')", () => {
+    const buggy: QuoteProvider = {
+      units: () => [],
+      quote: () => {
+        throw new TypeError("oops");
+      },
+    };
+    expect(applyQuote(buggy, { amount: 100, unit: "USD" })).toEqual({ ok: false, reason: "Quote failed" });
+  });
+
+  it("enforces the advertised unit's own min/max bounds before quoting", () => {
+    const bounded: QuoteProvider = {
+      units: () => [{ code: "USD", decimals: 2, minAmount: "10", maxAmount: "1000" }],
+      quote: usd.quote,
+    };
+    expect(applyQuote(bounded, { amount: 5, unit: "USD" })).toMatchObject({ ok: false, reason: expect.stringMatching(/minimum/) });
+    expect(applyQuote(bounded, { amount: 5000, unit: "USD" })).toMatchObject({ ok: false, reason: expect.stringMatching(/maximum/) });
+    expect(applyQuote(bounded, { amount: 100, unit: "USD" })).toMatchObject({ ok: true, amountMsat: 100000 });
+  });
 });

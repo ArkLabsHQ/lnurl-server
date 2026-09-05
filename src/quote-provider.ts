@@ -63,18 +63,38 @@ export type ApplyQuoteResult =
  *  requires the quoted `payment` to be denominated in `msat`. */
 export function applyQuote(provider: QuoteProvider | undefined, req: QuoteRequest): ApplyQuoteResult {
   if (!provider) return { ok: false, reason: "Unsupported unit" };
+  // The advertised unit's own bounds, when it carries them — checked before quoting.
+  if (req.unit !== undefined && Number.isInteger(req.amount)) {
+    const u = provider.units(req.paymentOption).find((x) => x.code === req.unit);
+    if (u) {
+      const amount = BigInt(req.amount);
+      if (u.minAmount !== undefined && amount < BigInt(u.minAmount)) return { ok: false, reason: `Amount below ${req.unit} minimum (${u.minAmount})` };
+      if (u.maxAmount !== undefined && amount > BigInt(u.maxAmount)) return { ok: false, reason: `Amount above ${req.unit} maximum (${u.maxAmount})` };
+    }
+  }
   let q: PaymentQuote;
   try {
     q = provider.quote(req);
   } catch (e) {
-    return { ok: false, reason: e instanceof QuoteError ? e.message : "Unsupported unit" };
+    if (e instanceof QuoteError) return { ok: false, reason: e.message };
+    // A provider BUG is not a payer-facing "unsupported unit" — log it and say so.
+    console.error("quote provider threw", e);
+    return { ok: false, reason: "Quote failed" };
   }
   if (q.payment.unit !== "msat") {
     return { ok: false, reason: "Quote payment must be denominated in msat" };
   }
-  const amountMsat = Number(q.payment.amount);
-  if (!Number.isInteger(amountMsat) || amountMsat <= 0) {
+  // The wire carries amounts as strings precisely to avoid float precision loss —
+  // parse via BigInt and refuse what JS numbers can't hold exactly.
+  let amountBig: bigint;
+  try {
+    amountBig = BigInt(q.payment.amount);
+  } catch {
     return { ok: false, reason: "Invalid quoted amount" };
   }
+  if (amountBig > BigInt(Number.MAX_SAFE_INTEGER) || amountBig <= 0n) {
+    return { ok: false, reason: "Invalid quoted amount" };
+  }
+  const amountMsat = Number(amountBig);
   return { ok: true, amountMsat, paymentQuote: q };
 }
