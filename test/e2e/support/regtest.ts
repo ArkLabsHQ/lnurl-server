@@ -109,6 +109,8 @@ export async function ensureStack(log: (s: string) => void = console.log): Promi
     // refresh it, then reuse the stack.
     await applySolverOverlay();
     log("regtest stack already healthy; reusing it");
+    // If the stack predates a channel announcement (fresh chain), mature it.
+    await mine(8);
     return;
   }
   log("starting arkade-regtest stack (first boot pulls ~20 images; several minutes)...");
@@ -125,6 +127,9 @@ export async function ensureStack(log: (s: string) => void = console.log): Promi
   await pollUntil("covclaimd", () => httpOk(`${COVCLAIMD_URL}/v1/preimage/covclaimd-pubkey`), 120_000);
   // The stack's intent-solver lacks COVCLAIMD_URL in its env map; the overlay adds it.
   await applySolverOverlay();
+  // The LN channel between the payer and the solver's node announces after 6
+  // confirmations; an HTLC can't route until then. Automine is off, so mine them.
+  await mine(8);
 }
 
 // -- miner + faucet --
