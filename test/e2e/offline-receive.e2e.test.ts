@@ -157,7 +157,8 @@ describe("e2e: offline receive via the intents corridor", () => {
     // before covclaimd's claim can be co-signed, so mine when it lands (and then
     // slowly, so the claim's own batch confirms too). Bounded: the HTLC's CLTV
     // budget (54 blocks) is never approached.
-    const swapId = settlements.get(paymentHash)!.swapId!;
+    const swapId = settlements.get(paymentHash)?.swapId;
+    if (!swapId) throw new Error(`no settlement record / swap id for ${paymentHash} — the callback should have created one`);
     console.log(`[test] rfq ${swapId} — payment hash ${paymentHash}`);
     let minedFunding = false;
     let blocksMined = 0;

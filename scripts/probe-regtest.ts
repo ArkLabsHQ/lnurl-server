@@ -10,7 +10,6 @@ async function main() {
     covclaimdUrl: "http://localhost:7271",
     arkServerUrl: "http://localhost:7070",
   });
-  const receiveKey = secp256k1.utils.randomSecretKey();
   const receiveAddress = new ArkAddress(secp256k1.utils.randomSecretKey(), secp256k1.utils.randomSecretKey(), "tark").encode();
 
   console.log("[1] quoting...");
