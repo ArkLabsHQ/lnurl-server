@@ -158,6 +158,7 @@ describe("e2e: offline receive via the intents corridor", () => {
     // slowly, so the claim's own batch confirms too). Bounded: the HTLC's CLTV
     // budget (54 blocks) is never approached.
     const swapId = settlements.get(paymentHash)!.swapId!;
+    console.log(`[test] rfq ${swapId} — payment hash ${paymentHash}`);
     let minedFunding = false;
     let blocksMined = 0;
     let lastMine = 0;

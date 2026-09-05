@@ -42,6 +42,11 @@ jobs:
         if: failure()
         run: |
           docker ps || true
+          echo "=== solver admin overview ==="; curl -s http://localhost:8788/api/overview || true
+          echo "=== solver swaps ==="; curl -s http://localhost:8788/api/swaps || true
+          echo "=== solver DBs ==="
+          docker cp test/e2e/support/dump-solver-db.js intent-solver:/tmp/dump.js || true
+          docker exec intent-solver node /tmp/dump.js || true
           for c in arkd intent-solver covclaimd emulator lnd boltz-lnd; do
             echo "=== $c ==="; docker logs "$c" --tail 200 2>&1 || true
           done
