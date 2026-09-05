@@ -118,7 +118,7 @@ export async function ensureStack(log: (s: string) => void = console.log): Promi
     await enforceEmulatorPin();
     log("regtest stack already healthy; reusing it");
     // If the stack predates a channel announcement (fresh chain), mature it.
-    await mine(8);
+    await waitForLnChannel();
     return;
   }
   log("starting arkade-regtest stack (first boot pulls ~20 images; several minutes)...");
@@ -135,9 +135,9 @@ export async function ensureStack(log: (s: string) => void = console.log): Promi
   await pollUntil("covclaimd", () => httpOk(`${COVCLAIMD_URL}/v1/preimage/covclaimd-pubkey`), 120_000);
   // The stack's intent-solver lacks COVCLAIMD_URL in its env map; the overlay adds it.
   await applySolverOverlay();
-  // The LN channel between the payer and the solver's node announces after 6
-  // confirmations; an HTLC can't route until then. Automine is off, so mine them.
-  await mine(8);
+  // The LN channel between the payer and the solver's node must be usable before any
+  // HTLC routes; stackIsUp answers before the stack's boltz setup finishes opening it.
+  await waitForLnChannel();
 }
 
 // -- miner + faucet --
@@ -217,6 +217,24 @@ const compose = (args: string[], profile = "intent-solver") =>
     ],
     { cwd: REGTEST_DIR, env: STACK_ENV, timeout: 120_000 },
   );
+
+/** The payer↔solver LN channel must be announced/usable before any HTLC routes;
+ *  stackIsUp answers before the stack's boltz setup finishes opening it, so poll
+ *  (mining each pass — a fresh chain's funding tx needs the blocks). */
+async function waitForLnChannel(): Promise<void> {
+  const deadline = Date.now() + 600_000;
+  for (;;) {
+    await mine(1);
+    try {
+      const { channels } = await lncli<{ channels: { active: boolean }[] }>("lnd", ["listchannels"]);
+      if (channels.some((c) => c.active)) return;
+    } catch {
+      // lnd not answering yet
+    }
+    if (Date.now() > deadline) throw new Error("no active LN channel within 600s");
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+}
 
 /** Recreate intent-solver with the e2e overlay applied (carries COVCLAIMD_URL). */
 export async function applySolverOverlay(): Promise<void> {
