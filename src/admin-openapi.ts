@@ -291,7 +291,8 @@ export const adminOpenApiSpec = {
         summary: "List settlement records",
         description:
           "Read-only audit view over LUD-21 settlement records (relay invoices, offline corridor swaps, " +
-          "destination-rail payments). Newest first. The preimage is never exposed (`hasPreimage` flag only) " +
+          "destination-rail payments). Newest first, filters applied before the limit (a filtered page is " +
+          "never truncated by it). The preimage is never exposed (`hasPreimage` flag only) " +
           "and `pr` is omitted as bulk — fetch the public `/lnurl/verify/:paymentHash` for those.",
         tags: ["Settlements"],
         parameters: [

@@ -201,9 +201,12 @@ export function createAdminApi(deps: AdminDeps): Router {
     const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 1000) : 200;
     const settled = req.query.settled as string | undefined;
     const option = req.query.option as string | undefined;
-    let rows = deps.settlements.listRecent(limit);
-    if (settled === "true" || settled === "false") rows = rows.filter((x) => x.settled === (settled === "true"));
-    if (option) rows = rows.filter((x) => x.paymentOption === option);
+    // Filters are pushed into the store query — filtering after the limit would
+    // silently truncate (a pending record older than the window must still surface).
+    const rows = deps.settlements.listRecent(limit, {
+      ...(settled === "true" || settled === "false" ? { settled: settled === "true" } : {}),
+      ...(option ? { option } : {}),
+    });
     res.json(
       rows.map((x) => ({
         paymentHash: x.paymentHash,

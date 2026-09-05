@@ -37,7 +37,8 @@ const covclaimd = http.createServer((req, res) => {
   }
 });
 
-await new Promise<void>((r) => covclaimd.listen(0, "127.0.0.1", r));
+// With a real daemon configured, don't bind the local fake at all.
+if (!realCovclaimdUrl) await new Promise<void>((r) => covclaimd.listen(0, "127.0.0.1", r));
 const covclaimdUrl = realCovclaimdUrl ?? `http://127.0.0.1:${(covclaimd.address() as { port: number }).port}`;
 
 console.log(`solver   ${solverPubkey}`);

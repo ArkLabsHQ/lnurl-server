@@ -147,4 +147,31 @@ describe("admin API", () => {
     const arkadeOnly = await request(app).get("/admin/api/settlements?option=arkade");
     expect(arkadeOnly.body.map((r: { paymentHash: string }) => r.paymentHash)).toEqual(["vid2"]);
   });
+
+  it("returns 503 when no settlement store is configured", async () => {
+    const svc = new AddressService(repos, randomBytes(32));
+    const config = loadConfig({ PORT: "3000", BASE_URL: "http://localhost:3000" });
+    const settings = new SettingsService(repos.settings, {
+      minSendable: config.minSendable, maxSendable: config.maxSendable, invoiceTimeoutMs: config.invoiceTimeoutMs,
+      baseUrl: config.baseUrl, registrationRateLimitPerMin: config.registrationRateLimitPerMin,
+    });
+    const bare = express();
+    bare.use(express.json());
+    bare.use("/admin/api", createAdminApi({ repos, addressService: svc, sessions, settings, config }));
+    const r = await request(bare).get("/admin/api/settlements");
+    expect(r.status).toBe(503);
+  });
+
+  it("applies filters before the limit (a filtered page is not truncated by it)", async () => {
+    // 3 settled records newer than 2 pending ones; a naive limit-then-filter would
+    // return nothing pending at limit=3, the pushed-down filter must still find them.
+    for (let i = 0; i < 3; i++) {
+      settlements.create({ paymentHash: `s${i}`, pr: "ln1", sessionId: "sess" });
+      settlements.markSettled(`s${i}`, "preimage");
+    }
+    settlements.create({ paymentHash: "p0", pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000 });
+    settlements.create({ paymentHash: "p1", pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000 });
+    const res = await request(app).get("/admin/api/settlements?settled=false&limit=3");
+    expect(res.body.map((r: { paymentHash: string }) => r.paymentHash)).toEqual(["p1", "p0"]);
+  });
 });
