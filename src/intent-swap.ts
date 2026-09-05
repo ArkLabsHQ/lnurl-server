@@ -184,7 +184,8 @@ export async function createIntentSwapCreator(settings: IntentSwapSettings): Pro
         throw new Error("receiveAddress is not a valid Arkade address");
       }
       // Discovered card bounds: reject out-of-range amounts with the actual numbers
-      // instead of the solver's bare refusal reason.
+      // instead of the solver's bare refusal reason. The card is read once at
+      // construction — a solver changing its corridor bounds takes effect on restart.
       if (card && (params.amountSat < card.minSat || params.amountSat > card.maxSat)) {
         throw new Error(`amount ${params.amountSat} sats is outside the corridor's ${card.minSat}–${card.maxSat} sats bounds`);
       }

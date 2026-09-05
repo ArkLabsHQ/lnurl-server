@@ -30,7 +30,8 @@ function asCard(m: IndexMarket): CorridorCard | null {
   if (m.quote_corridor !== "lightning") return null;
   if (typeof m.discovery_pubkey !== "string" || !/^[0-9a-f]{64}$/i.test(m.discovery_pubkey)) return null;
   const relays = m.transports?.nostr?.relays;
-  if (!Array.isArray(relays) || !relays.length || !relays.every((r) => typeof r === "string" && r.startsWith("wss://"))) return null;
+  // The registry schema permits ws:// (regtest/dev relays terminate no TLS).
+  if (!Array.isArray(relays) || !relays.length || !relays.every((r) => typeof r === "string" && /^wss?:\/\//.test(r))) return null;
   const minSat = Number(m.min_quote_amount);
   const maxSat = Number(m.max_quote_amount);
   if (!Number.isFinite(minSat) || !Number.isFinite(maxSat) || minSat < 0 || maxSat < minSat) return null;
@@ -45,9 +46,14 @@ function asCard(m: IndexMarket): CorridorCard | null {
 }
 
 /** Fetch a registry index and pick the lowest-fee lightning-corridor card.
- *  Returns null when the index serves no usable lightning corridor. */
-export async function discoverLightningCorridor(registryUrl: string, fetchImpl: typeof fetch = fetch): Promise<CorridorCard | null> {
-  const res = await fetchImpl(registryUrl);
+ *  Returns null when the index serves no usable lightning corridor.
+ *  The fetch is time-bounded: a hung registry must not stall startup forever. */
+export async function discoverLightningCorridor(
+  registryUrl: string,
+  fetchImpl: typeof fetch = fetch,
+  timeoutMs = 10_000,
+): Promise<CorridorCard | null> {
+  const res = await fetchImpl(registryUrl, { signal: AbortSignal.timeout(timeoutMs) });
   if (!res.ok) throw new Error(`solver registry index: HTTP ${res.status}`);
   const index = (await res.json()) as { markets?: unknown };
   if (!Array.isArray(index.markets)) throw new Error("solver registry index: no markets array");

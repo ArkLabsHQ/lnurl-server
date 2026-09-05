@@ -87,4 +87,24 @@ describe("discoverLightningCorridor", () => {
       await noMarkets.close();
     }
   });
+
+  it("accepts ws:// (dev relays) and fails fast on a hung index fetch", async () => {
+    const idx = await serveIndex({ markets: [card({ transports: { nostr: { relays: ["ws://localhost:7777"] } } })] });
+    try {
+      expect((await discoverLightningCorridor(idx.url))?.relays).toEqual(["ws://localhost:7777"]);
+    } finally {
+      await idx.close();
+    }
+
+    // A server that accepts the socket but never answers must not stall startup.
+    const hanger = http.createServer(() => {});
+    await new Promise<void>((r) => hanger.listen(0, "127.0.0.1", r));
+    try {
+      const port = (hanger.address() as { port: number }).port;
+      await expect(discoverLightningCorridor(`http://127.0.0.1:${port}`, fetch, 50)).rejects.toThrow();
+    } finally {
+      hanger.closeAllConnections();
+      await new Promise<void>((r) => hanger.close(() => r()));
+    }
+  });
 });

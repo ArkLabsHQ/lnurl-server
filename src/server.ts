@@ -569,7 +569,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         await createOfflineSwapAndRespond({
           creator, store, baseUrl: settings.baseUrl(), amountMsat,
           receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, paymentQuote,
-          echoLightningOption: paymentOptionId !== undefined, res,
+          echoLightningOption: Boolean(paymentOptionId), res,
         });
         return;
       }
@@ -584,7 +584,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         sessions, sessionId: address.sessionId, amountMsat, comment,
         min, max, timeoutMs: settings.invoiceTimeoutMs(),
         offlineReason: `${username}@${domain.domain} is currently offline`,
-        store, baseUrl: settings.baseUrl(), paymentQuote, echoLightningOption: paymentOptionId !== undefined, res,
+        store, baseUrl: settings.baseUrl(), paymentQuote, echoLightningOption: Boolean(paymentOptionId), res,
       });
     });
 
