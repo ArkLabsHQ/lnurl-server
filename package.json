@@ -3,6 +3,7 @@
   "version": "0.2.6",
   "description": "LNURL service for amountless Lightning receives via Arkade swaps",
   "type": "module",
+  "packageManager": "pnpm@10.25.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
