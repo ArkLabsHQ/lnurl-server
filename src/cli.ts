@@ -68,6 +68,8 @@ async function main(): Promise<void> {
       settlements,
       offlineSwapCreator,
     };
+    // Neither timer below keeps its stop function: both are unref'd, and there is
+    // no process-shutdown hook for either to be called from.
     if (offlineSwapCreator) {
       const { startOfflineSettlementPoller } = await import("./offline-poller.js");
       startOfflineSettlementPoller(settlements, offlineSwapCreator, 15_000);
@@ -76,8 +78,6 @@ async function main(): Promise<void> {
     }
     // The destination rail (paymentOptions: arkade) settles by observation, not by
     // preimage: watch the indexer for payments to registered Arkade addresses.
-    // The stop function is intentionally unused — the timer is unref'd and there is
-    // no process-shutdown hook for it to be called from.
     if (config.offlineReceive.arkServerUrl) {
       const { startArkadeWatcher } = await import("./arkade-watcher.js");
       startArkadeWatcher(settlements, config.offlineReceive.arkServerUrl, 15_000);

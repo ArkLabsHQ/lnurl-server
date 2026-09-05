@@ -29,6 +29,17 @@ describe("DbSettlementStore", () => {
     db.close();
   });
 
+  it("refuses a second markSettled rather than overwriting the settled preimage", () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    const s = new DbSettlementStore(db, 60_000);
+    s.create({ paymentHash: "cc", pr: "lnbc1", sessionId: "sess" });
+    expect(s.markSettled("cc", "beef")).toBe(true);
+    expect(s.markSettled("cc", "d00d")).toBe(false);
+    expect(s.get("cc")!.preimage).toBe("beef");
+    db.close();
+  });
+
   it("holds an offline swap's preimage + swapId and lists pending across instances", () => {
     const db = openDb(":memory:");
     runMigrations(db);
