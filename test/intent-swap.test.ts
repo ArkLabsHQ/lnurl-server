@@ -170,7 +170,7 @@ describe("createIntentSwapCreator", () => {
   });
 
   it("sends the stampable packet, naming our covclaimd, when asked to", async () => {
-    const stamping = createIntentSwapCreator({
+    const stamping = await createIntentSwapCreator({
       solverUrl: solver.baseUrl,
       covclaimdUrl: covclaimd.baseUrl,
       arkServerUrl: operator.baseUrl,
@@ -179,12 +179,15 @@ describe("createIntentSwapCreator", () => {
     await stamping.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
 
     const packet = base64.decode(solver.requests.at(-1)!.profile.claim_packet);
-    expect(packet.length).toBeGreaterThan(93); // never mistakable for the ciphertext
+    expect(packet.length).toBeGreaterThan(93);
     expect(packet[0]).toBe(0x01);
-    const pubkeyTlvAt = 3 + 93;
+    const ciphertextLength = (packet[1]! << 8) | packet[2]!;
+    expect(ciphertextLength).toBe(93);
+    const pubkeyTlvAt = 3 + ciphertextLength;
     expect(packet[pubkeyTlvAt]).toBe(0x03);
-    // No 0x02: the solver appends the arkade script from the covenant it builds.
-    expect(packet).toHaveLength(3 + 93 + 3 + 33);
+    expect((packet[pubkeyTlvAt + 1]! << 8) | packet[pubkeyTlvAt + 2]!).toBe(33);
+    // Ends there: no 0x02, which the solver appends from the covenant it builds.
+    expect(packet).toHaveLength(pubkeyTlvAt + 3 + 33);
   });
 
   it("follows solver status for isSettled", async () => {
