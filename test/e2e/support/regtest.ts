@@ -102,7 +102,6 @@ export async function ensureStack(log: (s: string) => void = console.log): Promi
     throw new Error("arkade-regtest submodule missing — run: git submodule update --init");
   }
   await ensureIntentSolverImage(log);
-  await ensureIntentSolverImage(log);
   if (await stackIsUp()) {
     // A running stack may carry a solver from before the current image/overlay —
     // refresh it, then reuse the stack.
@@ -215,7 +214,6 @@ const compose = (args: string[], profile = "intent-solver") =>
 async function waitForLnChannel(): Promise<void> {
   const deadline = Date.now() + 600_000;
   for (;;) {
-    await mine(1);
     try {
       const { channels } = await lncli<{ channels: { active: boolean }[] }>("lnd", ["listchannels"]);
       if (channels.some((c) => c.active)) return;
@@ -223,6 +221,9 @@ async function waitForLnChannel(): Promise<void> {
       // lnd not answering yet
     }
     if (Date.now() > deadline) throw new Error("no active LN channel within 600s");
+    // After the check, not before: a reused stack is already active, and mining
+    // first advances the chain for nothing. Still one block per waiting pass.
+    await mine(1);
     await new Promise((r) => setTimeout(r, 5000));
   }
 }
