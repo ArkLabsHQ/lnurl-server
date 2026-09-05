@@ -25,6 +25,10 @@ export const SOLVER_MNEMONIC = "planet travel grab found idle ripple acoustic he
 
 const INTENT_SOLVER_IMAGE = process.env.E2E_INTENT_SOLVER_IMAGE ?? "intent-solver:e2e";
 const COVCLAIMD_IMAGE = process.env.E2E_COVCLAIMD_IMAGE ?? "ghcr.io/arkade-os/covclaimd:v0.0.1-rc.4";
+// Emulator >= v0.0.7 rejects covclaimd rc.4's claim ("missing prevout tx for input 0")
+// — a regression window we hit on every v0.0.7+ pairing; v0.0.6 is the last good one.
+// Tracked upstream: https://github.com/arkade-os/covclaimd/issues/10
+const EMULATOR_IMAGE = process.env.E2E_EMULATOR_IMAGE ?? "ghcr.io/arkade-os/emulator:v0.0.6";
 const INTENT_SOLVER_REPO = "https://github.com/arkade-os/intent-solver";
 const BUILD_CACHE = join(HERE, "..", "..", "..", ".e2e-cache");
 
@@ -38,6 +42,8 @@ const STACK_ENV = {
   ARKD_CHECKPOINT_EXIT_DELAY: "1536",
   INTENT_SOLVER_IMAGE,
   COVCLAIMD_IMAGE,
+  EMULATOR_IMAGE,
+  EMULATOR_SECRET_KEY: "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c4", // arkade-regtest's fixed throwaway key
   INTENT_SOLVER_MNEMONIC: SOLVER_MNEMONIC, // the compose file interpolates it, and .env.defaults is regtest.mjs-only
   AUTOMINE_INTERVAL: "0", // deterministic: mine only explicitly
 };
@@ -104,10 +110,12 @@ export async function ensureStack(log: (s: string) => void = console.log): Promi
     throw new Error("arkade-regtest submodule missing — run: git submodule update --init");
   }
   await ensureIntentSolverImage(log);
+  await ensureIntentSolverImage(log);
   if (await stackIsUp()) {
-    // A running stack may carry a solver from before the current image/overlay —
-    // refresh it, then reuse the stack.
+    // A running stack may carry stale images from before the current pins — refresh
+    // both corridor-critical services, then reuse the stack.
     await applySolverOverlay();
+    await enforceEmulatorPin();
     log("regtest stack already healthy; reusing it");
     // If the stack predates a channel announcement (fresh chain), mature it.
     await mine(8);
@@ -196,7 +204,7 @@ export async function nodeSqliteStorage(path: string) {
 
 const E2E_OVERLAY = join(HERE, "..", "compose.e2e.yml");
 
-const compose = (args: string[]) =>
+const compose = (args: string[], profile = "intent-solver") =>
   run(
     "docker",
     [
@@ -204,7 +212,7 @@ const compose = (args: string[]) =>
       "-f", join(REGTEST_DIR, "docker", "compose.base.yml"),
       "-f", join(REGTEST_DIR, "docker", "compose.ark.yml"),
       "-f", E2E_OVERLAY,
-      "--profile", "intent-solver",
+      "--profile", profile,
       ...args,
     ],
     { cwd: REGTEST_DIR, env: STACK_ENV, timeout: 120_000 },
@@ -220,6 +228,15 @@ export async function applySolverOverlay(): Promise<void> {
   if (current.includes(imageId) && current.includes("COVCLAIMD_URL=")) return; // already applied
   await compose(["up", "-d", "--force-recreate", "--no-deps", "intent-solver"]);
   await pollUntil("intent-solver", () => httpOk(`${SOLVER_URL}/healthz`), 180_000);
+}
+
+/** The claim path needs the pinned emulator — a stale one fails claims opaquely. */
+async function enforceEmulatorPin(): Promise<void> {
+  const want = (await run("docker", ["image", "inspect", EMULATOR_IMAGE, "--format", "{{.Id}}"])).stdout.trim();
+  const have = await run("docker", ["inspect", "emulator", "--format", "{{.Image}}"]).then((r) => r.stdout.trim(), () => "");
+  if (have === want) return;
+  await compose(["up", "-d", "--force-recreate", "--no-deps", "emulator"], "emulator");
+  await pollUntil("emulator", () => httpOk("http://localhost:7073/v1/info"), 120_000);
 }
 
 /**
