@@ -12,6 +12,16 @@ export interface OfflineReceiveConfig {
   registryUrl?: string;
   covclaimdUrl?: string;
   arkServerUrl?: string;
+  /**
+   * Send the claim packet for the solver to stamp into the funding tx, rather
+   * than the bare ciphertext it reveals to its own covclaimd.
+   *
+   * Off by default because it is not safe against a solver that predates
+   * arkade-os/intent-solver#47: that one forwards the packet as a ciphertext,
+   * covclaimd cannot decrypt it, and the swap funds and refunds. Turning it on
+   * is a statement about the solver being quoted, so it cannot be inferred here.
+   */
+  stampClaimPacket: boolean;
 }
 
 export interface AppConfig {
@@ -90,6 +100,7 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   const hasTransport = Boolean(solverUrl || (solverPubkey && nostrRelays?.length) || registryUrl);
   return {
     enabled: Boolean(hasTransport && covclaimdUrl && arkServerUrl),
+    stampClaimPacket: env.OFFLINE_STAMP_CLAIM_PACKET === "true",
     ...(solverUrl ? { solverUrl } : {}),
     ...(solverPubkey ? { solverPubkey } : {}),
     ...(nostrRelays?.length ? { nostrRelays } : {}),

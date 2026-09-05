@@ -15,7 +15,8 @@
 // solver settled the payer's hold invoice, not merely that a lockup exists.
 
 import { randomBytes } from "node:crypto";
-import { hex } from "@scure/base";
+import { base64, hex } from "@scure/base";
+import { encodeClientClaimPacket } from "./claim-packet.js";
 import { ArkAddress, RestArkProvider, getNetwork, toXOnly, type NetworkName } from "@arkade-os/sdk";
 import {
   assertReceivable,
@@ -81,6 +82,8 @@ export interface IntentSwapSettings {
   covclaimdUrl: string;
   /** Arkade operator URL — signer key, exit delay and network come from its getInfo. */
   arkServerUrl: string;
+  /** Send the packet the solver stamps, not the ciphertext it reveals. @see OfflineReceiveConfig */
+  stampClaimPacket?: boolean;
 }
 
 /** Operator + covclaimd facts a swap derivation needs. Refetched on a TTL so a
@@ -197,7 +200,17 @@ export async function createIntentSwapCreator(settings: IntentSwapSettings): Pro
       if (payout.hrp !== ctx.hrp) {
         throw new Error(`receiveAddress prefix ${payout.hrp} does not match operator network (${ctx.hrp})`);
       }
-      const claimPacket = await sealClaimPacket({ preimage, covclaimdPubkey: ctx.covclaimdPubkey });
+      const sealed = await sealClaimPacket({ preimage, covclaimdPubkey: ctx.covclaimdPubkey });
+      // The packet shape names our covclaimd in a TLV the solver stamps on chain,
+      // so the solver never has to have been pointed at the same one we were.
+      const claimPacket = settings.stampClaimPacket
+        ? base64.encode(
+            encodeClientClaimPacket({
+              ciphertext: base64.decode(sealed.ciphertext),
+              covclaimdPubkey: ctx.covclaimdPubkey,
+            }),
+          )
+        : sealed.ciphertext;
 
       const quote = await transport.requestQuote(
         lightningReceiveRequest({
@@ -205,7 +218,7 @@ export async function createIntentSwapCreator(settings: IntentSwapSettings): Pro
           paymentHash,
           payoutAddress: params.receiveAddress,
           payoutPubkey,
-          claimPacket: claimPacket.ciphertext,
+          claimPacket,
           amount: params.amountSat,
           amountSide: "from",
         }),

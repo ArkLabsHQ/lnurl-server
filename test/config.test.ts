@@ -48,10 +48,14 @@ describe("loadConfig", () => {
     });
     expect(on.offlineReceive).toEqual({
       enabled: true,
+      stampClaimPacket: false,
       solverUrl: "https://solver.example",
       covclaimdUrl: "https://covclaimd.example:7071",
       arkServerUrl: "https://mutinynet.arkade.sh",
     });
+    // Opt-in, exact string only: an older solver strands a stamped packet.
+    expect(loadConfig({ ...base, OFFLINE_STAMP_CLAIM_PACKET: "true" }).offlineReceive.stampClaimPacket).toBe(true);
+    expect(loadConfig({ ...base, OFFLINE_STAMP_CLAIM_PACKET: "1" }).offlineReceive.stampClaimPacket).toBe(false);
 
     // partial config → disabled (missing covclaimd + operator)
     expect(loadConfig({ ...base, SOLVER_URL: "https://solver.example" }).offlineReceive.enabled).toBe(false);

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import http from "node:http";
 import { createHash } from "node:crypto";
-import { hex } from "@scure/base";
+import { base64, hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { ArkAddress, toXOnly } from "@arkade-os/sdk";
 import { createIntentSwapCreator, type OfflineSwapCreator } from "../src/intent-swap.js";
@@ -163,8 +163,28 @@ describe("createIntentSwapCreator", () => {
     expect(r.profile.payout_address).toBe(RECEIVE);
     expect(r.profile.payout_pubkey).toBe(CLAIM_PUBKEY.slice(2));
     expect(typeof r.profile.claim_packet).toBe("string");
+    // Default off: the bare 93-byte ciphertext an older solver forwards as-is.
+    expect(base64.decode(r.profile.claim_packet)).toHaveLength(93);
     // The covenant derivation agrees with the solver's, so the quoted lockup passes.
     expect(swap.lockupAddress).toMatch(/^tark1/);
+  });
+
+  it("sends the stampable packet, naming our covclaimd, when asked to", async () => {
+    const stamping = createIntentSwapCreator({
+      solverUrl: solver.baseUrl,
+      covclaimdUrl: covclaimd.baseUrl,
+      arkServerUrl: operator.baseUrl,
+      stampClaimPacket: true,
+    });
+    await stamping.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
+
+    const packet = base64.decode(solver.requests.at(-1)!.profile.claim_packet);
+    expect(packet.length).toBeGreaterThan(93); // never mistakable for the ciphertext
+    expect(packet[0]).toBe(0x01);
+    const pubkeyTlvAt = 3 + 93;
+    expect(packet[pubkeyTlvAt]).toBe(0x03);
+    // No 0x02: the solver appends the arkade script from the covenant it builds.
+    expect(packet).toHaveLength(3 + 93 + 3 + 33);
   });
 
   it("follows solver status for isSettled", async () => {
