@@ -164,6 +164,8 @@ Normally an LN address only resolves while the wallet's SSE session is connected
 
 Enable it by setting `SOLVER_URL`, `COVCLAIMD_URL`, and `ARK_SERVER_URL`. A wallet then registers its receive identity on an owned address:
 
+> **`COVCLAIMD_URL` must name the same covclaimd instance the solver reveals to.** The protocol does not carry that choice: this server seals the preimage to the key its own `COVCLAIMD_URL` reports, while the solver reveals to whichever daemon *its* operator configured. Point them at different daemons and every offline receive funds, fails to claim, and refunds — covclaimd correctly refuses a packet it cannot decrypt, the solver retries that refusal until the refund deadline, and the only trace is in the solver operator's logs, not yours. Until [arkade-os/intent-solver#46](https://github.com/arkade-os/intent-solver/issues/46) moves the choice in band, confirm the pairing with whoever runs the solver.
+
 ```bash
 curl -X POST https://pay.example.com/lnurl/address/alice/arkade \
   -H "Authorization: Bearer <session-token>" \
@@ -221,7 +223,7 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `INVOICE_TIMEOUT_MS` | `30000` | How long to wait (ms) for the wallet to provide a bolt11 |
 | `VERIFY_TTL_MS` | `86400000` | How long (ms) LUD-21 settlement records are retained for `verify` polling |
 | `SOLVER_URL` | — | Intent-solver RFQ base URL. Set together with `COVCLAIMD_URL` + `ARK_SERVER_URL` to enable offline receive. |
-| `COVCLAIMD_URL` | — | covclaimd daemon base URL (non-interactive VHTLC claims). |
+| `COVCLAIMD_URL` | — | covclaimd daemon base URL (non-interactive VHTLC claims). Must be the same instance the solver reveals to — see the warning under [Offline receive](#offline-receive-opt-in). |
 | `ARK_SERVER_URL` | — | Arkade operator URL (e.g. `https://mutinynet.arkade.sh`) — signer key, exit delay and network are read from it. |
 | `DB_PATH` | — | Path to SQLite database file. Omit for in-memory-only mode. |
 | `TOKEN_ENCRYPTION_KEY` | — | 32-byte AES key (hex or base64). Required when `DB_PATH` is set. |
