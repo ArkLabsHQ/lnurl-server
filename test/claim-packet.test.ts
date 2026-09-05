@@ -17,9 +17,8 @@ describe("encodeClaimPacket", () => {
     );
   });
 
-  // covclaimd's CEL filter searches the packet body for this exact needle
-  // (pkg/preimage/README.md), so matching it is their own statement of the
-  // 0x03 header bytes rather than our reading of the encoder.
+  // The needle covclaimd's own README documents its filter as searching for,
+  // so this is their statement of the 0x03 header bytes, not our reading.
   it("emits the 030021 needle covclaimd's extension filter selects on", () => {
     expect(hex(encodeClaimPacket(packet()))).toContain("030021" + hex(PUBKEY));
   });

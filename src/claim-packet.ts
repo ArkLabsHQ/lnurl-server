@@ -1,9 +1,6 @@
 /**
- * ClaimPacket TLV codec, mirroring covclaimd `pkg/preimage/packet.go`
- * (`Serialize` on the write side, `DeserializeClaim` on the read side).
- *
- * Lives here rather than in `src/vendor/arkade-swap/`, whose exit plan deletes
- * that directory wholesale once `@arkade-os/swap` ships the receive corridors.
+ * ClaimPacket TLV codec, mirroring covclaimd `pkg/preimage/packet.go`. Not in
+ * `src/vendor/arkade-swap/`, whose exit plan deletes that directory wholesale.
  */
 
 /** Arkade extension packet type covclaimd scans the arkd tx stream for. */
@@ -16,9 +13,7 @@ const TLV_COVCLAIMD_PUBKEY = 0x03;
 const COMPRESSED_PUBKEY_LEN = 33;
 
 export interface ClaimPacket {
-  /** The preimage ECIES-sealed to covclaimd — `sealClaimPacket(...)` output, decoded. */
   ciphertext: Uint8Array;
-  /** `enforcePayTo(receiverPkScript)`, the covenant covclaimd's claim co-signs against. */
   arkadeScript: Uint8Array;
   /** Compressed secp256k1. Required to write; absent in the legacy two-TLV shape. */
   covclaimdPubkey?: Uint8Array;
@@ -34,12 +29,8 @@ const encodeTlv = (type: number, value: Uint8Array): Uint8Array => {
 };
 
 /**
- * Serialize to the body of an Arkade extension packet of {@link CLAIM_PACKET_TYPE}.
- *
- * The pubkey is mandatory here even though the parser tolerates its absence:
- * covclaimd's CEL filter selects on that TLV, and its README warns the filter
- * "must stay inert until every emitter stamps the key" — so emitting the older
- * two-TLV shape would be writing packets that a live filter silently drops.
+ * Requires the pubkey the parser treats as optional: covclaimd's CEL filter
+ * selects on that TLV, so the two-TLV shape is what a live filter would drop.
  */
 export function encodeClaimPacket(packet: ClaimPacket): Uint8Array {
   if (packet.ciphertext.length === 0) throw new Error("ciphertext must not be empty");
@@ -64,9 +55,8 @@ export function encodeClaimPacket(packet: ClaimPacket): Uint8Array {
 }
 
 /**
- * Parse a packet body. Transcribed from `DeserializeClaim`, including the parts
- * that look like oversights and are not: unknown TLV types are skipped rather
- * than refused, and a repeated type overwrites rather than erroring.
+ * Transcribed from `DeserializeClaim`: unknown TLV types are skipped rather
+ * than refused, and a repeated type overwrites. Both deliberate there.
  */
 export function decodeClaimPacket(data: Uint8Array): ClaimPacket {
   let ciphertext: Uint8Array | undefined;
