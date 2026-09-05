@@ -67,6 +67,9 @@ describe("MemorySettlementStore", () => {
     expect(s.markObserved("missing", "tx")).toBe(false);
     expect(s.markObserved("vid1", "txid1")).toBe(true);
     expect(s.get("vid1")).toMatchObject({ settled: true, paymentReference: "txid1", preimage: null });
+    // A second observation never overwrites the first's reference.
+    expect(s.markObserved("vid1", "txid2")).toBe(false);
+    expect(s.get("vid1")).toMatchObject({ paymentReference: "txid1" });
     expect(s.listPendingDestinations()).toEqual([]);
 
     // expired records are not listed

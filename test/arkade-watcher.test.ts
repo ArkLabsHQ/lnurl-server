@@ -70,7 +70,6 @@ beforeEach(() => {
 
 function storeWith(...recs: { hash: string; amountMsat: number; createdAt?: number }[]): MemorySettlementStore {
   const s = new MemorySettlementStore(3_600_000);
-  const now = Date.now();
   for (const r of recs) {
     s.create({ paymentHash: r.hash, pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination: DEST, amountMsat: r.amountMsat });
     // createdAt is stamped from the store clock at create; backdate via a wrapped store when needed
@@ -79,7 +78,6 @@ function storeWith(...recs: { hash: string; amountMsat: number; createdAt?: numb
       rec.createdAt = r.createdAt;
     }
   }
-  void now;
   return s;
 }
 

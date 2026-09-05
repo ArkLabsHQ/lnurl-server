@@ -73,6 +73,9 @@ describe("DbSettlementStore", () => {
     expect(b.listPendingDestinations()).toEqual([{ paymentHash: "vid1", paymentDestination: "ark1xyz", amountMsat: 50000, createdAt: 1000 }]);
     expect(b.markObserved("vid1", "txid1")).toBe(true);
     expect(b.get("vid1")).toMatchObject({ settled: true, paymentReference: "txid1", preimage: null });
+    // Idempotent: a second observation never overwrites the reference.
+    expect(b.markObserved("vid1", "txid2")).toBe(false);
+    expect(b.get("vid1")!.paymentReference).toBe("txid1");
     expect(b.listPendingDestinations()).toEqual([]);
     t = 1000 + 5000;
     const c = new DbSettlementStore(db, 5000, () => t);

@@ -124,9 +124,9 @@ export class MemorySettlementStore implements SettlementStore {
     const t = this.now();
     for (const r of this.map.values()) {
       if (t - r.createdAt >= this.ttlMs) continue;
-      // No amountMsat → the agreed amount is unknown, so an observed payment can
-      // never be checked against it — skip rather than flip on any payment.
-      if (r.paymentOption !== "lightning" && !r.settled && r.paymentDestination && r.amountMsat != null) {
+      // amountMsat missing → an observed payment can never be amount-checked, so
+      // skip rather than flip on any payment. Option missing == lightning.
+      if (r.paymentOption != null && r.paymentOption !== "lightning" && !r.settled && r.paymentDestination && r.amountMsat != null) {
         out.push({ paymentHash: r.paymentHash, paymentDestination: r.paymentDestination, amountMsat: r.amountMsat, createdAt: r.createdAt });
       }
     }
@@ -135,7 +135,7 @@ export class MemorySettlementStore implements SettlementStore {
 
   markObserved(paymentHash: string, reference: string): boolean {
     const r = this.get(paymentHash);
-    if (!r) return false;
+    if (!r || r.settled) return false; // idempotent: never overwrite a settlement's reference
     r.settled = true;
     r.paymentReference = reference;
     r.settledAt = this.now();
@@ -245,8 +245,9 @@ export class DbSettlementStore implements SettlementStore {
   }
 
   markObserved(paymentHash: string, reference: string): boolean {
+    // Idempotent: a second observation must not overwrite the first's reference.
     const info = this.db
-      .prepare("UPDATE settlements SET settled = 1, payment_reference = ?, settled_at = ? WHERE payment_hash = ?")
+      .prepare("UPDATE settlements SET settled = 1, payment_reference = ?, settled_at = ? WHERE payment_hash = ? AND settled = 0")
       .run(reference, this.now(), paymentHash);
     return info.changes > 0;
   }
