@@ -58,6 +58,9 @@ export interface SettlementStore {
   listPendingSwaps(): PendingSwap[];
   /** Unsettled destination-rail records (non-lightning) with an amount, for the watcher. */
   listPendingDestinations(): PendingDestination[];
+  /** True when a reference (e.g. an Arkade txid) already settled some record —
+   *  one observed payment must not settle two records across watcher passes. */
+  isReferenceUsed(reference: string): boolean;
 }
 
 /** In-memory store used in library / no-DB mode. Lazy expiry on read plus an
@@ -89,7 +92,7 @@ export class MemorySettlementStore implements SettlementStore {
 
   markSettled(paymentHash: string, preimage: string): boolean {
     const r = this.get(paymentHash);
-    if (!r) return false;
+    if (!r || r.settled) return false; // idempotent: a settled record never re-flips
     r.settled = true;
     r.preimage = preimage;
     r.settledAt = this.now();
@@ -140,6 +143,11 @@ export class MemorySettlementStore implements SettlementStore {
     r.paymentReference = reference;
     r.settledAt = this.now();
     return true;
+  }
+
+  isReferenceUsed(reference: string): boolean {
+    for (const r of this.map.values()) if (r.paymentReference === reference) return true;
+    return false;
   }
 
   private sweep(): void {
@@ -195,7 +203,7 @@ export class DbSettlementStore implements SettlementStore {
 
   markSettled(paymentHash: string, preimage: string): boolean {
     const info = this.db
-      .prepare("UPDATE settlements SET settled = 1, preimage = ?, settled_at = ? WHERE payment_hash = ?")
+      .prepare("UPDATE settlements SET settled = 1, preimage = ?, settled_at = ? WHERE payment_hash = ? AND settled = 0")
       .run(preimage, this.now(), paymentHash);
     return info.changes > 0;
   }
@@ -250,5 +258,9 @@ export class DbSettlementStore implements SettlementStore {
       .prepare("UPDATE settlements SET settled = 1, payment_reference = ?, settled_at = ? WHERE payment_hash = ? AND settled = 0")
       .run(reference, this.now(), paymentHash);
     return info.changes > 0;
+  }
+
+  isReferenceUsed(reference: string): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM settlements WHERE payment_reference = ? LIMIT 1").get(reference));
   }
 }

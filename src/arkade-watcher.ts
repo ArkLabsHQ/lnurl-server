@@ -13,8 +13,9 @@ import type { SettlementStore } from "./settlement-store.js";
  *  an under-payment (value*1000 < amountMsat) never flips a record. Payments are
  *  correlated by arrival time, but the wire's `createdAt` is seconds-granular and the
  *  payer can outrun the callback, so a record tolerates arrivals up to
- *  {@link SETTLEMENT_SKEW_MS} before its creation. A transient indexer failure skips
- *  that destination for the next pass. */
+ *  {@link SETTLEMENT_SKEW_MS} before its creation. The effective upper bound on the
+ *  arrival window is the record's TTL expiry, not the skew. A transient indexer
+ *  failure skips that destination for the next pass. */
 export const SETTLEMENT_SKEW_MS = 15_000;
 export async function settleDestinationPayments(store: SettlementStore, indexer: IndexerProvider): Promise<number> {
   const pending = store.listPendingDestinations();
@@ -40,6 +41,8 @@ export async function settleDestinationPayments(store: SettlementStore, indexer:
       const { vtxos } = await indexer.getVtxos({ scripts: [script], after: Math.floor((oldest - SETTLEMENT_SKEW_MS) / 1000) });
       const arrivals = vtxos
         .filter((v) => v.createdAt.getTime() >= oldest - SETTLEMENT_SKEW_MS)
+        // A txid that already settled a record must not settle another one later.
+        .filter((v) => !store.isReferenceUsed(v.txid))
         .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
       const assigned = new Set<string>();
       for (const record of records.sort((a, b) => a.createdAt - b.createdAt)) {

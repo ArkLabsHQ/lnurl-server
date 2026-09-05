@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import http from "node:http";
 import { randomBytes } from "node:crypto";
 import { hex } from "@scure/base";
@@ -130,6 +130,21 @@ describe("settleDestinationPayments", () => {
     expect(store.get("v2")!.settled).toBe(false);
   });
 
+  it("never settles a later record from an already-used payment (cross-pass replay)", async () => {
+    const store = storeWith({ hash: "r1", amountMsat: 50_000 });
+    const createdAt = store.get("r1")!.createdAt;
+    const txid = randomBytes(32).toString("hex");
+    indexerVtxos.push(wireVtxo({ txid, valueSat: 50, createdAtSec: Math.floor(createdAt / 1000) }));
+
+    expect(await settleDestinationPayments(store, new RestIndexerProvider(indexerCtx.baseUrl))).toBe(1);
+    expect(store.get("r1")).toMatchObject({ settled: true, paymentReference: txid });
+
+    // A second request to the same address; the same payment must not settle it.
+    store.create({ paymentHash: "r2", pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination: DEST, amountMsat: 50_000 });
+    expect(await settleDestinationPayments(store, new RestIndexerProvider(indexerCtx.baseUrl))).toBe(0);
+    expect(store.get("r2")!.settled).toBe(false);
+  });
+
   it("leaves everything pending when the indexer errors", async () => {
     const store = storeWith({ hash: "v1", amountMsat: 50_000 });
     indexerFails = true;
@@ -148,7 +163,7 @@ describe("arkade watcher end-to-end", () => {
     repos = createRepositories(db);
     repos.domains.create({ domain: "domain.com", allocationModes: ["self"] });
   });
-  afterAll(() => db?.close());
+  afterEach(() => db.close());
 
   it("callback → observed payment → verify reports settled with the txid reference", async () => {
     const settlements = new MemorySettlementStore(3_600_000);
