@@ -77,6 +77,11 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   const solverUrl = env.SOLVER_URL || undefined;
   const solverPubkey = env.SOLVER_PUBKEY || undefined;
   const nostrRelays = env.NOSTR_RELAYS?.split(",").map((r) => r.trim()).filter(Boolean);
+  // ws:// is valid (regtest/dev relays terminate no TLS); anything else fails at
+  // startup rather than as a runtime connection error.
+  for (const r of nostrRelays ?? []) {
+    if (!/^wss?:\/\//.test(r)) throw new Error(`NOSTR_RELAYS entries must be ws(s):// URLs (got "${r}")`);
+  }
   const nostrSecretKey = env.NOSTR_SECRET_KEY || undefined;
   const covclaimdUrl = env.COVCLAIMD_URL || undefined;
   const arkServerUrl = env.ARK_SERVER_URL || undefined;

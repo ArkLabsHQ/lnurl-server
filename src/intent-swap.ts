@@ -59,6 +59,9 @@ export interface OfflineSwapCreator {
   create(params: OfflineSwapParams): Promise<OfflineSwapResult>;
   /** True once the solver reports the payer's invoice settled. */
   isSettled(swapId: string): Promise<boolean>;
+  /** Close the transport when present (a Nostr pool holds open relay sockets).
+   *  Optional: process exit closes them anyway — cli has no shutdown hook today. */
+  close?(): Promise<void>;
 }
 
 export interface IntentSwapSettings {
@@ -230,5 +233,7 @@ export function createIntentSwapCreator(settings: IntentSwapSettings): OfflineSw
       const status = await transport.status(swapId);
       return status?.state === "settled";
     },
+
+    close: () => transport.close(),
   };
 }

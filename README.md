@@ -266,7 +266,7 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `SOLVER_URL` | — | Intent-solver RFQ HTTP base URL (dev/custom solvers). Alternatively configure the Nostr transport below. |
 | `SOLVER_PUBKEY` | — | Solver's x-only discovery pubkey (hex) for Nostr RFQ — the production transport. Needs `NOSTR_RELAYS`. |
 | `NOSTR_RELAYS` | — | Comma-separated `wss://` relay URLs the solver listens on. |
-| `NOSTR_SECRET_KEY` | — | 32-byte hex Nostr identity for the RFQ transport; ephemeral per boot when unset. |
+| `NOSTR_SECRET_KEY` | — | 32-byte hex Nostr identity for the RFQ transport; ephemeral per boot when unset. **Key material** — treat it like a private key; prefer the ephemeral default unless a stable identity is genuinely required. |
 | `COVCLAIMD_URL` | — | covclaimd daemon base URL (non-interactive VHTLC claims). Must be the same instance the solver reveals to — see the warning under [Offline receive](#offline-receive-opt-in). |
 | `ARK_SERVER_URL` | — | Arkade operator URL (e.g. `https://mutinynet.arkade.sh`) — signer key, exit delay and network are read from it. |
 | `DB_PATH` | — | Path to SQLite database file. Omit for in-memory-only mode. |
