@@ -202,9 +202,13 @@ export class DbSettlementStore implements SettlementStore {
   }
 
   markSettled(paymentHash: string, preimage: string): boolean {
+    // `created_at >` keeps this in step with `get`, which treats an expired
+    // record as absent — settling one nothing can read afterwards is a lie.
     const info = this.db
-      .prepare("UPDATE settlements SET settled = 1, preimage = ?, settled_at = ? WHERE payment_hash = ? AND settled = 0")
-      .run(preimage, this.now(), paymentHash);
+      .prepare(
+        "UPDATE settlements SET settled = 1, preimage = ?, settled_at = ? WHERE payment_hash = ? AND settled = 0 AND created_at > ?",
+      )
+      .run(preimage, this.now(), paymentHash, this.now() - this.ttlMs);
     return info.changes > 0;
   }
 
@@ -255,8 +259,10 @@ export class DbSettlementStore implements SettlementStore {
   markObserved(paymentHash: string, reference: string): boolean {
     // Idempotent: a second observation must not overwrite the first's reference.
     const info = this.db
-      .prepare("UPDATE settlements SET settled = 1, payment_reference = ?, settled_at = ? WHERE payment_hash = ? AND settled = 0")
-      .run(reference, this.now(), paymentHash);
+      .prepare(
+        "UPDATE settlements SET settled = 1, payment_reference = ?, settled_at = ? WHERE payment_hash = ? AND settled = 0 AND created_at > ?",
+      )
+      .run(reference, this.now(), paymentHash, this.now() - this.ttlMs);
     return info.changes > 0;
   }
 

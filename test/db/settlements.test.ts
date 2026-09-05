@@ -1,7 +1,54 @@
 import { describe, it, expect } from "vitest";
 import { openDb } from "../../src/db/connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
-import { DbSettlementStore } from "../../src/settlement-store.js";
+import { DbSettlementStore, MemorySettlementStore } from "../../src/settlement-store.js";
+
+// Both back the same interface, and the no-DB path is production too, so a
+// caller must not be able to tell which one it holds.
+describe("store parity past the ttl", () => {
+  const TTL = 5000;
+  const stores = (now: () => number) => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    return { db, memory: new MemorySettlementStore(TTL, now), sqlite: new DbSettlementStore(db, TTL, now) };
+  };
+
+  it("refuses markSettled on an expired record in both stores", () => {
+    let t = 1000;
+    const { db, memory, sqlite } = stores(() => t);
+    memory.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "s" });
+    sqlite.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "s" });
+    t += TTL;
+    expect(memory.markSettled("aa", "beef")).toBe(false);
+    expect(sqlite.markSettled("aa", "beef")).toBe(false);
+    expect(memory.get("aa")).toBeUndefined();
+    expect(sqlite.get("aa")).toBeUndefined();
+    db.close();
+  });
+
+  it("refuses markObserved on an expired record in both stores", () => {
+    let t = 1000;
+    const { db, memory, sqlite } = stores(() => t);
+    const rec = { pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1xyz", amountMsat: 50000 };
+    memory.create({ paymentHash: "vid1", ...rec });
+    sqlite.create({ paymentHash: "vid1", ...rec });
+    t += TTL;
+    expect(memory.markObserved("vid1", "txid1")).toBe(false);
+    expect(sqlite.markObserved("vid1", "txid1")).toBe(false);
+    db.close();
+  });
+
+  it("still settles inside the ttl in both stores", () => {
+    let t = 1000;
+    const { db, memory, sqlite } = stores(() => t);
+    memory.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "s" });
+    sqlite.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "s" });
+    t += TTL - 1;
+    expect(memory.markSettled("aa", "beef")).toBe(true);
+    expect(sqlite.markSettled("aa", "beef")).toBe(true);
+    db.close();
+  });
+});
 
 describe("DbSettlementStore", () => {
   it("persists across store instances (DB-backed, not instance state)", () => {
