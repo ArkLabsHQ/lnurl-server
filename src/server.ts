@@ -462,7 +462,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       }
       const amountStr = strParam(req.query.amount);
       const comment = strParam(req.query.comment);
-      if (!amountStr || isNaN(Number(amountStr)) || Number(amountStr) <= 0) {
+      if (!amountStr || isNaN(Number(amountStr))) {
         res.json({ status: "ERROR", reason: "Missing or invalid amount parameter" } satisfies LnurlErrorResponse);
         return;
       }
