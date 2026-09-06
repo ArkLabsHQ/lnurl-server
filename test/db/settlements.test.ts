@@ -42,6 +42,25 @@ describe("DbSettlementStore", () => {
     db.close();
   });
 
+  it("persists a non-pr (destination) record with option fields", () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    const a = new DbSettlementStore(db, 60_000);
+    a.create({ paymentHash: "vid1", pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination: "ark1xyz", amountMsat: 50000 });
+    const b = new DbSettlementStore(db, 60_000);
+    expect(b.get("vid1")).toMatchObject({
+      settled: false,
+      paymentOption: "arkade",
+      paymentDestination: "ark1xyz",
+      paymentReference: null,
+      amountMsat: 50000,
+    });
+    // A legacy lightning record (no option column) reads back as "lightning".
+    a.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "sess" });
+    expect(b.get("aa")!.paymentOption).toBe("lightning");
+    db.close();
+  });
+
   it("expires records past the ttl", () => {
     const db = openDb(":memory:");
     runMigrations(db);

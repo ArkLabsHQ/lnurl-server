@@ -208,13 +208,15 @@ export const openApiSpec = {
     },
     "/lnurl/verify/{paymentHash}": {
       get: {
-        summary: "Verify settlement (LUD-21)",
+        summary: "Verify settlement (LUD-21 / LUD-XX)",
         description:
           "Payer polls this to learn whether the invoice settled. Public and unauthed — " +
-          "the payment hash is not secret. `preimage` is revealed only once `settled` is true.",
+          "the payment hash is not secret. For lightning, `preimage` is revealed once " +
+          "`settled` is true. For a LUD-XX non-`pr` option (e.g. arkade), it reports the " +
+          "`paymentOption`, `paymentDestination`, and `paymentReference` instead.",
         tags: ["LNURL-pay"],
         parameters: [
-          { name: "paymentHash", in: "path", required: true, schema: { type: "string" }, description: "bolt11 payment hash (hex)" },
+          { name: "paymentHash", in: "path", required: true, schema: { type: "string" }, description: "bolt11 payment hash (hex), or an opaque verify id for non-`pr` options" },
         ],
         responses: {
           "200": {
@@ -230,6 +232,17 @@ export const openApiSpec = {
                         settled: { type: "boolean" },
                         preimage: { type: "string", nullable: true },
                         pr: { type: "string", description: "BOLT11 invoice" },
+                      },
+                    },
+                    {
+                      type: "object",
+                      description: "LUD-XX non-`pr` option settlement status",
+                      properties: {
+                        status: { type: "string", enum: ["OK"] },
+                        settled: { type: "boolean" },
+                        paymentOption: { type: "string" },
+                        paymentDestination: { type: "string" },
+                        paymentReference: { type: "string", nullable: true, description: "Method-specific reference (e.g. a txid) once observed" },
                       },
                     },
                     {
@@ -458,6 +471,17 @@ export const openApiSpec = {
                         maxSendable: { type: "number" },
                         metadata: { type: "string" },
                         commentAllowed: { type: "number" },
+                        paymentOptions: {
+                          type: "array",
+                          description: "LUD-XX: advertised payment rails; present only when a non-lightning rail (e.g. arkade) is offered",
+                          items: {
+                            type: "object",
+                            properties: {
+                              id: { type: "string" },
+                              type: { type: "string", description: "e.g. lightning, arkade" },
+                            },
+                          },
+                        },
                       },
                     },
                     {
@@ -479,17 +503,20 @@ export const openApiSpec = {
       get: {
         summary: "LN Address pay callback (LUD-16)",
         description:
-          "Requests a bolt11 invoice for the address. The wallet must have an active " +
-          "SSE session; returns an error when the wallet is offline.",
+          "Requests payment for the address. Default (lightning): returns a bolt11 from the " +
+          "wallet's SSE session, or a server-created offline reverse swap, or an error when " +
+          "offline. LUD-XX: pass `paymentOption` to select an advertised rail — `arkade` " +
+          "returns the address's registered Arkade destination instead of a bolt11.",
         tags: ["LN Address"],
         parameters: [
           { name: "username", in: "path", required: true, schema: { type: "string" }, description: "LN address local part" },
           { name: "amount", in: "query", required: true, schema: { type: "number" }, description: "Amount in millisatoshis" },
           { name: "comment", in: "query", required: false, schema: { type: "string" }, description: "Optional payer comment" },
+          { name: "paymentOption", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: selected rail id (e.g. `arkade`); defaults to lightning" },
         ],
         responses: {
           "200": {
-            description: "BOLT11 invoice or error",
+            description: "BOLT11 invoice, a non-`pr` destination, or error",
             content: {
               "application/json": {
                 schema: {
@@ -497,6 +524,16 @@ export const openApiSpec = {
                     {
                       type: "object",
                       properties: { pr: { type: "string", description: "BOLT11 invoice" }, routes: { type: "array", items: {} }, verify: { type: "string", description: "LUD-21 verify URL (present when the bolt11 could be decoded)" } },
+                    },
+                    {
+                      type: "object",
+                      description: "LUD-XX non-`pr` payment option (e.g. arkade)",
+                      properties: {
+                        status: { type: "string", enum: ["OK"] },
+                        paymentOption: { type: "string" },
+                        paymentDestination: { type: "string", description: "Rail destination, e.g. an Arkade address" },
+                        verify: { type: "string", description: "LUD-21/LUD-XX verify URL" },
+                      },
                     },
                     {
                       type: "object",

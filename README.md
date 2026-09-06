@@ -177,6 +177,27 @@ After that, if a payer pays `alice@pay.example.com` while the wallet is offline,
 
 > The corridor client is vendored at `src/vendor/arkade-swap/` (byte-exact from `arkade-os/ts-sdk` — see its README for the exit plan) until `@arkade-os/swap` ships a release carrying the receive corridors. The live path (real solver + covclaimd + operator) is not exercised by the test suite; the integration test drives the same wire contracts against fake HTTP services.
 
+## Payment options (LUD-XX)
+
+Once an address has a registered Arkade identity (see above), its LUD-06 `payRequest` advertises multiple rails:
+
+```json
+"paymentOptions": [{ "id": "lightning", "type": "lightning" }, { "id": "arkade", "type": "arkade" }]
+```
+
+A payer selects one with `?paymentOption=<id>` on the callback:
+
+- **`lightning`** (or omitted) — the existing BOLT11 flow (live wallet, or an offline reverse swap). Returns `pr` + `verify`.
+- **`arkade`** — returns the user's Arkade address directly, for on-Arkade payment (no swap):
+
+```json
+{ "status": "OK", "paymentOption": "arkade", "paymentDestination": "tark1...", "verify": "https://pay.example.com/lnurl/verify/<id>" }
+```
+
+The `verify` URL then reports the non-`pr` LUD-21 shape: `{ status, settled, paymentOption, paymentDestination, paymentReference }`. Unknown or unavailable options return `{ "status": "ERROR", "reason": "Unsupported paymentOption" }`.
+
+> Because the payer pays the Arkade address **directly**, the server isn't in the payment path and can't observe settlement itself, so arkade `settled` stays `false` until a server-side Arkade watcher is added (follow-up). Addresses without an Arkade identity stay pure LUD-06 (no `paymentOptions`). New rails/assets are added in `src/payment-options.ts`.
+
 ## Admin backend — port 3001
 
 When `DB_PATH` is set an admin backend starts on `ADMIN_PORT` (default `3001`), bound to `ADMIN_BIND` (default `127.0.0.1` for the CLI).

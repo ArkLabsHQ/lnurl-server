@@ -1,4 +1,5 @@
 import type { Response } from "express";
+import type { PaymentOption } from "./payment-options.js";
 
 /** Configuration for starting the LNURL service */
 export interface LnurlServiceConfig {
@@ -95,13 +96,23 @@ export interface LnurlPayMetadata {
   metadata: string;
   tag: "payRequest";
   commentAllowed?: number;
+  /** LUD-XX: advertised payment rails. Omitted when only lightning is offered. */
+  paymentOptions?: PaymentOption[];
 }
 
-/** LNURL-pay callback response */
+/** LNURL-pay callback response (BOLT11 / lightning) */
 export interface LnurlPayCallbackResponse {
   pr: string;
   routes: never[];
   /** LUD-21: URL the payer can poll to confirm settlement. Omitted if the bolt11 can't be decoded. */
+  verify?: string;
+}
+
+/** LUD-XX callback response for a non-`pr` payment option (e.g. a direct Arkade destination). */
+export interface LnurlPayDestinationResponse {
+  status: "OK";
+  paymentOption: string;
+  paymentDestination?: string;
   verify?: string;
 }
 
