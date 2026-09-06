@@ -35,4 +35,25 @@ describe("loadConfig", () => {
     expect(loadConfig({ ...base }).verifyTtlMs).toBe(86_400_000);
     expect(loadConfig({ ...base, VERIFY_TTL_MS: "1000" }).verifyTtlMs).toBe(1000);
   });
+
+  it("reads offline-receive config and reports enabled only when all three are set", () => {
+    const off = loadConfig({ ...base });
+    expect(off.offlineReceive.enabled).toBe(false);
+
+    const on = loadConfig({
+      ...base,
+      SOLVER_URL: "https://solver.example",
+      COVCLAIMD_URL: "https://covclaimd.example:7071",
+      ARK_SERVER_URL: "https://mutinynet.arkade.sh",
+    });
+    expect(on.offlineReceive).toEqual({
+      enabled: true,
+      solverUrl: "https://solver.example",
+      covclaimdUrl: "https://covclaimd.example:7071",
+      arkServerUrl: "https://mutinynet.arkade.sh",
+    });
+
+    // partial config → disabled (missing covclaimd + operator)
+    expect(loadConfig({ ...base, SOLVER_URL: "https://solver.example" }).offlineReceive.enabled).toBe(false);
+  });
 });

@@ -18,6 +18,30 @@ beforeEach(() => {
 
 function domain() { return repos.domains.getById(domainId)!; }
 
+describe("AddressService.setOfflineReceive", () => {
+  it("stores the arkade receive identity for the owning token", () => {
+    svc.register({ domain: domain(), username: "devious", token: TOKEN });
+    const ok = svc.setOfflineReceive(domain(), "devious", TOKEN, {
+      arkadeAddress: "tark1qexample",
+      claimPublicKey: "02" + "ab".repeat(32),
+    });
+    expect(ok).toBe(true);
+    const a = repos.addresses.getByDomainAndUsername(domainId, "devious")!;
+    expect(a.arkadeAddress).toBe("tark1qexample");
+    expect(a.claimPublicKey).toBe("02" + "ab".repeat(32));
+  });
+
+  it("rejects a non-owner token and leaves the address unchanged", () => {
+    svc.register({ domain: domain(), username: "devious", token: TOKEN });
+    const ok = svc.setOfflineReceive(domain(), "devious", "cd".repeat(32), {
+      arkadeAddress: "tark1qexample",
+      claimPublicKey: "02" + "ab".repeat(32),
+    });
+    expect(ok).toBe(false);
+    expect(repos.addresses.getByDomainAndUsername(domainId, "devious")!.arkadeAddress).toBeNull();
+  });
+});
+
 describe("AddressService.register", () => {
   it("self-registers a chosen username and binds the token", () => {
     const r = svc.register({ domain: domain(), username: "devious", token: TOKEN });

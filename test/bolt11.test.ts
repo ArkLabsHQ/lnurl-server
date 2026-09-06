@@ -1,23 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { bech32 } from "@scure/base";
 import { createHash } from "node:crypto";
-import { paymentHashFromBolt11 } from "../src/bolt11.js";
-
-/** Build a structurally-valid bolt11 whose payment-hash field is `paymentHashHex`.
- *  Layout: 35-bit timestamp, a decoy `d` field (type 13), the `p` field
- *  (type 1, len 52), then 104 dummy signature words. The decoder must skip the
- *  decoy field to find the payment hash. Signature bytes are not valid — the
- *  decoder does not (and need not) verify them. */
-function buildInvoice(paymentHashHex: string): string {
-  const words: number[] = [];
-  for (let i = 0; i < 7; i++) words.push(0);
-  const desc = bech32.toWords(new TextEncoder().encode("hello"));
-  words.push(13, desc.length >> 5, desc.length & 31, ...desc);
-  const hw = bech32.toWords(Uint8Array.from(Buffer.from(paymentHashHex, "hex")));
-  words.push(1, 52 >> 5, 52 & 31, ...hw);
-  for (let i = 0; i < 104; i++) words.push(0);
-  return bech32.encode("lnbc", words, 2000);
-}
+import { invoiceFactsFromBolt11, paymentHashFromBolt11 } from "../src/bolt11.js";
+import { buildInvoice } from "./helpers/bolt11.js";
 
 describe("paymentHashFromBolt11", () => {
   it("extracts the payment hash, skipping earlier fields", () => {
@@ -32,4 +17,32 @@ describe("paymentHashFromBolt11", () => {
   });
 });
 
-export { buildInvoice };
+describe("invoiceFactsFromBolt11", () => {
+  const hash = "9a".repeat(32);
+
+  it("decodes payment hash, u-denominated amount, and timestamp+expiry", () => {
+    const now = 1_700_000_000;
+    const facts = invoiceFactsFromBolt11(buildInvoice(hash, { amountHrp: "50u", timestamp: now, expirySeconds: 7200 }));
+    expect(facts).toMatchObject({ paymentHash: hash, amountSats: 5000, expiresAt: now + 7200 });
+  });
+
+  it("decodes whole-bitcoin and pico denominations, rounding p down", () => {
+    expect(invoiceFactsFromBolt11(buildInvoice(hash, { amountHrp: "1" })).amountSats).toBe(100_000_000);
+    expect(invoiceFactsFromBolt11(buildInvoice(hash, { amountHrp: "500000p" })).amountSats).toBe(50);
+    expect(invoiceFactsFromBolt11(buildInvoice(hash, { amountHrp: "15p" })).amountSats).toBe(0);
+  });
+
+  it("decodes amountless invoices to amountSats 0 and defaults expiry to 3600s", () => {
+    const facts = invoiceFactsFromBolt11(buildInvoice(hash, { timestamp: 1_700_000_000 }));
+    expect(facts.amountSats).toBe(0);
+    expect(facts.expiresAt).toBe(1_700_000_000 + 3600);
+  });
+
+  it("throws on undecodable input and on a missing payment hash", () => {
+    expect(() => invoiceFactsFromBolt11("lnbc1test")).toThrow();
+    const words: number[] = [];
+    for (let i = 0; i < 7; i++) words.push(0);
+    for (let i = 0; i < 104; i++) words.push(0);
+    expect(() => invoiceFactsFromBolt11(bech32.encode("lnbc", words, 2000))).toThrow(/payment hash/);
+  });
+});

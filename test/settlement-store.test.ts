@@ -20,4 +20,23 @@ describe("MemorySettlementStore", () => {
     t = 1000 + 5000; // reach ttl → record is gone
     expect(s.get("aa")).toBeUndefined();
   });
+
+  it("holds an offline swap's preimage + swapId and lists it until settled", () => {
+    const s = new MemorySettlementStore(60_000, () => 1000);
+    s.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "off:1", preimage: "beef", swapId: "swap-1" });
+    // Preimage is held on the record (verify exposure is gated on `settled` at the route).
+    expect(s.get("aa")).toMatchObject({ settled: false, preimage: "beef", swapId: "swap-1" });
+    expect(s.listPendingSwaps()).toEqual([{ swapId: "swap-1", paymentHash: "aa", preimage: "beef" }]);
+    s.markSettled("aa", "beef");
+    expect(s.listPendingSwaps()).toEqual([]);
+  });
+
+  it("stops listing pending swaps once their record is past TTL", () => {
+    let t = 1000;
+    const s = new MemorySettlementStore(5000, () => t);
+    s.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "off:1", preimage: "beef", swapId: "swap-1" });
+    expect(s.listPendingSwaps()).toHaveLength(1);
+    t = 1000 + 5000;
+    expect(s.listPendingSwaps()).toEqual([]);
+  });
 });

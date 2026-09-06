@@ -13,6 +13,8 @@ interface AddressRecord {
   claim_code_hash: Uint8Array | null;
   status: string;
   metadata: string | null;
+  arkade_address: string | null;
+  claim_public_key: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -35,6 +37,8 @@ function rowToAddress(r: AddressRecord): AddressRow {
     claimCodeHash: buf(r.claim_code_hash),
     status: r.status as AddressStatus,
     metadata: r.metadata,
+    arkadeAddress: r.arkade_address,
+    claimPublicKey: r.claim_public_key,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -95,6 +99,12 @@ export class AddressesRepo {
 
   updateStatus(id: number, status: AddressStatus): void {
     this.db.prepare("UPDATE addresses SET status = ?, updated_at = ? WHERE id = ?").run(status, Date.now(), id);
+  }
+
+  setOfflineReceive(id: number, arkadeAddress: string, claimPublicKey: string): void {
+    this.db
+      .prepare("UPDATE addresses SET arkade_address = ?, claim_public_key = ?, updated_at = ? WHERE id = ?")
+      .run(arkadeAddress, claimPublicKey, Date.now(), id);
   }
 
   list(filter: { domainId?: number; status?: AddressStatus; q?: string } = {}): AddressRow[] {

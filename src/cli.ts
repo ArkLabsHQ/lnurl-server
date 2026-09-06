@@ -45,14 +45,30 @@ async function main(): Promise<void> {
       baseUrl: config.baseUrl,
       registrationRateLimitPerMin: config.registrationRateLimitPerMin,
     });
+    const settlements = new DbSettlementStore(db, config.verifyTtlMs);
+    let offlineSwapCreator: import("./intent-swap.js").OfflineSwapCreator | undefined;
+    if (config.offlineReceive.enabled) {
+      const { createIntentSwapCreator } = await import("./intent-swap.js");
+      offlineSwapCreator = createIntentSwapCreator({
+        solverUrl: config.offlineReceive.solverUrl!,
+        covclaimdUrl: config.offlineReceive.covclaimdUrl!,
+        arkServerUrl: config.offlineReceive.arkServerUrl!,
+      });
+    }
     deps = {
       repos,
       addressService,
       registrationLimiter: new RateLimiter(() => settings.registrationRateLimitPerMin(), 60_000),
       sessions,
       settings,
-      settlements: new DbSettlementStore(db, config.verifyTtlMs),
+      settlements,
+      offlineSwapCreator,
     };
+    if (offlineSwapCreator) {
+      const { startOfflineSettlementPoller } = await import("./offline-poller.js");
+      startOfflineSettlementPoller(settlements, offlineSwapCreator, 15_000);
+      console.log(`offline receive: enabled (solver=${config.offlineReceive.solverUrl})`);
+    }
     console.log(`persistence: enabled at ${config.dbPath} (${deps.repos.domains.list().length} domain(s))`);
 
     const { createAdminServer } = await import("./admin-server.js");

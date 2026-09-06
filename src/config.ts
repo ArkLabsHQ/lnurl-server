@@ -1,3 +1,13 @@
+/** Server-orchestrated offline receive over the Arkade intents corridor
+ *  (`lightning:BTC -> arkade:BTC` solver quote + covclaimd claim).
+ *  Enabled only when SOLVER_URL, COVCLAIMD_URL and ARK_SERVER_URL are all set. */
+export interface OfflineReceiveConfig {
+  enabled: boolean;
+  solverUrl?: string;
+  covclaimdUrl?: string;
+  arkServerUrl?: string;
+}
+
 export interface AppConfig {
   port: number;
   baseUrl: string;
@@ -13,6 +23,7 @@ export interface AppConfig {
   bootstrapDomain?: string;
   registrationRateLimitPerMin: number;
   trustProxy: number | boolean;
+  offlineReceive: OfflineReceiveConfig;
 }
 
 type Env = Record<string, string | undefined>;
@@ -53,5 +64,18 @@ export function loadConfig(env: Env = process.env): AppConfig {
     bootstrapDomain: env.BOOTSTRAP_DOMAIN || undefined,
     registrationRateLimitPerMin: Number(env.REGISTRATION_RATE_LIMIT) || 10,
     trustProxy: /^\d+$/.test(env.TRUST_PROXY ?? "") ? Number(env.TRUST_PROXY) : env.TRUST_PROXY === "false" ? false : 1,
+    offlineReceive: buildOfflineReceive(env),
+  };
+}
+
+function buildOfflineReceive(env: Env): OfflineReceiveConfig {
+  const solverUrl = env.SOLVER_URL || undefined;
+  const covclaimdUrl = env.COVCLAIMD_URL || undefined;
+  const arkServerUrl = env.ARK_SERVER_URL || undefined;
+  return {
+    enabled: Boolean(solverUrl && covclaimdUrl && arkServerUrl),
+    ...(solverUrl ? { solverUrl } : {}),
+    ...(covclaimdUrl ? { covclaimdUrl } : {}),
+    ...(arkServerUrl ? { arkServerUrl } : {}),
   };
 }

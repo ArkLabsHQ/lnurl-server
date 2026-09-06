@@ -397,6 +397,41 @@ export const openApiSpec = {
         },
       },
     },
+    "/lnurl/address/{username}/arkade": {
+      post: {
+        summary: "Register Arkade receive identity (offline receive)",
+        description:
+          "Sets the Arkade address + claim public key the server uses to quote a solver-mediated " +
+          "corridor swap for this address when the wallet is offline. Requires the owning session token.",
+        tags: ["LN Address"],
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: "username", in: "path", required: true, schema: { type: "string" }, description: "LN address local part" },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  arkadeAddress: { type: "string", description: "Arkade address to receive funds" },
+                  claimPublicKey: { type: "string", description: "Compressed claim public key (66 hex chars)" },
+                  domain: { type: "string", description: "Target domain (defaults to the Host header)" },
+                },
+                required: ["arkadeAddress", "claimPublicKey"],
+              },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "Identity stored", content: { "application/json": { schema: { type: "object", properties: { ok: { type: "boolean" } } } } } },
+          "400": { description: "Missing arkadeAddress or invalid claimPublicKey" },
+          "401": { description: "Missing auth token" },
+          "404": { description: "Unknown domain, or address not found / not owned by this token" },
+        },
+      },
+    },
     "/.well-known/lnurlp/{username}": {
       get: {
         summary: "LN Address pay metadata (LUD-16)",

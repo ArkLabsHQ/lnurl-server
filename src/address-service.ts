@@ -89,6 +89,20 @@ export class AddressService {
     return true;
   }
 
+  /** Set the Arkade receive identity for offline receive on an owned address. */
+  setOfflineReceive(
+    domain: DomainRow,
+    username: string,
+    token: string,
+    cfg: { arkadeAddress: string; claimPublicKey: string },
+  ): boolean {
+    if (!isValidToken(token)) return false;
+    const a = this.repos.addresses.getByDomainAndUsername(domain.id, username.toLowerCase());
+    if (!a || a.sessionId !== deriveSessionId(token) || a.status !== "active") return false;
+    this.repos.addresses.setOfflineReceive(a.id, cfg.arkadeAddress, cfg.claimPublicKey);
+    return true;
+  }
+
   private result(domain: DomainRow, username: string) {
     return { address: this.repos.addresses.getByDomainAndUsername(domain.id, username)!, lightningAddress: `${username}@${domain.domain}` };
   }

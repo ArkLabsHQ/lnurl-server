@@ -90,6 +90,25 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_settlements_created ON settlements(created_at);
     `,
   },
+  {
+    version: 4,
+    // Offline-receive swaps: the server holds the preimage from swap creation and
+    // records the swap's RFQ id so the settlement poller can flip `verify` when the
+    // solver reports it settled.
+    up: `
+      ALTER TABLE settlements ADD COLUMN swap_id TEXT;
+      CREATE INDEX idx_settlements_pending_swaps ON settlements(swap_id) WHERE swap_id IS NOT NULL AND settled = 0;
+    `,
+  },
+  {
+    version: 5,
+    // Per-address Arkade receive identity for offline receive: the public info the
+    // server needs to quote a corridor swap paying an offline user (no user secret).
+    up: `
+      ALTER TABLE addresses ADD COLUMN arkade_address TEXT;
+      ALTER TABLE addresses ADD COLUMN claim_public_key TEXT;
+    `,
+  },
 ];
 
 /** Apply all pending forward-only migrations inside a transaction each. */

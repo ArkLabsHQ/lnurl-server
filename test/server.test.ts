@@ -924,6 +924,7 @@ describe("LNURL Service", () => {
           "/lnurl/session/{id}/settled",
           "/lnurl/address",
           "/lnurl/address/{username}",
+          "/lnurl/address/{username}/arkade",
           "/.well-known/lnurlp/{username}",
           "/.well-known/lnurlp/{username}/callback",
         ]),
