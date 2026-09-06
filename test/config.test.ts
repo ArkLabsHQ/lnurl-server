@@ -56,4 +56,48 @@ describe("loadConfig", () => {
     // partial config → disabled (missing covclaimd + operator)
     expect(loadConfig({ ...base, SOLVER_URL: "https://solver.example" }).offlineReceive.enabled).toBe(false);
   });
+
+  it("enables offline receive via the Nostr solver transport (pubkey + relays)", () => {
+    const on = loadConfig({
+      ...base,
+      SOLVER_PUBKEY: "3f831510a6d7678d0c90d7d6fbc4057720517e2e30681ef4c87cc57aaf57e8d5",
+      NOSTR_RELAYS: "wss://nostr.arkade.sh, wss://relay.example",
+      COVCLAIMD_URL: "https://covclaimd.example:7071",
+      ARK_SERVER_URL: "https://mutinynet.arkade.sh",
+    });
+    expect(on.offlineReceive).toMatchObject({
+      enabled: true,
+      solverPubkey: "3f831510a6d7678d0c90d7d6fbc4057720517e2e30681ef4c87cc57aaf57e8d5",
+      nostrRelays: ["wss://nostr.arkade.sh", "wss://relay.example"],
+    });
+    // pubkey without relays is not a transport
+    expect(
+      loadConfig({
+        ...base,
+        SOLVER_PUBKEY: "3f831510a6d7678d0c90d7d6fbc4057720517e2e30681ef4c87cc57aaf57e8d5",
+        COVCLAIMD_URL: "https://covclaimd.example:7071",
+        ARK_SERVER_URL: "https://mutinynet.arkade.sh",
+      }).offlineReceive.enabled,
+    ).toBe(false);
+  });
+
+  it("accepts ws:// relays (regtest/dev) but rejects non-WS schemes at load", () => {
+    const dev = loadConfig({
+      ...base,
+      SOLVER_PUBKEY: "3f831510a6d7678d0c90d7d6fbc4057720517e2e30681ef4c87cc57aaf57e8d5",
+      NOSTR_RELAYS: "ws://localhost:7777",
+      COVCLAIMD_URL: "https://covclaimd.example:7071",
+      ARK_SERVER_URL: "https://mutinynet.arkade.sh",
+    });
+    expect(dev.offlineReceive.nostrRelays).toEqual(["ws://localhost:7777"]);
+    expect(() =>
+      loadConfig({
+        ...base,
+        SOLVER_PUBKEY: "3f831510a6d7678d0c90d7d6fbc4057720517e2e30681ef4c87cc57aaf57e8d5",
+        NOSTR_RELAYS: "http://relay.example",
+        COVCLAIMD_URL: "https://covclaimd.example:7071",
+        ARK_SERVER_URL: "https://mutinynet.arkade.sh",
+      }),
+    ).toThrow(/ws\(s\):\/\//);
+  });
 });

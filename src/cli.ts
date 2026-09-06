@@ -49,10 +49,14 @@ async function main(): Promise<void> {
     let offlineSwapCreator: import("./intent-swap.js").OfflineSwapCreator | undefined;
     if (config.offlineReceive.enabled) {
       const { createIntentSwapCreator } = await import("./intent-swap.js");
+      const off = config.offlineReceive;
       offlineSwapCreator = createIntentSwapCreator({
-        solverUrl: config.offlineReceive.solverUrl!,
-        covclaimdUrl: config.offlineReceive.covclaimdUrl!,
-        arkServerUrl: config.offlineReceive.arkServerUrl!,
+        solverUrl: off.solverUrl,
+        solverPubkey: off.solverPubkey,
+        nostrRelays: off.nostrRelays,
+        nostrSecretKey: off.nostrSecretKey,
+        covclaimdUrl: off.covclaimdUrl!,
+        arkServerUrl: off.arkServerUrl!,
       });
     }
     deps = {
@@ -67,7 +71,8 @@ async function main(): Promise<void> {
     if (offlineSwapCreator) {
       const { startOfflineSettlementPoller } = await import("./offline-poller.js");
       startOfflineSettlementPoller(settlements, offlineSwapCreator, 15_000);
-      console.log(`offline receive: enabled (solver=${config.offlineReceive.solverUrl})`);
+      const via = config.offlineReceive.solverUrl ?? `nostr:${config.offlineReceive.solverPubkey}`;
+      console.log(`offline receive: enabled (solver=${via})`);
     }
     console.log(`persistence: enabled at ${config.dbPath} (${deps.repos.domains.list().length} domain(s))`);
 

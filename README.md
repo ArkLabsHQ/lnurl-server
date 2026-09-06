@@ -162,7 +162,7 @@ Constraints enforced per domain:
 
 Normally an LN address only resolves while the wallet's SSE session is connected. With offline receive, a wallet can receive while disconnected: the server quotes a **solver-mediated swap over the Arkade intents corridor** (`lightning:BTC -> arkade:BTC`) and hands the payer the solver's hold invoice. When the payer pays, the solver funds a VHTLC pinned to the user's Arkade address, and a **covclaimd** daemon claims it on the user's behalf — constrained by covenant (`enforcePayTo`) to pay only that address, so neither the solver nor the daemon can redirect funds.
 
-Enable it by setting `SOLVER_URL`, `COVCLAIMD_URL`, and `ARK_SERVER_URL`. A wallet then registers its receive identity on an owned address:
+Enable it by setting a solver transport — `SOLVER_URL` (HTTP, dev/custom solvers) or `SOLVER_PUBKEY` + `NOSTR_RELAYS` (Nostr, the production transport; see the [solver registry](https://arkade-os.github.io/solver-registry/) for listed solvers) — plus `COVCLAIMD_URL` and `ARK_SERVER_URL`. A wallet then registers its receive identity on an owned address:
 
 > **`COVCLAIMD_URL` must name the same covclaimd instance the solver reveals to.** The protocol does not carry that choice: this server seals the preimage to the key its own `COVCLAIMD_URL` reports, while the solver reveals to whichever daemon *its* operator configured. Point them at different daemons and every offline receive funds, fails to claim, and refunds — covclaimd correctly refuses a packet it cannot decrypt, the solver retries that refusal until the refund deadline, and the only trace is in the solver operator's logs, not yours. Until [arkade-os/intent-solver#46](https://github.com/arkade-os/intent-solver/issues/46) moves the choice in band, confirm the pairing with whoever runs the solver.
 
@@ -175,7 +175,7 @@ curl -X POST https://pay.example.com/lnurl/address/alice/arkade \
 
 After that, if a payer pays `alice@pay.example.com` while the wallet is offline, the server returns the solver's hold invoice and reports settlement through the LUD-21 `verify` URL (polled from the solver's RFQ status). The server never holds the user's keys or funds — it generates the swap preimage and hands it to covclaimd encrypted (sealed into the quote request, so it never touches the solver in plaintext).
 
-> The corridor client is vendored at `src/vendor/arkade-swap/` (byte-exact from `arkade-os/ts-sdk` — see its README for the exit plan) until `@arkade-os/swap` ships a release carrying the receive corridors. The live path (real solver + covclaimd + operator) is not exercised by the test suite; the integration test drives the same wire contracts against fake HTTP services.
+> The corridor client is vendored at `src/vendor/arkade-swap/` (byte-exact from `arkade-os/ts-sdk` — see its README for the exit plan) until `@arkade-os/swap` ships a release carrying the receive corridors. The wire contract is integration-tested against fake HTTP services and was **live-probed against the public mutinynet solver** (`scripts/probe-solver.ts`) — quote, hold-invoice binding, and covenant derivation all verified. A full funded swap (payer pays, covclaimd claims) remains the operator's pre-production check.
 
 ## Payment options (LUD-XX)
 
@@ -263,7 +263,10 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `MAX_SENDABLE` | `100000000000` | Maximum sendable amount in millisats |
 | `INVOICE_TIMEOUT_MS` | `30000` | How long to wait (ms) for the wallet to provide a bolt11 |
 | `VERIFY_TTL_MS` | `86400000` | How long (ms) LUD-21 settlement records are retained for `verify` polling |
-| `SOLVER_URL` | — | Intent-solver RFQ base URL. Set together with `COVCLAIMD_URL` + `ARK_SERVER_URL` to enable offline receive. |
+| `SOLVER_URL` | — | Intent-solver RFQ HTTP base URL (dev/custom solvers). Alternatively configure the Nostr transport below. |
+| `SOLVER_PUBKEY` | — | Solver's x-only discovery pubkey (hex) for Nostr RFQ — the production transport. Needs `NOSTR_RELAYS`. |
+| `NOSTR_RELAYS` | — | Comma-separated `wss://` relay URLs the solver listens on. |
+| `NOSTR_SECRET_KEY` | — | 32-byte hex Nostr identity for the RFQ transport; ephemeral per boot when unset. **Key material** — treat it like a private key; prefer the ephemeral default unless a stable identity is genuinely required. |
 | `COVCLAIMD_URL` | — | covclaimd daemon base URL (non-interactive VHTLC claims). Must be the same instance the solver reveals to — see the warning under [Offline receive](#offline-receive-opt-in). |
 | `ARK_SERVER_URL` | — | Arkade operator URL (e.g. `https://mutinynet.arkade.sh`) — signer key, exit delay and network are read from it. |
 | `DB_PATH` | — | Path to SQLite database file. Omit for in-memory-only mode. |

@@ -1,9 +1,14 @@
 /** Server-orchestrated offline receive over the Arkade intents corridor
  *  (`lightning:BTC -> arkade:BTC` solver quote + covclaimd claim).
- *  Enabled only when SOLVER_URL, COVCLAIMD_URL and ARK_SERVER_URL are all set. */
+ *  Enabled when COVCLAIMD_URL + ARK_SERVER_URL are set and a solver transport is
+ *  configured: SOLVER_URL (HTTP, dev/custom) or SOLVER_PUBKEY + NOSTR_RELAYS (Nostr,
+ *  the production transport). */
 export interface OfflineReceiveConfig {
   enabled: boolean;
   solverUrl?: string;
+  solverPubkey?: string;
+  nostrRelays?: string[];
+  nostrSecretKey?: string;
   covclaimdUrl?: string;
   arkServerUrl?: string;
 }
@@ -70,11 +75,23 @@ export function loadConfig(env: Env = process.env): AppConfig {
 
 function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   const solverUrl = env.SOLVER_URL || undefined;
+  const solverPubkey = env.SOLVER_PUBKEY || undefined;
+  const nostrRelays = env.NOSTR_RELAYS?.split(",").map((r) => r.trim()).filter(Boolean);
+  // ws:// is valid (regtest/dev relays terminate no TLS); anything else fails at
+  // startup rather than as a runtime connection error.
+  for (const r of nostrRelays ?? []) {
+    if (!/^wss?:\/\//.test(r)) throw new Error(`NOSTR_RELAYS entries must be ws(s):// URLs (got "${r}")`);
+  }
+  const nostrSecretKey = env.NOSTR_SECRET_KEY || undefined;
   const covclaimdUrl = env.COVCLAIMD_URL || undefined;
   const arkServerUrl = env.ARK_SERVER_URL || undefined;
+  const hasTransport = Boolean(solverUrl || (solverPubkey && nostrRelays?.length));
   return {
-    enabled: Boolean(solverUrl && covclaimdUrl && arkServerUrl),
+    enabled: Boolean(hasTransport && covclaimdUrl && arkServerUrl),
     ...(solverUrl ? { solverUrl } : {}),
+    ...(solverPubkey ? { solverPubkey } : {}),
+    ...(nostrRelays?.length ? { nostrRelays } : {}),
+    ...(nostrSecretKey ? { nostrSecretKey } : {}),
     ...(covclaimdUrl ? { covclaimdUrl } : {}),
     ...(arkServerUrl ? { arkServerUrl } : {}),
   };
