@@ -47,6 +47,49 @@ export interface SelfClaimer {
   claim(swapId: string, preimage: string): Promise<SelfClaimOutcome>;
 }
 
+export type EmulatorPairing = "matched" | "mismatched" | "unknown";
+
+/**
+ * Loud at boot rather than silent per-claim. The covenant bakes in the emulator
+ * key covclaimd reports, so an `OFFLINE_EMULATOR_URL` naming a different signer
+ * yields covenants nobody can satisfy — and the first sign of it would otherwise
+ * be a funded lockup that never claims.
+ *
+ * Never throws and never blocks startup: unreachable is `unknown`, because a
+ * transient blip at boot is a worse reason to refuse to serve than the
+ * misconfiguration this catches.
+ */
+export async function checkEmulatorPairing(opts: {
+  covclaimdUrl: string;
+  emulatorUrl: string;
+  warn?: (message: string) => void;
+}): Promise<EmulatorPairing> {
+  const warn = opts.warn ?? console.warn;
+  const get = async (url: string) => {
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) throw new Error(`${url} -> ${res.status}`);
+    return (await res.json()) as Record<string, unknown>;
+  };
+  let expected: string;
+  let signer: string;
+  let deprecated: string[];
+  try {
+    expected = String((await get(`${opts.covclaimdUrl}/v1/preimage/covclaimd-pubkey`)).emulator_pub_key ?? "");
+    const info = await get(`${opts.emulatorUrl}/v1/info`);
+    signer = String(info.signerPubkey ?? "");
+    deprecated = Array.isArray(info.deprecatedSignerPubkeys) ? info.deprecatedSignerPubkeys.map(String) : [];
+  } catch {
+    return "unknown";
+  }
+  // A rotated emulator still satisfies covenants built under its old key.
+  if (expected && [signer, ...deprecated].includes(expected)) return "matched";
+  warn(
+    `offline self-claim: OFFLINE_EMULATOR_URL signs with ${signer || "(none)"}, but covclaimd's covenants name ` +
+      `${expected || "(none)"} — every self-claim will fail until they agree`,
+  );
+  return "mismatched";
+}
+
 export function createSelfClaimer(opts: {
   arkServerUrl: string;
   emulatorUrl: string;

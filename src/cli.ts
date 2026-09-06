@@ -52,9 +52,10 @@ async function main(): Promise<void> {
       const off = config.offlineReceive;
       let selfClaimer: import("./self-claim.js").SelfClaimer | undefined;
       if (off.selfClaim) {
-        const { createSelfClaimer } = await import("./self-claim.js");
+        const { createSelfClaimer, checkEmulatorPairing } = await import("./self-claim.js");
         selfClaimer = createSelfClaimer({ arkServerUrl: off.arkServerUrl!, emulatorUrl: off.emulatorUrl! });
         console.log(`offline self-claim: enabled (emulator=${off.emulatorUrl})`);
+        void checkEmulatorPairing({ covclaimdUrl: off.covclaimdUrl!, emulatorUrl: off.emulatorUrl! });
       }
       offlineSwapCreator = await createIntentSwapCreator({
         solverUrl: off.solverUrl,
