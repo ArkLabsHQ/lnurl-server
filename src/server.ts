@@ -558,7 +558,12 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           paymentDestination: derived?.address ?? resolved.paymentDestination,
           amountMsat,
           ...(derived
-            ? { covenantScript: derived.script, covenantPreimage: derived.preimage, covenantTapTree: derived.tapTree }
+            ? {
+                covenantScript: derived.script,
+                covenantPreimage: derived.preimage,
+                covenantTapTree: derived.tapTree,
+                covenantPayoutScript: derived.payoutScript,
+              }
             : {}),
         });
         res.json({

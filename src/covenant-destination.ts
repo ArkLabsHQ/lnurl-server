@@ -27,7 +27,7 @@ const preimageCondition = (hash20: Uint8Array): Uint8Array =>
 
 /** Re-emitted, not imported: the emulator co-signs only a covenant hashing to the
  *  key baked into the leaf, so these bytes must match its own exactly. */
-const enforcePayTo = (destinationPkScript: Uint8Array): Uint8Array => {
+export const enforcePayTo = (destinationPkScript: Uint8Array): Uint8Array => {
   if (destinationPkScript.length !== 34 || destinationPkScript[0] !== 0x51 || destinationPkScript[1] !== 0x20) {
     throw new Error("destination must be a P2TR pkScript (0x5120 + 32 bytes)");
   }
@@ -73,6 +73,8 @@ export interface DerivedDestination {
   script: string;
   preimage: string;
   tapTree: string;
+  /** Where the covenant forces the sweep to pay — the user's static address. */
+  payoutScript: string;
 }
 
 export interface CovenantDestinationProvider {
@@ -124,7 +126,13 @@ export function createCovenantDestinationProvider(opts: {
         preimage,
         recoveryDelaySeconds: opts.recoveryDelaySeconds,
       });
-      return { address: d.address, script: d.script, preimage: hex.encode(preimage), tapTree: hex.encode(d.tapTree) };
+      return {
+        address: d.address,
+        script: d.script,
+        preimage: hex.encode(preimage),
+        tapTree: hex.encode(d.tapTree),
+        payoutScript: hex.encode(ArkAddress.decode(address.arkadeAddress).pkScript),
+      };
     },
   };
 }

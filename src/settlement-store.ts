@@ -28,6 +28,7 @@ export interface SettlementRecord {
   covenantScript: string | null;
   covenantPreimage: string | null;
   covenantTapTree: string | null;
+  covenantPayoutScript: string | null;
   createdAt: number;
   settledAt: number | null;
 }
@@ -51,6 +52,7 @@ export interface PendingDestination {
   covenantScript: string | null;
   covenantPreimage: string | null;
   covenantTapTree: string | null;
+  covenantPayoutScript: string | null;
 }
 
 /** What `create` accepts. Covenant fields arrive together or not at all. */
@@ -66,6 +68,7 @@ export interface NewSettlement {
   covenantScript?: string;
   covenantPreimage?: string;
   covenantTapTree?: string;
+  covenantPayoutScript?: string;
 }
 
 export interface SettlementStore {
@@ -116,6 +119,7 @@ export class MemorySettlementStore implements SettlementStore {
       covenantScript: rec.covenantScript ?? null,
       covenantPreimage: rec.covenantPreimage ?? null,
       covenantTapTree: rec.covenantTapTree ?? null,
+      covenantPayoutScript: rec.covenantPayoutScript ?? null,
       createdAt: this.now(),
       settledAt: null,
     });
@@ -169,6 +173,7 @@ export class MemorySettlementStore implements SettlementStore {
           covenantScript: r.covenantScript,
           covenantPreimage: r.covenantPreimage,
           covenantTapTree: r.covenantTapTree,
+          covenantPayoutScript: r.covenantPayoutScript,
         });
       }
     }
@@ -216,6 +221,7 @@ interface SettlementRow {
   covenant_script: string | null;
   covenant_preimage: string | null;
   covenant_tap_tree: string | null;
+  covenant_payout_script: string | null;
   created_at: number;
   settled_at: number | null;
 }
@@ -229,7 +235,7 @@ export class DbSettlementStore implements SettlementStore {
   create(rec: NewSettlement): void {
     const info = this.db
       .prepare(
-        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, covenant_script, covenant_preimage, covenant_tap_tree, created_at, settled_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, covenant_script, covenant_preimage, covenant_tap_tree, covenant_payout_script, created_at, settled_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
       )
       .run(
         rec.paymentHash,
@@ -243,6 +249,7 @@ export class DbSettlementStore implements SettlementStore {
         rec.covenantScript ?? null,
         rec.covenantPreimage ?? null,
         rec.covenantTapTree ?? null,
+        rec.covenantPayoutScript ?? null,
         this.now(),
       );
     // A paymentHash collision on the offline path would leave `verify` polling the
@@ -292,6 +299,7 @@ export class DbSettlementStore implements SettlementStore {
       covenantScript: row.covenant_script ?? null,
       covenantPreimage: row.covenant_preimage ?? null,
       covenantTapTree: row.covenant_tap_tree ?? null,
+      covenantPayoutScript: row.covenant_payout_script ?? null,
       createdAt: row.created_at,
       settledAt: row.settled_at ?? null,
     };
@@ -310,7 +318,7 @@ export class DbSettlementStore implements SettlementStore {
   listPendingDestinations(): PendingDestination[] {
     const rows = this.db
       .prepare(
-        "SELECT payment_hash, payment_destination, amount_msat, created_at, covenant_script, covenant_preimage, covenant_tap_tree FROM settlements WHERE settled = 0 AND payment_option IS NOT NULL AND payment_option != 'lightning' AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
+        "SELECT payment_hash, payment_destination, amount_msat, created_at, covenant_script, covenant_preimage, covenant_tap_tree, covenant_payout_script FROM settlements WHERE settled = 0 AND payment_option IS NOT NULL AND payment_option != 'lightning' AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
       )
       .all(this.now() - this.ttlMs) as unknown as {
       payment_hash: string;
@@ -320,6 +328,7 @@ export class DbSettlementStore implements SettlementStore {
       covenant_script: string | null;
       covenant_preimage: string | null;
       covenant_tap_tree: string | null;
+      covenant_payout_script: string | null;
     }[];
     return rows.map((r) => ({
       paymentHash: r.payment_hash,
@@ -329,6 +338,7 @@ export class DbSettlementStore implements SettlementStore {
       covenantScript: r.covenant_script,
       covenantPreimage: r.covenant_preimage,
       covenantTapTree: r.covenant_tap_tree,
+      covenantPayoutScript: r.covenant_payout_script,
     }));
   }
 
@@ -374,6 +384,7 @@ export class DbSettlementStore implements SettlementStore {
       covenantScript: row.covenant_script ?? null,
       covenantPreimage: row.covenant_preimage ?? null,
       covenantTapTree: row.covenant_tap_tree ?? null,
+      covenantPayoutScript: row.covenant_payout_script ?? null,
       createdAt: row.created_at,
       settledAt: row.settled_at ?? null,
     }));

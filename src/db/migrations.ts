@@ -134,6 +134,7 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE settlements ADD COLUMN covenant_script TEXT;
       ALTER TABLE settlements ADD COLUMN covenant_preimage TEXT;
       ALTER TABLE settlements ADD COLUMN covenant_tap_tree TEXT;
+      ALTER TABLE settlements ADD COLUMN covenant_payout_script TEXT;
       CREATE UNIQUE INDEX uq_settlements_covenant_script
         ON settlements(covenant_script) WHERE covenant_script IS NOT NULL;
     `,
