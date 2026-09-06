@@ -23,6 +23,11 @@ export interface SettlementRecord {
   /** The agreed amount. Recorded so a future Arkade watcher can correlate the observed
    *  payment against it — without it an under-payment would flip settled just the same. */
   amountMsat: number | null;
+  /** Set on destination records with a per-payment covenant address; null for the
+   *  static-address shape and for lightning. @see covenant-destination.ts */
+  covenantScript: string | null;
+  covenantPreimage: string | null;
+  covenantTapTree: string | null;
   createdAt: number;
   settledAt: number | null;
 }
@@ -41,12 +46,32 @@ export interface PendingDestination {
   paymentDestination: string;
   amountMsat: number;
   createdAt: number;
+  /** hex pkScript of this record's own destination. Present makes attribution exact:
+   *  a VTXO there belongs to this record and to no other. */
+  covenantScript: string | null;
+  covenantPreimage: string | null;
+  covenantTapTree: string | null;
+}
+
+/** What `create` accepts. Covenant fields arrive together or not at all. */
+export interface NewSettlement {
+  paymentHash: string;
+  pr: string;
+  sessionId: string;
+  preimage?: string;
+  swapId?: string;
+  paymentOption?: string;
+  paymentDestination?: string;
+  amountMsat?: number;
+  covenantScript?: string;
+  covenantPreimage?: string;
+  covenantTapTree?: string;
 }
 
 export interface SettlementStore {
   /** Record a new invoice. Idempotent: a repeated paymentHash is ignored (never resets settled).
    *  Offline swaps pass `preimage` + `swapId` up front (held privately until settled). */
-  create(rec: { paymentHash: string; pr: string; sessionId: string; preimage?: string; swapId?: string; paymentOption?: string; paymentDestination?: string; amountMsat?: number }): void;
+  create(rec: NewSettlement): void;
   /** Mark an invoice settled with its preimage. Returns false if the hash is unknown. */
   markSettled(paymentHash: string, preimage: string): boolean;
   /** Mark a destination record settled from an observed payment — reference is the
@@ -74,7 +99,7 @@ export class MemorySettlementStore implements SettlementStore {
 
   constructor(private ttlMs: number, private now: () => number = () => Date.now()) {}
 
-  create(rec: { paymentHash: string; pr: string; sessionId: string; preimage?: string; swapId?: string; paymentOption?: string; paymentDestination?: string; amountMsat?: number }): void {
+  create(rec: NewSettlement): void {
     if (++this.calls % 1000 === 0) this.sweep();
     if (this.map.has(rec.paymentHash)) return;
     this.map.set(rec.paymentHash, {
@@ -88,6 +113,9 @@ export class MemorySettlementStore implements SettlementStore {
       paymentDestination: rec.paymentDestination ?? null,
       paymentReference: null,
       amountMsat: rec.amountMsat ?? null,
+      covenantScript: rec.covenantScript ?? null,
+      covenantPreimage: rec.covenantPreimage ?? null,
+      covenantTapTree: rec.covenantTapTree ?? null,
       createdAt: this.now(),
       settledAt: null,
     });
@@ -133,7 +161,15 @@ export class MemorySettlementStore implements SettlementStore {
       // amountMsat missing → an observed payment can never be amount-checked, so
       // skip rather than flip on any payment. Option missing == lightning.
       if (r.paymentOption != null && r.paymentOption !== "lightning" && !r.settled && r.paymentDestination && r.amountMsat != null) {
-        out.push({ paymentHash: r.paymentHash, paymentDestination: r.paymentDestination, amountMsat: r.amountMsat, createdAt: r.createdAt });
+        out.push({
+          paymentHash: r.paymentHash,
+          paymentDestination: r.paymentDestination,
+          amountMsat: r.amountMsat,
+          createdAt: r.createdAt,
+          covenantScript: r.covenantScript,
+          covenantPreimage: r.covenantPreimage,
+          covenantTapTree: r.covenantTapTree,
+        });
       }
     }
     return out;
@@ -177,6 +213,9 @@ interface SettlementRow {
   payment_destination: string | null;
   payment_reference: string | null;
   amount_msat: number | null;
+  covenant_script: string | null;
+  covenant_preimage: string | null;
+  covenant_tap_tree: string | null;
   created_at: number;
   settled_at: number | null;
 }
@@ -187,10 +226,10 @@ interface SettlementRow {
 export class DbSettlementStore implements SettlementStore {
   constructor(private db: Db, private ttlMs: number, private now: () => number = () => Date.now()) {}
 
-  create(rec: { paymentHash: string; pr: string; sessionId: string; preimage?: string; swapId?: string; paymentOption?: string; paymentDestination?: string; amountMsat?: number }): void {
+  create(rec: NewSettlement): void {
     const info = this.db
       .prepare(
-        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, created_at, settled_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, NULL)",
+        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, covenant_script, covenant_preimage, covenant_tap_tree, created_at, settled_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
       )
       .run(
         rec.paymentHash,
@@ -201,6 +240,9 @@ export class DbSettlementStore implements SettlementStore {
         rec.paymentOption ?? "lightning",
         rec.paymentDestination ?? null,
         rec.amountMsat ?? null,
+        rec.covenantScript ?? null,
+        rec.covenantPreimage ?? null,
+        rec.covenantTapTree ?? null,
         this.now(),
       );
     // A paymentHash collision on the offline path would leave `verify` polling the
@@ -208,6 +250,11 @@ export class DbSettlementStore implements SettlementStore {
     // but loud if it ever happens.
     if (info.changes === 0 && rec.swapId) {
       console.warn(`settlements: insert ignored for existing paymentHash ${rec.paymentHash} (offline swap ${rec.swapId})`);
+    }
+    // OR IGNORE swallows the unique index, and an ignored insert would hand a payer
+    // an address whose record does not exist.
+    if (info.changes === 0 && rec.covenantScript) {
+      throw new Error(`settlements: covenant script ${rec.covenantScript} is already in use`);
     }
   }
 
@@ -242,6 +289,9 @@ export class DbSettlementStore implements SettlementStore {
       paymentDestination: row.payment_destination ?? null,
       paymentReference: row.payment_reference ?? null,
       amountMsat: row.amount_msat ?? null,
+      covenantScript: row.covenant_script ?? null,
+      covenantPreimage: row.covenant_preimage ?? null,
+      covenantTapTree: row.covenant_tap_tree ?? null,
       createdAt: row.created_at,
       settledAt: row.settled_at ?? null,
     };
@@ -260,10 +310,26 @@ export class DbSettlementStore implements SettlementStore {
   listPendingDestinations(): PendingDestination[] {
     const rows = this.db
       .prepare(
-        "SELECT payment_hash, payment_destination, amount_msat, created_at FROM settlements WHERE settled = 0 AND payment_option IS NOT NULL AND payment_option != 'lightning' AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
+        "SELECT payment_hash, payment_destination, amount_msat, created_at, covenant_script, covenant_preimage, covenant_tap_tree FROM settlements WHERE settled = 0 AND payment_option IS NOT NULL AND payment_option != 'lightning' AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
       )
-      .all(this.now() - this.ttlMs) as unknown as { payment_hash: string; payment_destination: string; amount_msat: number; created_at: number }[];
-    return rows.map((r) => ({ paymentHash: r.payment_hash, paymentDestination: r.payment_destination, amountMsat: r.amount_msat, createdAt: r.created_at }));
+      .all(this.now() - this.ttlMs) as unknown as {
+      payment_hash: string;
+      payment_destination: string;
+      amount_msat: number;
+      created_at: number;
+      covenant_script: string | null;
+      covenant_preimage: string | null;
+      covenant_tap_tree: string | null;
+    }[];
+    return rows.map((r) => ({
+      paymentHash: r.payment_hash,
+      paymentDestination: r.payment_destination,
+      amountMsat: r.amount_msat,
+      createdAt: r.created_at,
+      covenantScript: r.covenant_script,
+      covenantPreimage: r.covenant_preimage,
+      covenantTapTree: r.covenant_tap_tree,
+    }));
   }
 
   markObserved(paymentHash: string, reference: string): boolean {
@@ -305,6 +371,9 @@ export class DbSettlementStore implements SettlementStore {
       paymentDestination: row.payment_destination ?? null,
       paymentReference: row.payment_reference ?? null,
       amountMsat: row.amount_msat ?? null,
+      covenantScript: row.covenant_script ?? null,
+      covenantPreimage: row.covenant_preimage ?? null,
+      covenantTapTree: row.covenant_tap_tree ?? null,
       createdAt: row.created_at,
       settledAt: row.settled_at ?? null,
     }));
