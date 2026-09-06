@@ -98,17 +98,23 @@ export function createCovenantDestinationProvider(opts: {
   const now = opts.now ?? (() => Date.now());
   let cached: { at: number; serverPubkey: Uint8Array; emulatorPubkey: Uint8Array } | undefined;
 
+  // A 4xx body parses into an envelope with the field missing, so the decode error
+  // hides the status that caused it.
+  const getJson = async <T>(url: string): Promise<T> => {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`${url} -> HTTP ${res.status}`);
+    return (await res.json()) as T;
+  };
+
   const context = async () => {
     if (cached && now() - cached.at < CONTEXT_TTL_MS) return cached;
     const [info, keys] = await Promise.all([
-      fetch(`${opts.arkServerUrl}/v1/info`).then((r) => r.json() as Promise<{ signerPubkey: string }>),
-      fetch(`${opts.covclaimdUrl}/v1/preimage/covclaimd-pubkey`).then(
-        (r) => r.json() as Promise<{ emulator_pub_key: string }>,
-      ),
+      getJson<{ signerPubkey: string }>(`${opts.arkServerUrl}/v1/info`),
+      getJson<{ emulator_pub_key: string }>(`${opts.covclaimdUrl}/v1/preimage/covclaimd-pubkey`),
     ]);
     cached = {
       at: now(),
-      serverPubkey: hex.decode(info.signerPubkey).subarray(1),
+      serverPubkey: toXOnly(hex.decode(info.signerPubkey)),
       emulatorPubkey: hex.decode(keys.emulator_pub_key),
     };
     return cached;
@@ -137,11 +143,18 @@ export function createCovenantDestinationProvider(opts: {
   };
 }
 
-/** Registered claim keys are compressed; the covenant leaves take x-only. */
-const toXOnly = (key: Uint8Array): Uint8Array => (key.length === 33 ? key.subarray(1) : key);
+/** Stripping unconditionally turns an x-only key into 31 bytes, and the covenant
+ *  commits to it without complaint — only the refused sweep would ever say so. */
+const toXOnly = (key: Uint8Array): Uint8Array => {
+  if (key.length === 32) return key;
+  if (key.length === 33) return key.subarray(1);
+  throw new Error(`expected a 32- or 33-byte key, got ${key.length} bytes`);
+};
 
 export function deriveCovenantDestination(input: CovenantDestinationInput): CovenantDestination {
   if (input.preimage.length !== 32) throw new Error(`preimage must be 32 bytes, got ${input.preimage.length}`);
+  const userPubkey = toXOnly(input.userPubkey);
+  const serverPubkey = toXOnly(input.serverPubkey);
   const staticPkScript = ArkAddress.decode(input.staticAddress).pkScript;
   const covenantScript = enforcePayTo(staticPkScript);
   const cosigner = arkade.computeArkadeScriptPublicKey(
@@ -151,17 +164,17 @@ export function deriveCovenantDestination(input: CovenantDestinationInput): Cove
   const vtxo = new VtxoScript([
     ConditionMultisigTapscript.encode({
       conditionScript: preimageCondition(ripemd160(sha256(input.preimage))),
-      pubkeys: [input.serverPubkey, cosigner],
+      pubkeys: [serverPubkey, cosigner],
     }).script,
-    MultisigTapscript.encode({ pubkeys: [input.userPubkey, input.serverPubkey] }).script,
+    MultisigTapscript.encode({ pubkeys: [userPubkey, serverPubkey] }).script,
     CSVMultisigTapscript.encode({
       timelock: { type: "seconds", value: BigInt(input.recoveryDelaySeconds) },
-      pubkeys: [input.userPubkey],
+      pubkeys: [userPubkey],
     }).script,
   ]);
   const hrp = input.staticAddress.slice(0, input.staticAddress.lastIndexOf("1"));
   return {
-    address: vtxo.address(hrp, input.serverPubkey).encode(),
+    address: vtxo.address(hrp, serverPubkey).encode(),
     script: hex.encode(vtxo.pkScript),
     tapTree: vtxo.encode(),
     covenantScript,

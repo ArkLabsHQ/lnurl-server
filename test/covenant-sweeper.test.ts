@@ -84,6 +84,34 @@ describe("createCovenantSweeper", () => {
     expect(indexer.getVtxos).toHaveBeenCalledWith(expect.objectContaining({ scripts: ["5120aa"] }));
   });
 
+  // A split payment left two outpoints at one script. Skipping on "not exactly one"
+  // stranded both, and the covenant pins every spend to the same address anyway.
+  it("sweeps each outpoint at a destination, not only a lone one", async () => {
+    const store = new MemorySettlementStore(3_600_000);
+    store.create(record("v1", "5120aa"));
+    const indexer = {
+      getVtxos: vi.fn(async () => ({
+        vtxos: [
+          { txid: "tx-a", vout: 0, value: 1000, script: "5120aa" },
+          { txid: "tx-b", vout: 0, value: 1000, script: "5120aa" },
+        ],
+      })),
+    } as unknown as IndexerProvider;
+    const submitTx = vi.fn(async () => ({ signedArkTx: "", signedCheckpointTxs: [] }));
+    const sweeper = createCovenantSweeper({
+      store,
+      arkServerUrl: "http://unused",
+      emulatorUrl: "http://unused",
+      indexer,
+      arkProvider: { getInfo: async () => ({ checkpointTapscript: "00" }) } as never,
+      emulator: { submitTx },
+    });
+
+    await sweeper.sweep();
+
+    expect(indexer.getVtxos).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps sweeping after one destination throws", async () => {
     const store = new MemorySettlementStore(3_600_000);
     store.create(record("bad", "5120bad"));

@@ -66,4 +66,31 @@ describe("deriveCovenantDestination", () => {
   it("refuses a preimage that is not 32 bytes", () => {
     expect(() => derive(new Uint8Array(31).fill(7))).toThrow(/32 bytes/);
   });
+
+  it("refuses a key that is neither 32 nor 33 bytes rather than truncating it", () => {
+    expect(() =>
+      deriveCovenantDestination({
+        staticAddress,
+        userPubkey: new Uint8Array(31).fill(4),
+        serverPubkey,
+        emulatorPubkey,
+        preimage: new Uint8Array(32).fill(7),
+        recoveryDelaySeconds: 4096,
+      }),
+    ).toThrow(/32- or 33-byte key/);
+  });
+
+  it("accepts a compressed user key and an x-only one as the same covenant", () => {
+    const compressed = secp256k1.getPublicKey(new Uint8Array(32).fill(4), true);
+    const withCompressed = deriveCovenantDestination({
+      staticAddress,
+      userPubkey: compressed,
+      serverPubkey,
+      emulatorPubkey,
+      preimage: new Uint8Array(32).fill(7),
+      recoveryDelaySeconds: 4096,
+    });
+
+    expect(withCompressed.script).toBe(derive(new Uint8Array(32).fill(7)).script);
+  });
 });

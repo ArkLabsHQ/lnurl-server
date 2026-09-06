@@ -53,12 +53,8 @@ export function createCovenantSweeper(opts: {
 
   const sweepOne = async (
     rec: { covenantScript: string; covenantPreimage: string; covenantTapTree: string; covenantPayoutScript: string },
+    utxo: { txid: string; vout: number; value: number },
   ): Promise<SweepOutcome> => {
-    const { vtxos } = await indexer.getVtxos({ scripts: [rec.covenantScript], spendableOnly: true });
-    // Not funded yet and already swept are the same no-op, so retries are safe.
-    if (vtxos.length !== 1) return { state: "skipped", reason: "unfunded" };
-    const utxo = vtxos[0]!;
-
     const tapTree = hex.decode(rec.covenantTapTree);
     const vtxo = VtxoScript.decode(tapTree);
     const payTo = hex.decode(rec.covenantPayoutScript);
@@ -94,10 +90,18 @@ export function createCovenantSweeper(opts: {
         const { covenantScript, covenantPreimage, covenantTapTree, covenantPayoutScript } = rec;
         if (!covenantScript || !covenantPreimage || !covenantTapTree || !covenantPayoutScript) continue;
         try {
-          const outcome = await sweepOne({ covenantScript, covenantPreimage, covenantTapTree, covenantPayoutScript });
-          if (outcome.state === "swept") {
-            moved++;
-            console.log(`covenant sweep: ${rec.paymentHash} -> ${outcome.arkTxid}`);
+          const { vtxos } = await indexer.getVtxos({ scripts: [covenantScript], spendableOnly: true });
+          // Each one separately rather than only a lone outpoint: the covenant pins
+          // every spend to the same address, so a split payment is swept, not stranded.
+          for (const utxo of vtxos) {
+            const outcome = await sweepOne(
+              { covenantScript, covenantPreimage, covenantTapTree, covenantPayoutScript },
+              utxo,
+            );
+            if (outcome.state === "swept") {
+              moved++;
+              console.log(`covenant sweep: ${rec.paymentHash} -> ${outcome.arkTxid}`);
+            }
           }
         } catch (err) {
           // One stuck destination must not stop the rest, and the next pass retries.

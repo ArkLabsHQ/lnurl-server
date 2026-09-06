@@ -100,7 +100,13 @@ describe("LUD-XX paymentOptions", () => {
     const provider: CovenantDestinationProvider = {
       derive: async () => {
         n += 1;
-        return { address: `tark1derived${n}`, script: `5120${n}`, preimage: `${n}`.repeat(64), tapTree: `ee${n}` };
+        return {
+          address: `tark1derived${n}`,
+          script: `5120${n}`,
+          preimage: `${n}`.repeat(64),
+          tapTree: `ee${n}`,
+          payoutScript: `5120${"00".repeat(32)}`,
+        };
       },
     };
     await ctx.close();
