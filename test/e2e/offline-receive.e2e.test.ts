@@ -68,7 +68,11 @@ function req(url: string, method: string, body?: unknown, token?: string) {
   });
 }
 
-describe("e2e: offline receive via the intents corridor", () => {
+// Under `stamped` no reveal is sent, so a settle proves the tx-stream ingress.
+describe.each([
+  { label: "reveal", stamp: false },
+  { label: "stamped", stamp: true },
+])("e2e: offline receive via the intents corridor ($label)", ({ stamp }) => {
   let db: Db;
   let server: http.Server;
   let baseUrl: string;
@@ -111,6 +115,7 @@ describe("e2e: offline receive via the intents corridor", () => {
       solverUrl: SOLVER_URL,
       covclaimdUrl: COVCLAIMD_URL,
       arkServerUrl: ARKD_URL,
+      stampClaimPacket: stamp,
     });
     const defaults = { baseUrl: "", minSendable: 1000, maxSendable: 100_000_000_000, invoiceTimeoutMs: 30_000, registrationRateLimitPerMin: 1000 };
     const app = createServer(
