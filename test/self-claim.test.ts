@@ -220,6 +220,16 @@ describe("createSelfClaimer", () => {
     expect(submitted).toHaveLength(0);
   });
 
+  it("leaves a multi-vtxo lockup alone instead of spending one below the quote", async () => {
+    const r = funded({ swapId: "swap-6", expectedAmount: 4_900, valueSat: 2_500 });
+    const second = fundingTx(r.script.pkScript, 2_500);
+    virtualTxs.set(second.txid, second.psbt);
+    vtxos.push(wireVtxo({ txid: second.txid, valueSat: 2_500, script: r.lockupScript }));
+
+    expect(await r.claimer.claim("swap-6", hex.encode(PREIMAGE))).toEqual({ state: "skipped", reason: "unfunded" });
+    expect(submitted).toHaveLength(0);
+  });
+
   it("skips a swap it never quoted (nothing to rebuild the covenant from)", async () => {
     const { claimer } = registered({ swapId: "swap-5", expectedAmount: 4_900 });
 

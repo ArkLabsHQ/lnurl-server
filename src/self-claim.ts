@@ -70,11 +70,10 @@ export function createSelfClaimer(opts: {
       const lockupScript = hex.encode(reg.script.pkScript);
       const { vtxos } = await indexer.getVtxos({ scripts: [lockupScript], spendableOnly: true });
       // "Not funded yet" and "already spent" are the same no-op: retries are safe.
-      if (vtxos.length === 0) return { state: "skipped", reason: "unfunded" };
+      if (vtxos.length !== 1) return { state: "skipped", reason: "unfunded" };
       const vtxo = vtxos[0]!;
-      const funded = vtxos.reduce((sum, v) => sum + v.value, 0);
-      // The solver settles the payer's invoice off the preimage, not off what it funded.
-      if (funded < reg.expectedAmount) return { state: "skipped", reason: "underfunded" };
+      // The outpoint spent, never a sum across outpoints: the preimage buys THIS one.
+      if (vtxo.value < reg.expectedAmount) return { state: "skipped", reason: "underfunded" };
 
       const [leaf, arkadeScript] = reg.script.nonInteractiveClaim();
       const payTo = reg.script.options.nonInteractiveParameters!.receiverPkScript;
