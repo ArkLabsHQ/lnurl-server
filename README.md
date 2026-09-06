@@ -271,6 +271,7 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `NOSTR_SECRET_KEY` | — | 32-byte hex Nostr identity for the RFQ transport; ephemeral per boot when unset. **Key material** — treat it like a private key; prefer the ephemeral default unless a stable identity is genuinely required. |
 | `COVCLAIMD_URL` | — | covclaimd daemon base URL (non-interactive VHTLC claims). Must be the same instance the solver reveals to — see the warning under [Offline receive](#offline-receive-opt-in). |
 | `ARK_SERVER_URL` | — | Arkade operator URL (e.g. `https://mutinynet.arkade.sh`) — signer key, exit delay and network are read from it. |
+| `OFFLINE_STAMP_CLAIM_PACKET` | `false` | `true` sends the claim packet for the solver to stamp into the funding tx, naming our covclaimd in-band — which removes the pairing requirement above entirely. **Only set it if the solver you quote carries [arkade-os/intent-solver#47](https://github.com/arkade-os/intent-solver/pull/47).** An older solver forwards the packet to its own covclaimd as a ciphertext, cannot decrypt it, and the swap funds and refunds. |
 | `DB_PATH` | — | Path to SQLite database file. Omit for in-memory-only mode. |
 | `TOKEN_ENCRYPTION_KEY` | — | 32-byte AES key (hex or base64). Required when `DB_PATH` is set. |
 | `ALLOW_INSECURE_TOKEN_STORAGE` | — | Set to `1` to skip token encryption in dev (plaintext storage). |

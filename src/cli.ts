@@ -58,6 +58,7 @@ async function main(): Promise<void> {
         registryUrl: off.registryUrl,
         covclaimdUrl: off.covclaimdUrl!,
         arkServerUrl: off.arkServerUrl!,
+        stampClaimPacket: off.stampClaimPacket,
       });
     }
     deps = {
