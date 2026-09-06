@@ -22,10 +22,11 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import http from "node:http";
 import { randomBytes } from "node:crypto";
-import { hex } from "@scure/base";
+import { hex, base64 } from "@scure/base";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
-import { MnemonicIdentity, Wallet, RestIndexerProvider, ArkAddress } from "@arkade-os/sdk";
+import { MnemonicIdentity, Wallet, RestIndexerProvider, ArkAddress, Extension, Transaction } from "@arkade-os/sdk";
+import { CLAIM_PACKET_TYPE } from "../../src/claim-packet.js";
 import { createServer } from "../../src/server.js";
 import { openDb, type Db } from "../../src/db/connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
@@ -68,7 +69,11 @@ function req(url: string, method: string, body?: unknown, token?: string) {
   });
 }
 
-describe("e2e: offline receive via the intents corridor", () => {
+// Under `stamped` no reveal is sent, so a settle proves the tx-stream ingress.
+describe.each([
+  { label: "reveal", stamp: false },
+  { label: "stamped", stamp: true },
+])("e2e: offline receive via the intents corridor ($label)", ({ stamp }) => {
   let db: Db;
   let server: http.Server;
   let baseUrl: string;
@@ -111,6 +116,7 @@ describe("e2e: offline receive via the intents corridor", () => {
       solverUrl: SOLVER_URL,
       covclaimdUrl: COVCLAIMD_URL,
       arkServerUrl: ARKD_URL,
+      stampClaimPacket: stamp,
     });
     const defaults = { baseUrl: "", minSendable: 1000, maxSendable: 100_000_000_000, invoiceTimeoutMs: 30_000, registrationRateLimitPerMin: 1000 };
     const app = createServer(
@@ -164,11 +170,13 @@ describe("e2e: offline receive via the intents corridor", () => {
     let blocksMined = 0;
     let lastMine = 0;
     let settled: Record<string, unknown> = {};
+    let lockupAddress = "";
     await pollUntil(
       "verify settled",
       async () => {
         if (swapId) {
           const raw = await fetch(`${SOLVER_URL}/v1/rfq/${swapId}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+          lockupAddress ||= String(raw?.profile?.lockup_address ?? "");
           if ((raw?.state === "funded" || raw?.state === "claimed") && !minedFunding) {
             minedFunding = true;
             await mine(2);
@@ -208,5 +216,21 @@ describe("e2e: offline receive via the intents corridor", () => {
     const received = vtxos.reduce((sum, v) => sum + v.value, 0);
     expect(received).toBeGreaterThan(0);
     expect(received).toBeLessThanOrEqual(AMOUNT_SATS);
+
+    // Without this a discriminator regression still settles, via the reveal.
+    expect(lockupAddress).not.toBe("");
+    const lockupScript = hex.encode(ArkAddress.decode(lockupAddress).pkScript);
+    const lockup = await indexer.getVtxos({ scripts: [lockupScript] });
+    const fundingTxid = lockup.vtxos[0]?.txid;
+    expect(fundingTxid).toBeTruthy();
+    const { txs } = await indexer.getVirtualTxs([fundingTxid!]);
+    const funding = Transaction.fromPSBT(base64.decode(txs[0]!));
+    let packet: Uint8Array | undefined;
+    try {
+      packet = Extension.fromTx(funding).getPacketByType(CLAIM_PACKET_TYPE)?.serialize();
+    } catch {
+      packet = undefined; // no extension output at all — an unstamped funding
+    }
+    expect(Boolean(packet)).toBe(stamp);
   }, SWAP_TIMEOUT_MS);
 });
