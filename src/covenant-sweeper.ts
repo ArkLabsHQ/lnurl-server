@@ -26,9 +26,8 @@ import {
 import type { SettlementStore } from "./settlement-store.js";
 import { enforcePayTo } from "./covenant-destination.js";
 
-export type SweepOutcome =
-  | { state: "swept"; arkTxid: string }
-  | { state: "skipped"; reason: "unfunded" | "incomplete" };
+/** `sweepOne` is only reached for an outpoint that exists, so it sweeps or throws. */
+export type SweepOutcome = { state: "swept"; arkTxid: string };
 
 interface EmulatorSubmit {
   submitTx(arkTx: string, checkpointTxs: string[]): Promise<{ signedArkTx: string; signedCheckpointTxs: string[] }>;

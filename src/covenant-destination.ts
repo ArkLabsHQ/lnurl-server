@@ -25,8 +25,16 @@ import {
 const preimageCondition = (hash20: Uint8Array): Uint8Array =>
   arkade.ArkadeScript.encode(["HASH160", hash20, "EQUAL"] as Parameters<typeof arkade.ArkadeScript.encode>[0]);
 
-/** Re-emitted, not imported: the emulator co-signs only a covenant hashing to the
- *  key baked into the leaf, so these bytes must match its own exactly. */
+/**
+ * "This input's output pays `destination`, value >= the input." Re-emitted rather
+ * than imported: the emulator co-signs only a covenant hashing to the key in the
+ * leaf, so these bytes must match `solver-arkade/arkade/covenant.ts` exactly.
+ *
+ * `INSPECTOUTPUTSCRIPTPUBKEY` pushes program THEN witness version, so version is on
+ * top — hence `1 EQUALVERIFY` (Taproot) before the 32-byte program, which reads
+ * backwards in source order. Swapping them compares a version against a key and the
+ * emulator refuses every sweep.
+ */
 export const enforcePayTo = (destinationPkScript: Uint8Array): Uint8Array => {
   if (destinationPkScript.length !== 34 || destinationPkScript[0] !== 0x51 || destinationPkScript[1] !== 0x20) {
     throw new Error("destination must be a P2TR pkScript (0x5120 + 32 bytes)");
@@ -151,16 +159,21 @@ const toXOnly = (key: Uint8Array): Uint8Array => {
   throw new Error(`expected a 32- or 33-byte key, got ${key.length} bytes`);
 };
 
+/** The cosigner derivation takes a compressed key; a wrong length would tweak into
+ *  a cosigner nothing can sign for, and only the refused sweep would say so. */
+const toCompressed = (key: Uint8Array): Uint8Array => {
+  if (key.length === 33) return key;
+  if (key.length === 32) return Uint8Array.from([0x02, ...key]);
+  throw new Error(`expected a 32- or 33-byte key, got ${key.length} bytes`);
+};
+
 export function deriveCovenantDestination(input: CovenantDestinationInput): CovenantDestination {
   if (input.preimage.length !== 32) throw new Error(`preimage must be 32 bytes, got ${input.preimage.length}`);
   const userPubkey = toXOnly(input.userPubkey);
   const serverPubkey = toXOnly(input.serverPubkey);
   const staticPkScript = ArkAddress.decode(input.staticAddress).pkScript;
   const covenantScript = enforcePayTo(staticPkScript);
-  const cosigner = arkade.computeArkadeScriptPublicKey(
-    input.emulatorPubkey.length === 33 ? input.emulatorPubkey : Uint8Array.from([0x02, ...input.emulatorPubkey]),
-    covenantScript,
-  );
+  const cosigner = arkade.computeArkadeScriptPublicKey(toCompressed(input.emulatorPubkey), covenantScript);
   const vtxo = new VtxoScript([
     ConditionMultisigTapscript.encode({
       conditionScript: preimageCondition(ripemd160(sha256(input.preimage))),
