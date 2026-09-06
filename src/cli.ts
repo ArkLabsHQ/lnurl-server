@@ -68,11 +68,20 @@ async function main(): Promise<void> {
       settlements,
       offlineSwapCreator,
     };
+    // Neither timer below keeps its stop function: both are unref'd, and there is
+    // no process-shutdown hook for either to be called from.
     if (offlineSwapCreator) {
       const { startOfflineSettlementPoller } = await import("./offline-poller.js");
       startOfflineSettlementPoller(settlements, offlineSwapCreator, 15_000);
       const via = config.offlineReceive.solverUrl ?? `nostr:${config.offlineReceive.solverPubkey}`;
       console.log(`offline receive: enabled (solver=${via})`);
+    }
+    // The destination rail (paymentOptions: arkade) settles by observation, not by
+    // preimage: watch the indexer for payments to registered Arkade addresses.
+    if (config.offlineReceive.arkServerUrl) {
+      const { startArkadeWatcher } = await import("./arkade-watcher.js");
+      startArkadeWatcher(settlements, config.offlineReceive.arkServerUrl, 15_000);
+      console.log(`arkade watcher: enabled (indexer=${config.offlineReceive.arkServerUrl})`);
     }
     console.log(`persistence: enabled at ${config.dbPath} (${deps.repos.domains.list().length} domain(s))`);
 
