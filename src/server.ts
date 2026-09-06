@@ -14,6 +14,7 @@ import { MemorySettlementStore, type SettlementStore } from "./settlement-store.
 import type { OfflineSwapCreator } from "./intent-swap.js";
 import { ArkAddress } from "@arkade-os/sdk";
 import { advertisedOptions, resolvePaymentOption } from "./payment-options.js";
+import { applyQuote, type QuoteProvider, type PaymentQuote } from "./quote-provider.js";
 import { staticSettings, type RuntimeSettings } from "./settings.js";
 import type {
   LnurlServiceConfig,
@@ -32,6 +33,10 @@ const PROVISIONING_STATUS: Record<string, number> = {
   blacklisted: 409, taken: 409, limit_reached: 429, invalid_claim: 401,
 };
 
+/** Express types query values as string | string[] | ...; an array (`?a=1&a=2`)
+ *  is never meaningful for our params — take them only when they're a string. */
+const strParam = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+
 export interface ServerDeps {
   repos: Repositories;
   addressService?: AddressService;
@@ -42,6 +47,8 @@ export interface ServerDeps {
   /** When set, an offline LN address with a registered Arkade identity gets a
    *  server-orchestrated corridor swap instead of an "offline" error. */
   offlineSwapCreator?: OfflineSwapCreator;
+  /** When set, enables LUD-XX unit-denominated quotes (advertises `units`, quotes callbacks). */
+  quoteProvider?: QuoteProvider;
 }
 
 // Create a solver-mediated receive swap for an offline receiver and return the hold
@@ -57,9 +64,10 @@ async function createOfflineSwapAndRespond(args: {
   receiveAddress: string;
   claimPublicKey: string;
   addressId: number;
+  paymentQuote?: PaymentQuote;
   res: express.Response;
 }): Promise<void> {
-  const { creator, store, baseUrl, amountMsat, receiveAddress, claimPublicKey, addressId, res } = args;
+  const { creator, store, baseUrl, amountMsat, receiveAddress, claimPublicKey, addressId, paymentQuote, res } = args;
   try {
     // Caller guarantees whole satoshis (rejected at the route otherwise).
     const swap = await creator.create({ amountSat: amountMsat / 1000, receiveAddress, claimPublicKey });
@@ -71,7 +79,12 @@ async function createOfflineSwapAndRespond(args: {
       swapId: swap.swapId,
       amountMsat,
     });
-    res.json({ pr: swap.invoice, routes: [], verify: `${baseUrl}/lnurl/verify/${swap.preimageHash}` } satisfies LnurlPayCallbackResponse);
+    res.json({
+      pr: swap.invoice,
+      routes: [],
+      verify: `${baseUrl}/lnurl/verify/${swap.preimageHash}`,
+      ...(paymentQuote ? { paymentQuote } : {}),
+    } satisfies LnurlPayCallbackResponse);
   } catch (err) {
     res.json({ status: "ERROR", reason: err instanceof Error ? err.message : "Failed to create swap" } satisfies LnurlErrorResponse);
   }
@@ -95,9 +108,10 @@ async function requestInvoiceAndRespond(args: {
   offlineReason: string;
   store: SettlementStore;
   baseUrl: string;
+  paymentQuote?: PaymentQuote;
   res: express.Response;
 }): Promise<void> {
-  const { sessions, sessionId, amountMsat, comment, min, max, timeoutMs, offlineReason, store, baseUrl, res } = args;
+  const { sessions, sessionId, amountMsat, comment, min, max, timeoutMs, offlineReason, store, baseUrl, paymentQuote, res } = args;
   if (amountMsat < min || amountMsat > max) {
     res.json({ status: "ERROR", reason: `Amount must be between ${min} and ${max} millisats` } satisfies LnurlErrorResponse);
     return;
@@ -113,9 +127,9 @@ async function requestInvoiceAndRespond(args: {
     const paymentHash = paymentHashFromBolt11(pr);
     if (paymentHash) {
       store.create({ paymentHash, pr, sessionId, amountMsat });
-      res.json({ pr, routes: [], verify: `${baseUrl}/lnurl/verify/${paymentHash}` } satisfies LnurlPayCallbackResponse);
+      res.json({ pr, routes: [], verify: `${baseUrl}/lnurl/verify/${paymentHash}`, ...(paymentQuote ? { paymentQuote } : {}) } satisfies LnurlPayCallbackResponse);
     } else {
-      res.json({ pr, routes: [] } satisfies LnurlPayCallbackResponse);
+      res.json({ pr, routes: [], ...(paymentQuote ? { paymentQuote } : {}) } satisfies LnurlPayCallbackResponse);
     }
   } catch (err) {
     res.json({ status: "ERROR", reason: err instanceof Error ? err.message : "Failed to get invoice" } satisfies LnurlErrorResponse);
@@ -135,6 +149,8 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
   const addressCallbackLimiter = new RateLimiter(30, 60_000);
   // When configured, offline LN addresses receive via a solver-mediated corridor swap.
   const creator = deps?.offlineSwapCreator;
+  // When configured, enables LUD-XX unit-denominated quotes.
+  const quoteProvider = deps?.quoteProvider;
   // Soft settings are read per-request so DB-backed overrides take effect without a restart.
   // No DB (library/in-memory mode) → fall back to the static config values.
   const settings: RuntimeSettings = deps?.settings ?? staticSettings({
@@ -310,11 +326,17 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
   // LNURL-pay callback (LUD-06). Requests bolt11 from wallet via SSE.
   app.get("/lnurl/:id/callback", async (req, res) => {
     const { id } = req.params;
-    const amountStr = req.query.amount as string | undefined;
-    const comment = req.query.comment as string | undefined;
+    const amountStr = strParam(req.query.amount);
+    const comment = strParam(req.query.comment);
 
     if (!amountStr || isNaN(Number(amountStr))) {
       res.json({ status: "ERROR", reason: "Missing or invalid amount parameter" } satisfies LnurlErrorResponse);
+      return;
+    }
+    // Non-positive amounts are refused before anything downstream (a provider must
+    // never see them) — with the same bounds phrasing the relay has always used.
+    if (Number(amountStr) <= 0) {
+      res.json({ status: "ERROR", reason: `Amount must be between ${settings.minSendable()} and ${settings.maxSendable()} millisats` } satisfies LnurlErrorResponse);
       return;
     }
     await requestInvoiceAndRespond({
@@ -411,6 +433,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       }
       const origin = `${req.protocol}://${domain.domain}`;
       const options = advertisedOptions(address);
+      const units = quoteProvider?.units() ?? [];
       const response: LnurlPayMetadata = {
         tag: "payRequest",
         callback: `${origin}/.well-known/lnurlp/${username}/callback`,
@@ -419,6 +442,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         metadata: buildMetadata(`${username}@${domain.domain}`),
         commentAllowed: 140,
         ...(options.length ? { paymentOptions: options } : {}),
+        ...(units.length ? { units } : {}),
       };
       res.json(response);
     });
@@ -436,24 +460,50 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         res.json({ status: "ERROR", reason: "Unknown LN address" } satisfies LnurlErrorResponse);
         return;
       }
-      const amountStr = req.query.amount as string | undefined;
-      const comment = req.query.comment as string | undefined;
+      const amountStr = strParam(req.query.amount);
+      const comment = strParam(req.query.comment);
       if (!amountStr || isNaN(Number(amountStr))) {
         res.json({ status: "ERROR", reason: "Missing or invalid amount parameter" } satisfies LnurlErrorResponse);
         return;
       }
-      const amountMsat = Number(amountStr);
+      let amountMsat = Number(amountStr);
       const min = domain.minSendable ?? settings.minSendable();
       const max = domain.maxSendable ?? settings.maxSendable();
+      const paymentOptionId = strParam(req.query.paymentOption);
+      // Non-positive amounts are refused before the quote/provider path.
+      if (amountMsat <= 0) {
+        res.json({ status: "ERROR", reason: `Amount must be between ${min} and ${max} millisats` } satisfies LnurlErrorResponse);
+        return;
+      }
 
       // LUD-XX paymentOptions: resolve the wallet's selected rail. "lightning" (or absent)
       // falls through to the BOLT11 flow below; a destination rail (arkade) returns the
       // registered address + a non-`pr` verify record.
-      const resolved = resolvePaymentOption(req.query.paymentOption as string | undefined, address);
+      const resolved = resolvePaymentOption(paymentOptionId, address);
       if (resolved.kind === "error") {
         res.json({ status: "ERROR", reason: resolved.reason } satisfies LnurlErrorResponse);
         return;
       }
+
+      // LUD-XX paymentQuote: a unit-denominated request is quoted to a msat amount by the
+      // injected provider (lightning path only). Absent unit ⇒ amount stays msat.
+      const unit = strParam(req.query.unit);
+      const receiveUnit = strParam(req.query.receiveUnit);
+      let paymentQuote: PaymentQuote | undefined;
+      if (unit !== undefined || receiveUnit !== undefined) {
+        if (resolved.kind === "destination") {
+          res.json({ status: "ERROR", reason: "unit is not supported for this paymentOption" } satisfies LnurlErrorResponse);
+          return;
+        }
+        const q = applyQuote(quoteProvider, { amount: amountMsat, unit, receiveUnit, paymentOption: paymentOptionId });
+        if (!q.ok) {
+          res.json({ status: "ERROR", reason: q.reason } satisfies LnurlErrorResponse);
+          return;
+        }
+        amountMsat = q.amountMsat;
+        paymentQuote = q.paymentQuote;
+      }
+
       if (resolved.kind === "destination") {
         // Unauthed store-writing branch — same per-IP guard as the offline-swap branch.
         if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) {
@@ -512,7 +562,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         }
         await createOfflineSwapAndRespond({
           creator, store, baseUrl: settings.baseUrl(), amountMsat,
-          receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, res,
+          receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, paymentQuote, res,
         });
         return;
       }
@@ -527,7 +577,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         sessions, sessionId: address.sessionId, amountMsat, comment,
         min, max, timeoutMs: settings.invoiceTimeoutMs(),
         offlineReason: `${username}@${domain.domain} is currently offline`,
-        store, baseUrl: settings.baseUrl(), res,
+        store, baseUrl: settings.baseUrl(), paymentQuote, res,
       });
     });
 

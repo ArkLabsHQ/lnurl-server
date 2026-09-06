@@ -1,5 +1,6 @@
 import type { Response } from "express";
 import type { PaymentOption } from "./payment-options.js";
+import type { Unit, PaymentQuote } from "./quote-provider.js";
 
 /** Configuration for starting the LNURL service */
 export interface LnurlServiceConfig {
@@ -98,6 +99,8 @@ export interface LnurlPayMetadata {
   commentAllowed?: number;
   /** LUD-XX: advertised payment rails. Omitted when only lightning is offered. */
   paymentOptions?: PaymentOption[];
+  /** LUD-XX: advertised denomination units. Omitted when no quote provider is configured. */
+  units?: Unit[];
 }
 
 /** LNURL-pay callback response (BOLT11 / lightning) */
@@ -106,6 +109,8 @@ export interface LnurlPayCallbackResponse {
   routes: never[];
   /** LUD-21: URL the payer can poll to confirm settlement. Omitted if the bolt11 can't be decoded. */
   verify?: string;
+  /** LUD-XX: the quote, when the request was unit-denominated. */
+  paymentQuote?: PaymentQuote;
 }
 
 /** LUD-XX callback response for a non-`pr` payment option (e.g. a direct Arkade destination). */

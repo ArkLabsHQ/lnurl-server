@@ -482,6 +482,22 @@ export const openApiSpec = {
                             },
                           },
                         },
+                        units: {
+                          type: "array",
+                          description: "LUD-XX: advertised denomination units; present only when a quote provider is configured",
+                          items: {
+                            type: "object",
+                            properties: {
+                              code: { type: "string" },
+                              decimals: { type: "number" },
+                              name: { type: "string" },
+                              symbol: { type: "string" },
+                              assetId: { type: "string", description: "Asset identifier, when the unit is a non-BTC asset" },
+                              minAmount: { type: "string", description: "Smallest quotable amount in the unit's smallest unit" },
+                              maxAmount: { type: "string", description: "Largest quotable amount in the unit's smallest unit" },
+                            },
+                          },
+                        },
                       },
                     },
                     {
@@ -506,13 +522,17 @@ export const openApiSpec = {
           "Requests payment for the address. Default (lightning): returns a bolt11 from the " +
           "wallet's SSE session, or a server-created offline reverse swap, or an error when " +
           "offline. LUD-XX: pass `paymentOption` to select an advertised rail — `arkade` " +
-          "returns the address's registered Arkade destination instead of a bolt11.",
+          "returns the address's registered Arkade destination instead of a bolt11. LUD-XX: " +
+          "`unit`/`receiveUnit` denominate the amount (requires a configured quote provider); " +
+          "the response then includes `paymentQuote`.",
         tags: ["LN Address"],
         parameters: [
           { name: "username", in: "path", required: true, schema: { type: "string" }, description: "LN address local part" },
-          { name: "amount", in: "query", required: true, schema: { type: "number" }, description: "Amount in millisatoshis" },
+          { name: "amount", in: "query", required: true, schema: { type: "number" }, description: "Amount — millisatoshis, or the smallest unit of `unit` when set" },
           { name: "comment", in: "query", required: false, schema: { type: "string" }, description: "Optional payer comment" },
           { name: "paymentOption", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: selected rail id (e.g. `arkade`); defaults to lightning" },
+          { name: "unit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: denomination unit (e.g. `USD`); `amount` becomes that unit's smallest integer" },
+          { name: "receiveUnit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: desired receiver unit" },
         ],
         responses: {
           "200": {
@@ -523,7 +543,23 @@ export const openApiSpec = {
                   oneOf: [
                     {
                       type: "object",
-                      properties: { pr: { type: "string", description: "BOLT11 invoice" }, routes: { type: "array", items: {} }, verify: { type: "string", description: "LUD-21 verify URL (present when the bolt11 could be decoded)" } },
+                      properties: {
+                        pr: { type: "string", description: "BOLT11 invoice" },
+                        routes: { type: "array", items: {} },
+                        verify: { type: "string", description: "LUD-21 verify URL (present when the bolt11 could be decoded)" },
+                        paymentQuote: {
+                          type: "object",
+                          description: "LUD-XX quote (present when the request was unit-denominated)",
+                          properties: {
+                            id: { type: "string" },
+                            expiresAt: { type: "string", description: "ISO 8601" },
+                            requested: { $ref: "#/components/schemas/AmountObject" },
+                            payment: { $ref: "#/components/schemas/AmountObject" },
+                            receive: { $ref: "#/components/schemas/AmountObject" },
+                            fees: { type: "array", items: { type: "object", properties: { amount: { type: "string" }, unit: { type: "string" }, description: { type: "string" } } } },
+                          },
+                        },
+                      },
                     },
                     {
                       type: "object",
@@ -549,6 +585,14 @@ export const openApiSpec = {
     },
   },
   components: {
+    schemas: {
+      AmountObject: {
+        type: "object",
+        description: "An amount denominated in a unit; strings avoid JSON integer-precision loss",
+        properties: { amount: { type: "string" }, unit: { type: "string", description: "e.g. msat, USD" } },
+        required: ["amount", "unit"],
+      },
+    },
     securitySchemes: {
       bearerAuth: {
         type: "http" as const,

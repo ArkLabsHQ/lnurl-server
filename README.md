@@ -198,6 +198,26 @@ The `verify` URL then reports the non-`pr` LUD-21 shape: `{ status, settled, pay
 
 > Because the payer pays the Arkade address **directly**, the server isn't in the payment path and can't observe settlement itself, so arkade `settled` stays `false` until a server-side Arkade watcher is added (follow-up). Addresses without an Arkade identity stay pure LUD-06 (no `paymentOptions`). New rails/assets are added in `src/payment-options.ts`.
 
+## Payment quote (LUD-XX)
+
+Optional: denominate amounts in units other than millisatoshis (USD, USDT, …). This server has **no rate oracle**, so quoting is delegated to an injected `QuoteProvider` (`src/quote-provider.ts`). Without one, `units` is not advertised and any `unit=` request is rejected.
+
+When a provider is configured, the LN-address `payRequest` advertises `units`:
+
+```json
+"units": [{ "code": "USD", "name": "US Dollar", "symbol": "$", "decimals": 2 }]
+```
+
+A payer denominates the callback with `?unit=<code>` (optionally `&receiveUnit=<code>`). `amount` is then the smallest integer of that unit (e.g. `amount=100&unit=USD` = $1.00). The provider quotes it to millisats — which drives the bolt11 / offline swap — and the response echoes the quote:
+
+```json
+{ "pr": "lnbc...", "routes": [], "paymentQuote": { "requested": { "amount": "100", "unit": "USD" }, "payment": { "amount": "162345000", "unit": "msat" } }, "verify": "..." }
+```
+
+An unknown or unsupported unit returns `{ "status": "ERROR", "reason": "Unsupported unit" }`.
+
+> Framework only — plug real rates, assets, and swap-backed quotes in behind `QuoteProvider`. Quoting applies to the amount-denominated Lightning path (relay + offline swap); the `arkade` destination rail rejects `unit` for now.
+
 ## Admin backend — port 3001
 
 When `DB_PATH` is set an admin backend starts on `ADMIN_PORT` (default `3001`), bound to `ADMIN_BIND` (default `127.0.0.1` for the CLI).
