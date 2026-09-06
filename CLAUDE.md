@@ -48,7 +48,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/):
 - `src/cli.ts` — CLI entrypoint reading config from env vars
 - `src/intent-swap.ts` — Offline receive: solver-quoted `lightning:BTC -> arkade:BTC` corridor swaps (config `SOLVER_URL` or `SOLVER_PUBKEY` + `NOSTR_RELAYS`, plus `COVCLAIMD_URL` + `ARK_SERVER_URL`)
 - `src/self-claim.ts` — Optional server-side lockup claim (`OFFLINE_SELF_CLAIM` + `OFFLINE_EMULATOR_URL`): pushes the covenant's `nonInteractiveClaim` leaf — operator + emulator signatures, gated on the preimage we hold — so covclaimd isn't a single point of failure. Needs no key; the covenant pins the payout to the user. Never the collaborative `claim` leaf, which has no output constraint
-- `src/arkade-watcher.ts` — Destination-rail settlement watcher (indexer polling for `paymentOptions: arkade` records)
+- `src/covenant-destination.ts` + `src/covenant-sweeper.ts` — Per-payment arkade-rail addresses (`OFFLINE_COVENANT_DESTINATIONS`): three leaves (covenant sweep pinned to the user's static address, user+operator, user-alone CSV), so the script identifies the payment instead of amount/arrival guesswork. Every leaf must be a valid vtxo script — arkd rejects a taptree containing anything else, which is why the per-payment nonce rides in the condition
+- `src/arkade-watcher.ts` — Destination-rail settlement watcher (indexer polling for `paymentOptions: arkade` records); exact lookup for covenant records, amount/window correlation only for static-address ones
 - `src/payment-options.ts` — LUD-XX paymentOptions rail registry (advertise + resolve)
 - `src/quote-provider.ts` — LUD-XX paymentQuote framework (injected rate oracle seam)
 - `src/settlement-store.ts` + `src/offline-poller.ts` — LUD-21 settlement records (memory/SQLite) and the offline-swap status poller

@@ -28,6 +28,12 @@ export interface OfflineReceiveConfig {
   selfClaim: boolean;
   /** Emulator base URL backing {@link selfClaim} — it co-signs the covenant leaf. */
   emulatorUrl?: string;
+  /** Give each arkade-rail payment its own covenant address instead of the user's
+   *  static one, so concurrent payments are told apart by script rather than by
+   *  amount and arrival window. Needs {@link emulatorUrl} for the sweep. */
+  covenantDestinations: boolean;
+  /** CSV delay, seconds, before the user may sweep a covenant destination alone. */
+  covenantRecoveryDelaySeconds: number;
 }
 
 export interface AppConfig {
@@ -113,10 +119,26 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   if (emulatorUrl && !/^https?:\/\//.test(emulatorUrl)) {
     throw new Error(`OFFLINE_EMULATOR_URL must be an http(s):// URL (got "${emulatorUrl}")`);
   }
+  const covenantDestinations = env.OFFLINE_COVENANT_DESTINATIONS === "true";
+  // Same reasoning as selfClaim: a payer must never be handed an address nothing
+  // can sweep, and by then their money is already at it.
+  if (covenantDestinations && !emulatorUrl) {
+    throw new Error("OFFLINE_COVENANT_DESTINATIONS=true requires OFFLINE_EMULATOR_URL (the emulator co-signs the sweep)");
+  }
+  if (covenantDestinations && !(covclaimdUrl && arkServerUrl)) {
+    throw new Error("OFFLINE_COVENANT_DESTINATIONS=true requires COVCLAIMD_URL and ARK_SERVER_URL (the covenant commits to their keys)");
+  }
+  const recoveryRaw = env.OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS;
+  const covenantRecoveryDelaySeconds = recoveryRaw ? Number(recoveryRaw) : 86_400;
+  if (!Number.isInteger(covenantRecoveryDelaySeconds) || covenantRecoveryDelaySeconds <= 0) {
+    throw new Error(`OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS must be a positive integer (got "${recoveryRaw}")`);
+  }
   return {
     enabled: Boolean(hasTransport && covclaimdUrl && arkServerUrl),
     stampClaimPacket: env.OFFLINE_STAMP_CLAIM_PACKET === "true",
     selfClaim,
+    covenantDestinations,
+    covenantRecoveryDelaySeconds,
     ...(emulatorUrl ? { emulatorUrl } : {}),
     ...(solverUrl ? { solverUrl } : {}),
     ...(solverPubkey ? { solverPubkey } : {}),

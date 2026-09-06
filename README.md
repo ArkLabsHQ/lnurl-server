@@ -194,6 +194,26 @@ Normally covclaimd is the only thing that claims the solver's lockup, and it nee
 
 covclaimd stays configured and keeps working alongside this: both push the same leaf to the same destination, so they race harmlessly and the loser's push simply fails. The claim fires from the offline settlement poller once the indexer shows a spendable VTXO at the lockup, is skipped when the lockup is funded below the quote's `to_amount` (revealing the preimage for less would let the solver settle the payer's invoice in full), and is safe to retry: an already-spent lockup is a no-op. Claim registrations live in memory, so swaps quoted before a restart fall back to covclaimd.
 
+### Per-payment destinations (`OFFLINE_COVENANT_DESTINATIONS`, default off)
+
+The `arkade` rail hands the payer an address, and the server is not in the payment path — so with a single static address, two payments arriving at once are indistinguishable. Nothing on the wire says which is which, and the watcher is left correlating on amount and arrival window. Two payments of the same amount cannot be told apart at all.
+
+With `OFFLINE_COVENANT_DESTINATIONS=true` each callback derives its own address instead, and the script becomes the identifier. A VTXO there belongs to exactly one record, so attribution is exact rather than inferred.
+
+The address is a three-leaf Taproot script:
+
+| leaf | who can spend | what it is for |
+| --- | --- | --- |
+| `condition(H(P))` + operator + covenant cosigner | anyone holding `P` | the sweep, pinned by the covenant |
+| user + operator | the user, collaboratively | recovery without waiting |
+| user alone, after a CSV delay | the user | recovery if the operator is gone |
+
+Only the first leaf carries `H(P)`, so a fresh preimage moves the address while the covenant bytes stay fixed. **The preimage is not a secret** — the covenant means whoever holds it can only pay the user's registered address — which is why the two recovery leaves are keyed to the user and need neither `P` nor this server.
+
+A sweeper moves each funded destination on to the static address, so the user's wallet sees an ordinary arrival there and needs to know nothing about any of this. It costs one extra Arkade transaction per payment, and the rail gains a dependency on the emulator co-signing that sweep. If derivation fails at request time the callback falls back to the static address: that payment is ambiguous again, which beats refusing to be paid.
+
+`OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS` (default 86400) sets the CSV delay on the third leaf.
+
 ## Payment options (LUD-XX)
 
 Once an address has a registered Arkade identity (see above), its LUD-06 `payRequest` advertises multiple rails:
@@ -290,7 +310,9 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `ARK_SERVER_URL` | — | Arkade operator URL (e.g. `https://mutinynet.arkade.sh`) — signer key, exit delay and network are read from it. |
 | `OFFLINE_STAMP_CLAIM_PACKET` | `false` | `true` sends the claim packet for the solver to stamp into the funding tx, naming our covclaimd in-band — which removes the pairing requirement above entirely. **Only set it if the solver you quote carries [arkade-os/intent-solver#47](https://github.com/arkade-os/intent-solver/pull/47).** An older solver forwards the packet to its own covclaimd as a ciphertext, cannot decrypt it, and the swap funds and refunds. |
 | `OFFLINE_SELF_CLAIM` | `false` | `true` pushes each lockup's `nonInteractiveClaim` leaf here as well as covclaimd, so covclaimd stops being a single point of failure. Needs no key — the leaf is signed by the operator and the emulator, and gated on the preimage this server already holds. Requires `OFFLINE_EMULATOR_URL`. See [Self-claim](#self-claim-offline_self_claim-default-off). |
-| `OFFLINE_EMULATOR_URL` | — | Emulator base URL backing `OFFLINE_SELF_CLAIM` — it co-signs the covenant leaf after checking the spend pays the user. Must be the emulator whose `emulator_pub_key` `COVCLAIMD_URL` reports. Missing with the flag on, the server refuses to start. |
+| `OFFLINE_EMULATOR_URL` | — | Emulator base URL backing `OFFLINE_SELF_CLAIM` and `OFFLINE_COVENANT_DESTINATIONS` — it co-signs the covenant leaf after checking the spend pays the user. Must be the emulator whose `emulator_pub_key` `COVCLAIMD_URL` reports. Missing with either flag on, the server refuses to start. |
+| `OFFLINE_COVENANT_DESTINATIONS` | `false` | `true` gives each arkade-rail payment its own covenant address, so concurrent payments are told apart by script instead of by amount and arrival window. Requires `OFFLINE_EMULATOR_URL`, `COVCLAIMD_URL` and `ARK_SERVER_URL`. See [Per-payment destinations](#per-payment-destinations-offline_covenant_destinations-default-off). |
+| `OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS` | `86400` | CSV delay before the user may sweep a covenant destination alone. |
 | `DB_PATH` | — | Path to SQLite database file. Omit for in-memory-only mode. |
 | `TOKEN_ENCRYPTION_KEY` | — | 32-byte AES key (hex or base64). Required when `DB_PATH` is set. |
 | `ALLOW_INSECURE_TOKEN_STORAGE` | — | Set to `1` to skip token encryption in dev (plaintext storage). |
