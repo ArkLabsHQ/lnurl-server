@@ -18,7 +18,7 @@ describe("SessionManager.listSessions / disconnect", () => {
   it("never exposes the token or socket in the listing", () => {
     const sm = new SessionManager();
     sm.create(res(), "cd".repeat(32));
-    const info = sm.listSessions()[0] as Record<string, unknown>;
+    const info = sm.listSessions()[0] as unknown as Record<string, unknown>;
     expect(info).not.toHaveProperty("token");
     expect(info).not.toHaveProperty("sseRes");
   });

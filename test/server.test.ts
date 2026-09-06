@@ -3,7 +3,6 @@ import http from "node:http";
 import { createServer } from "../src/server.js";
 import type { LnurlServiceConfig } from "../src/types.js";
 
-const BASE_URL = "http://localhost:0"; // placeholder, overridden per test
 const CONFIG: LnurlServiceConfig = {
   port: 0,
   baseUrl: "", // set dynamically per test
