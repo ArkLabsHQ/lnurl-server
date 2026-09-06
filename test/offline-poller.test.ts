@@ -28,6 +28,53 @@ describe("settleOfflineSwaps", () => {
     expect(store.listPendingSwaps().map((p) => p.swapId)).toEqual(["swap-2"]);
   });
 
+  it("claims the lockup before checking status, since the claim is what makes the solver settle", async () => {
+    const store = new MemorySettlementStore(60_000);
+    store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
+    const calls: [string, string][] = [];
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const n = await settleOfflineSwaps(store, {
+      ...creatorReporting(["swap-1"]),
+      selfClaim: async (swapId, preimage) => {
+        calls.push([swapId, preimage]);
+        return { state: "claimed", arkTxid: "ark-tx-1" };
+      },
+    });
+
+    expect(calls).toEqual([["swap-1", "beef"]]);
+    expect(n).toBe(1);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("ark-tx-1"));
+  });
+
+  it("still checks status when the claim throws, so a broken claim path cannot wedge a swap", async () => {
+    const store = new MemorySettlementStore(60_000);
+    store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const n = await settleOfflineSwaps(store, {
+      ...creatorReporting(["swap-1"]),
+      selfClaim: async () => { throw new Error("arkd down"); },
+    });
+
+    expect(n).toBe(1);
+    expect(store.get("aa")!.settled).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("self-claim failed"), expect.any(Error));
+  });
+
+  it("warns rather than revealing the preimage for an underfunded lockup", async () => {
+    const store = new MemorySettlementStore(60_000);
+    store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await settleOfflineSwaps(store, {
+      ...creatorReporting([]),
+      selfClaim: async () => ({ state: "skipped", reason: "underfunded" }),
+    });
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("underfunded"));
+  });
+
   it("leaves a swap pending when the status check throws, and names it in a warning", async () => {
     const store = new MemorySettlementStore(60_000);
     store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });

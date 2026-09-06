@@ -50,6 +50,13 @@ async function main(): Promise<void> {
     if (config.offlineReceive.enabled) {
       const { createIntentSwapCreator } = await import("./intent-swap.js");
       const off = config.offlineReceive;
+      let selfClaimer: import("./self-claim.js").SelfClaimer | undefined;
+      if (off.selfClaim) {
+        const { createSelfClaimer, checkEmulatorPairing } = await import("./self-claim.js");
+        selfClaimer = createSelfClaimer({ arkServerUrl: off.arkServerUrl!, emulatorUrl: off.emulatorUrl! });
+        console.log(`offline self-claim: enabled (emulator=${off.emulatorUrl})`);
+        void checkEmulatorPairing({ covclaimdUrl: off.covclaimdUrl!, emulatorUrl: off.emulatorUrl! });
+      }
       offlineSwapCreator = await createIntentSwapCreator({
         solverUrl: off.solverUrl,
         solverPubkey: off.solverPubkey,
@@ -59,6 +66,7 @@ async function main(): Promise<void> {
         covclaimdUrl: off.covclaimdUrl!,
         arkServerUrl: off.arkServerUrl!,
         stampClaimPacket: off.stampClaimPacket,
+        ...(selfClaimer ? { selfClaimer } : {}),
       });
     }
     deps = {
