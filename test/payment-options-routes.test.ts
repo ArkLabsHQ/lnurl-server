@@ -7,6 +7,7 @@ import { createRepositories, type Repositories } from "../src/db/repositories/in
 import { MemorySettlementStore } from "../src/settlement-store.js";
 import type { OfflineSwapCreator } from "../src/intent-swap.js";
 import type { LnurlServiceConfig } from "../src/types.js";
+import type { CovenantDestinationProvider } from "../src/covenant-destination.js";
 
 const CONFIG: LnurlServiceConfig = { port: 0, baseUrl: "", minSendable: 1000, maxSendable: 100_000_000, invoiceTimeoutMs: 3000 };
 const ARK = "ark1qexampledestination";
@@ -17,7 +18,12 @@ const fakeSwapCreator: OfflineSwapCreator = {
   isSettled: async () => false,
 };
 
-function start(repos: Repositories, settlements?: MemorySettlementStore, offlineSwapCreator?: OfflineSwapCreator) {
+function start(
+  repos: Repositories,
+  settlements?: MemorySettlementStore,
+  offlineSwapCreator?: OfflineSwapCreator,
+  covenantDestinations?: CovenantDestinationProvider,
+) {
   const server = http.createServer();
   return new Promise<{ baseUrl: string; close: () => Promise<void> }>((resolve) => {
     server.listen(0, "127.0.0.1", () => {
@@ -26,7 +32,7 @@ function start(repos: Repositories, settlements?: MemorySettlementStore, offline
         "request",
         createServer(
           { ...CONFIG, baseUrl: `http://127.0.0.1:${port}` },
-          { repos, ...(settlements ? { settlements } : {}), ...(offlineSwapCreator ? { offlineSwapCreator } : {}) },
+          { repos, ...(settlements ? { settlements } : {}), ...(offlineSwapCreator ? { offlineSwapCreator } : {}), ...(covenantDestinations ? { covenantDestinations } : {}) },
         ),
       );
       resolve({ baseUrl: `http://127.0.0.1:${port}`, close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }) });
@@ -86,6 +92,47 @@ describe("LUD-XX paymentOptions", () => {
       paymentReference: null,
     });
     expect(v.pr).toBeUndefined();
+  });
+
+  it("hands out a per-payment covenant address, and records it for attribution", async () => {
+    const settlements = new MemorySettlementStore(60_000);
+    let n = 0;
+    const provider: CovenantDestinationProvider = {
+      derive: async () => {
+        n += 1;
+        return { address: `tark1derived${n}`, script: `5120${n}`, preimage: `${n}`.repeat(64), tapTree: `ee${n}` };
+      },
+    };
+    await ctx.close();
+    ctx = await start(repos, settlements, undefined, provider);
+    addr("alice", true);
+
+    const first = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000&paymentOption=arkade`, "domain.com");
+    const second = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000&paymentOption=arkade`, "domain.com");
+
+    // Two payers, same amount, same user — the case the static address cannot tell apart.
+    expect(first.paymentDestination).toBe("tark1derived1");
+    expect(second.paymentDestination).toBe("tark1derived2");
+    expect(first.paymentDestination).not.toBe(second.paymentDestination);
+    const rec = settlements.get(String(first.verify).split("/").pop()!);
+    expect(rec).toMatchObject({ paymentDestination: "tark1derived1", covenantScript: "51201", covenantTapTree: "ee1" });
+  });
+
+  it("falls back to the static address when derivation fails, rather than refusing to be paid", async () => {
+    const settlements = new MemorySettlementStore(60_000);
+    const provider: CovenantDestinationProvider = {
+      derive: async () => {
+        throw new Error("arkd unreachable");
+      },
+    };
+    await ctx.close();
+    ctx = await start(repos, settlements, undefined, provider);
+    addr("alice", true);
+
+    const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000&paymentOption=arkade`, "domain.com");
+
+    expect(cb).toMatchObject({ status: "OK", paymentDestination: ARK });
+    expect(settlements.get(String(cb.verify).split("/").pop()!)?.covenantScript).toBeNull();
   });
 
   it("errors on an unknown paymentOption", async () => {

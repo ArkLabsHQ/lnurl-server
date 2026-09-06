@@ -8,6 +8,7 @@
 // Only leaf 0 carries H(P): a fresh preimage moves the address, the covenant bytes
 // stay fixed, and the user's two recovery paths need neither P nor this server.
 
+import { randomBytes } from "node:crypto";
 import { hex } from "@scure/base";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { ripemd160 } from "@noble/hashes/legacy.js";
@@ -65,6 +66,71 @@ export interface CovenantDestination {
   covenantScript: Uint8Array;
   sweepLeafIndex: number;
 }
+
+/** What the callback needs per payment. Hex throughout, so it stores as-is. */
+export interface DerivedDestination {
+  address: string;
+  script: string;
+  preimage: string;
+  tapTree: string;
+}
+
+export interface CovenantDestinationProvider {
+  derive(address: { arkadeAddress: string; claimPublicKey: string }): Promise<DerivedDestination>;
+}
+
+const CONTEXT_TTL_MS = 5 * 60_000;
+
+/**
+ * Reads the operator and emulator keys the covenant commits to, refetched on a TTL
+ * so a rekey is picked up without a restart. The emulator key comes from covclaimd
+ * for the same reason the offline path takes it from there: it must be the one
+ * whose covenants the network already accepts.
+ */
+export function createCovenantDestinationProvider(opts: {
+  arkServerUrl: string;
+  covclaimdUrl: string;
+  recoveryDelaySeconds: number;
+  now?: () => number;
+}): CovenantDestinationProvider {
+  const now = opts.now ?? (() => Date.now());
+  let cached: { at: number; serverPubkey: Uint8Array; emulatorPubkey: Uint8Array } | undefined;
+
+  const context = async () => {
+    if (cached && now() - cached.at < CONTEXT_TTL_MS) return cached;
+    const [info, keys] = await Promise.all([
+      fetch(`${opts.arkServerUrl}/v1/info`).then((r) => r.json() as Promise<{ signerPubkey: string }>),
+      fetch(`${opts.covclaimdUrl}/v1/preimage/covclaimd-pubkey`).then(
+        (r) => r.json() as Promise<{ emulator_pub_key: string }>,
+      ),
+    ]);
+    cached = {
+      at: now(),
+      serverPubkey: hex.decode(info.signerPubkey).subarray(1),
+      emulatorPubkey: hex.decode(keys.emulator_pub_key),
+    };
+    return cached;
+  };
+
+  return {
+    async derive(address) {
+      const { serverPubkey, emulatorPubkey } = await context();
+      const preimage = randomBytes(32);
+      const d = deriveCovenantDestination({
+        staticAddress: address.arkadeAddress,
+        userPubkey: toXOnly(hex.decode(address.claimPublicKey)),
+        serverPubkey,
+        emulatorPubkey,
+        preimage,
+        recoveryDelaySeconds: opts.recoveryDelaySeconds,
+      });
+      return { address: d.address, script: d.script, preimage: hex.encode(preimage), tapTree: hex.encode(d.tapTree) };
+    },
+  };
+}
+
+/** Registered claim keys are compressed; the covenant leaves take x-only. */
+const toXOnly = (key: Uint8Array): Uint8Array => (key.length === 33 ? key.subarray(1) : key);
 
 export function deriveCovenantDestination(input: CovenantDestinationInput): CovenantDestination {
   if (input.preimage.length !== 32) throw new Error(`preimage must be 32 bytes, got ${input.preimage.length}`);

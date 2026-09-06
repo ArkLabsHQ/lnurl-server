@@ -15,6 +15,7 @@ import type { OfflineSwapCreator } from "./intent-swap.js";
 import { ArkAddress } from "@arkade-os/sdk";
 import { advertisedOptions, resolvePaymentOption } from "./payment-options.js";
 import { applyQuote, type QuoteProvider, type PaymentQuote } from "./quote-provider.js";
+import type { CovenantDestinationProvider, DerivedDestination } from "./covenant-destination.js";
 import { staticSettings, type RuntimeSettings } from "./settings.js";
 import type {
   LnurlServiceConfig,
@@ -47,6 +48,9 @@ export interface ServerDeps {
   /** When set, an offline LN address with a registered Arkade identity gets a
    *  server-orchestrated corridor swap instead of an "offline" error. */
   offlineSwapCreator?: OfflineSwapCreator;
+  /** When set, the arkade rail hands out a per-payment covenant address instead of the
+   *  user's static one, so concurrent payments are told apart by script. */
+  covenantDestinations?: CovenantDestinationProvider;
   /** When set, enables LUD-XX unit-denominated quotes (advertises `units`, quotes callbacks). */
   quoteProvider?: QuoteProvider;
 }
@@ -157,6 +161,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
   const creator = deps?.offlineSwapCreator;
   // When configured, enables LUD-XX unit-denominated quotes.
   const quoteProvider = deps?.quoteProvider;
+  const covenantDestinations = deps?.covenantDestinations;
   // Soft settings are read per-request so DB-backed overrides take effect without a restart.
   // No DB (library/in-memory mode) → fall back to the static config values.
   const settings: RuntimeSettings = deps?.settings ?? staticSettings({
@@ -532,18 +537,34 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         // observes the payment (follow-up). Keyed by an opaque verify id (not a payment hash).
         // No SSE session needed on a destination rail — the record keeps one only for shape.
         const verifyId = randomBytes(16).toString("hex");
+        // The script identifies the payment outright. On failure fall back to the
+        // static address: ambiguous, but being paid beats refusing.
+        let derived: DerivedDestination | undefined;
+        if (covenantDestinations && address.arkadeAddress && address.claimPublicKey) {
+          try {
+            derived = await covenantDestinations.derive({
+              arkadeAddress: address.arkadeAddress,
+              claimPublicKey: address.claimPublicKey,
+            });
+          } catch (err) {
+            console.warn(`covenant destination: derivation failed, using the static address:`, err);
+          }
+        }
         store.create({
           paymentHash: verifyId,
           pr: "",
           sessionId: address.sessionId ?? `addr:${address.id}`,
           paymentOption: resolved.paymentOption,
-          paymentDestination: resolved.paymentDestination,
+          paymentDestination: derived?.address ?? resolved.paymentDestination,
           amountMsat,
+          ...(derived
+            ? { covenantScript: derived.script, covenantPreimage: derived.preimage, covenantTapTree: derived.tapTree }
+            : {}),
         });
         res.json({
           status: "OK",
           paymentOption: resolved.paymentOption,
-          paymentDestination: resolved.paymentDestination,
+          paymentDestination: derived?.address ?? resolved.paymentDestination,
           verify: `${settings.baseUrl()}/lnurl/verify/${verifyId}`,
         } satisfies LnurlPayDestinationResponse);
         return;
