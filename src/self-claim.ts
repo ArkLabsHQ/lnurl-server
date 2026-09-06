@@ -81,11 +81,14 @@ export async function checkEmulatorPairing(opts: {
   } catch {
     return "unknown";
   }
+  // A 200 carrying no key teaches nothing about the pairing, so say so rather
+  // than reporting a disagreement between a key and a blank.
+  if (!expected || !signer) return "unknown";
   // A rotated emulator still satisfies covenants built under its old key.
-  if (expected && [signer, ...deprecated].includes(expected)) return "matched";
+  if ([signer, ...deprecated].includes(expected)) return "matched";
   warn(
-    `offline self-claim: OFFLINE_EMULATOR_URL signs with ${signer || "(none)"}, but covclaimd's covenants name ` +
-      `${expected || "(none)"} — every self-claim will fail until they agree`,
+    `offline self-claim: OFFLINE_EMULATOR_URL signs with ${signer}, but covclaimd's covenants name ` +
+      `${expected} — every self-claim will fail until they agree`,
   );
   return "mismatched";
 }

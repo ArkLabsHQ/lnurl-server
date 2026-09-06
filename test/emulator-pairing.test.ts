@@ -79,6 +79,26 @@ describe("checkEmulatorPairing", () => {
     expect(warnings).toHaveLength(0);
   });
 
+  // A 200 with the field missing is absence, not disagreement — warning there
+  // would teach operators to ignore the one line that matters.
+  it("treats a 200 carrying no key as unknown, not as a mismatch", async () => {
+    const warnings: string[] = [];
+    const noKey = await checkEmulatorPairing({
+      covclaimdUrl: await serve({ "/v1/preimage/covclaimd-pubkey": { covclaimd_pub_key: "02" + "11".repeat(32) } }),
+      emulatorUrl: await serve({ "/v1/info": { version: "v0.0.6", signerPubkey: EMULATOR_KEY, deprecatedSignerPubkeys: [] } }),
+      warn: (m) => warnings.push(m),
+    });
+    expect(noKey).toBe("unknown");
+
+    const noSigner = await checkEmulatorPairing({
+      covclaimdUrl: await covclaimd(EMULATOR_KEY),
+      emulatorUrl: await serve({ "/v1/info": { version: "v0.0.6", deprecatedSignerPubkeys: [] } }),
+      warn: (m) => warnings.push(m),
+    });
+    expect(noSigner).toBe("unknown");
+    expect(warnings).toHaveLength(0);
+  });
+
   it("treats a non-200 as unknown, not as a mismatch", async () => {
     const warnings: string[] = [];
     const result = await checkEmulatorPairing({
