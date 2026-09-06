@@ -31,6 +31,7 @@ import { sealClaimPacket } from "./vendor/arkade-swap/claimPacket.js";
 import { nostrRfqTransport } from "./vendor/arkade-swap/nostr.js";
 import { paymentHashOf } from "./vendor/arkade-swap/onchainHtlc.js";
 import { invoiceFactsFromBolt11 } from "./bolt11.js";
+import { discoverLightningCorridor, type CorridorCard } from "./solver-discovery.js";
 
 export interface OfflineSwapParams {
   /** Invoice amount in satoshis — the payer pays exactly this (`amountSide: "from"`). */
@@ -73,6 +74,9 @@ export interface IntentSwapSettings {
   nostrRelays?: string[];
   /** 32-byte hex Nostr identity for the transport; ephemeral per boot when unset. */
   nostrSecretKey?: string;
+  /** Solver-registry index URL — discover the cheapest lightning-corridor solver.
+   *  Used only when neither SOLVER_URL nor SOLVER_PUBKEY is configured. */
+  registryUrl?: string;
   /** covclaimd base URL — its pubkey endpoint keys the sealed claim packet. */
   covclaimdUrl: string;
   /** Arkade operator URL — signer key, exit delay and network come from its getInfo. */
@@ -92,22 +96,32 @@ interface CorridorContext {
 const CONTEXT_TTL_MS = 5 * 60_000;
 
 /** HTTP when a solver URL is configured (dev/custom), Nostr directed-RFQ otherwise —
- *  the production transport deployed solvers actually listen on. */
-function buildTransport(settings: IntentSwapSettings): RfqTransport {
-  if (settings.solverUrl) return httpTransport(settings.solverUrl);
-  if (!settings.solverPubkey || !settings.nostrRelays?.length) {
-    throw new Error("offline receive needs a solver transport: SOLVER_URL, or SOLVER_PUBKEY + NOSTR_RELAYS");
+ *  the production transport deployed solvers actually listen on. With only a registry
+ *  index configured, the solver is discovered from it (cheapest lightning corridor). */
+async function buildTransport(settings: IntentSwapSettings): Promise<{ transport: RfqTransport; card: CorridorCard | null }> {
+  if (settings.solverUrl) return { transport: httpTransport(settings.solverUrl), card: null };
+  if (settings.solverPubkey && settings.nostrRelays?.length) {
+    return { transport: nostrTransport(settings.solverPubkey, settings.nostrRelays, settings.nostrSecretKey), card: null };
   }
-  if (!/^[0-9a-f]{64}$/i.test(settings.solverPubkey)) {
-    throw new Error("SOLVER_PUBKEY must be a 64-char hex (x-only) pubkey");
+  if (settings.registryUrl) {
+    const card = await discoverLightningCorridor(settings.registryUrl);
+    if (!card) throw new Error(`no lightning-corridor solver in registry index ${settings.registryUrl}`);
+    return { transport: nostrTransport(card.discoveryPubkey, card.relays, settings.nostrSecretKey), card };
   }
-  if (settings.nostrSecretKey && !/^[0-9a-f]{64}$/i.test(settings.nostrSecretKey)) {
+  throw new Error("offline receive needs a solver transport: SOLVER_URL, SOLVER_PUBKEY + NOSTR_RELAYS, or SOLVER_REGISTRY_URL");
+}
+
+function nostrTransport(solverPubkey: string, relays: string[], nostrSecretKey?: string): RfqTransport {
+  if (!/^[0-9a-f]{64}$/i.test(solverPubkey)) {
+    throw new Error("solver pubkey must be a 64-char hex (x-only) pubkey");
+  }
+  if (nostrSecretKey && !/^[0-9a-f]{64}$/i.test(nostrSecretKey)) {
     throw new Error("NOSTR_SECRET_KEY must be 64-char hex");
   }
   return nostrRfqTransport({
-    relays: settings.nostrRelays,
-    solverPubkey: settings.solverPubkey.toLowerCase(),
-    ...(settings.nostrSecretKey ? { secretKey: hex.decode(settings.nostrSecretKey.toLowerCase()) } : {}),
+    relays,
+    solverPubkey: solverPubkey.toLowerCase(),
+    ...(nostrSecretKey ? { secretKey: hex.decode(nostrSecretKey.toLowerCase()) } : {}),
   });
 }
 
@@ -134,8 +148,8 @@ async function fetchCovclaimdKeys(covclaimdUrl: string): Promise<{ covclaimdPubk
  * integration test drives this against fake HTTP servers implementing the same wire
  * contracts. Mutinynet/mainnet verification is the deployment's to do once.
  */
-export function createIntentSwapCreator(settings: IntentSwapSettings): OfflineSwapCreator {
-  const transport: RfqTransport = buildTransport(settings);
+export async function createIntentSwapCreator(settings: IntentSwapSettings): Promise<OfflineSwapCreator> {
+  const { transport, card } = await buildTransport(settings);
   const arkProvider = new RestArkProvider(settings.arkServerUrl);
 
   let cached: { at: number; ctx: Promise<CorridorContext> } | null = null;
@@ -168,6 +182,12 @@ export function createIntentSwapCreator(settings: IntentSwapSettings): OfflineSw
         payout = ArkAddress.decode(params.receiveAddress);
       } catch {
         throw new Error("receiveAddress is not a valid Arkade address");
+      }
+      // Discovered card bounds: reject out-of-range amounts with the actual numbers
+      // instead of the solver's bare refusal reason. The card is read once at
+      // construction — a solver changing its corridor bounds takes effect on restart.
+      if (card && (params.amountSat < card.minSat || params.amountSat > card.maxSat)) {
+        throw new Error(`amount ${params.amountSat} sats is outside the corridor's ${card.minSat}–${card.maxSat} sats bounds`);
       }
 
       const preimage = randomBytes(32);

@@ -41,7 +41,7 @@ console.log(`solver   ${solverPubkey}`);
 console.log(`relay    ${relay}`);
 console.log(`operator ${arkServerUrl}`);
 
-const creator = createIntentSwapCreator({ solverPubkey, nostrRelays: [relay], covclaimdUrl, arkServerUrl });
+const creator = await createIntentSwapCreator({ solverPubkey, nostrRelays: [relay], covclaimdUrl, arkServerUrl });
 // Arkade address keys are x-only 32-byte keys, not raw scalars.
 const receiveAddress = new ArkAddress(
   secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true).slice(1),
@@ -57,6 +57,10 @@ try {
   console.log(`  invoice       ${swap.invoice.slice(0, 60)}…`);
   console.log(`  preimageHash  ${swap.preimageHash}`);
   console.log(`  lockupAddress ${swap.lockupAddress}`);
+  // Status round-trip: the same transport answers rfq_status requests. Nothing was
+  // paid, so `false` is the only correct answer — what matters is that it answered.
+  const settled = await creator.isSettled(swap.swapId);
+  console.log(`  status check  replied, settled=${settled} (expected false — nothing was paid)`);
   console.log("\n=> the receive corridor is served and the wire contract matches the vendored client.");
   process.exitCode = 0;
 } catch (err) {

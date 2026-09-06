@@ -1,14 +1,15 @@
 /** Server-orchestrated offline receive over the Arkade intents corridor
  *  (`lightning:BTC -> arkade:BTC` solver quote + covclaimd claim).
  *  Enabled when COVCLAIMD_URL + ARK_SERVER_URL are set and a solver transport is
- *  configured: SOLVER_URL (HTTP, dev/custom) or SOLVER_PUBKEY + NOSTR_RELAYS (Nostr,
- *  the production transport). */
+ *  configured: SOLVER_URL (HTTP, dev/custom), SOLVER_PUBKEY + NOSTR_RELAYS (Nostr,
+ *  the production transport), or SOLVER_REGISTRY_URL (discover from a registry index). */
 export interface OfflineReceiveConfig {
   enabled: boolean;
   solverUrl?: string;
   solverPubkey?: string;
   nostrRelays?: string[];
   nostrSecretKey?: string;
+  registryUrl?: string;
   covclaimdUrl?: string;
   arkServerUrl?: string;
 }
@@ -83,15 +84,17 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
     if (!/^wss?:\/\//.test(r)) throw new Error(`NOSTR_RELAYS entries must be ws(s):// URLs (got "${r}")`);
   }
   const nostrSecretKey = env.NOSTR_SECRET_KEY || undefined;
+  const registryUrl = env.SOLVER_REGISTRY_URL || undefined;
   const covclaimdUrl = env.COVCLAIMD_URL || undefined;
   const arkServerUrl = env.ARK_SERVER_URL || undefined;
-  const hasTransport = Boolean(solverUrl || (solverPubkey && nostrRelays?.length));
+  const hasTransport = Boolean(solverUrl || (solverPubkey && nostrRelays?.length) || registryUrl);
   return {
     enabled: Boolean(hasTransport && covclaimdUrl && arkServerUrl),
     ...(solverUrl ? { solverUrl } : {}),
     ...(solverPubkey ? { solverPubkey } : {}),
     ...(nostrRelays?.length ? { nostrRelays } : {}),
     ...(nostrSecretKey ? { nostrSecretKey } : {}),
+    ...(registryUrl ? { registryUrl } : {}),
     ...(covclaimdUrl ? { covclaimdUrl } : {}),
     ...(arkServerUrl ? { arkServerUrl } : {}),
   };

@@ -139,7 +139,7 @@ beforeAll(async () => {
     }),
     startFakeSolver(),
   ]);
-  creator = createIntentSwapCreator({ solverUrl: solver.baseUrl, covclaimdUrl: covclaimd.baseUrl, arkServerUrl: operator.baseUrl });
+  creator = await createIntentSwapCreator({ solverUrl: solver.baseUrl, covclaimdUrl: covclaimd.baseUrl, arkServerUrl: operator.baseUrl });
 });
 
 afterAll(async () => {
@@ -209,5 +209,49 @@ describe("createIntentSwapCreator", () => {
     const mainnetAddr = new ArkAddress(secp256k1.utils.randomSecretKey(), secp256k1.utils.randomSecretKey(), "ark").encode();
     await expect(creator.create({ amountSat: 50, receiveAddress: mainnetAddr, claimPublicKey: CLAIM_PUBKEY })).rejects.toThrow(/prefix|network/i);
     expect(solver.requests).toHaveLength(requestsBefore); // neither attempt reached the solver
+  });
+
+  it("rejects out-of-bounds amounts with the card's numbers when discovered from a registry", async () => {
+    // A registry index whose only lightning-corridor card is bounded 1000–25000 sats.
+    // Its transport points nowhere usable — discovery alone is what we're proving.
+    const registry = await serve((req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify({
+          markets: [
+            {
+              pair: "BTC/lightning:BTC",
+              quote_corridor: "lightning",
+              fee_bps: 30,
+              min_base_amount: "1000",
+              max_base_amount: "50000",
+              min_quote_amount: "1000",
+              max_quote_amount: "25000",
+              solver: "card-solver",
+              discovery_pubkey: "aa".repeat(32), // x-only Nostr pubkey
+              transports: { nostr: { relays: ["wss://relay.invalid"] } },
+            },
+          ],
+        }),
+      );
+    });
+    try {
+      const discovered = await createIntentSwapCreator({ registryUrl: registry.baseUrl, covclaimdUrl: covclaimd.baseUrl, arkServerUrl: operator.baseUrl });
+      await expect(discovered.create({ amountSat: 500, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY })).rejects.toThrow(/1000–25000/);
+    } finally {
+      await registry.close();
+    }
+  });
+
+  it("throws at construction when discovery finds no lightning corridor", async () => {
+    const registry = await serve((req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ markets: [{ pair: "BTC/USDT", fee_bps: 30 }] }));
+    });
+    try {
+      await expect(createIntentSwapCreator({ registryUrl: registry.baseUrl, covclaimdUrl: covclaimd.baseUrl, arkServerUrl: operator.baseUrl })).rejects.toThrow(/no lightning-corridor/);
+    } finally {
+      await registry.close();
+    }
   });
 });

@@ -109,6 +109,8 @@ export interface LnurlPayCallbackResponse {
   routes: never[];
   /** LUD-21: URL the payer can poll to confirm settlement. Omitted if the bolt11 can't be decoded. */
   verify?: string;
+  /** LUD-XX: echoed when the wallet explicitly selected `paymentOption=lightning` on the callback. */
+  paymentOption?: string;
   /** LUD-XX: the quote, when the request was unit-denominated. */
   paymentQuote?: PaymentQuote;
 }

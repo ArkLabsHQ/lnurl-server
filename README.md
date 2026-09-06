@@ -162,7 +162,7 @@ Constraints enforced per domain:
 
 Normally an LN address only resolves while the wallet's SSE session is connected. With offline receive, a wallet can receive while disconnected: the server quotes a **solver-mediated swap over the Arkade intents corridor** (`lightning:BTC -> arkade:BTC`) and hands the payer the solver's hold invoice. When the payer pays, the solver funds a VHTLC pinned to the user's Arkade address, and a **covclaimd** daemon claims it on the user's behalf — constrained by covenant (`enforcePayTo`) to pay only that address, so neither the solver nor the daemon can redirect funds.
 
-Enable it by setting a solver transport — `SOLVER_URL` (HTTP, dev/custom solvers) or `SOLVER_PUBKEY` + `NOSTR_RELAYS` (Nostr, the production transport; see the [solver registry](https://arkade-os.github.io/solver-registry/) for listed solvers) — plus `COVCLAIMD_URL` and `ARK_SERVER_URL`. A wallet then registers its receive identity on an owned address:
+Enable it by setting a solver transport — `SOLVER_REGISTRY_URL` (discover the cheapest lightning-corridor solver from a [registry index](https://arkade-os.github.io/solver-registry/), e.g. `…/mutinynet.json`), or `SOLVER_PUBKEY` + `NOSTR_RELAYS` (pin a solver directly), or `SOLVER_URL` (HTTP, dev/custom solvers) — plus `COVCLAIMD_URL` and `ARK_SERVER_URL`. A wallet then registers its receive identity on an owned address:
 
 > **`COVCLAIMD_URL` must name the same covclaimd instance the solver reveals to.** The protocol does not carry that choice: this server seals the preimage to the key its own `COVCLAIMD_URL` reports, while the solver reveals to whichever daemon *its* operator configured. Point them at different daemons and every offline receive funds, fails to claim, and refunds — covclaimd correctly refuses a packet it cannot decrypt, the solver retries that refusal until the refund deadline, and the only trace is in the solver operator's logs, not yours. Until [arkade-os/intent-solver#46](https://github.com/arkade-os/intent-solver/issues/46) moves the choice in band, confirm the pairing with whoever runs the solver.
 
@@ -264,6 +264,7 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `INVOICE_TIMEOUT_MS` | `30000` | How long to wait (ms) for the wallet to provide a bolt11 |
 | `VERIFY_TTL_MS` | `86400000` | How long (ms) LUD-21 settlement records are retained for `verify` polling |
 | `SOLVER_URL` | — | Intent-solver RFQ HTTP base URL (dev/custom solvers). Alternatively configure the Nostr transport below. |
+| `SOLVER_REGISTRY_URL` | — | Solver-registry index URL — discover the cheapest lightning-corridor solver (bounds from its card are enforced before quoting). The card is read at startup; a solver changing its bounds takes effect on restart. Alternative to pinning `SOLVER_PUBKEY`. |
 | `SOLVER_PUBKEY` | — | Solver's x-only discovery pubkey (hex) for Nostr RFQ — the production transport. Needs `NOSTR_RELAYS`. |
 | `NOSTR_RELAYS` | — | Comma-separated `wss://` relay URLs the solver listens on. |
 | `NOSTR_SECRET_KEY` | — | 32-byte hex Nostr identity for the RFQ transport; ephemeral per boot when unset. **Key material** — treat it like a private key; prefer the ephemeral default unless a stable identity is genuinely required. |
