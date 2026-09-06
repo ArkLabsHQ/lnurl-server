@@ -1,8 +1,8 @@
 import { Fragment, useEffect, useState } from "react";
 import { api } from "./api.js";
 
-type Tab = "Dashboard" | "Sessions" | "Domains" | "Addresses" | "API Keys" | "Blacklist" | "Settings";
-const TABS: Tab[] = ["Dashboard", "Sessions", "Domains", "Addresses", "API Keys", "Blacklist", "Settings"];
+type Tab = "Dashboard" | "Sessions" | "Settlements" | "Domains" | "Addresses" | "API Keys" | "Blacklist" | "Settings";
+const TABS: Tab[] = ["Dashboard", "Sessions", "Settlements", "Domains", "Addresses", "API Keys", "Blacklist", "Settings"];
 const ALLOCATION_MODES = ["self", "random", "admin"] as const;
 
 interface Domain {
@@ -64,6 +64,7 @@ export function App() {
       </nav>
       {tab === "Dashboard" && <Dashboard />}
       {tab === "Sessions" && <Sessions />}
+      {tab === "Settlements" && <Settlements />}
       {tab === "Domains" && <Domains />}
       {tab === "Addresses" && <Addresses />}
       {tab === "API Keys" && <ApiKeys />}
@@ -153,6 +154,70 @@ function Sessions() {
         ))}</tbody>
       </table>
       {items.length === 0 && <p style={{ color: "#999" }}>No wallets connected.</p>}
+    </div>
+  );
+}
+
+interface SettlementRow {
+  paymentHash: string;
+  sessionId: string;
+  settled: boolean;
+  swapId: string | null;
+  paymentOption: string;
+  paymentDestination: string | null;
+  paymentReference: string | null;
+  amountMsat: number | null;
+  hasPreimage: boolean;
+  createdAt: number;
+  settledAt: number | null;
+}
+
+function Settlements() {
+  const [items, setItems] = useState<SettlementRow[]>([]);
+  const [err, setErr] = useState<string>();
+  const [state, setState] = useState("");
+  const [option, setOption] = useState("");
+  const reload = () => api.get<SettlementRow[]>(`/settlements${qs({ settled: state, option })}`).then((r) => { setItems(r); setErr(undefined); }).catch((e: Error) => setErr(e.message));
+  useEffect(() => {
+    reload();
+    const t = setInterval(reload, 5000); // flips land on payment events — poll like Sessions
+    return () => clearInterval(t);
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [state, option]);
+
+  return (
+    <div>
+      {err && <p style={{ color: "crimson" }}>{err}</p>}
+      <p style={{ color: "#666", marginTop: 0 }}>
+        {items.length} record{items.length === 1 ? "" : "s"} · auto-refreshes every 5s{" "}
+        <button onClick={reload}>Refresh</button>
+      </p>
+      <div style={{ marginBottom: 12, display: "flex", gap: 8 }}>
+        <select value={state} onChange={(e) => setState(e.target.value)}>
+          <option value="">all states</option>
+          <option value="false">pending</option>
+          <option value="true">settled</option>
+        </select>
+        <select value={option} onChange={(e) => setOption(e.target.value)}>
+          <option value="">all options</option>
+          <option value="lightning">lightning</option>
+          <option value="arkade">arkade</option>
+        </select>
+      </div>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead><tr><Th>Created</Th><Th>Option</Th><Th>Amount</Th><Th>State</Th><Th>Destination</Th><Th>Reference</Th></tr></thead>
+        <tbody>{items.map((s) => (
+          <tr key={s.paymentHash}>
+            <Td><span title={new Date(s.createdAt).toLocaleString()}>{ago(s.createdAt)}</span></Td>
+            <Td>{s.paymentOption}{s.swapId ? " (offline swap)" : ""}</Td>
+            <Td>{s.amountMsat != null ? `${s.amountMsat.toLocaleString()} msat` : "—"}</Td>
+            <Td>{s.settled ? `settled${s.settledAt ? ` (${ago(s.settledAt)})` : ""}` : "pending"}{s.hasPreimage ? " · preimage held" : ""}</Td>
+            <Td>{s.paymentDestination ? <code title={s.paymentDestination}>{s.paymentDestination.slice(0, 18)}…</code> : <span title={s.paymentHash}><code>{s.paymentHash.slice(0, 12)}…</code></span>}</Td>
+            <Td>{s.paymentReference ? <code title={s.paymentReference}>{s.paymentReference.slice(0, 12)}…</code> : "—"}</Td>
+          </tr>
+        ))}</tbody>
+      </table>
+      {items.length === 0 && <p style={{ color: "#999" }}>No settlement records yet.</p>}
     </div>
   );
 }

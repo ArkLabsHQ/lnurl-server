@@ -285,6 +285,43 @@ export const adminOpenApiSpec = {
       delete: { summary: "Remove a blacklist entry", tags: ["Blacklist"], parameters: [idParam], responses: { ...OK } },
     },
 
+    // ── Settlements ──────────────────────────────────────────
+    "/settlements": {
+      get: {
+        summary: "List settlement records",
+        description:
+          "Read-only audit view over LUD-21 settlement records (relay invoices, offline corridor swaps, " +
+          "destination-rail payments). Newest first, filters applied before the limit (a filtered page is " +
+          "never truncated by it). The preimage is never exposed (`hasPreimage` flag only) " +
+          "and `pr` is omitted as bulk — fetch the public `/lnurl/verify/:paymentHash` for those.",
+        tags: ["Settlements"],
+        parameters: [
+          { name: "settled", in: "query", required: false, schema: { type: "string", enum: ["true", "false"] }, description: "Filter by settlement state" },
+          { name: "option", in: "query", required: false, schema: { type: "string" }, description: "Filter by payment option (e.g. lightning, arkade)" },
+          { name: "limit", in: "query", required: false, schema: { type: "integer", default: 200, maximum: 1000 }, description: "Max records (newest first)" },
+        ],
+        responses: {
+          "200": { description: "Settlement records", content: { "application/json": { schema: { type: "array", items: {
+            type: "object",
+            properties: {
+              paymentHash: { type: "string", description: "Verify key (opaque id for destination rails)" },
+              sessionId: { type: "string" },
+              settled: { type: "boolean" },
+              swapId: { type: "string", nullable: true, description: "RFQ id for offline corridor swaps" },
+              paymentOption: { type: "string" },
+              paymentDestination: { type: "string", nullable: true },
+              paymentReference: { type: "string", nullable: true, description: "Observed Arkade txid, once settled by observation" },
+              amountMsat: { type: "integer", nullable: true },
+              hasPreimage: { type: "boolean", description: "Whether the record holds its preimage (never exposed here)" },
+              createdAt: { type: "integer" },
+              settledAt: { type: "integer", nullable: true },
+            },
+          } } } } },
+          ...errorResponse("503", "No settlement store configured"),
+        },
+      },
+    },
+
     // ── Sessions ─────────────────────────────────────────────
     "/sessions": {
       get: {

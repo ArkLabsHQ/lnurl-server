@@ -78,4 +78,16 @@ describe("MemorySettlementStore", () => {
     t = 1000 + 5000;
     expect(s2.listPendingDestinations()).toEqual([]);
   });
+
+  it("lists recent records newest-first for the admin view", () => {
+    let t = 1000;
+    const s = new MemorySettlementStore(60_000, () => t);
+    s.create({ paymentHash: "a1", pr: "ln1", sessionId: "s" });
+    t = 2000;
+    s.create({ paymentHash: "a2", pr: "ln2", sessionId: "s", preimage: "beef", swapId: "swap-1" });
+    t = 3000;
+    s.create({ paymentHash: "a3", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 50 });
+    expect(s.listRecent(10).map((r) => r.paymentHash)).toEqual(["a3", "a2", "a1"]);
+    expect(s.listRecent(2).map((r) => r.paymentHash)).toEqual(["a3", "a2"]);
+  });
 });

@@ -61,6 +61,9 @@ export interface SettlementStore {
   /** True when a reference (e.g. an Arkade txid) already settled some record —
    *  one observed payment must not settle two records across watcher passes. */
   isReferenceUsed(reference: string): boolean;
+  /** Newest-first audit view for the admin API (no TTL filter — history, not polling).
+   *  Filters are pushed into the query so a filtered page isn't silently truncated. */
+  listRecent(limit: number, opts?: { settled?: boolean; option?: string }): SettlementRecord[];
 }
 
 /** In-memory store used in library / no-DB mode. Lazy expiry on read plus an
@@ -148,6 +151,13 @@ export class MemorySettlementStore implements SettlementStore {
   isReferenceUsed(reference: string): boolean {
     for (const r of this.map.values()) if (r.paymentReference === reference) return true;
     return false;
+  }
+
+  listRecent(limit: number, opts?: { settled?: boolean; option?: string }): SettlementRecord[] {
+    return [...this.map.values()]
+      .filter((r) => (opts?.settled === undefined || r.settled === opts.settled) && (opts?.option === undefined || r.paymentOption === opts.option))
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, limit);
   }
 
   private sweep(): void {
@@ -268,5 +278,35 @@ export class DbSettlementStore implements SettlementStore {
 
   isReferenceUsed(reference: string): boolean {
     return Boolean(this.db.prepare("SELECT 1 FROM settlements WHERE payment_reference = ? LIMIT 1").get(reference));
+  }
+
+  listRecent(limit: number, opts?: { settled?: boolean; option?: string }): SettlementRecord[] {
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    if (opts?.settled !== undefined) {
+      where.push("settled = ?");
+      params.push(opts.settled ? 1 : 0);
+    }
+    if (opts?.option !== undefined) {
+      where.push("payment_option = ?");
+      params.push(opts.option);
+    }
+    const rows = this.db
+      .prepare(`SELECT * FROM settlements${where.length ? " WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC LIMIT ?`)
+      .all(...params, limit) as unknown as SettlementRow[];
+    return rows.map((row) => ({
+      paymentHash: row.payment_hash,
+      pr: row.pr,
+      sessionId: row.session_id,
+      settled: !!row.settled,
+      preimage: row.preimage ?? null,
+      swapId: row.swap_id ?? null,
+      paymentOption: row.payment_option ?? "lightning",
+      paymentDestination: row.payment_destination ?? null,
+      paymentReference: row.payment_reference ?? null,
+      amountMsat: row.amount_msat ?? null,
+      createdAt: row.created_at,
+      settledAt: row.settled_at ?? null,
+    }));
   }
 }

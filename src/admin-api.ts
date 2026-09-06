@@ -7,6 +7,7 @@ import type { AddressStatus } from "./db/types.js";
 import type { SettingsService } from "./settings.js";
 import { isSettingKey, SettingsError } from "./settings.js";
 import type { AppConfig } from "./config.js";
+import type { SettlementStore } from "./settlement-store.js";
 import { adminOpenApiSpec } from "./admin-openapi.js";
 
 const ADMIN_DOCS_HTML = `<!DOCTYPE html>
@@ -35,6 +36,8 @@ export interface AdminDeps {
   sessions: SessionManager;
   settings: SettingsService;
   config: AppConfig;
+  /** Settlement records view (offline swaps, destination payments, relay invoices). */
+  settlements?: SettlementStore;
 }
 
 const VALID_ALLOCATION_MODES = new Set(["self", "random", "admin"]);
@@ -187,6 +190,38 @@ export function createAdminApi(deps: AdminDeps): Router {
     if (!isSettingKey(req.params.key)) { res.status(400).json({ error: "unknown setting" }); return; }
     settings.clear(req.params.key);
     res.json(settings.view());
+  });
+
+  // ── Settlements ───────────────────────────────────────────
+  // Read-only audit view over the settlements table. The preimage is never exposed
+  // (a hasPreimage flag is enough for debugging) and `pr` is omitted as bulk.
+  r.get("/settlements", (req, res) => {
+    if (!deps.settlements) { res.status(503).json({ error: "no settlement store configured" }); return; }
+    const limitRaw = Number(req.query.limit);
+    const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 1000) : 200;
+    const settled = req.query.settled as string | undefined;
+    const option = req.query.option as string | undefined;
+    // Filters are pushed into the store query — filtering after the limit would
+    // silently truncate (a pending record older than the window must still surface).
+    const rows = deps.settlements.listRecent(limit, {
+      ...(settled === "true" || settled === "false" ? { settled: settled === "true" } : {}),
+      ...(option ? { option } : {}),
+    });
+    res.json(
+      rows.map((x) => ({
+        paymentHash: x.paymentHash,
+        sessionId: x.sessionId,
+        settled: x.settled,
+        swapId: x.swapId,
+        paymentOption: x.paymentOption,
+        paymentDestination: x.paymentDestination,
+        paymentReference: x.paymentReference,
+        amountMsat: x.amountMsat,
+        hasPreimage: x.preimage !== null,
+        createdAt: x.createdAt,
+        settledAt: x.settledAt,
+      })),
+    );
   });
 
   // ── API docs ──────────────────────────────────────────────
