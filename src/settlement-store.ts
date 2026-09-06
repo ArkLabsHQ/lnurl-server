@@ -86,6 +86,10 @@ export interface SettlementStore {
   listPendingSwaps(): PendingSwap[];
   /** Unsettled destination-rail records (non-lightning) with an amount, for the watcher. */
   listPendingDestinations(): PendingDestination[];
+  /** Every covenant destination inside the TTL, SETTLED OR NOT, for the sweeper:
+   *  observing a payment and moving it are different facts, and sweeping only the
+   *  pending ones strands what the watcher just settled. */
+  listCovenantDestinations(): PendingDestination[];
   /** True when a reference (e.g. an Arkade txid) already settled some record —
    *  one observed payment must not settle two records across watcher passes. */
   isReferenceUsed(reference: string): boolean;
@@ -176,6 +180,26 @@ export class MemorySettlementStore implements SettlementStore {
           covenantPayoutScript: r.covenantPayoutScript,
         });
       }
+    }
+    return out;
+  }
+
+  listCovenantDestinations(): PendingDestination[] {
+    const out: PendingDestination[] = [];
+    const t = this.now();
+    for (const r of this.map.values()) {
+      if (t - r.createdAt >= this.ttlMs) continue;
+      if (!r.covenantScript || r.amountMsat == null || !r.paymentDestination) continue;
+      out.push({
+        paymentHash: r.paymentHash,
+        paymentDestination: r.paymentDestination,
+        amountMsat: r.amountMsat,
+        createdAt: r.createdAt,
+        covenantScript: r.covenantScript,
+        covenantPreimage: r.covenantPreimage,
+        covenantTapTree: r.covenantTapTree,
+        covenantPayoutScript: r.covenantPayoutScript,
+      });
     }
     return out;
   }
@@ -319,6 +343,33 @@ export class DbSettlementStore implements SettlementStore {
     const rows = this.db
       .prepare(
         "SELECT payment_hash, payment_destination, amount_msat, created_at, covenant_script, covenant_preimage, covenant_tap_tree, covenant_payout_script FROM settlements WHERE settled = 0 AND payment_option IS NOT NULL AND payment_option != 'lightning' AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
+      )
+      .all(this.now() - this.ttlMs) as unknown as {
+      payment_hash: string;
+      payment_destination: string;
+      amount_msat: number;
+      created_at: number;
+      covenant_script: string | null;
+      covenant_preimage: string | null;
+      covenant_tap_tree: string | null;
+      covenant_payout_script: string | null;
+    }[];
+    return rows.map((r) => ({
+      paymentHash: r.payment_hash,
+      paymentDestination: r.payment_destination,
+      amountMsat: r.amount_msat,
+      createdAt: r.created_at,
+      covenantScript: r.covenant_script,
+      covenantPreimage: r.covenant_preimage,
+      covenantTapTree: r.covenant_tap_tree,
+      covenantPayoutScript: r.covenant_payout_script,
+    }));
+  }
+
+  listCovenantDestinations(): PendingDestination[] {
+    const rows = this.db
+      .prepare(
+        "SELECT payment_hash, payment_destination, amount_msat, created_at, covenant_script, covenant_preimage, covenant_tap_tree, covenant_payout_script FROM settlements WHERE covenant_script IS NOT NULL AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
       )
       .all(this.now() - this.ttlMs) as unknown as {
       payment_hash: string;

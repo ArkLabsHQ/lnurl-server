@@ -88,7 +88,9 @@ export function createCovenantSweeper(opts: {
   return {
     async sweep() {
       let moved = 0;
-      for (const rec of opts.store.listPendingDestinations()) {
+      // Settled or not — an already-swept destination reads as unfunded, so
+      // repeats are free, and pending-only would strand what the watcher settled.
+      for (const rec of opts.store.listCovenantDestinations()) {
         const { covenantScript, covenantPreimage, covenantTapTree, covenantPayoutScript } = rec;
         if (!covenantScript || !covenantPreimage || !covenantTapTree || !covenantPayoutScript) continue;
         try {

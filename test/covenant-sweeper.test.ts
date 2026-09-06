@@ -72,6 +72,18 @@ describe("createCovenantSweeper", () => {
     expect(submitTx).not.toHaveBeenCalled();
   });
 
+  it("still sweeps a record the watcher has already settled", async () => {
+    const store = new MemorySettlementStore(3_600_000);
+    store.create(record("v1", "5120aa"));
+    expect(store.markObserved("v1", "tx-observed")).toBe(true);
+    expect(store.listPendingDestinations()).toHaveLength(0);
+    const indexer = indexerReturning({ "5120aa": 2000 });
+
+    await sweeperWith(store, indexer).sweep();
+
+    expect(indexer.getVtxos).toHaveBeenCalledWith(expect.objectContaining({ scripts: ["5120aa"] }));
+  });
+
   it("keeps sweeping after one destination throws", async () => {
     const store = new MemorySettlementStore(3_600_000);
     store.create(record("bad", "5120bad"));
