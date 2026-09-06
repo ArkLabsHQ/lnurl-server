@@ -1,0 +1,55 @@
+name: e2e
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/e2e-offline-receive]
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "test/**"
+      - "scripts/**"
+      - "regtest/**"
+      - ".github/workflows/e2e.yml"
+
+jobs:
+  corridor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: true
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # The harness brings the stack up itself (arkade-regtest at ./regtest) and
+      # builds the intent-solver image from upstream master, which carries the
+      # covclaimd wiring since arkade-os/intent-solver#38.
+      - name: E2E — offline receive via the intents corridor
+        run: pnpm test:e2e
+
+      - name: Dump regtest stack logs on failure
+        if: failure()
+        run: |
+          docker ps || true
+          echo "=== solver admin overview ==="; curl -s http://localhost:8788/api/overview || true
+          echo "=== solver swaps ==="; curl -s http://localhost:8788/api/swaps || true
+          echo "=== solver DBs ==="
+          docker cp test/e2e/support/dump-solver-db.js intent-solver:/tmp/dump.js || true
+          docker exec intent-solver node /tmp/dump.js || true
+          for c in arkd intent-solver covclaimd emulator lnd boltz-lnd; do
+            echo "=== $c ==="; docker logs "$c" --tail 200 2>&1 || true
+          done

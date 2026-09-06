@@ -1,0 +1,13 @@
+# E2E-only overlay: the stack's compose files predate the solver's covclaimd wiring,
+# so COVCLAIMD_URL isn't in intent-solver's env map there. Applied only by the e2e
+# harness (regtest.mjs's compose invocations don't read it).
+services:
+  intent-solver:
+    environment:
+      # Receive legs reveal funded lockups to the claim daemon (offline-claim path).
+      COVCLAIMD_URL: http://covclaimd:7071
+      # Admin console for the failure dump — loopback-only on the runner; no auth.
+      ADMIN_PORT: "8788"
+      ADMIN_HOST: 0.0.0.0
+    ports:
+      - "8788:8788"
