@@ -237,7 +237,7 @@ describe("createIntentSwapCreator", () => {
   it("rejects out-of-bounds amounts with the card's numbers when discovered from a registry", async () => {
     // A registry index whose only lightning-corridor card is bounded 1000–25000 sats.
     // Its transport points nowhere usable — discovery alone is what we're proving.
-    const registry = await serve((req, res) => {
+    const registry = await serve((_req, res) => {
       res.setHeader("content-type", "application/json");
       res.end(
         JSON.stringify({
@@ -267,7 +267,7 @@ describe("createIntentSwapCreator", () => {
   });
 
   it("throws at construction when discovery finds no lightning corridor", async () => {
-    const registry = await serve((req, res) => {
+    const registry = await serve((_req, res) => {
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ markets: [{ pair: "BTC/USDT", fee_bps: 30 }] }));
     });
