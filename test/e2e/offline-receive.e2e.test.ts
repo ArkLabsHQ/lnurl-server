@@ -181,7 +181,10 @@ describe.each([
             .then((r) => (r.ok ? r.json() : null))
             .catch(() => null)) as { state?: string; profile?: { lockup_address?: string } } | null;
           lockupAddress ||= String(raw?.profile?.lockup_address ?? "");
-          if ((raw?.state === "funded" || raw?.state === "claimed") && !minedFunding) {
+          // Wire vocabulary, not the solver's internal one: wire `filling` is internal
+          // `funded` (lockup broadcast). Wire `funded` is internal `armed` — invoice
+          // merely held, nothing on chain to confirm — and there is no wire `claimed`.
+          if ((raw?.state === "filling" || raw?.state === "filled") && !minedFunding) {
             minedFunding = true;
             await mine(2);
             blocksMined += 2;
