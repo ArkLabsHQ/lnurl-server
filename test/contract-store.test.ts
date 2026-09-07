@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { openDb } from "../src/db/connection.js";
-import { sqliteContractStores, memoryContractStores } from "../src/contract-store.js";
+import { sqliteContractStores } from "../src/contract-store.js";
 
 const contract = (script: string) => ({
   type: "lnurl-covenant-destination",
@@ -37,9 +37,4 @@ describe("contract stores", () => {
     expect(tables()).toContain("ark_contracts");
   });
 
-  it("offers the same surface in memory mode", async () => {
-    const { contractRepository } = await memoryContractStores();
-    await contractRepository.saveContract(contract(`5120${"cc".repeat(32)}`));
-    expect(await contractRepository.getContracts()).toHaveLength(1);
-  });
 });

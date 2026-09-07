@@ -74,11 +74,14 @@ async function main(): Promise<void> {
     if (off.covenantDestinations) {
       const { ContractManager, RestIndexerProvider, contractHandlers } = await import("@arkade-os/sdk");
       const { covenantDestinationHandler } = await import("./covenant-contract.js");
-      const { sqliteContractStores, memoryContractStores } = await import("./contract-store.js");
+      const { sqliteContractStores } = await import("./contract-store.js");
       // The SDK tracks, watches and spends these; registering the handler is what
       // lets it build the script and pick a leaf without us restating either.
       contractHandlers.register(covenantDestinationHandler);
-      const stores = db ? await sqliteContractStores(db) : await memoryContractStores();
+      // Always SQLite: this block is inside `if (db)`, and the rail needs the
+      // contracts to survive a restart. In memory they would not, the catch-up pass
+      // would find nothing, and a payment made while down could never settle.
+      const stores = await sqliteContractStores(db);
       const contracts = await ContractManager.create({
         indexerProvider: new RestIndexerProvider(off.arkServerUrl!),
         ...stores,

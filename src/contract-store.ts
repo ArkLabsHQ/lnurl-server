@@ -1,6 +1,10 @@
 // The SDK's contract repositories over our own SQLite handle. They create and own
 // their `ark_*` tables, so nothing here goes through src/db/migrations.ts — the
 // schema belongs to the SDK and moves with it.
+//
+// SQLite only, deliberately. The SDK ships in-memory repositories too, but this rail
+// needs its contracts to outlive a restart: without them the watcher's catch-up pass
+// finds nothing and a payment made while the process was down can never settle.
 
 import type { Db } from "./db/connection.js";
 
@@ -24,8 +28,3 @@ export async function sqliteContractStores(db: Db) {
   return { contractRepository: new SQLiteContractRepository(exec), walletRepository: new SQLiteWalletRepository(exec) };
 }
 
-/** No DB_PATH: the SDK's own in-memory pair, so the two modes differ only in storage. */
-export async function memoryContractStores() {
-  const { InMemoryContractRepository, InMemoryWalletRepository } = await import("@arkade-os/sdk");
-  return { contractRepository: new InMemoryContractRepository(), walletRepository: new InMemoryWalletRepository() };
-}
