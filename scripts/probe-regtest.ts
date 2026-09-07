@@ -30,7 +30,12 @@ async function main() {
     "solver status != quoted",
     async () => {
       const s = await creator.isSettled(swap.swapId);
-      const raw = await fetch(`http://localhost:8787/v1/rfq/${swap.swapId}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      // `unknown` rather than a cast: nothing here reads a property, so naming a
+      // shape would assert structure this never checks. It also forces the next
+      // reader to narrow instead of inheriting `any` from `.json()`.
+      const raw: unknown = await fetch(`http://localhost:8787/v1/rfq/${swap.swapId}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null);
       console.log("    status:", raw ? JSON.stringify(raw).slice(0, 200) : "(404/null)", "isSettled:", s);
       return s;
     },
