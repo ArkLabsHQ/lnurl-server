@@ -53,11 +53,28 @@ async function httpOk(url: string): Promise<boolean> {
   }
 }
 
-export async function pollUntil(what: string, fn: () => Promise<boolean>, timeoutMs: number, intervalMs = 2000): Promise<void> {
+export async function pollUntil(
+  what: string,
+  fn: () => Promise<boolean>,
+  timeoutMs: number,
+  intervalMs = 2000,
+  explain?: () => string | undefined,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (await fn()) return;
-    if (Date.now() > deadline) throw new Error(`${what} not ready within ${Math.round(timeoutMs / 1000)}s`);
+    if (Date.now() > deadline) {
+      let detail: string | undefined;
+      // Synchronous and swallowed on purpose: a diagnostic that throws, or that
+      // blocks on the same service the poll just gave up on, must not replace
+      // the timeout it exists to explain.
+      try {
+        detail = explain?.();
+      } catch {
+        detail = undefined;
+      }
+      throw new Error(`${what} not ready within ${Math.round(timeoutMs / 1000)}s${detail ? ` — ${detail}` : ""}`);
+    }
     await new Promise((r) => setTimeout(r, intervalMs));
   }
 }

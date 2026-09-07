@@ -164,11 +164,19 @@ describe("e2e: offline receive via the intents corridor", () => {
     let blocksMined = 0;
     let lastMine = 0;
     let settled: Record<string, unknown> = {};
+    let swapState: string | undefined;
+    let swapStateAt = 0;
     await pollUntil(
       "verify settled",
       async () => {
         if (swapId) {
-          const raw = await fetch(`${SOLVER_URL}/v1/rfq/${swapId}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+          const raw = (await fetch(`${SOLVER_URL}/v1/rfq/${swapId}`)
+            .then((r) => (r.ok ? r.json() : null))
+            .catch(() => null)) as { state?: string } | null;
+          if (raw?.state && raw.state !== swapState) {
+            swapState = raw.state;
+            swapStateAt = Date.now();
+          }
           if ((raw?.state === "funded" || raw?.state === "claimed") && !minedFunding) {
             minedFunding = true;
             await mine(2);
@@ -190,6 +198,10 @@ describe("e2e: offline receive via the intents corridor", () => {
       },
       SWAP_TIMEOUT_MS - 60_000,
       3000,
+      () =>
+        `swap ${swapId} stuck at ${swapState ?? "unknown"}` +
+        (swapStateAt ? ` for ${Math.round((Date.now() - swapStateAt) / 1000)}s` : "") +
+        `, ${blocksMined} blocks mined`,
     );
 
     // THE assertion the whole corridor exists for: the preimage verify reveals is the
