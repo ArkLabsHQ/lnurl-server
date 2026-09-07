@@ -14,8 +14,10 @@ import type { SettlementStore } from "./settlement-store.js";
  *  correlated by arrival time, but the wire's `createdAt` is seconds-granular and the
  *  payer can outrun the callback, so a record tolerates arrivals up to
  *  {@link SETTLEMENT_SKEW_MS} before its creation. The effective upper bound on the
- *  arrival window is the record's TTL expiry, not the skew. A transient indexer
- *  failure skips that destination for the next pass. */
+ *  arrival window is the record's TTL expiry, not the skew. An indexer failure
+ *  calls `onFailure` and skips that destination for the next pass — reported
+ *  rather than swallowed, because a misconfigured indexer is indistinguishable
+ *  from an unreachable one and never recovers on its own. */
 export const SETTLEMENT_SKEW_MS = 15_000;
 /** Reports a pass that could not complete. Nothing here retries — the next tick does. */
 export type WatcherFailure = (stage: string, err: unknown) => void;
