@@ -164,6 +164,8 @@ describe("e2e: offline receive via the intents corridor", () => {
     let blocksMined = 0;
     let lastMine = 0;
     let settled: Record<string, unknown> = {};
+    let swapState: string | undefined;
+    let swapStateChangedAt = 0;
     await pollUntil(
       "verify settled",
       async () => {
@@ -176,6 +178,10 @@ describe("e2e: offline receive via the intents corridor", () => {
             await mine(2);
             blocksMined += 2;
             lastMine = Date.now();
+          }
+          if (raw?.state && raw.state !== swapState) {
+            swapState = raw.state;
+            swapStateChangedAt = Date.now();
           }
         }
         if (minedFunding && blocksMined < 20 && Date.now() - lastMine > 30_000) {
@@ -192,6 +198,10 @@ describe("e2e: offline receive via the intents corridor", () => {
       },
       SWAP_TIMEOUT_MS - 60_000,
       3000,
+      () =>
+        `swap ${swapId} stuck at ${swapState ?? "unknown"}` +
+        (swapStateChangedAt ? ` for ${Math.round((Date.now() - swapStateChangedAt) / 1000)}s` : "") +
+        `, ${blocksMined} blocks mined`,
     );
 
     // THE assertion the whole corridor exists for: the preimage verify reveals is the
