@@ -17,7 +17,14 @@ import type { SettlementStore } from "./settlement-store.js";
  *  arrival window is the record's TTL expiry, not the skew. A transient indexer
  *  failure skips that destination for the next pass. */
 export const SETTLEMENT_SKEW_MS = 15_000;
-export async function settleDestinationPayments(store: SettlementStore, indexer: IndexerProvider): Promise<number> {
+/** Reports a pass that could not complete. Nothing here retries — the next tick does. */
+export type WatcherFailure = (stage: string, err: unknown) => void;
+
+export async function settleDestinationPayments(
+  store: SettlementStore,
+  indexer: IndexerProvider,
+  onFailure: WatcherFailure = () => {},
+): Promise<number> {
   const pending = store.listPendingDestinations();
   let settled = 0;
 
@@ -35,8 +42,10 @@ export async function settleDestinationPayments(store: SettlementStore, indexer:
         if (!record || v.value * 1000 < record.amountMsat) continue;
         if (store.markObserved(record.paymentHash, v.txid)) settled++;
       }
-    } catch {
-      // Indexer unreachable — leave them pending for the next tick.
+    } catch (err) {
+      // Written for an unreachable indexer, but a misconfigured one lands here too
+      // and never leaves: silently, the rail simply stops settling.
+      onFailure("covenant lookup", err);
     }
   }
 
@@ -53,8 +62,9 @@ export async function settleDestinationPayments(store: SettlementStore, indexer:
     let script: string;
     try {
       script = hex.encode(ArkAddress.decode(destination).pkScript);
-    } catch {
-      continue; // undecodable destination — should not happen (validated at registration)
+    } catch (err) {
+      onFailure(`undecodable destination ${destination}`, err);
+      continue;
     }
     try {
       const oldest = Math.min(...records.map((r) => r.createdAt));
@@ -78,8 +88,8 @@ export async function settleDestinationPayments(store: SettlementStore, indexer:
         assigned.add(`${hit.txid}:${hit.vout}`);
         if (store.markObserved(record.paymentHash, hit.txid)) settled++;
       }
-    } catch {
-      // Indexer unreachable / error — leave everything pending for the next tick.
+    } catch (err) {
+      onFailure(`static-address lookup for ${destination}`, err);
     }
   }
   return settled;
@@ -89,11 +99,26 @@ export async function settleDestinationPayments(store: SettlementStore, indexer:
 export function startArkadeWatcher(store: SettlementStore, arkServerUrl: string, intervalMs: number): () => void {
   const indexer = new RestIndexerProvider(arkServerUrl);
   let inFlight = false;
+  // Deduped: a down indexer fails identically every tick, and a line every
+  // intervalMs would bury the first one. Cleared on a clean pass, so a
+  // recurrence says so again.
+  let lastReported: string | undefined;
+  const onFailure: WatcherFailure = (stage, err) => {
+    const msg = `${stage}: ${err instanceof Error ? err.message : String(err)}`;
+    if (msg === lastReported) return;
+    lastReported = msg;
+    console.warn(`arkade watcher: ${msg}`);
+  };
   const timer = setInterval(() => {
     // A slow indexer must not stack overlapping passes.
     if (inFlight) return;
     inFlight = true;
-    void settleDestinationPayments(store, indexer).finally(() => {
+    let failed = false;
+    void settleDestinationPayments(store, indexer, (stage, err) => {
+      failed = true;
+      onFailure(stage, err);
+    }).finally(() => {
+      if (!failed) lastReported = undefined;
       inFlight = false;
     });
   }, intervalMs);
