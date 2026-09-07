@@ -16,7 +16,6 @@ import {
   RestArkProvider,
   RestEmulatorProvider,
   RestIndexerProvider,
-  Transaction,
   attachPrevArkTxs,
   buildOffchainTx,
   setArkPsbtField,
@@ -93,19 +92,6 @@ export async function checkEmulatorPairing(opts: {
   return "mismatched";
 }
 
-/** An unreadable response costs the txid in the log, not the claim: the emulator
- *  accepting it is what already made it done. */
-function arkTxidOf(signedArkTx: string): string {
-  try {
-    return Transaction.fromPSBT(base64.decode(signedArkTx)).id;
-  } catch (err) {
-    console.warn(
-      `offline self-claim: emulator accepted the claim but its signedArkTx did not parse (${err instanceof Error ? err.message : String(err)})`,
-    );
-    return "unknown";
-  }
-}
-
 export function createSelfClaimer(opts: {
   arkServerUrl: string;
   emulatorUrl: string;
@@ -150,12 +136,14 @@ export function createSelfClaimer(opts: {
       setArkPsbtField(arkTx, 0, ConditionWitness, [hex.decode(preimage)]);
       setArkPsbtField(checkpoints[0]!, 0, ConditionWitness, [hex.decode(preimage)]);
 
-      const res = await emulator.submitTx(
+      await emulator.submitTx(
         base64.encode(arkTx.toPSBT()),
         checkpoints.map((c) => base64.encode(c.toPSBT())),
       );
       registry.delete(swapId);
-      return { state: "claimed", arkTxid: arkTxidOf(res.signedArkTx) };
+      // Not read back from the reply: the emulator's signatures live in the witness,
+      // which no txid commits to, so the transaction we built already has the id.
+      return { state: "claimed", arkTxid: arkTx.id };
     },
   };
 }

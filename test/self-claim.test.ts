@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import http from "node:http";
 import { randomBytes, createHash } from "node:crypto";
 import { base64, hex } from "@scure/base";
@@ -239,18 +239,18 @@ describe("createSelfClaimer", () => {
     expect(submitted).toHaveLength(0);
   });
 
-  it("still reports a claim the emulator accepted, even if its response will not parse", async () => {
+  it("reports the txid of the transaction it built, not one read back from the emulator", async () => {
     const { claimer } = funded({ swapId: "swap-7", expectedAmount: 4_900, valueSat: 4_900 });
+    // The emulator only adds witness data, which cannot change a txid, so the reply
+    // is not a source of truth for it — garbage here must not matter.
     signedArkTxOverride = "not-a-psbt";
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const outcome = await claimer.claim("swap-7", hex.encode(PREIMAGE));
 
-    // The spend was submitted, so the lockup is gone: reporting failure here would
-    // strand a claim that happened.
     expect(submitted).toHaveLength(1);
-    expect(outcome).toEqual({ state: "claimed", arkTxid: "unknown" });
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("did not parse"));
-    warn.mockRestore();
+    expect(outcome).toEqual({
+      state: "claimed",
+      arkTxid: Transaction.fromPSBT(base64.decode(submitted[0].arkTx)).id,
+    });
   });
 });
