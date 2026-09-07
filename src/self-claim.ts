@@ -141,8 +141,9 @@ export function createSelfClaimer(opts: {
         checkpoints.map((c) => base64.encode(c.toPSBT())),
       );
       registry.delete(swapId);
-      // Not read back from the reply: the emulator's signatures live in the witness,
-      // which no txid commits to, so the transaction we built already has the id.
+      // Not read back from the reply: a txid commits to no witness data, so the
+      // emulator's signatures cannot change it. Sound while this input stays
+      // taproot-only — a scriptSig one could gain a finalScriptSig server-side.
       return { state: "claimed", arkTxid: arkTx.id };
     },
   };
