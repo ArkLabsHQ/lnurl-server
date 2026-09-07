@@ -165,7 +165,7 @@ describe("e2e: offline receive via the intents corridor", () => {
     let lastMine = 0;
     let settled: Record<string, unknown> = {};
     let swapState: string | undefined;
-    let swapStateAt = 0;
+    let swapStateChangedAt = 0;
     await pollUntil(
       "verify settled",
       async () => {
@@ -175,7 +175,7 @@ describe("e2e: offline receive via the intents corridor", () => {
             .catch(() => null)) as { state?: string } | null;
           if (raw?.state && raw.state !== swapState) {
             swapState = raw.state;
-            swapStateAt = Date.now();
+            swapStateChangedAt = Date.now();
           }
           if ((raw?.state === "funded" || raw?.state === "claimed") && !minedFunding) {
             minedFunding = true;
@@ -200,7 +200,7 @@ describe("e2e: offline receive via the intents corridor", () => {
       3000,
       () =>
         `swap ${swapId} stuck at ${swapState ?? "unknown"}` +
-        (swapStateAt ? ` for ${Math.round((Date.now() - swapStateAt) / 1000)}s` : "") +
+        (swapStateChangedAt ? ` for ${Math.round((Date.now() - swapStateChangedAt) / 1000)}s` : "") +
         `, ${blocksMined} blocks mined`,
     );
 
