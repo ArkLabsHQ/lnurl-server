@@ -77,14 +77,12 @@ export interface CovenantDestination {
   sweepLeafIndex: number;
 }
 
-/** What the callback needs per payment. Hex throughout, so it stores as-is. */
+/** What the callback needs per payment: the address to hand the payer and the script
+ *  that attributes their payment. Everything else about the covenant lives on the
+ *  contract registered at derivation. */
 export interface DerivedDestination {
   address: string;
   script: string;
-  preimage: string;
-  tapTree: string;
-  /** Where the covenant forces the sweep to pay — the user's static address. */
-  payoutScript: string;
 }
 
 export interface CovenantDestinationProvider {
@@ -164,13 +162,7 @@ export function createCovenantDestinationProvider(opts: {
         address: d.address,
         watch: "awaiting-funds",
       });
-      return {
-        address: d.address,
-        script: d.script,
-        preimage: hex.encode(preimage),
-        tapTree: hex.encode(d.tapTree),
-        payoutScript: hex.encode(ArkAddress.decode(address.arkadeAddress).pkScript),
-      };
+      return { address: d.address, script: d.script };
     },
   };
 }

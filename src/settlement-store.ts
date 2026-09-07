@@ -26,14 +26,9 @@ export interface SettlementRecord {
   /** Set on destination records with a per-payment covenant address; null for the
    *  static-address shape and for lightning. @see covenant-destination.ts */
   covenantScript: string | null;
-  covenantPreimage: string | null;
-  covenantTapTree: string | null;
-  covenantPayoutScript: string | null;
   /** When the sweeper last moved this destination on, and the tx that did it.
    *  Null on a funded record means the sweep has not run — which nothing else
    *  distinguishes from swept, since an already-swept address reads as unfunded. */
-  covenantSweptAt: number | null;
-  covenantSweepTxid: string | null;
   createdAt: number;
   settledAt: number | null;
 }
@@ -55,9 +50,6 @@ export interface PendingDestination {
   /** hex pkScript of this record's own destination. Present makes attribution exact:
    *  a VTXO there belongs to this record and to no other. */
   covenantScript: string | null;
-  covenantPreimage: string | null;
-  covenantTapTree: string | null;
-  covenantPayoutScript: string | null;
 }
 
 /** What `create` accepts. Covenant fields arrive together or not at all. */
@@ -71,9 +63,6 @@ export interface NewSettlement {
   paymentDestination?: string;
   amountMsat?: number;
   covenantScript?: string;
-  covenantPreimage?: string;
-  covenantTapTree?: string;
-  covenantPayoutScript?: string;
 }
 
 export interface SettlementStore {
@@ -85,19 +74,12 @@ export interface SettlementStore {
   /** Mark a destination record settled from an observed payment — reference is the
    *  method-specific proof (the Arkade txid), never a preimage. */
   markObserved(paymentHash: string, reference: string): boolean;
-  /** Record that the sweeper moved this destination on. Not idempotency — that
-   *  comes from the indexer — but the only durable trace a sweep happened. */
-  markSwept(paymentHash: string, arkTxid: string): boolean;
   /** Fetch a record, or undefined if unknown or expired. */
   get(paymentHash: string): SettlementRecord | undefined;
   /** Unsettled offline swaps (have a swapId) for the settlement poller. */
   listPendingSwaps(): PendingSwap[];
   /** Unsettled destination-rail records (non-lightning) with an amount, for the watcher. */
   listPendingDestinations(): PendingDestination[];
-  /** Every covenant destination inside the TTL, SETTLED OR NOT, for the sweeper:
-   *  observing a payment and moving it are different facts, and sweeping only the
-   *  pending ones strands what the watcher just settled. */
-  listCovenantDestinations(): PendingDestination[];
   /** True when a reference (e.g. an Arkade txid) already settled some record —
    *  one observed payment must not settle two records across watcher passes. */
   isReferenceUsed(reference: string): boolean;
@@ -129,11 +111,6 @@ export class MemorySettlementStore implements SettlementStore {
       paymentReference: null,
       amountMsat: rec.amountMsat ?? null,
       covenantScript: rec.covenantScript ?? null,
-      covenantPreimage: rec.covenantPreimage ?? null,
-      covenantTapTree: rec.covenantTapTree ?? null,
-      covenantPayoutScript: rec.covenantPayoutScript ?? null,
-      covenantSweptAt: null,
-      covenantSweepTxid: null,
       createdAt: this.now(),
       settledAt: null,
     });
@@ -185,34 +162,12 @@ export class MemorySettlementStore implements SettlementStore {
           amountMsat: r.amountMsat,
           createdAt: r.createdAt,
           covenantScript: r.covenantScript,
-          covenantPreimage: r.covenantPreimage,
-          covenantTapTree: r.covenantTapTree,
-          covenantPayoutScript: r.covenantPayoutScript,
         });
       }
     }
     return out;
   }
 
-  listCovenantDestinations(): PendingDestination[] {
-    const out: PendingDestination[] = [];
-    const t = this.now();
-    for (const r of this.map.values()) {
-      if (t - r.createdAt >= this.ttlMs) continue;
-      if (!r.covenantScript || r.amountMsat == null || !r.paymentDestination) continue;
-      out.push({
-        paymentHash: r.paymentHash,
-        paymentDestination: r.paymentDestination,
-        amountMsat: r.amountMsat,
-        createdAt: r.createdAt,
-        covenantScript: r.covenantScript,
-        covenantPreimage: r.covenantPreimage,
-        covenantTapTree: r.covenantTapTree,
-        covenantPayoutScript: r.covenantPayoutScript,
-      });
-    }
-    return out;
-  }
 
   markObserved(paymentHash: string, reference: string): boolean {
     const r = this.get(paymentHash);
@@ -223,13 +178,6 @@ export class MemorySettlementStore implements SettlementStore {
     return true;
   }
 
-  markSwept(paymentHash: string, arkTxid: string): boolean {
-    const r = this.get(paymentHash);
-    if (!r) return false;
-    r.covenantSweptAt = this.now();
-    r.covenantSweepTxid = arkTxid;
-    return true;
-  }
 
   isReferenceUsed(reference: string): boolean {
     for (const r of this.map.values()) if (r.paymentReference === reference) return true;
@@ -261,11 +209,6 @@ interface SettlementRow {
   payment_reference: string | null;
   amount_msat: number | null;
   covenant_script: string | null;
-  covenant_preimage: string | null;
-  covenant_tap_tree: string | null;
-  covenant_payout_script: string | null;
-  covenant_swept_at: number | null;
-  covenant_sweep_txid: string | null;
   created_at: number;
   settled_at: number | null;
 }
@@ -279,7 +222,7 @@ export class DbSettlementStore implements SettlementStore {
   create(rec: NewSettlement): void {
     const info = this.db
       .prepare(
-        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, covenant_script, covenant_preimage, covenant_tap_tree, covenant_payout_script, created_at, settled_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, covenant_script, created_at, settled_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, NULL)",
       )
       .run(
         rec.paymentHash,
@@ -291,9 +234,6 @@ export class DbSettlementStore implements SettlementStore {
         rec.paymentDestination ?? null,
         rec.amountMsat ?? null,
         rec.covenantScript ?? null,
-        rec.covenantPreimage ?? null,
-        rec.covenantTapTree ?? null,
-        rec.covenantPayoutScript ?? null,
         this.now(),
       );
     // A paymentHash collision on the offline path would leave `verify` polling the
@@ -341,11 +281,6 @@ export class DbSettlementStore implements SettlementStore {
       paymentReference: row.payment_reference ?? null,
       amountMsat: row.amount_msat ?? null,
       covenantScript: row.covenant_script ?? null,
-      covenantPreimage: row.covenant_preimage ?? null,
-      covenantTapTree: row.covenant_tap_tree ?? null,
-      covenantPayoutScript: row.covenant_payout_script ?? null,
-      covenantSweptAt: row.covenant_swept_at ?? null,
-      covenantSweepTxid: row.covenant_sweep_txid ?? null,
       createdAt: row.created_at,
       settledAt: row.settled_at ?? null,
     };
@@ -364,7 +299,7 @@ export class DbSettlementStore implements SettlementStore {
   listPendingDestinations(): PendingDestination[] {
     const rows = this.db
       .prepare(
-        "SELECT payment_hash, payment_destination, amount_msat, created_at, covenant_script, covenant_preimage, covenant_tap_tree, covenant_payout_script FROM settlements WHERE settled = 0 AND payment_option IS NOT NULL AND payment_option != 'lightning' AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
+        "SELECT payment_hash, payment_destination, amount_msat, created_at, covenant_script FROM settlements WHERE settled = 0 AND payment_option IS NOT NULL AND payment_option != 'lightning' AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
       )
       .all(this.now() - this.ttlMs) as unknown as {
       payment_hash: string;
@@ -372,9 +307,6 @@ export class DbSettlementStore implements SettlementStore {
       amount_msat: number;
       created_at: number;
       covenant_script: string | null;
-      covenant_preimage: string | null;
-      covenant_tap_tree: string | null;
-      covenant_payout_script: string | null;
     }[];
     return rows.map((r) => ({
       paymentHash: r.payment_hash,
@@ -382,38 +314,9 @@ export class DbSettlementStore implements SettlementStore {
       amountMsat: r.amount_msat,
       createdAt: r.created_at,
       covenantScript: r.covenant_script,
-      covenantPreimage: r.covenant_preimage,
-      covenantTapTree: r.covenant_tap_tree,
-      covenantPayoutScript: r.covenant_payout_script,
     }));
   }
 
-  listCovenantDestinations(): PendingDestination[] {
-    const rows = this.db
-      .prepare(
-        "SELECT payment_hash, payment_destination, amount_msat, created_at, covenant_script, covenant_preimage, covenant_tap_tree, covenant_payout_script FROM settlements WHERE covenant_script IS NOT NULL AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
-      )
-      .all(this.now() - this.ttlMs) as unknown as {
-      payment_hash: string;
-      payment_destination: string;
-      amount_msat: number;
-      created_at: number;
-      covenant_script: string | null;
-      covenant_preimage: string | null;
-      covenant_tap_tree: string | null;
-      covenant_payout_script: string | null;
-    }[];
-    return rows.map((r) => ({
-      paymentHash: r.payment_hash,
-      paymentDestination: r.payment_destination,
-      amountMsat: r.amount_msat,
-      createdAt: r.created_at,
-      covenantScript: r.covenant_script,
-      covenantPreimage: r.covenant_preimage,
-      covenantTapTree: r.covenant_tap_tree,
-      covenantPayoutScript: r.covenant_payout_script,
-    }));
-  }
 
   markObserved(paymentHash: string, reference: string): boolean {
     // Idempotent: a second observation must not overwrite the first's reference.
@@ -425,12 +328,6 @@ export class DbSettlementStore implements SettlementStore {
     return info.changes > 0;
   }
 
-  markSwept(paymentHash: string, arkTxid: string): boolean {
-    const info = this.db
-      .prepare("UPDATE settlements SET covenant_swept_at = ?, covenant_sweep_txid = ? WHERE payment_hash = ?")
-      .run(this.now(), arkTxid, paymentHash);
-    return info.changes > 0;
-  }
 
   isReferenceUsed(reference: string): boolean {
     return Boolean(this.db.prepare("SELECT 1 FROM settlements WHERE payment_reference = ? LIMIT 1").get(reference));
@@ -462,11 +359,6 @@ export class DbSettlementStore implements SettlementStore {
       paymentReference: row.payment_reference ?? null,
       amountMsat: row.amount_msat ?? null,
       covenantScript: row.covenant_script ?? null,
-      covenantPreimage: row.covenant_preimage ?? null,
-      covenantTapTree: row.covenant_tap_tree ?? null,
-      covenantPayoutScript: row.covenant_payout_script ?? null,
-      covenantSweptAt: row.covenant_swept_at ?? null,
-      covenantSweepTxid: row.covenant_sweep_txid ?? null,
       createdAt: row.created_at,
       settledAt: row.settled_at ?? null,
     }));

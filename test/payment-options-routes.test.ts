@@ -121,7 +121,7 @@ describe("LUD-XX paymentOptions", () => {
     expect(second.paymentDestination).toBe("tark1derived2");
     expect(first.paymentDestination).not.toBe(second.paymentDestination);
     const rec = settlements.get(String(first.verify).split("/").pop()!);
-    expect(rec).toMatchObject({ paymentDestination: "tark1derived1", covenantScript: "51201", covenantTapTree: "ee1" });
+    expect(rec).toMatchObject({ paymentDestination: "tark1derived1", covenantScript: "51201" });
   });
 
   it("falls back to the static address when derivation fails, rather than refusing to be paid", async () => {

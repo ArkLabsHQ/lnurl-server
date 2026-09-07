@@ -126,20 +126,11 @@ const MIGRATIONS: Migration[] = [
   },
   {
     version: 7,
-    // Per-payment Arkade destinations. covenant_script is the attribution key: a
-    // VTXO there IS this record's payment, so nothing is inferred from amount or
-    // arrival. covenant_preimage satisfies the sweep leaf and is not a secret —
-    // the covenant pins the payout to the user, so holding it buys nothing.
-    // covenant_swept_at is not needed for correctness (spendableOnly makes the
-    // sweep idempotent) but a sweep that fails forever is otherwise invisible:
-    // funded, settled, and never moved reads identically to swept.
+    // Per-payment Arkade destinations. covenant_script is the attribution key and
+    // the join to the SDK contract that owns everything else about the covenant —
+    // its params, its vtxos and its watch state all live in `ark_contracts`.
     up: `
       ALTER TABLE settlements ADD COLUMN covenant_script TEXT;
-      ALTER TABLE settlements ADD COLUMN covenant_preimage TEXT;
-      ALTER TABLE settlements ADD COLUMN covenant_tap_tree TEXT;
-      ALTER TABLE settlements ADD COLUMN covenant_payout_script TEXT;
-      ALTER TABLE settlements ADD COLUMN covenant_swept_at INTEGER;
-      ALTER TABLE settlements ADD COLUMN covenant_sweep_txid TEXT;
       CREATE UNIQUE INDEX uq_settlements_covenant_script
         ON settlements(covenant_script) WHERE covenant_script IS NOT NULL;
     `,

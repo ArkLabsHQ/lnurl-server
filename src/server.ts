@@ -557,14 +557,9 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           paymentOption: resolved.paymentOption,
           paymentDestination: derived?.address ?? resolved.paymentDestination,
           amountMsat,
-          ...(derived
-            ? {
-                covenantScript: derived.script,
-                covenantPreimage: derived.preimage,
-                covenantTapTree: derived.tapTree,
-                covenantPayoutScript: derived.payoutScript,
-              }
-            : {}),
+          // The script alone: it is the attribution key, and the contract registered
+          // at derivation owns the preimage, the taptree and the payout script.
+          ...(derived ? { covenantScript: derived.script } : {}),
         });
         res.json({
           status: "OK",

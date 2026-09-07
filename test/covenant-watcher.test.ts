@@ -18,8 +18,6 @@ const storeWith = (recs: { hash: string; script: string; amountMsat: number }[])
       paymentDestination: `tark1for-${r.hash}`,
       amountMsat: r.amountMsat,
       covenantScript: r.script,
-      covenantPreimage: "aa".repeat(32),
-      covenantTapTree: "bb",
     });
   }
   return s;
