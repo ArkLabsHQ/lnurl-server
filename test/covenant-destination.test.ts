@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import { hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { MultisigTapscript, VtxoScript } from "@arkade-os/sdk";
-import { deriveCovenantDestination } from "../src/covenant-destination.js";
+import { deriveCovenantDestination, createCovenantDestinationProvider } from "../src/covenant-destination.js";
+import { loadConfig } from "../src/config.js";
 
 const xonly = (fill: number) => secp256k1.getPublicKey(new Uint8Array(32).fill(fill), true).subarray(1);
 const serverPubkey = xonly(3);
@@ -23,6 +24,29 @@ const derive = (preimage: Uint8Array) =>
   });
 
 describe("deriveCovenantDestination", () => {
+  // Every other case here picks 4096, which is a multiple of 512 by luck of the
+  // draw. The shipped default was 86400, which is not, and BIP68 threw on it —
+  // so the flag derived nothing and every payment fell back to the static
+  // address. Derive at whatever config actually ships, not at a chosen value.
+  it("derives at the shipped default recovery delay", () => {
+    const { offlineReceive } = loadConfig({
+      NODE_ENV: "test",
+      COVCLAIMD_URL: "https://cc.example",
+      ARK_SERVER_URL: "https://ark.example",
+      OFFLINE_COVENANT_DESTINATIONS: "true",
+      OFFLINE_EMULATOR_URL: "https://emulator.example",
+    });
+    const d = deriveCovenantDestination({
+      staticAddress,
+      userPubkey,
+      serverPubkey,
+      emulatorPubkey,
+      preimage: new Uint8Array(32).fill(7),
+      recoveryDelaySeconds: offlineReceive.covenantRecoveryDelaySeconds,
+    });
+    expect(d.address.startsWith("tark1")).toBe(true);
+  });
+
   // Golden values from the construction funded and swept on regtest, so a drift
   // here means the emulator would stop co-signing rather than a test going stale.
   it("reproduces the construction proven on-chain, byte for byte", () => {
@@ -92,5 +116,22 @@ describe("deriveCovenantDestination", () => {
     });
 
     expect(withCompressed.script).toBe(derive(new Uint8Array(32).fill(7)).script);
+  });
+});
+
+describe("createCovenantDestinationProvider", () => {
+  const provider = (recoveryDelaySeconds: number) =>
+    createCovenantDestinationProvider({
+      arkServerUrl: "https://ark.example",
+      covclaimdUrl: "https://cc.example",
+      recoveryDelaySeconds,
+    });
+
+  it("refuses a delay BIP68 cannot encode instead of degrading per payment", () => {
+    expect(() => provider(86_400)).toThrow(/positive multiple of 512/);
+    expect(() => provider(3600)).toThrow(/positive multiple of 512/);
+    expect(() => provider(0)).toThrow(/positive multiple of 512/);
+    expect(() => provider(-512)).toThrow(/positive multiple of 512/);
+    expect(() => provider(86_528)).not.toThrow();
   });
 });

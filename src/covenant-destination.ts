@@ -103,6 +103,12 @@ export function createCovenantDestinationProvider(opts: {
   recoveryDelaySeconds: number;
   now?: () => number;
 }): CovenantDestinationProvider {
+  // Here rather than only at derivation: BIP68's throw arrives per payment, where
+  // the caller falls back to the static address, so the flag looks on and does
+  // nothing. Construction is the last point that can still fail loudly.
+  if (!Number.isInteger(opts.recoveryDelaySeconds) || opts.recoveryDelaySeconds <= 0 || opts.recoveryDelaySeconds % 512 !== 0) {
+    throw new Error(`recoveryDelaySeconds must be a positive multiple of 512 (got ${opts.recoveryDelaySeconds})`);
+  }
   const now = opts.now ?? (() => Date.now());
   let cached: { at: number; serverPubkey: Uint8Array; emulatorPubkey: Uint8Array } | undefined;
 

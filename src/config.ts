@@ -129,9 +129,19 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
     throw new Error("OFFLINE_COVENANT_DESTINATIONS=true requires COVCLAIMD_URL and ARK_SERVER_URL (the covenant commits to their keys)");
   }
   const recoveryRaw = env.OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS;
-  const covenantRecoveryDelaySeconds = recoveryRaw ? Number(recoveryRaw) : 86_400;
+  // 512-second granularity, and 24h is not a multiple of it. Rejected here rather
+  // than rounded: BIP68 throws on anything else, and the only place that surfaces
+  // is per-payment derivation, which falls back to the static address and hands
+  // the payer the ambiguity this flag exists to remove.
+  const covenantRecoveryDelaySeconds = recoveryRaw ? Number(recoveryRaw) : 86_528;
   if (!Number.isInteger(covenantRecoveryDelaySeconds) || covenantRecoveryDelaySeconds <= 0) {
     throw new Error(`OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS must be a positive integer (got "${recoveryRaw}")`);
+  }
+  if (covenantRecoveryDelaySeconds % 512 !== 0) {
+    const near = Math.round(covenantRecoveryDelaySeconds / 512) * 512;
+    throw new Error(
+      `OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS must be a multiple of 512 (BIP68 encodes seconds in 512s units); got ${covenantRecoveryDelaySeconds}, nearest is ${near}`,
+    );
   }
   return {
     enabled: Boolean(hasTransport && covclaimdUrl && arkServerUrl),

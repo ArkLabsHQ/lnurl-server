@@ -212,7 +212,7 @@ Only the first leaf carries `H(P)`, so a fresh preimage moves the address while 
 
 A sweeper moves each funded destination on to the static address, so the user's wallet sees an ordinary arrival there and needs to know nothing about any of this. It costs one extra Arkade transaction per payment, and the rail gains a dependency on the emulator co-signing that sweep. If derivation fails at request time the callback falls back to the static address: that payment is ambiguous again, which beats refusing to be paid.
 
-`OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS` (default 86400) sets the CSV delay on the third leaf.
+`OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS` (default 86528) sets the CSV delay on the third leaf. It must be a multiple of 512: BIP68 encodes seconds in 512s units and rejects anything else, so 86400 — 24h exactly — is not a legal value and is refused at startup.
 
 ## Payment options (LUD-XX)
 
@@ -312,7 +312,7 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `OFFLINE_SELF_CLAIM` | `false` | `true` pushes each lockup's `nonInteractiveClaim` leaf here as well as covclaimd, so covclaimd stops being a single point of failure. Needs no key — the leaf is signed by the operator and the emulator, and gated on the preimage this server already holds. Requires `OFFLINE_EMULATOR_URL`. See [Self-claim](#self-claim-offline_self_claim-default-off). |
 | `OFFLINE_EMULATOR_URL` | — | Emulator base URL backing `OFFLINE_SELF_CLAIM` and `OFFLINE_COVENANT_DESTINATIONS` — it co-signs the covenant leaf after checking the spend pays the user. Must be the emulator whose `emulator_pub_key` `COVCLAIMD_URL` reports. Missing with either flag on, the server refuses to start. |
 | `OFFLINE_COVENANT_DESTINATIONS` | `false` | `true` gives each arkade-rail payment its own covenant address, so concurrent payments are told apart by script instead of by amount and arrival window. Requires `OFFLINE_EMULATOR_URL`, `COVCLAIMD_URL` and `ARK_SERVER_URL`. See [Per-payment destinations](#per-payment-destinations-offline_covenant_destinations-default-off). |
-| `OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS` | `86400` | CSV delay before the user may sweep a covenant destination alone. |
+| `OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS` | `86528` | CSV delay before the user may sweep a covenant destination alone. |
 | `DB_PATH` | — | Path to SQLite database file. Omit for in-memory-only mode. |
 | `TOKEN_ENCRYPTION_KEY` | — | 32-byte AES key (hex or base64). Required when `DB_PATH` is set. |
 | `ALLOW_INSECURE_TOKEN_STORAGE` | — | Set to `1` to skip token encryption in dev (plaintext storage). |
