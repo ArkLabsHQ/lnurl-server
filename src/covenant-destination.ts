@@ -168,8 +168,10 @@ export function createCovenantDestinationProvider(opts: {
 }
 
 /** Stripping unconditionally turns an x-only key into 31 bytes, and the covenant
- *  commits to it without complaint — only the refused sweep would ever say so. */
-const toXOnly = (key: Uint8Array): Uint8Array => {
+ *  commits to it without complaint — only the refused sweep would ever say so.
+ *  Exported so callers that need the key *before* derivation share this guard
+ *  rather than writing `.subarray(1)` and reintroducing the same defect. */
+export const toXOnly = (key: Uint8Array): Uint8Array => {
   if (key.length === 32) return key;
   if (key.length === 33) return key.subarray(1);
   throw new Error(`expected a 32- or 33-byte key, got ${key.length} bytes`);

@@ -8,7 +8,7 @@
 import { hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { ArkAddress, getNetwork, resolveEmulatorPubkey, MultisigTapscript, VtxoScript } from "@arkade-os/sdk";
-import { deriveCovenantDestination } from "../src/covenant-destination.js";
+import { deriveCovenantDestination, toXOnly } from "../src/covenant-destination.js";
 import { loadConfig } from "../src/config.js";
 
 const arkServerUrl = process.argv[2] ?? "https://mutinynet.arkade.sh";
@@ -22,7 +22,10 @@ const getJson = async (url: string): Promise<Record<string, unknown>> => {
 };
 
 const info = await getJson(`${arkServerUrl}/v1/info`);
-const serverPubkey = hex.decode(String(info.signerPubkey)).subarray(1);
+// Guarded, not stripped: this key builds the static address below, before anything
+// inside deriveCovenantDestination would check it, and 31 bytes there produces a
+// confusing error instead of "signerPubkey was not a 32- or 33-byte key".
+const serverPubkey = toXOnly(hex.decode(String(info.signerPubkey)));
 
 const emulatorHex = covclaimdUrl
   ? String((await getJson(`${covclaimdUrl}/v1/preimage/covclaimd-pubkey`)).emulator_pub_key)
