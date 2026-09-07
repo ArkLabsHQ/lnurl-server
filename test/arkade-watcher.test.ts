@@ -81,6 +81,62 @@ function storeWith(...recs: { hash: string; amountMsat: number; createdAt?: numb
   return s;
 }
 
+describe("per-payment covenant destinations", () => {
+  const covenantStore = (recs: { hash: string; script: string; amountMsat: number }[]) => {
+    const s = new MemorySettlementStore(3_600_000);
+    for (const r of recs) {
+      s.create({
+        paymentHash: r.hash,
+        pr: "",
+        sessionId: "sess",
+        paymentOption: "arkade",
+        paymentDestination: `tark1for-${r.hash}`,
+        amountMsat: r.amountMsat,
+        covenantScript: r.script,
+        covenantPreimage: "aa".repeat(32),
+        covenantTapTree: "bb",
+      });
+    }
+    return s;
+  };
+
+  // The case the static address cannot resolve: same user, same amount, both in
+  // flight. Distinct scripts settle each to its own record with no guessing.
+  it("attributes concurrent same-amount payments exactly", async () => {
+    const store = covenantStore([
+      { hash: "v1", script: "512011", amountMsat: 50_000 },
+      { hash: "v2", script: "512022", amountMsat: 50_000 },
+    ]);
+    const t = Math.floor(Date.now() / 1000);
+    indexerVtxos.push(wireVtxo({ txid: "tx-for-v2", valueSat: 50, createdAtSec: t, script: "512022" }));
+    indexerVtxos.push(wireVtxo({ txid: "tx-for-v1", valueSat: 50, createdAtSec: t, script: "512011" }));
+
+    expect(await settleDestinationPayments(store, new RestIndexerProvider(indexerCtx.baseUrl))).toBe(2);
+    expect(store.get("v1")).toMatchObject({ settled: true, paymentReference: "tx-for-v1" });
+    expect(store.get("v2")).toMatchObject({ settled: true, paymentReference: "tx-for-v2" });
+  });
+
+  it("never lets a smaller record consume a larger record's payment", async () => {
+    const store = covenantStore([
+      { hash: "small", script: "512033", amountMsat: 1_000 },
+      { hash: "large", script: "512044", amountMsat: 50_000 },
+    ]);
+    indexerVtxos.push(wireVtxo({ txid: "tx-large", valueSat: 50, createdAtSec: Math.floor(Date.now() / 1000), script: "512044" }));
+
+    expect(await settleDestinationPayments(store, new RestIndexerProvider(indexerCtx.baseUrl))).toBe(1);
+    expect(store.get("large")).toMatchObject({ settled: true, paymentReference: "tx-large" });
+    expect(store.get("small")!.settled).toBe(false);
+  });
+
+  it("still refuses an under-payment to its own script", async () => {
+    const store = covenantStore([{ hash: "v1", script: "512055", amountMsat: 50_000 }]);
+    indexerVtxos.push(wireVtxo({ txid: "tx-short", valueSat: 49, createdAtSec: Math.floor(Date.now() / 1000), script: "512055" }));
+
+    expect(await settleDestinationPayments(store, new RestIndexerProvider(indexerCtx.baseUrl))).toBe(0);
+    expect(store.get("v1")!.settled).toBe(false);
+  });
+});
+
 describe("settleDestinationPayments", () => {
   it("flips a record when a covering payment is observed, with the txid as reference", async () => {
     const store = storeWith({ hash: "v1", amountMsat: 50_000 });

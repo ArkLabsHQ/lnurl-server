@@ -26,6 +26,50 @@ describe("store parity past the ttl", () => {
     db.close();
   });
 
+  it("round-trips the covenant fields identically in both stores", () => {
+    const t = 1000;
+    const { db, memory, sqlite } = stores(() => t);
+    const rec = {
+      paymentHash: "vid1",
+      pr: "",
+      sessionId: "s",
+      paymentOption: "arkade",
+      paymentDestination: "tark1derived",
+      amountMsat: 50_000,
+      covenantScript: "5120aa",
+      covenantPreimage: "bb".repeat(32),
+      covenantTapTree: "cc",
+    };
+    memory.create(rec);
+    sqlite.create(rec);
+
+    expect(memory.listPendingDestinations()).toEqual(sqlite.listPendingDestinations());
+    expect(sqlite.listPendingDestinations()[0]).toMatchObject({
+      covenantScript: "5120aa",
+      covenantPreimage: "bb".repeat(32),
+      covenantTapTree: "cc",
+    });
+    expect(sqlite.get("vid1")?.covenantScript).toBe("5120aa");
+    db.close();
+  });
+
+  // Two records sharing a destination is the ambiguity this design removes, so
+  // the schema refuses it rather than leaving the watcher to pick.
+  it("refuses to reuse one covenant script across records", () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    const store = new DbSettlementStore(db, 5000, () => 1000);
+    const base = { pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "tark1d", amountMsat: 1, covenantScript: "5120dup" };
+    store.create({ ...base, paymentHash: "one" });
+
+    // INSERT OR IGNORE would otherwise drop this silently, leaving a payer with
+    // an address that maps to somebody else's record.
+    expect(() => store.create({ ...base, paymentHash: "two" })).toThrow(/already in use/i);
+    expect(store.get("two")).toBeUndefined();
+    expect(store.get("one")?.covenantScript).toBe("5120dup");
+    db.close();
+  });
+
   it("refuses markObserved on an expired record in both stores", () => {
     let t = 1000;
     const { db, memory, sqlite } = stores(() => t);
@@ -128,7 +172,7 @@ describe("DbSettlementStore", () => {
     a.create({ paymentHash: "vid2", pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination: "ark1xyz" }); // no amount
     a.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "sess" });
     const b = new DbSettlementStore(db, 5000, () => t);
-    expect(b.listPendingDestinations()).toEqual([{ paymentHash: "vid1", paymentDestination: "ark1xyz", amountMsat: 50000, createdAt: 1000 }]);
+    expect(b.listPendingDestinations()).toEqual([{ paymentHash: "vid1", paymentDestination: "ark1xyz", amountMsat: 50000, createdAt: 1000, covenantScript: null, covenantPreimage: null, covenantTapTree: null, covenantPayoutScript: null }]);
     expect(b.markObserved("vid1", "txid1")).toBe(true);
     expect(b.get("vid1")).toMatchObject({ settled: true, paymentReference: "txid1", preimage: null });
     // Idempotent: a second observation never overwrites the reference.

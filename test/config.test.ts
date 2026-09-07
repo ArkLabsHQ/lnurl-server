@@ -50,6 +50,8 @@ describe("loadConfig", () => {
       enabled: true,
       stampClaimPacket: false,
       selfClaim: false,
+      covenantDestinations: false,
+      covenantRecoveryDelaySeconds: 86_528,
       solverUrl: "https://solver.example",
       covclaimdUrl: "https://covclaimd.example:7071",
       arkServerUrl: "https://mutinynet.arkade.sh",
@@ -119,6 +121,63 @@ describe("loadConfig", () => {
 
     expect(() => loadConfig({ ...base, OFFLINE_SELF_CLAIM: "true" })).toThrow(/OFFLINE_EMULATOR_URL/);
     expect(() => loadConfig({ ...base, OFFLINE_EMULATOR_URL: "emulator.example" })).toThrow(/http\(s\)/);
+  });
+
+  it("reads the covenant-destination flag, and refuses a config nothing could sweep", () => {
+    const withUrls = { ...base, COVCLAIMD_URL: "https://cc.example", ARK_SERVER_URL: "https://ark.example" };
+    const on = loadConfig({
+      ...withUrls,
+      OFFLINE_COVENANT_DESTINATIONS: "true",
+      OFFLINE_EMULATOR_URL: "https://emulator.example",
+    });
+    expect(on.offlineReceive.covenantDestinations).toBe(true);
+    expect(on.offlineReceive.covenantRecoveryDelaySeconds).toBe(86_528);
+
+    expect(loadConfig({ ...base }).offlineReceive.covenantDestinations).toBe(false);
+    expect(
+      loadConfig({ ...withUrls, OFFLINE_COVENANT_DESTINATIONS: "1", OFFLINE_EMULATOR_URL: "https://e.example" })
+        .offlineReceive.covenantDestinations,
+    ).toBe(false);
+
+    // A payer must never be handed an address nothing can sweep, so both the
+    // emulator and the keys the covenant commits to are required up front.
+    expect(() => loadConfig({ ...withUrls, OFFLINE_COVENANT_DESTINATIONS: "true" })).toThrow(/OFFLINE_EMULATOR_URL/);
+    expect(() =>
+      loadConfig({ ...base, OFFLINE_COVENANT_DESTINATIONS: "true", OFFLINE_EMULATOR_URL: "https://emulator.example" }),
+    ).toThrow(/COVCLAIMD_URL and ARK_SERVER_URL/);
+  });
+
+  it("rejects a non-positive covenant recovery delay rather than building an unspendable leaf", () => {
+    const withFlag = (v: string) => ({
+      ...base,
+      COVCLAIMD_URL: "https://cc.example",
+      ARK_SERVER_URL: "https://ark.example",
+      OFFLINE_COVENANT_DESTINATIONS: "true",
+      OFFLINE_EMULATOR_URL: "https://emulator.example",
+      OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS: v,
+    });
+    expect(loadConfig(withFlag("4096")).offlineReceive.covenantRecoveryDelaySeconds).toBe(4096);
+    expect(() => loadConfig(withFlag("0"))).toThrow(/positive integer/);
+    expect(() => loadConfig(withFlag("-1"))).toThrow(/positive integer/);
+    expect(() => loadConfig(withFlag("soon"))).toThrow(/positive integer/);
+
+    // BIP68 counts seconds in 512s units and throws on anything else. That throw
+    // only surfaces at per-payment derivation, which falls back to the static
+    // address — so an operator would see the flag "on" and get none of it.
+    expect(() => loadConfig(withFlag("86400"))).toThrow(/multiple of 512.*nearest is 86528/s);
+    expect(() => loadConfig(withFlag("3600"))).toThrow(/multiple of 512/);
+    expect(loadConfig(withFlag("86528")).offlineReceive.covenantRecoveryDelaySeconds).toBe(86_528);
+  });
+
+  it("ships a default recovery delay BIP68 can actually encode", () => {
+    const cfg = loadConfig({
+      ...base,
+      COVCLAIMD_URL: "https://cc.example",
+      ARK_SERVER_URL: "https://ark.example",
+      OFFLINE_COVENANT_DESTINATIONS: "true",
+      OFFLINE_EMULATOR_URL: "https://emulator.example",
+    });
+    expect(cfg.offlineReceive.covenantRecoveryDelaySeconds % 512).toBe(0);
   });
 
   it("enables offline receive via a solver registry index URL", () => {

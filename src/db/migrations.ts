@@ -124,6 +124,21 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE settlements ADD COLUMN amount_msat INTEGER;
     `,
   },
+  {
+    version: 7,
+    // Per-payment Arkade destinations. covenant_script is the attribution key: a
+    // VTXO there IS this record's payment, so nothing is inferred from amount or
+    // arrival. covenant_preimage satisfies the sweep leaf and is not a secret —
+    // the covenant pins the payout to the user, so holding it buys nothing.
+    up: `
+      ALTER TABLE settlements ADD COLUMN covenant_script TEXT;
+      ALTER TABLE settlements ADD COLUMN covenant_preimage TEXT;
+      ALTER TABLE settlements ADD COLUMN covenant_tap_tree TEXT;
+      ALTER TABLE settlements ADD COLUMN covenant_payout_script TEXT;
+      CREATE UNIQUE INDEX uq_settlements_covenant_script
+        ON settlements(covenant_script) WHERE covenant_script IS NOT NULL;
+    `,
+  },
 ];
 
 /** Apply all pending forward-only migrations inside a transaction each. */

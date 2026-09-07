@@ -69,6 +69,22 @@ async function main(): Promise<void> {
         ...(selfClaimer ? { selfClaimer } : {}),
       });
     }
+    const off = config.offlineReceive;
+    let covenantDestinations: import("./covenant-destination.js").CovenantDestinationProvider | undefined;
+    if (off.covenantDestinations) {
+      const { createCovenantDestinationProvider } = await import("./covenant-destination.js");
+      covenantDestinations = createCovenantDestinationProvider({
+        arkServerUrl: off.arkServerUrl!,
+        covclaimdUrl: off.covclaimdUrl!,
+        recoveryDelaySeconds: off.covenantRecoveryDelaySeconds,
+      });
+      const { createCovenantSweeper, startCovenantSweeper } = await import("./covenant-sweeper.js");
+      startCovenantSweeper(
+        createCovenantSweeper({ store: settlements, arkServerUrl: off.arkServerUrl!, emulatorUrl: off.emulatorUrl! }),
+        15_000,
+      );
+      console.log(`covenant destinations: enabled (emulator=${off.emulatorUrl}, recovery=${off.covenantRecoveryDelaySeconds}s)`);
+    }
     deps = {
       repos,
       addressService,
@@ -77,6 +93,7 @@ async function main(): Promise<void> {
       settings,
       settlements,
       offlineSwapCreator,
+      ...(covenantDestinations ? { covenantDestinations } : {}),
     };
     // Neither timer below keeps its stop function: both are unref'd, and there is
     // no process-shutdown hook for either to be called from.
