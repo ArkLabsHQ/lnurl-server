@@ -90,9 +90,13 @@ async function main(): Promise<void> {
         recoveryDelaySeconds: off.covenantRecoveryDelaySeconds,
         contracts,
       });
+      // Event-driven, not polled: the manager pushes when an output lands, and its
+      // catch-up pass covers payments made while this process was down.
+      const { startCovenantWatcher } = await import("./covenant-watcher.js");
+      startCovenantWatcher(settlements, contracts);
       const { createCovenantSweeper, startCovenantSweeper } = await import("./covenant-sweeper.js");
       startCovenantSweeper(
-        createCovenantSweeper({ store: settlements, arkServerUrl: off.arkServerUrl!, emulatorUrl: off.emulatorUrl! }),
+        createCovenantSweeper({ contracts, arkServerUrl: off.arkServerUrl!, emulatorUrl: off.emulatorUrl! }),
         15_000,
       );
       console.log(`covenant destinations: enabled (emulator=${off.emulatorUrl}, recovery=${off.covenantRecoveryDelaySeconds}s)`);

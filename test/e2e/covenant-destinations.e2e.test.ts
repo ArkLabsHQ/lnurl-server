@@ -30,7 +30,7 @@ import { covenantDestinationHandler, COVENANT_CONTRACT_TYPE } from "../../src/co
 import { sqliteContractStores } from "../../src/contract-store.js";
 import { loadConfig } from "../../src/config.js";
 import { createCovenantSweeper, startCovenantSweeper } from "../../src/covenant-sweeper.js";
-import { startArkadeWatcher } from "../../src/arkade-watcher.js";
+import { startCovenantWatcher } from "../../src/covenant-watcher.js";
 import { ensureStack, pollUntil, mine, faucet, nodeSqliteStorage, ARKD_URL, COVCLAIMD_URL } from "./support/regtest.js";
 
 const AMOUNT_SATS = 3000;
@@ -164,9 +164,9 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
     });
     baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     defaults.baseUrl = baseUrl;
-    stopWatcher = startArkadeWatcher(settlements, ARKD_URL, 2000);
+    stopWatcher = startCovenantWatcher(settlements, contracts);
     stopSweeper = startCovenantSweeper(
-      createCovenantSweeper({ store: settlements, arkServerUrl: ARKD_URL, emulatorUrl: EMULATOR_URL }),
+      createCovenantSweeper({ contracts, arkServerUrl: ARKD_URL, emulatorUrl: EMULATOR_URL }),
       3000,
     );
 
@@ -259,11 +259,20 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
       );
       expect(unpaid?.watch).toBe("awaiting-funds");
 
-      const paidHash = second.verifyUrl.split("/").pop()!;
-      const record = settlements.get(paidHash)!;
-      expect(record.covenantSweepTxid).toMatch(/^[0-9a-f]{64}$/);
-      expect(record.covenantSweptAt).toBeGreaterThan(record.createdAt);
-      expect(settlements.get(first.verifyUrl.split("/").pop()!)!.covenantSweptAt).toBeNull();
+      // That a sweep happened is durable in the SDK's own state rather than in columns
+      // of ours: the destination's output is spent. It is also the signal a stuck sweep
+      // needs — funded (so `retained`) while still holding an unspent output.
+      await pollUntil(
+        "swept destination holds no unspent output",
+        async () => {
+          const entry = (await contracts.getContractsWithVtxos({ type: COVENANT_CONTRACT_TYPE })).find(
+            (e) => e.contract.address === second.destination,
+          );
+          return Boolean(entry) && entry!.vtxos.every((v) => v.isSpent);
+        },
+        RAIL_TIMEOUT_MS,
+        3000,
+      );
     },
     RAIL_TIMEOUT_MS * 2,
   );

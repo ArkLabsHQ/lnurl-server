@@ -30,27 +30,6 @@ export async function settleDestinationPayments(
   const pending = store.listPendingDestinations();
   let settled = 0;
 
-  // No correlation needed: the script belongs to one record, so a VTXO there is
-  // that record's payment. The amount check stays — an under-payment must not flip
-  // `settled`. No isReferenceUsed either: one tx paying two records through two
-  // outputs is legitimate here, and that guard would refuse the second.
-  const owned = pending.filter((p) => p.covenantScript !== null);
-  if (owned.length > 0) {
-    try {
-      const byScript = new Map(owned.map((p) => [p.covenantScript!, p]));
-      const { vtxos } = await indexer.getVtxos({ scripts: [...byScript.keys()] });
-      for (const v of vtxos) {
-        const record = byScript.get(v.script);
-        if (!record || v.value * 1000 < record.amountMsat) continue;
-        if (store.markObserved(record.paymentHash, v.txid)) settled++;
-      }
-    } catch (err) {
-      // Written for an unreachable indexer, but a misconfigured one lands here too
-      // and never leaves: silently, the rail simply stops settling.
-      onFailure("covenant lookup", err);
-    }
-  }
-
   // The rest share a static address, where the correlation below is all there is.
   const byDestination = new Map<string, typeof pending>();
   for (const p of pending) {

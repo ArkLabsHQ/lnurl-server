@@ -1,154 +1,111 @@
 import { describe, it, expect, vi } from "vitest";
+import type { IContractManager } from "@arkade-os/sdk";
 import { createCovenantSweeper } from "../src/covenant-sweeper.js";
-import { MemorySettlementStore } from "../src/settlement-store.js";
-import type { IndexerProvider } from "@arkade-os/sdk";
+import { COVENANT_CONTRACT_TYPE } from "../src/covenant-contract.js";
 
-// The funded path is proven against a live arkd + emulator rather than faked
-// (see the PR): what a fake can hold is which records are attempted at all, and
-// that one broken destination cannot stop the others.
+// The funded path is proven against a live arkd + emulator (the e2e). What a fake can
+// hold is which destinations are attempted at all, that a spent output is left alone,
+// and that one broken destination cannot stop the others.
 
-const record = (hash: string, script: string, complete = true) => ({
-  paymentHash: hash,
-  pr: "",
-  sessionId: "s",
-  paymentOption: "arkade",
-  paymentDestination: `tark1for-${hash}`,
-  amountMsat: 2_000_000,
-  ...(complete
-    ? {
-        covenantScript: script,
-        covenantPreimage: "aa".repeat(32),
-        covenantTapTree: "bb",
-        covenantPayoutScript: "5120" + "cc".repeat(32),
-      }
-    : {}),
+const contract = (script: string) => ({
+  type: COVENANT_CONTRACT_TYPE,
+  params: {},
+  script,
+  address: `tark1for-${script}`,
+  state: "active" as const,
+  createdAt: Date.now(),
 });
 
-const indexerReturning = (byScript: Record<string, number>) =>
-  ({
-    getVtxos: vi.fn(async ({ scripts }: { scripts: string[] }) => {
-      const script = scripts[0]!;
-      const value = byScript[script];
-      return {
-        vtxos: value === undefined ? [] : [{ txid: `tx-${script}`, vout: 0, value, script }],
-      };
-    }),
-  }) as unknown as IndexerProvider;
+const vtxo = (txid: string, opts: { spent?: boolean } = {}) => ({
+  txid,
+  vout: 0,
+  value: 2000,
+  isSpent: opts.spent ?? false,
+});
 
-const sweeperWith = (store: MemorySettlementStore, indexer: IndexerProvider) =>
+function managerWith(entries: { script: string; vtxos: ReturnType<typeof vtxo>[] }[]) {
+  const getSpendablePaths = vi.fn(async () => [{ leaf: {} as never, extraWitness: [] }]);
+  const getContractsWithVtxos = vi.fn(async () =>
+    entries.map((e) => ({ contract: contract(e.script), vtxos: e.vtxos })),
+  );
+  return {
+    manager: { getContractsWithVtxos, getSpendablePaths } as unknown as IContractManager,
+    getContractsWithVtxos,
+    getSpendablePaths,
+  };
+}
+
+const sweeperWith = (manager: IContractManager) =>
   createCovenantSweeper({
-    store,
+    contracts: manager,
     arkServerUrl: "http://unused",
     emulatorUrl: "http://unused",
-    indexer,
+    indexer: {} as never,
     arkProvider: { getInfo: async () => ({ checkpointTapscript: "00" }) } as never,
     emulator: { submitTx: async () => ({ signedArkTx: "", signedCheckpointTxs: [] }) },
   });
 
 describe("createCovenantSweeper", () => {
-  it("ignores a destination record carrying no covenant, leaving the static path alone", async () => {
-    const store = new MemorySettlementStore(3_600_000);
-    store.create(record("static-only", "", false));
-    const indexer = indexerReturning({});
+  it("asks the manager only for covenant destinations", async () => {
+    const { manager, getContractsWithVtxos } = managerWith([]);
 
-    expect(await sweeperWith(store, indexer).sweep()).toBe(0);
-    expect(indexer.getVtxos).not.toHaveBeenCalled();
+    await sweeperWith(manager).sweep();
+
+    expect(getContractsWithVtxos).toHaveBeenCalledWith({ type: COVENANT_CONTRACT_TYPE });
   });
 
-  it("skips an unfunded destination without submitting anything", async () => {
-    const store = new MemorySettlementStore(3_600_000);
-    store.create(record("v1", "5120aa"));
-    const submitTx = vi.fn();
-    const sweeper = createCovenantSweeper({
-      store,
-      arkServerUrl: "http://unused",
-      emulatorUrl: "http://unused",
-      indexer: indexerReturning({}),
-      arkProvider: { getInfo: async () => ({ checkpointTapscript: "00" }) } as never,
-      emulator: { submitTx },
-    });
+  // One query for every destination, where the old shape issued one per record.
+  it("reads every funded destination in a single query", async () => {
+    const { manager, getContractsWithVtxos } = managerWith([
+      { script: "5120aa", vtxos: [vtxo("tx-a")] },
+      { script: "5120bb", vtxos: [vtxo("tx-b")] },
+      { script: "5120cc", vtxos: [vtxo("tx-c")] },
+    ]);
 
-    expect(await sweeper.sweep()).toBe(0);
-    expect(submitTx).not.toHaveBeenCalled();
+    await sweeperWith(manager).sweep();
+
+    expect(getContractsWithVtxos).toHaveBeenCalledTimes(1);
   });
 
-  // A sweep that throws must not look like one that happened — the whole point of
-  // the record is that funded-and-never-moved is otherwise indistinguishable from
-  // swept. (The success path needs a real emulator; the e2e asserts it there.)
-  it("records no sweep when the submit fails", async () => {
-    const store = new MemorySettlementStore(3_600_000);
-    store.create(record("v1", "5120aa"));
+  it("leaves a spent output alone", async () => {
+    const { manager, getSpendablePaths } = managerWith([
+      { script: "5120aa", vtxos: [vtxo("tx-spent", { spent: true })] },
+    ]);
 
-    await sweeperWith(store, indexerReturning({ "5120aa": 2000 })).sweep();
+    await sweeperWith(manager).sweep();
 
-    expect(store.get("v1")!.covenantSweptAt).toBeNull();
-    expect(store.get("v1")!.covenantSweepTxid).toBeNull();
+    expect(getSpendablePaths).not.toHaveBeenCalled();
   });
 
-  it("leaves no sweep record when nothing was funded", async () => {
-    const store = new MemorySettlementStore(3_600_000);
-    store.create(record("v1", "5120aa"));
+  // A split payment left two outpoints at one script; both are the user's.
+  it("attempts each unspent outpoint at a destination", async () => {
+    const { manager, getSpendablePaths } = managerWith([
+      { script: "5120aa", vtxos: [vtxo("tx-1"), vtxo("tx-2")] },
+    ]);
 
-    await sweeperWith(store, indexerReturning({})).sweep();
+    await sweeperWith(manager).sweep();
 
-    expect(store.get("v1")!.covenantSweptAt).toBeNull();
-    expect(store.get("v1")!.covenantSweepTxid).toBeNull();
+    expect(getSpendablePaths).toHaveBeenCalledTimes(2);
   });
 
-  it("still sweeps a record the watcher has already settled", async () => {
-    const store = new MemorySettlementStore(3_600_000);
-    store.create(record("v1", "5120aa"));
-    expect(store.markObserved("v1", "tx-observed")).toBe(true);
-    expect(store.listPendingDestinations()).toHaveLength(0);
-    const indexer = indexerReturning({ "5120aa": 2000 });
+  // Timelocked recovery and a down emulator both look like this, and neither is
+  // an error worth logging every pass.
+  it("skips a destination with no spendable path", async () => {
+    const { manager, getSpendablePaths } = managerWith([{ script: "5120aa", vtxos: [vtxo("tx-a")] }]);
+    getSpendablePaths.mockResolvedValue([]);
 
-    await sweeperWith(store, indexer).sweep();
-
-    expect(indexer.getVtxos).toHaveBeenCalledWith(expect.objectContaining({ scripts: ["5120aa"] }));
+    await expect(sweeperWith(manager).sweep()).resolves.toBe(0);
   });
 
-  // A split payment left two outpoints at one script. Skipping on "not exactly one"
-  // stranded both, and the covenant pins every spend to the same address anyway.
-  it("sweeps each outpoint at a destination, not only a lone one", async () => {
-    const store = new MemorySettlementStore(3_600_000);
-    store.create(record("v1", "5120aa"));
-    const indexer = {
-      getVtxos: vi.fn(async () => ({
-        vtxos: [
-          { txid: "tx-a", vout: 0, value: 1000, script: "5120aa" },
-          { txid: "tx-b", vout: 0, value: 1000, script: "5120aa" },
-        ],
-      })),
-    } as unknown as IndexerProvider;
-    const submitTx = vi.fn(async () => ({ signedArkTx: "", signedCheckpointTxs: [] }));
-    const sweeper = createCovenantSweeper({
-      store,
-      arkServerUrl: "http://unused",
-      emulatorUrl: "http://unused",
-      indexer,
-      arkProvider: { getInfo: async () => ({ checkpointTapscript: "00" }) } as never,
-      emulator: { submitTx },
-    });
+  it("keeps going after one destination throws", async () => {
+    const { manager, getSpendablePaths } = managerWith([
+      { script: "5120aa", vtxos: [vtxo("tx-a")] },
+      { script: "5120bb", vtxos: [vtxo("tx-b")] },
+    ]);
+    getSpendablePaths.mockRejectedValueOnce(new Error("indexer down"));
 
-    await sweeper.sweep();
+    await sweeperWith(manager).sweep();
 
-    expect(indexer.getVtxos).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps sweeping after one destination throws", async () => {
-    const store = new MemorySettlementStore(3_600_000);
-    store.create(record("bad", "5120bad"));
-    store.create(record("good", "5120good"));
-    const indexer = {
-      getVtxos: vi.fn(async ({ scripts }: { scripts: string[] }) => {
-        if (scripts[0] === "5120bad") throw new Error("indexer exploded");
-        return { vtxos: [{ txid: "tx-good", vout: 0, value: 2000, script: "5120good" }] };
-      }),
-    } as unknown as IndexerProvider;
-
-    // Both are attempted: a throw on one is caught per-record, not per-pass. The
-    // fake cannot finish a real spend, so what is pinned is reaching the second.
-    await sweeperWith(store, indexer).sweep();
-    expect(indexer.getVtxos).toHaveBeenCalledTimes(2);
+    expect(getSpendablePaths).toHaveBeenCalledTimes(2);
   });
 });
