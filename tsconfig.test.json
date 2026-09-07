@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.json",
-  "include": ["src", "test"],
+  "include": ["src", "test", "scripts"],
   "compilerOptions": { "noEmit": true, "declaration": false, "declarationMap": false, "sourceMap": false, "rootDir": "." }
 }
