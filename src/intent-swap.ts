@@ -33,6 +33,7 @@ import { nostrRfqTransport } from "./vendor/arkade-swap/nostr.js";
 import { paymentHashOf } from "./vendor/arkade-swap/onchainHtlc.js";
 import { invoiceFactsFromBolt11 } from "./bolt11.js";
 import { discoverLightningCorridor, type CorridorCard } from "./solver-discovery.js";
+import type { SelfClaimer, SelfClaimOutcome } from "./self-claim.js";
 
 export interface OfflineSwapParams {
   /** Invoice amount in satoshis — the payer pays exactly this (`amountSide: "from"`). */
@@ -61,6 +62,8 @@ export interface OfflineSwapCreator {
   create(params: OfflineSwapParams): Promise<OfflineSwapResult>;
   /** True once the solver reports the payer's invoice settled. */
   isSettled(swapId: string): Promise<boolean>;
+  /** Present only under OFFLINE_SELF_CLAIM. @see SelfClaimer */
+  selfClaim?(swapId: string, preimage: string): Promise<SelfClaimOutcome>;
   /** Close the transport when present (a Nostr pool holds open relay sockets).
    *  Optional: process exit closes them anyway — cli has no shutdown hook today. */
   close?(): Promise<void>;
@@ -84,6 +87,8 @@ export interface IntentSwapSettings {
   arkServerUrl: string;
   /** Send the packet the solver stamps, not the ciphertext it reveals. @see OfflineReceiveConfig */
   stampClaimPacket?: boolean;
+  /** Set under OFFLINE_SELF_CLAIM: pushes each lockup's covenant claim leaf. */
+  selfClaimer?: SelfClaimer;
 }
 
 /** Operator + covclaimd facts a swap derivation needs. Refetched on a TTL so a
@@ -252,6 +257,9 @@ export async function createIntentSwapCreator(settings: IntentSwapSettings): Pro
         quote,
       });
       assertReceivable({ quote, payDeadline, now: Math.floor(Date.now() / 1000) });
+      // After the gates so a refused quote leaves nothing registered; before the
+      // return so no payer holds an invoice the poller cannot claim against.
+      settings.selfClaimer?.register({ swapId: rfqId, script: derived.script, expectedAmount: quote.to_amount });
 
       return {
         swapId: rfqId,
@@ -266,6 +274,10 @@ export async function createIntentSwapCreator(settings: IntentSwapSettings): Pro
       const status = await transport.status(swapId);
       return status?.state === "settled";
     },
+
+    ...(settings.selfClaimer
+      ? { selfClaim: (swapId: string, preimage: string) => settings.selfClaimer!.claim(swapId, preimage) }
+      : {}),
 
     close: () => transport.close(),
   };

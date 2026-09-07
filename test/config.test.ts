@@ -49,6 +49,7 @@ describe("loadConfig", () => {
     expect(on.offlineReceive).toEqual({
       enabled: true,
       stampClaimPacket: false,
+      selfClaim: false,
       solverUrl: "https://solver.example",
       covclaimdUrl: "https://covclaimd.example:7071",
       arkServerUrl: "https://mutinynet.arkade.sh",
@@ -103,6 +104,21 @@ describe("loadConfig", () => {
         ARK_SERVER_URL: "https://mutinynet.arkade.sh",
       }),
     ).toThrow(/ws\(s\):\/\//);
+  });
+
+  it("reads the self-claim flag and its emulator URL, and fails loudly without one", () => {
+    const on = loadConfig({ ...base, OFFLINE_SELF_CLAIM: "true", OFFLINE_EMULATOR_URL: "https://emulator.example" });
+    expect(on.offlineReceive.selfClaim).toBe(true);
+    expect(on.offlineReceive.emulatorUrl).toBe("https://emulator.example");
+    // No key: the covenant leaf is signed by the operator and the emulator.
+    expect(on.offlineReceive).not.toHaveProperty("selfClaimKey");
+
+    // Opt-in, exact string only — same discipline as the stamp flag.
+    expect(loadConfig({ ...base }).offlineReceive.selfClaim).toBe(false);
+    expect(loadConfig({ ...base, OFFLINE_SELF_CLAIM: "1", OFFLINE_EMULATOR_URL: "https://e.example" }).offlineReceive.selfClaim).toBe(false);
+
+    expect(() => loadConfig({ ...base, OFFLINE_SELF_CLAIM: "true" })).toThrow(/OFFLINE_EMULATOR_URL/);
+    expect(() => loadConfig({ ...base, OFFLINE_EMULATOR_URL: "emulator.example" })).toThrow(/http\(s\)/);
   });
 
   it("enables offline receive via a solver registry index URL", () => {

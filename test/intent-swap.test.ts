@@ -190,6 +190,31 @@ describe("createIntentSwapCreator", () => {
     expect(packet).toHaveLength(pubkeyTlvAt + 3 + 33);
   });
 
+  it("registers the lockup for self-claim without touching the quote's receiver role", async () => {
+    const registrations: { swapId: string; expectedAmount: number; lockup: string }[] = [];
+    const selfClaiming = await createIntentSwapCreator({
+      solverUrl: solver.baseUrl,
+      covclaimdUrl: covclaimd.baseUrl,
+      arkServerUrl: operator.baseUrl,
+      selfClaimer: {
+        register: (r) =>
+          registrations.push({ swapId: r.swapId, expectedAmount: r.expectedAmount, lockup: r.script.address("tark", operatorXonly).encode() }),
+        claim: async () => ({ state: "skipped", reason: "unfunded" }),
+      },
+    });
+
+    const swap = await selfClaiming.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
+
+    const r = solver.requests.at(-1)!;
+    // The user keeps the receiver role, and with it their own claim paths.
+    expect(r.profile.payout_pubkey).toBe(CLAIM_PUBKEY.slice(2));
+    expect(r.profile.payout_address).toBe(RECEIVE);
+    expect(registrations).toEqual([{ swapId: swap.swapId, expectedAmount: 49, lockup: swap.lockupAddress }]);
+    expect(typeof selfClaiming.selfClaim).toBe("function");
+    // Absent without a claimer, so the poller can tell the two builds apart.
+    expect(creator.selfClaim).toBeUndefined();
+  });
+
   it("follows solver status for isSettled", async () => {
     const swap = await creator.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
     expect(await creator.isSettled(swap.swapId)).toBe(false); // 404 → unknown
@@ -237,7 +262,7 @@ describe("createIntentSwapCreator", () => {
   it("rejects out-of-bounds amounts with the card's numbers when discovered from a registry", async () => {
     // A registry index whose only lightning-corridor card is bounded 1000–25000 sats.
     // Its transport points nowhere usable — discovery alone is what we're proving.
-    const registry = await serve((req, res) => {
+    const registry = await serve((_req, res) => {
       res.setHeader("content-type", "application/json");
       res.end(
         JSON.stringify({
@@ -267,7 +292,7 @@ describe("createIntentSwapCreator", () => {
   });
 
   it("throws at construction when discovery finds no lightning corridor", async () => {
-    const registry = await serve((req, res) => {
+    const registry = await serve((_req, res) => {
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ markets: [{ pair: "BTC/USDT", fee_bps: 30 }] }));
     });
