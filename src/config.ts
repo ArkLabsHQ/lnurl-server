@@ -22,6 +22,12 @@ export interface OfflineReceiveConfig {
    * is a statement about the solver being quoted, so it cannot be inferred here.
    */
   stampClaimPacket: boolean;
+  /** Push each lockup's covenant claim leaf ourselves instead of waiting for
+   *  covclaimd to do it. Needs no key: the leaf is signed by the operator and the
+   *  emulator, and gated on the preimage this server already holds. */
+  selfClaim: boolean;
+  /** Emulator base URL backing {@link selfClaim} — it co-signs the covenant leaf. */
+  emulatorUrl?: string;
 }
 
 export interface AppConfig {
@@ -98,9 +104,20 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   const covclaimdUrl = env.COVCLAIMD_URL || undefined;
   const arkServerUrl = env.ARK_SERVER_URL || undefined;
   const hasTransport = Boolean(solverUrl || (solverPubkey && nostrRelays?.length) || registryUrl);
+  const selfClaim = env.OFFLINE_SELF_CLAIM === "true";
+  const emulatorUrl = env.OFFLINE_EMULATOR_URL || undefined;
+  // At load, not at claim time: by then a lockup is funded and the clock is running.
+  if (selfClaim && !emulatorUrl) {
+    throw new Error("OFFLINE_SELF_CLAIM=true requires OFFLINE_EMULATOR_URL (the emulator co-signs the covenant claim)");
+  }
+  if (emulatorUrl && !/^https?:\/\//.test(emulatorUrl)) {
+    throw new Error(`OFFLINE_EMULATOR_URL must be an http(s):// URL (got "${emulatorUrl}")`);
+  }
   return {
     enabled: Boolean(hasTransport && covclaimdUrl && arkServerUrl),
     stampClaimPacket: env.OFFLINE_STAMP_CLAIM_PACKET === "true",
+    selfClaim,
+    ...(emulatorUrl ? { emulatorUrl } : {}),
     ...(solverUrl ? { solverUrl } : {}),
     ...(solverPubkey ? { solverPubkey } : {}),
     ...(nostrRelays?.length ? { nostrRelays } : {}),

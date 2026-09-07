@@ -177,6 +177,23 @@ After that, if a payer pays `alice@pay.example.com` while the wallet is offline,
 
 > The corridor client is vendored at `src/vendor/arkade-swap/` (byte-exact from `arkade-os/ts-sdk` — see its README for the exit plan) until `@arkade-os/swap` ships a release carrying the receive corridors. The wire contract is integration-tested against fake HTTP services and was **live-probed against the public mutinynet solver** (`scripts/probe-solver.ts`) — quote, hold-invoice binding, and covenant derivation all verified. A full funded swap (payer pays, covclaimd claims) remains the operator's pre-production check.
 
+### Self-claim (`OFFLINE_SELF_CLAIM`, default off)
+
+Normally covclaimd is the only thing that claims the solver's lockup, and it needs the sealed claim packet because it does not have the preimage. This server *does* — it generates it. With `OFFLINE_SELF_CLAIM=true` and `OFFLINE_EMULATOR_URL` set, the server pushes the same claim itself, so covclaimd is no longer the single point of failure.
+
+**Which leaf, and what pins the destination.** It spends the covenant's `nonInteractiveClaim` leaf — the same one covclaimd uses. That leaf is `preimage + Arkade operator + an emulator key tweaked by `enforcePayTo(receiverPkScript)``, where `receiverPkScript` is the user's registered Arkade address. Two things follow, and they are different claims:
+
+- **This server cannot redirect the payout.** The leaf requires signatures from the Arkade operator and the emulator, and this server holds neither key. That follows from the tapscript alone.
+- **No pusher can redirect it either** — but that one rests on the emulator, which derives its per-covenant key from `enforcePayTo(...)` and, by policy, signs only after checking the spend satisfies it. That check is what makes "anyone can push this leaf" safe by design.
+
+**No key, and nothing taken from the user.** The server needs no key of its own, so there is no new secret to hold or rotate. The user keeps their `claimPublicKey` in the covenant's `receiver` role and with it the collaborative `claim` and `unilateralClaim` leaves, exactly as with the flag off. This is an additional pusher, not a transfer of control. The server still holds the preimage — it always did — so enabling this adds no custody it did not already have.
+
+> The collaborative `claim` leaf is deliberately **not** used. It is a bare `preimage + receiver + operator` multisig with no output constraint, so a server holding the receiver key and the preimage could send a funded lockup anywhere. Spending it would make this server custodial for every in-flight swap.
+
+> **`OFFLINE_EMULATOR_URL` must name the emulator whose key is baked into the covenant.** That key comes from `COVCLAIMD_URL`'s `emulator_pub_key`, so the two must agree — point them at different emulators and every push is refused, the same pairing hazard as `COVCLAIMD_URL` itself. Startup checks this and logs a warning naming both keys if they disagree; it never refuses to start, and it stays silent when either service is unreachable, so a boot-time blip is not mistaken for a misconfiguration. An emulator that has rotated its key still counts as a match, since covenants built under the retired key remain satisfiable.
+
+covclaimd stays configured and keeps working alongside this: both push the same leaf to the same destination, so they race harmlessly and the loser's push simply fails. The claim fires from the offline settlement poller once the indexer shows a spendable VTXO at the lockup, is skipped when the lockup is funded below the quote's `to_amount` (revealing the preimage for less would let the solver settle the payer's invoice in full), and is safe to retry: an already-spent lockup is a no-op. Claim registrations live in memory, so swaps quoted before a restart fall back to covclaimd.
+
 ## Payment options (LUD-XX)
 
 Once an address has a registered Arkade identity (see above), its LUD-06 `payRequest` advertises multiple rails:
@@ -272,6 +289,8 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `COVCLAIMD_URL` | — | covclaimd daemon base URL (non-interactive VHTLC claims). Must be the same instance the solver reveals to — see the warning under [Offline receive](#offline-receive-opt-in). |
 | `ARK_SERVER_URL` | — | Arkade operator URL (e.g. `https://mutinynet.arkade.sh`) — signer key, exit delay and network are read from it. |
 | `OFFLINE_STAMP_CLAIM_PACKET` | `false` | `true` sends the claim packet for the solver to stamp into the funding tx, naming our covclaimd in-band — which removes the pairing requirement above entirely. **Only set it if the solver you quote carries [arkade-os/intent-solver#47](https://github.com/arkade-os/intent-solver/pull/47).** An older solver forwards the packet to its own covclaimd as a ciphertext, cannot decrypt it, and the swap funds and refunds. |
+| `OFFLINE_SELF_CLAIM` | `false` | `true` pushes each lockup's `nonInteractiveClaim` leaf here as well as covclaimd, so covclaimd stops being a single point of failure. Needs no key — the leaf is signed by the operator and the emulator, and gated on the preimage this server already holds. Requires `OFFLINE_EMULATOR_URL`. See [Self-claim](#self-claim-offline_self_claim-default-off). |
+| `OFFLINE_EMULATOR_URL` | — | Emulator base URL backing `OFFLINE_SELF_CLAIM` — it co-signs the covenant leaf after checking the spend pays the user. Must be the emulator whose `emulator_pub_key` `COVCLAIMD_URL` reports. Missing with the flag on, the server refuses to start. |
 | `DB_PATH` | — | Path to SQLite database file. Omit for in-memory-only mode. |
 | `TOKEN_ENCRYPTION_KEY` | — | 32-byte AES key (hex or base64). Required when `DB_PATH` is set. |
 | `ALLOW_INSECURE_TOKEN_STORAGE` | — | Set to `1` to skip token encryption in dev (plaintext storage). |
