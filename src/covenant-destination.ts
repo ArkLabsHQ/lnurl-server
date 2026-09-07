@@ -9,6 +9,8 @@
 // stay fixed, and the user's two recovery paths need neither P nor this server.
 
 import { randomBytes } from "node:crypto";
+import type { IContractManager } from "@arkade-os/sdk";
+import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler } from "./covenant-contract.js";
 import { hex } from "@scure/base";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { ripemd160 } from "@noble/hashes/legacy.js";
@@ -101,6 +103,9 @@ export function createCovenantDestinationProvider(opts: {
   arkServerUrl: string;
   covclaimdUrl: string;
   recoveryDelaySeconds: number;
+  /** Absent keeps the provider standalone (unit tests, the probe script); present
+   *  makes every derived destination a contract the SDK watches and can spend. */
+  contracts?: IContractManager;
   now?: () => number;
 }): CovenantDestinationProvider {
   // Here rather than only at derivation: BIP68's throw arrives per payment, where
@@ -138,13 +143,26 @@ export function createCovenantDestinationProvider(opts: {
     async derive(address) {
       const { serverPubkey, emulatorPubkey } = await context();
       const preimage = randomBytes(32);
-      const d = deriveCovenantDestination({
+      const params = {
         staticAddress: address.arkadeAddress,
         userPubkey: toXOnly(hex.decode(address.claimPublicKey)),
         serverPubkey,
         emulatorPubkey,
         preimage,
         recoveryDelaySeconds: opts.recoveryDelaySeconds,
+      };
+      const d = deriveCovenantDestination(params);
+      // Before the address is returned, never after: a payer handed a destination
+      // nothing is watching has no way to be credited. A throw here reaches the
+      // caller's fallback to the static address, which is the same failure mode as
+      // derivation itself failing. `awaiting-funds` is the SDK's one-shot lifecycle —
+      // watched until a vtxo lands, then demoted off every background channel.
+      await opts.contracts?.createContract({
+        type: COVENANT_CONTRACT_TYPE,
+        params: covenantDestinationHandler.serializeParams(params),
+        script: d.script,
+        address: d.address,
+        watch: "awaiting-funds",
       });
       return {
         address: d.address,
@@ -173,12 +191,19 @@ const toCompressed = (key: Uint8Array): Uint8Array => {
   throw new Error(`expected a 32- or 33-byte key, got ${key.length} bytes`);
 };
 
-export function deriveCovenantDestination(input: CovenantDestinationInput): CovenantDestination {
+/** Leaf order is load-bearing: {@link SWEEP_LEAF} is what the emulator co-signs, and
+ *  `ContractHandler` reports the three as spending paths in this order. */
+export const SWEEP_LEAF = 0;
+export const COLLABORATIVE_LEAF = 1;
+export const RECOVERY_LEAF = 2;
+
+/** The construction itself, shared by {@link deriveCovenantDestination} and the
+ *  contract handler's `createScript` so neither can drift from the other. */
+export function covenantVtxoScript(input: CovenantDestinationInput): { vtxo: VtxoScript; covenantScript: Uint8Array } {
   if (input.preimage.length !== 32) throw new Error(`preimage must be 32 bytes, got ${input.preimage.length}`);
   const userPubkey = toXOnly(input.userPubkey);
   const serverPubkey = toXOnly(input.serverPubkey);
-  const staticPkScript = ArkAddress.decode(input.staticAddress).pkScript;
-  const covenantScript = enforcePayTo(staticPkScript);
+  const covenantScript = enforcePayTo(ArkAddress.decode(input.staticAddress).pkScript);
   const cosigner = arkade.computeArkadeScriptPublicKey(toCompressed(input.emulatorPubkey), covenantScript);
   const vtxo = new VtxoScript([
     ConditionMultisigTapscript.encode({
@@ -191,12 +216,17 @@ export function deriveCovenantDestination(input: CovenantDestinationInput): Cove
       pubkeys: [userPubkey],
     }).script,
   ]);
+  return { vtxo, covenantScript };
+}
+
+export function deriveCovenantDestination(input: CovenantDestinationInput): CovenantDestination {
+  const { vtxo, covenantScript } = covenantVtxoScript(input);
   const hrp = input.staticAddress.slice(0, input.staticAddress.lastIndexOf("1"));
   return {
-    address: vtxo.address(hrp, serverPubkey).encode(),
+    address: vtxo.address(hrp, toXOnly(input.serverPubkey)).encode(),
     script: hex.encode(vtxo.pkScript),
     tapTree: vtxo.encode(),
     covenantScript,
-    sweepLeafIndex: 0,
+    sweepLeafIndex: SWEEP_LEAF,
   };
 }

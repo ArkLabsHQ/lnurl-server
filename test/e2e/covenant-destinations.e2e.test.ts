@@ -16,7 +16,7 @@ import { randomBytes } from "node:crypto";
 import { hex } from "@scure/base";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
-import { MnemonicIdentity, Wallet, RestIndexerProvider, ArkAddress } from "@arkade-os/sdk";
+import { MnemonicIdentity, Wallet, RestIndexerProvider, ArkAddress, ContractManager, contractHandlers, type IContractManager } from "@arkade-os/sdk";
 import { createServer } from "../../src/server.js";
 import { openDb, type Db } from "../../src/db/connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
@@ -26,6 +26,8 @@ import { AddressService } from "../../src/address-service.js";
 import { DbSettlementStore } from "../../src/settlement-store.js";
 import { staticSettings } from "../../src/settings.js";
 import { createCovenantDestinationProvider } from "../../src/covenant-destination.js";
+import { covenantDestinationHandler, COVENANT_CONTRACT_TYPE } from "../../src/covenant-contract.js";
+import { sqliteContractStores } from "../../src/contract-store.js";
 import { loadConfig } from "../../src/config.js";
 import { createCovenantSweeper, startCovenantSweeper } from "../../src/covenant-sweeper.js";
 import { startArkadeWatcher } from "../../src/arkade-watcher.js";
@@ -93,6 +95,7 @@ async function fundedWallet(log: (s: string) => void): Promise<Wallet> {
 describe("e2e: arkade rail, per-payment covenant destinations", () => {
   let db: Db;
   let settlements: DbSettlementStore;
+  let contracts: IContractManager;
   let server: http.Server;
   let baseUrl: string;
   let payer: Wallet;
@@ -132,10 +135,18 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
       OFFLINE_COVENANT_DESTINATIONS: "true",
       OFFLINE_EMULATOR_URL: EMULATOR_URL,
     }).offlineReceive.covenantRecoveryDelaySeconds;
+    // The same wiring as cli.ts: the SDK owns tracking and watching, so the e2e
+    // exercises that path rather than a provider standing on its own.
+    contractHandlers.register(covenantDestinationHandler);
+    contracts = await ContractManager.create({
+      indexerProvider: new RestIndexerProvider(ARKD_URL),
+      ...(await sqliteContractStores(db)),
+    });
     const covenantDestinations = createCovenantDestinationProvider({
       arkServerUrl: ARKD_URL,
       covclaimdUrl: COVCLAIMD_URL,
       recoveryDelaySeconds,
+      contracts,
     });
     const defaults = { baseUrl: "", minSendable: 1000, maxSendable: 100_000_000_000, invoiceTimeoutMs: 30_000, registrationRateLimitPerMin: 1000 };
     const app = createServer(
@@ -166,6 +177,9 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
   afterAll(async () => {
     stopWatcher?.();
     stopSweeper?.();
+    // The manager holds an indexer subscription; leaving it open leaks it into the
+    // next file in the suite, which shares this stack.
+    (contracts as unknown as { dispose?: () => void })?.dispose?.();
     await payer?.dispose();
     await new Promise<void>((r) => server?.close(() => r()));
     db?.close();
@@ -187,6 +201,11 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
       // Identical amount, identical receiver: only the script distinguishes them.
       expect(second.destination).not.toBe(first.destination);
       expect(first.destination).not.toBe(receiver.arkadeAddress);
+
+      // Both are tracked contracts the SDK is watching, not rows we poll ourselves.
+      const registered = await contracts.getContracts({ type: COVENANT_CONTRACT_TYPE });
+      expect(registered).toHaveLength(2);
+      expect(registered.every((c) => c.watch === "awaiting-funds")).toBe(true);
 
       const txid = await payer.sendBitcoin({ address: second.destination, amount: AMOUNT_SATS });
       expect(txid).toMatch(/^[0-9a-f]{64}$/);
@@ -222,6 +241,24 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
       // The sweep left a durable trace. Without it, a destination that was funded
       // and never moved reads exactly like one that was swept, because an already
       // swept address returns no spendable vtxo either way.
+      // The one-shot lifecycle ran: funded, so the SDK demoted it off the watch
+      // channels by itself. The unpaid one is still waiting. Neither is ours to expire.
+      await pollUntil(
+        "paid contract demoted to retained",
+        async () => {
+          const byScript = new Map(
+            (await contracts.getContracts({ type: COVENANT_CONTRACT_TYPE })).map((c) => [c.address, c.watch]),
+          );
+          return byScript.get(second.destination) === "retained";
+        },
+        RAIL_TIMEOUT_MS,
+        3000,
+      );
+      const unpaid = (await contracts.getContracts({ type: COVENANT_CONTRACT_TYPE })).find(
+        (c) => c.address === first.destination,
+      );
+      expect(unpaid?.watch).toBe("awaiting-funds");
+
       const paidHash = second.verifyUrl.split("/").pop()!;
       const record = settlements.get(paidHash)!;
       expect(record.covenantSweepTxid).toMatch(/^[0-9a-f]{64}$/);

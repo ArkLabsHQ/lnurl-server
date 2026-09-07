@@ -72,11 +72,23 @@ async function main(): Promise<void> {
     const off = config.offlineReceive;
     let covenantDestinations: import("./covenant-destination.js").CovenantDestinationProvider | undefined;
     if (off.covenantDestinations) {
+      const { ContractManager, RestIndexerProvider, contractHandlers } = await import("@arkade-os/sdk");
+      const { covenantDestinationHandler } = await import("./covenant-contract.js");
+      const { sqliteContractStores, memoryContractStores } = await import("./contract-store.js");
+      // The SDK tracks, watches and spends these; registering the handler is what
+      // lets it build the script and pick a leaf without us restating either.
+      contractHandlers.register(covenantDestinationHandler);
+      const stores = db ? await sqliteContractStores(db) : await memoryContractStores();
+      const contracts = await ContractManager.create({
+        indexerProvider: new RestIndexerProvider(off.arkServerUrl!),
+        ...stores,
+      });
       const { createCovenantDestinationProvider } = await import("./covenant-destination.js");
       covenantDestinations = createCovenantDestinationProvider({
         arkServerUrl: off.arkServerUrl!,
         covclaimdUrl: off.covclaimdUrl!,
         recoveryDelaySeconds: off.covenantRecoveryDelaySeconds,
+        contracts,
       });
       const { createCovenantSweeper, startCovenantSweeper } = await import("./covenant-sweeper.js");
       startCovenantSweeper(
