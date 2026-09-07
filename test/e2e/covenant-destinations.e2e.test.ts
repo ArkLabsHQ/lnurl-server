@@ -179,6 +179,12 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
     stopSweeper?.();
     // The manager holds an indexer subscription; leaving it open leaks it into the
     // next file in the suite, which shares this stack.
+    //
+    // The cast is deliberate: `ContractManager` has `dispose()` but `IContractManager`
+    // does not declare it, so there is no typed way to reach it. If the SDK ever adds
+    // it to the interface, drop the cast — and if it renames the method instead, this
+    // optional chain goes quietly no-op and the symptom is cross-file flakiness rather
+    // than an error, which is the reason to leave a note rather than just a `?.`.
     (contracts as unknown as { dispose?: () => void })?.dispose?.();
     await payer?.dispose();
     await new Promise<void>((r) => server?.close(() => r()));

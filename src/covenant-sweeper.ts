@@ -33,7 +33,7 @@ import {
   type VirtualCoin,
 } from "@arkade-os/sdk";
 import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler } from "./covenant-contract.js";
-import { enforcePayTo } from "./covenant-destination.js";
+import { SWEEP_LEAF, enforcePayTo } from "./covenant-destination.js";
 
 interface EmulatorSubmit {
   submitTx(arkTx: string, checkpointTxs: string[]): Promise<{ signedArkTx: string; signedCheckpointTxs: string[] }>;
@@ -56,14 +56,18 @@ export function createCovenantSweeper(opts: {
   const indexer = opts.indexer ?? new RestIndexerProvider(opts.arkServerUrl);
   const emulator = opts.emulator ?? new RestEmulatorProvider(opts.emulatorUrl);
 
-  const sweepOne = async (contract: Contract, vtxo: VirtualCoin, path: PathSelection): Promise<string> => {
+  const sweepOne = async (
+    contract: Contract,
+    vtxo: VirtualCoin,
+    path: PathSelection,
+    tapTree: Uint8Array,
+  ): Promise<string> => {
     const { staticAddress } = covenantDestinationHandler.deserializeParams(contract.params);
     const payTo = ArkAddress.decode(staticAddress).pkScript;
     // Recomputed, not read off the leaf: the leaf holds the cosigner key, which is
     // a commitment to this script rather than the script itself.
     const packet = EmulatorPacket.create([{ vin: 0, script: enforcePayTo(payTo), witness: RawWitness.encode([]) }]);
     const info = await arkProvider.getInfo();
-    const tapTree = covenantDestinationHandler.createScript(contract.params).encode();
     // The covenant reads the output at the spent input's index, so the payout stays 0.
     const { arkTx, checkpoints } = buildOffchainTx(
       [{ txid: vtxo.txid, vout: vtxo.vout, value: vtxo.value, tapLeafScript: path.leaf, tapTree }],
@@ -91,14 +95,22 @@ export function createCovenantSweeper(opts: {
       for (const { contract, vtxos } of await opts.contracts.getContractsWithVtxos({
         type: COVENANT_CONTRACT_TYPE,
       })) {
+        const script = covenantDestinationHandler.createScript(contract.params);
+        const tapTree = script.encode();
+        const sweepLeaf = hex.encode(script.leaves[SWEEP_LEAF]![1]);
         for (const vtxo of vtxos) {
           if (vtxo.isSpent) continue;
           try {
-            const [path] = await opts.contracts.getSpendablePaths({ contractScript: contract.script, vtxo });
-            // No spendable path is not a failure: the recovery leaf is still timelocked
-            // and the sweep leaf needs the emulator, which may simply be down.
+            const paths = await opts.contracts.getSpendablePaths({ contractScript: contract.script, vtxo });
+            // Chosen by leaf, not by position. The handler happens to return the sweep
+            // first, but nothing in the manager's contract promises an order, and the
+            // wrong leaf builds a transaction with no preimage that the emulator simply
+            // refuses — a silent skip every pass rather than an error worth reading.
+            const path = paths.find((p) => hex.encode(p.leaf[1]) === sweepLeaf);
+            // No sweepable path is not a failure: the emulator may be down, and the
+            // user's own two leaves are never ours to spend.
             if (!path) continue;
-            const arkTxid = await sweepOne(contract, vtxo, path);
+            const arkTxid = await sweepOne(contract, vtxo, path, tapTree);
             moved++;
             console.log(`covenant sweep: ${contract.script.slice(0, 16)}… -> ${arkTxid}`);
           } catch (err) {

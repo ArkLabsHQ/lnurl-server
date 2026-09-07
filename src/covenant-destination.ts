@@ -44,10 +44,12 @@ export const enforcePayTo = (destinationPkScript: Uint8Array): Uint8Array => {
   return arkade.ArkadeScript.encode([
     "PUSHCURRENTINPUTINDEX",
     "DUP",
+    // Pushes (program, version) with VERSION ON TOP, so the two EQUALVERIFYs below
+    // read backwards from source order: version first, then program. See the docblock.
     "INSPECTOUTPUTSCRIPTPUBKEY",
-    1,
+    1, // witness version — Taproot
     "EQUALVERIFY",
-    destinationPkScript.subarray(2),
+    destinationPkScript.subarray(2), // the 32-byte program
     "EQUALVERIFY",
     "INSPECTOUTPUTVALUE",
     "PUSHCURRENTINPUTINDEX",
