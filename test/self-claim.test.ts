@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import http from "node:http";
 import { randomBytes, createHash } from "node:crypto";
 import { base64, hex } from "@scure/base";
@@ -43,6 +43,7 @@ let ark: { baseUrl: string; close: () => Promise<void> };
 let vtxos: ReturnType<typeof wireVtxo>[];
 let virtualTxs: Map<string, string>;
 let submitted: { arkTx: string; checkpointTxs: string[] }[];
+let signedArkTxOverride: string | undefined;
 
 /** Keyed by the txid it actually hashes to, so PrevArkTx resolution can find it. */
 function fundingTx(lockupPkScript: Uint8Array, valueSat: number): { txid: string; psbt: string } {
@@ -108,7 +109,7 @@ beforeAll(async () => {
     if (req.method === "POST" && url.pathname === "/v1/tx") {
       const body = (await readBody(req)) as { arkTx: string; checkpointTxs: string[] };
       submitted.push(body);
-      res.end(JSON.stringify({ signedArkTx: body.arkTx, signedCheckpointTxs: body.checkpointTxs }));
+      res.end(JSON.stringify({ signedArkTx: signedArkTxOverride ?? body.arkTx, signedCheckpointTxs: body.checkpointTxs }));
       return;
     }
     res.statusCode = 404;
@@ -129,6 +130,7 @@ beforeEach(() => {
   vtxos = [];
   virtualTxs = new Map();
   submitted = [];
+  signedArkTxOverride = undefined;
 });
 
 /** A claimer plus the lockup a solver would have funded for it. */
@@ -235,5 +237,20 @@ describe("createSelfClaimer", () => {
 
     expect(await claimer.claim("never-seen", hex.encode(PREIMAGE))).toEqual({ state: "skipped", reason: "unregistered" });
     expect(submitted).toHaveLength(0);
+  });
+
+  it("still reports a claim the emulator accepted, even if its response will not parse", async () => {
+    const { claimer } = funded({ swapId: "swap-7", expectedAmount: 4_900, valueSat: 4_900 });
+    signedArkTxOverride = "not-a-psbt";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const outcome = await claimer.claim("swap-7", hex.encode(PREIMAGE));
+
+    // The spend was submitted, so the lockup is gone: reporting failure here would
+    // strand a claim that happened.
+    expect(submitted).toHaveLength(1);
+    expect(outcome).toEqual({ state: "claimed", arkTxid: "unknown" });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("did not parse"));
+    warn.mockRestore();
   });
 });
