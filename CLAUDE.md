@@ -55,4 +55,5 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/):
 - `src/settlement-store.ts` + `src/offline-poller.ts` — LUD-21 settlement records (memory/SQLite) and the offline-swap status poller
 - `src/vendor/arkade-swap/` — byte-exact vendored corridor client from arkade-os/ts-sdk (see its README; delete once `@arkade-os/swap` ships receive corridors)
 - `scripts/probe-solver.ts` — live solver quote probe (operator diagnostic; funds nothing)
+- `scripts/probe-covenant.ts` — the same for the covenant rail: derives a destination from a network's real operator + emulator keys, so a config that would silently fall back to the static address fails here instead of on a payer's money
 - `scripts/inspect-funding.ts` — why a funded lockup never claimed: reports the claim packet and output taptree covclaimd needs, both of which it declines at debug level
