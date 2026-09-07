@@ -92,6 +92,7 @@ async function fundedWallet(log: (s: string) => void): Promise<Wallet> {
 
 describe("e2e: arkade rail, per-payment covenant destinations", () => {
   let db: Db;
+  let settlements: DbSettlementStore;
   let server: http.Server;
   let baseUrl: string;
   let payer: Wallet;
@@ -121,7 +122,7 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
     runMigrations(db);
     bootstrap(db, { bootstrapDomain: "localhost" });
     const repos = createRepositories(db);
-    const settlements = new DbSettlementStore(db, 3_600_000);
+    settlements = new DbSettlementStore(db, 3_600_000);
     // The shipped default, not a chosen value: a delay BIP68 cannot encode makes
     // derivation throw and every payment fall back to the static address.
     const recoveryDelaySeconds = loadConfig({
@@ -217,6 +218,15 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
         RAIL_TIMEOUT_MS,
         3000,
       );
+
+      // The sweep left a durable trace. Without it, a destination that was funded
+      // and never moved reads exactly like one that was swept, because an already
+      // swept address returns no spendable vtxo either way.
+      const paidHash = second.verifyUrl.split("/").pop()!;
+      const record = settlements.get(paidHash)!;
+      expect(record.covenantSweepTxid).toMatch(/^[0-9a-f]{64}$/);
+      expect(record.covenantSweptAt).toBeGreaterThan(record.createdAt);
+      expect(settlements.get(first.verifyUrl.split("/").pop()!)!.covenantSweptAt).toBeNull();
     },
     RAIL_TIMEOUT_MS * 2,
   );

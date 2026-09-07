@@ -29,6 +29,11 @@ export interface SettlementRecord {
   covenantPreimage: string | null;
   covenantTapTree: string | null;
   covenantPayoutScript: string | null;
+  /** When the sweeper last moved this destination on, and the tx that did it.
+   *  Null on a funded record means the sweep has not run — which nothing else
+   *  distinguishes from swept, since an already-swept address reads as unfunded. */
+  covenantSweptAt: number | null;
+  covenantSweepTxid: string | null;
   createdAt: number;
   settledAt: number | null;
 }
@@ -80,6 +85,9 @@ export interface SettlementStore {
   /** Mark a destination record settled from an observed payment — reference is the
    *  method-specific proof (the Arkade txid), never a preimage. */
   markObserved(paymentHash: string, reference: string): boolean;
+  /** Record that the sweeper moved this destination on. Not idempotency — that
+   *  comes from the indexer — but the only durable trace a sweep happened. */
+  markSwept(paymentHash: string, arkTxid: string): boolean;
   /** Fetch a record, or undefined if unknown or expired. */
   get(paymentHash: string): SettlementRecord | undefined;
   /** Unsettled offline swaps (have a swapId) for the settlement poller. */
@@ -124,6 +132,8 @@ export class MemorySettlementStore implements SettlementStore {
       covenantPreimage: rec.covenantPreimage ?? null,
       covenantTapTree: rec.covenantTapTree ?? null,
       covenantPayoutScript: rec.covenantPayoutScript ?? null,
+      covenantSweptAt: null,
+      covenantSweepTxid: null,
       createdAt: this.now(),
       settledAt: null,
     });
@@ -213,6 +223,14 @@ export class MemorySettlementStore implements SettlementStore {
     return true;
   }
 
+  markSwept(paymentHash: string, arkTxid: string): boolean {
+    const r = this.get(paymentHash);
+    if (!r) return false;
+    r.covenantSweptAt = this.now();
+    r.covenantSweepTxid = arkTxid;
+    return true;
+  }
+
   isReferenceUsed(reference: string): boolean {
     for (const r of this.map.values()) if (r.paymentReference === reference) return true;
     return false;
@@ -246,6 +264,8 @@ interface SettlementRow {
   covenant_preimage: string | null;
   covenant_tap_tree: string | null;
   covenant_payout_script: string | null;
+  covenant_swept_at: number | null;
+  covenant_sweep_txid: string | null;
   created_at: number;
   settled_at: number | null;
 }
@@ -324,6 +344,8 @@ export class DbSettlementStore implements SettlementStore {
       covenantPreimage: row.covenant_preimage ?? null,
       covenantTapTree: row.covenant_tap_tree ?? null,
       covenantPayoutScript: row.covenant_payout_script ?? null,
+      covenantSweptAt: row.covenant_swept_at ?? null,
+      covenantSweepTxid: row.covenant_sweep_txid ?? null,
       createdAt: row.created_at,
       settledAt: row.settled_at ?? null,
     };
@@ -403,6 +425,13 @@ export class DbSettlementStore implements SettlementStore {
     return info.changes > 0;
   }
 
+  markSwept(paymentHash: string, arkTxid: string): boolean {
+    const info = this.db
+      .prepare("UPDATE settlements SET covenant_swept_at = ?, covenant_sweep_txid = ? WHERE payment_hash = ?")
+      .run(this.now(), arkTxid, paymentHash);
+    return info.changes > 0;
+  }
+
   isReferenceUsed(reference: string): boolean {
     return Boolean(this.db.prepare("SELECT 1 FROM settlements WHERE payment_reference = ? LIMIT 1").get(reference));
   }
@@ -436,6 +465,8 @@ export class DbSettlementStore implements SettlementStore {
       covenantPreimage: row.covenant_preimage ?? null,
       covenantTapTree: row.covenant_tap_tree ?? null,
       covenantPayoutScript: row.covenant_payout_script ?? null,
+      covenantSweptAt: row.covenant_swept_at ?? null,
+      covenantSweepTxid: row.covenant_sweep_txid ?? null,
       createdAt: row.created_at,
       settledAt: row.settled_at ?? null,
     }));

@@ -97,10 +97,9 @@ export function createCovenantSweeper(opts: {
               { covenantScript, covenantPreimage, covenantTapTree, covenantPayoutScript },
               utxo,
             );
-            if (outcome.state === "swept") {
-              moved++;
-              console.log(`covenant sweep: ${rec.paymentHash} -> ${outcome.arkTxid}`);
-            }
+            moved++;
+            opts.store.markSwept(rec.paymentHash, outcome.arkTxid);
+            console.log(`covenant sweep: ${rec.paymentHash} -> ${outcome.arkTxid}`);
           }
         } catch (err) {
           // One stuck destination must not stop the rest, and the next pass retries.

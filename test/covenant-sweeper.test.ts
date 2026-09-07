@@ -72,6 +72,29 @@ describe("createCovenantSweeper", () => {
     expect(submitTx).not.toHaveBeenCalled();
   });
 
+  // A sweep that throws must not look like one that happened — the whole point of
+  // the record is that funded-and-never-moved is otherwise indistinguishable from
+  // swept. (The success path needs a real emulator; the e2e asserts it there.)
+  it("records no sweep when the submit fails", async () => {
+    const store = new MemorySettlementStore(3_600_000);
+    store.create(record("v1", "5120aa"));
+
+    await sweeperWith(store, indexerReturning({ "5120aa": 2000 })).sweep();
+
+    expect(store.get("v1")!.covenantSweptAt).toBeNull();
+    expect(store.get("v1")!.covenantSweepTxid).toBeNull();
+  });
+
+  it("leaves no sweep record when nothing was funded", async () => {
+    const store = new MemorySettlementStore(3_600_000);
+    store.create(record("v1", "5120aa"));
+
+    await sweeperWith(store, indexerReturning({})).sweep();
+
+    expect(store.get("v1")!.covenantSweptAt).toBeNull();
+    expect(store.get("v1")!.covenantSweepTxid).toBeNull();
+  });
+
   it("still sweeps a record the watcher has already settled", async () => {
     const store = new MemorySettlementStore(3_600_000);
     store.create(record("v1", "5120aa"));

@@ -2,6 +2,16 @@ import { describe, it, expect } from "vitest";
 import { MemorySettlementStore } from "../src/settlement-store.js";
 
 describe("MemorySettlementStore", () => {
+  it("records a sweep against a record, and reports an unknown hash", () => {
+    const s = new MemorySettlementStore(60_000, () => 4242);
+    s.create({ paymentHash: "v1", pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination: "tark1x", amountMsat: 1000 });
+
+    expect(s.get("v1")!.covenantSweptAt).toBeNull();
+    expect(s.markSwept("v1", "ark-tx-1")).toBe(true);
+    expect(s.get("v1")).toMatchObject({ covenantSweptAt: 4242, covenantSweepTxid: "ark-tx-1" });
+    expect(s.markSwept("nope", "ark-tx-2")).toBe(false);
+  });
+
   it("creates, settles, and expires", () => {
     let t = 1000;
     const s = new MemorySettlementStore(5000, () => t);
