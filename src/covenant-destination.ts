@@ -187,8 +187,9 @@ const toCompressed = (key: Uint8Array): Uint8Array => {
   throw new Error(`expected a 32- or 33-byte key, got ${key.length} bytes`);
 };
 
-/** Leaf order is load-bearing: {@link SWEEP_LEAF} is what the emulator co-signs, and
- *  `ContractHandler` reports the three as spending paths in this order. */
+/** Indices into the array {@link covenantVtxoScript} hands `VtxoScript`, so they move
+ *  with it. {@link SWEEP_LEAF} is the leaf the emulator co-signs; the sweeper finds it
+ *  by script identity rather than by position, since no order is promised. */
 export const SWEEP_LEAF = 0;
 export const COLLABORATIVE_LEAF = 1;
 export const RECOVERY_LEAF = 2;
