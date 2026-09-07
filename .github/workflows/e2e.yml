@@ -15,6 +15,10 @@ on:
       - "scripts/**"
       - "regtest/**"
       - ".github/workflows/e2e.yml"
+      # The lockfile decides what actually runs in production, so a dependency
+      # change is exactly where the funded path is worth re-proving.
+      - "package.json"
+      - "pnpm-lock.yaml"
 
 jobs:
   corridor:
