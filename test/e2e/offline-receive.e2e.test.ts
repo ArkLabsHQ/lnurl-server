@@ -173,15 +173,15 @@ describe("e2e: offline receive via the intents corridor", () => {
           const raw = (await fetch(`${SOLVER_URL}/v1/rfq/${swapId}`)
             .then((r) => (r.ok ? r.json() : null))
             .catch(() => null)) as { state?: string } | null;
-          if (raw?.state && raw.state !== swapState) {
-            swapState = raw.state;
-            swapStateChangedAt = Date.now();
-          }
           if ((raw?.state === "funded" || raw?.state === "claimed") && !minedFunding) {
             minedFunding = true;
             await mine(2);
             blocksMined += 2;
             lastMine = Date.now();
+          }
+          if (raw?.state && raw.state !== swapState) {
+            swapState = raw.state;
+            swapStateChangedAt = Date.now();
           }
         }
         if (minedFunding && blocksMined < 20 && Date.now() - lastMine > 30_000) {
