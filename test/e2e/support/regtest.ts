@@ -179,12 +179,15 @@ export async function nodeSqliteStorage(path: string) {
   const { DatabaseSync } = await import("node:sqlite");
   const { SQLiteWalletRepository, SQLiteContractRepository } = await import("@arkade-os/sdk/repositories/sqlite");
   const db = new DatabaseSync(path);
+  // `SQLExecutor` is async; node:sqlite is not. Awaiting a plain value already
+  // worked, so these are `async` to say what the SDK's interface requires.
+  const bind = (params?: unknown[]) => (params ?? []).map((p) => (p === undefined ? null : p)) as never[];
   const executor = {
-    run: (sql: string, params?: unknown[]) => {
-      db.prepare(sql).run(...(params ?? []).map((p) => (p === undefined ? null : p)) as never);
+    run: async (sql: string, params?: unknown[]) => {
+      db.prepare(sql).run(...bind(params));
     },
-    get: <T>(sql: string, params?: unknown[]) => db.prepare(sql).get(...(params ?? []).map((p) => (p === undefined ? null : p)) as never) as T | undefined,
-    all: <T>(sql: string, params?: unknown[]) => db.prepare(sql).all(...(params ?? []).map((p) => (p === undefined ? null : p)) as never) as T[],
+    get: async <T>(sql: string, params?: unknown[]) => db.prepare(sql).get(...bind(params)) as T | undefined,
+    all: async <T>(sql: string, params?: unknown[]) => db.prepare(sql).all(...bind(params)) as T[],
   };
   return {
     walletRepository: new SQLiteWalletRepository(executor),

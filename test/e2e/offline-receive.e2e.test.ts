@@ -168,7 +168,9 @@ describe("e2e: offline receive via the intents corridor", () => {
       "verify settled",
       async () => {
         if (swapId) {
-          const raw = await fetch(`${SOLVER_URL}/v1/rfq/${swapId}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+          const raw = (await fetch(`${SOLVER_URL}/v1/rfq/${swapId}`)
+            .then((r) => (r.ok ? r.json() : null))
+            .catch(() => null)) as { state?: string } | null;
           if ((raw?.state === "funded" || raw?.state === "claimed") && !minedFunding) {
             minedFunding = true;
             await mine(2);
