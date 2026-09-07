@@ -29,7 +29,9 @@ async function main() {
   await pollUntil(
     "settled",
     async () => {
-      const raw = await fetch(`http://localhost:8787/v1/rfq/${swap.swapId}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      const raw = (await fetch(`http://localhost:8787/v1/rfq/${swap.swapId}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null)) as { state?: string } | null;
       const state = raw?.state ?? "?";
       if (state !== finalState) console.log("    state:", state);
       finalState = state;
