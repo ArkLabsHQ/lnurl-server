@@ -43,6 +43,7 @@ let ark: { baseUrl: string; close: () => Promise<void> };
 let vtxos: ReturnType<typeof wireVtxo>[];
 let virtualTxs: Map<string, string>;
 let submitted: { arkTx: string; checkpointTxs: string[] }[];
+let signedArkTxOverride: string | undefined;
 
 /** Keyed by the txid it actually hashes to, so PrevArkTx resolution can find it. */
 function fundingTx(lockupPkScript: Uint8Array, valueSat: number): { txid: string; psbt: string } {
@@ -108,7 +109,7 @@ beforeAll(async () => {
     if (req.method === "POST" && url.pathname === "/v1/tx") {
       const body = (await readBody(req)) as { arkTx: string; checkpointTxs: string[] };
       submitted.push(body);
-      res.end(JSON.stringify({ signedArkTx: body.arkTx, signedCheckpointTxs: body.checkpointTxs }));
+      res.end(JSON.stringify({ signedArkTx: signedArkTxOverride ?? body.arkTx, signedCheckpointTxs: body.checkpointTxs }));
       return;
     }
     res.statusCode = 404;
@@ -129,6 +130,7 @@ beforeEach(() => {
   vtxos = [];
   virtualTxs = new Map();
   submitted = [];
+  signedArkTxOverride = undefined;
 });
 
 /** A claimer plus the lockup a solver would have funded for it. */
@@ -235,5 +237,20 @@ describe("createSelfClaimer", () => {
 
     expect(await claimer.claim("never-seen", hex.encode(PREIMAGE))).toEqual({ state: "skipped", reason: "unregistered" });
     expect(submitted).toHaveLength(0);
+  });
+
+  it("reports the txid of the transaction it built, not one read back from the emulator", async () => {
+    const { claimer } = funded({ swapId: "swap-7", expectedAmount: 4_900, valueSat: 4_900 });
+    // The emulator only adds witness data, which cannot change a txid, so the reply
+    // is not a source of truth for it — garbage here must not matter.
+    signedArkTxOverride = "not-a-psbt";
+
+    const outcome = await claimer.claim("swap-7", hex.encode(PREIMAGE));
+
+    expect(submitted).toHaveLength(1);
+    expect(outcome).toEqual({
+      state: "claimed",
+      arkTxid: Transaction.fromPSBT(base64.decode(submitted[0].arkTx)).id,
+    });
   });
 });
