@@ -14,14 +14,17 @@
  * Arkade address — the covenant paid only the user.
  *
  * Prerequisites: docker + `git submodule update --init`. The suite brings the stack
- * up itself (arkade-regtest at ./regtest, intent-solver image built from upstream
- * master on first run) and reuses a healthy stack on later runs.
+ * up itself (arkade-regtest at ./regtest, intent-solver image built from a pinned
+ * commit on first run) and reuses a healthy stack on later runs.
  *
  * Run: `pnpm test:e2e` (never in the unit suite — vitest.config.ts excludes test/e2e).
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import http from "node:http";
 import { randomBytes } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { hex, base64 } from "@scure/base";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
@@ -77,14 +80,66 @@ describe.each([
   { label: "reveal", stamp: false },
   { label: "stamped", stamp: true },
 ])("e2e: offline receive via the intents corridor ($label)", ({ stamp }) => {
-  let db: Db;
-  let server: http.Server;
+  let db: Db | undefined;
+  let server: http.Server | undefined;
   let baseUrl: string;
-  let stopPoller: () => void;
+  let stopPoller: () => void = () => {};
+  let creator: OfflineSwapCreator | undefined;
   let settlements: DbSettlementStore;
   let receiver: { arkadeAddress: string; claimPublicKey: string };
   const token = randomBytes(32).toString("hex");
+  const encryptionKey = randomBytes(32);
+  const stateDir = mkdtempSync(join(tmpdir(), `lnurl-server-e2e-${stamp ? "stamped" : "reveal"}-`));
+  const dbPath = join(stateDir, "lnurl-server.sqlite");
   let payer: { stop: () => void } | undefined;
+
+  async function startLocal(): Promise<void> {
+    db = openDb(dbPath);
+    runMigrations(db);
+    bootstrap(db, { bootstrapDomain: "localhost" });
+    const repos = createRepositories(db);
+    const addressService = new AddressService(repos, encryptionKey);
+    settlements = new DbSettlementStore(db, 3_600_000);
+    const offlineSwaps = new OfflineSwapStore(db, 3_600_000);
+    const card = solverCard("registry", 30, "regtest");
+    creator = await createOfflineSwapCoordinator({
+      discovery: { selectLightningReceive: () => [{
+        name: card.name,
+        market: { ...card.markets[0]!, solver: card.name, discovery_pubkey: card.discovery_pubkey!, transports: card.transports!, source: "e2e-fixture", sourceType: "local" },
+        discoveryPubkey: card.discovery_pubkey!,
+        relays: card.transports!.nostr!.relays,
+        source: "e2e-fixture",
+        sourceType: "local",
+      }] },
+      transportFactory: () => httpTransport(SOLVER_HTTP_TEST_URL),
+      covclaimdUrl: COVCLAIMD_URL,
+      arkServerUrl: ARKD_URL,
+      stampClaimPacket: stamp,
+    });
+    const defaults = { baseUrl: "", minSendable: 1000, maxSendable: 100_000_000_000, invoiceTimeoutMs: 30_000, registrationRateLimitPerMin: 1000 };
+    const app = createServer(
+      { port: 0, baseUrl: "", minSendable: 1000, maxSendable: 100_000_000_000, invoiceTimeoutMs: 30_000, trustProxy: false },
+      { repos, addressService, settings: staticSettings(defaults), settlements, offlineSwapCreator: creator, offlineSwaps },
+    );
+    server = await new Promise<http.Server>((resolve) => {
+      const listening = http.createServer(app);
+      listening.listen(0, "127.0.0.1", () => resolve(listening));
+    });
+    baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    defaults.baseUrl = baseUrl;
+    stopPoller = startOfflineSettlementPoller(settlements, creator, 1000, offlineSwaps);
+  }
+
+  async function stopLocal(): Promise<void> {
+    stopPoller();
+    stopPoller = () => {};
+    await creator?.close?.();
+    creator = undefined;
+    if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = undefined;
+    db?.close();
+    db = undefined;
+  }
 
   beforeAll(async () => {
     console.log("[setup] ensuring regtest stack…");
@@ -107,41 +162,9 @@ describe.each([
     };
     await wallet.dispose();
 
-    // lnurl-server, in-process, DB mode — the same wiring as cli.ts.
+    // lnurl-server, in-process, file-backed DB mode — the same wiring as cli.ts.
     console.log("[setup] starting lnurl-server…");
-    db = openDb(":memory:");
-    runMigrations(db);
-    bootstrap(db, { bootstrapDomain: "localhost" });
-    const repos = createRepositories(db);
-    const addressService = new AddressService(repos, randomBytes(32));
-    settlements = new DbSettlementStore(db, 3_600_000);
-    const offlineSwaps = new OfflineSwapStore(db, 3_600_000);
-    const card = solverCard("registry", 30, "regtest");
-    const creator: OfflineSwapCreator = await createOfflineSwapCoordinator({
-      discovery: { selectLightningReceive: () => [{
-        name: card.name,
-        market: { ...card.markets[0]!, solver: card.name, discovery_pubkey: card.discovery_pubkey!, transports: card.transports!, source: "e2e-fixture", sourceType: "local" },
-        discoveryPubkey: card.discovery_pubkey!,
-        relays: card.transports!.nostr!.relays,
-        source: "e2e-fixture",
-        sourceType: "local",
-      }] },
-      transportFactory: () => httpTransport(SOLVER_HTTP_TEST_URL),
-      covclaimdUrl: COVCLAIMD_URL,
-      arkServerUrl: ARKD_URL,
-      stampClaimPacket: stamp,
-    });
-    const defaults = { baseUrl: "", minSendable: 1000, maxSendable: 100_000_000_000, invoiceTimeoutMs: 30_000, registrationRateLimitPerMin: 1000 };
-    const app = createServer(
-      { port: 0, baseUrl: "", minSendable: 1000, maxSendable: 100_000_000_000, invoiceTimeoutMs: 30_000, trustProxy: false },
-      { repos, addressService, settings: staticSettings(defaults), settlements, offlineSwapCreator: creator, offlineSwaps },
-    );
-    await new Promise<void>((resolve) => {
-      server = http.createServer(app).listen(0, "127.0.0.1", resolve);
-    });
-    baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-    defaults.baseUrl = baseUrl; // staticSettings reads it per request
-    stopPoller = startOfflineSettlementPoller(settlements, creator, 1000, offlineSwaps);
+    await startLocal();
 
     // Register the LN address + its Arkade receive identity, then go "offline".
     const reg = await req(`${baseUrl}/lnurl/address`, "POST", { token, username: "alice" });
@@ -152,9 +175,8 @@ describe.each([
 
   afterAll(async () => {
     payer?.stop();
-    stopPoller?.();
-    await new Promise<void>((r) => server?.close(() => r()));
-    db?.close();
+    await stopLocal();
+    rmSync(stateDir, { recursive: true, force: true });
   });
 
   it("pays an offline LN address end to end: corridor swap, covclaimd claim, verify flip", async () => {
@@ -163,9 +185,19 @@ describe.each([
     expect(cb.body.status).not.toBe("ERROR");
     const pr = String(cb.body.pr);
     expect(pr).toMatch(/^lnbcrt/); // regtest invoice
-    const verifyUrl = String(cb.body.verify);
+    let verifyUrl = String(cb.body.verify);
     expect(verifyUrl).toContain("/lnurl/verify/");
     const paymentHash = verifyUrl.split("/").pop()!;
+
+    const swapId = settlements.get(paymentHash)?.swapId;
+    if (!swapId) throw new Error(`no settlement record / swap id for ${paymentHash} — the callback should have created one`);
+
+    // Restart after invoice acceptance but before payment. The next process must
+    // reconstruct the pinned solver and covenant claim entirely from SQLite.
+    await stopLocal();
+    await startLocal();
+    verifyUrl = `${baseUrl}/lnurl/verify/${paymentHash}`;
+    expect(settlements.get(paymentHash)).toMatchObject({ swapId, settled: false });
 
     // The payer pays the solver's hold invoice for real (returns immediately;
     // payinvoice blocks on the held HTLC for the life of the swap).
@@ -176,8 +208,6 @@ describe.each([
     // before covclaimd's claim can be co-signed, so mine when it lands (and then
     // slowly, so the claim's own batch confirms too). Bounded: the HTLC's CLTV
     // budget (54 blocks) is never approached.
-    const swapId = settlements.get(paymentHash)?.swapId;
-    if (!swapId) throw new Error(`no settlement record / swap id for ${paymentHash} — the callback should have created one`);
     console.log(`[test] rfq ${swapId} — payment hash ${paymentHash}`);
     let minedFunding = false;
     let blocksMined = 0;

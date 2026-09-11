@@ -6,6 +6,7 @@ export default defineConfig({
     // Vitest 4: execArgv is a top-level option (poolOptions was removed).
     pool: "forks",
     execArgv: ["--experimental-sqlite"],
+    include: ["test/**/*.test.ts"],
     // The e2e suite (vitest.e2e.config.ts, `pnpm test:e2e`) needs the docker regtest
     // stack — never load it from the unit run.
     exclude: ["test/e2e/**", "**/node_modules/**"],

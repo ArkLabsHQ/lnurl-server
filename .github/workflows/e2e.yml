@@ -5,8 +5,6 @@ permissions:
 
 on:
   workflow_dispatch:
-  push:
-    branches: [feat/e2e-offline-receive]
   pull_request:
     branches: [main]
     paths:
@@ -19,6 +17,10 @@ on:
       # change is exactly where the funded path is worth re-proving.
       - "package.json"
       - "pnpm-lock.yaml"
+
+concurrency:
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   corridor:
@@ -40,9 +42,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # The harness brings the stack up itself (arkade-regtest at ./regtest) and
-      # builds the intent-solver image from upstream master, which carries the
-      # covclaimd wiring since arkade-os/intent-solver#38.
-      - name: E2E — offline receive via the intents corridor
+      # The harness builds intent-solver from the exact commit pinned in
+      # test/e2e/support/regtest.ts, then restarts this server mid-payment.
+      - name: E2E — funded offline receive and restart recovery
         run: pnpm test:e2e
 
       - name: Dump regtest stack logs on failure

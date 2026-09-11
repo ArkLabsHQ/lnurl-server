@@ -23,7 +23,8 @@ export const ESPLORA_URL = process.env.E2E_ESPLORA_URL ?? "http://localhost:3000
 /** The solver's throwaway regtest mnemonic — arkade-regtest's fixed, public, never-real-funds value. */
 export const SOLVER_MNEMONIC = "planet travel grab found idle ripple acoustic hero normal mixed rich lamp";
 
-const INTENT_SOLVER_IMAGE = process.env.E2E_INTENT_SOLVER_IMAGE ?? "intent-solver:e2e";
+export const INTENT_SOLVER_COMMIT = "4daa6c9bc3765282d51f67a871d037583f09368d";
+const INTENT_SOLVER_IMAGE = process.env.E2E_INTENT_SOLVER_IMAGE ?? `intent-solver:e2e-${INTENT_SOLVER_COMMIT.slice(0, 12)}`;
 // rc.5 attaches PrevArkTx to claims — the fix for the emulator >= v0.0.7 rejection
 // (arkade-os/covclaimd#10). Emulator follows the stack's own default.
 const COVCLAIMD_IMAGE = process.env.E2E_COVCLAIMD_IMAGE ?? "ghcr.io/arkade-os/covclaimd:v0.0.1-rc.5";
@@ -97,15 +98,31 @@ export async function stackIsUp(): Promise<boolean> {
   return checks.every(Boolean);
 }
 
-/** Build the intent-solver image from upstream master if it's not in the local docker. */
+/** A timelock unit change invalidates existing VTXO scripts, so an old test
+ *  volume must be rebuilt rather than updated in place. */
+async function arkTimelocksMatch(): Promise<boolean> {
+  try {
+    const { stdout } = await run("docker", ["exec", "arkd", "arkd", "settings"], { timeout: 30_000 });
+    const settings = JSON.parse(stdout) as Record<string, string>;
+    return settings.unilateralExitDelay === STACK_ENV.ARKD_UNILATERAL_EXIT_DELAY
+      && settings.publicUnilateralExitDelay === STACK_ENV.ARKD_PUBLIC_UNILATERAL_EXIT_DELAY
+      && settings.boardingExitDelay === STACK_ENV.ARKD_BOARDING_EXIT_DELAY
+      && settings.checkpointExitDelay === STACK_ENV.ARKD_CHECKPOINT_EXIT_DELAY
+      && settings.vtxoTreeExpiry === STACK_ENV.ARKD_VTXO_TREE_EXPIRY;
+  } catch {
+    return false;
+  }
+}
+
+/** Build the intent-solver image from the checked-in commit if it is not local. */
 export async function ensureIntentSolverImage(log: (s: string) => void = console.log): Promise<void> {
   const probe = await run("docker", ["image", "inspect", INTENT_SOLVER_IMAGE]).catch(() => null);
   if (probe) return;
   log(`building ${INTENT_SOLVER_IMAGE} from ${INTENT_SOLVER_REPO} (one-time, several minutes)...`);
   const dir = join(BUILD_CACHE, "intent-solver");
-  if (!existsSync(join(dir, "packages"))) {
-    await run("git", ["clone", "--depth", "1", INTENT_SOLVER_REPO, dir], { timeout: 300_000 });
-  }
+  if (!existsSync(join(dir, ".git"))) await run("git", ["clone", "--no-checkout", INTENT_SOLVER_REPO, dir], { timeout: 300_000 });
+  await run("git", ["fetch", "--depth", "1", "origin", INTENT_SOLVER_COMMIT], { cwd: dir, timeout: 300_000 });
+  await run("git", ["checkout", "--detach", INTENT_SOLVER_COMMIT], { cwd: dir, timeout: 60_000 });
   await run("docker", ["build", "-f", "packages/solver-app/Dockerfile", "-t", INTENT_SOLVER_IMAGE, "."], {
     cwd: dir,
     timeout: 1_800_000,
@@ -120,13 +137,14 @@ export async function ensureStack(log: (s: string) => void = console.log): Promi
   }
   await ensureIntentSolverImage(log);
   if (await stackIsUp()) {
-    // A running stack may carry a solver from before the current image/overlay —
-    // refresh it, then reuse the stack.
-    await applySolverOverlay();
-    log("regtest stack already healthy; reusing it");
-    // If the stack predates a channel announcement (fresh chain), mature it.
-    await waitForLnChannel();
-    return;
+    if (await arkTimelocksMatch()) {
+      await applySolverOverlay();
+      log("regtest stack already healthy; reusing it");
+      await waitForLnChannel();
+      return;
+    }
+    log("regtest timelocks changed; rebuilding the test-owned stack and volumes...");
+    await run("node", ["regtest.mjs", "clean"], { cwd: REGTEST_DIR, env: STACK_ENV, timeout: 300_000 });
   }
   log("starting arkade-regtest stack (first boot pulls ~20 images; several minutes)...");
   const child: ChildProcess = spawn("node", ["regtest.mjs", "start"], { cwd: REGTEST_DIR, env: STACK_ENV, stdio: "inherit" });
@@ -140,6 +158,7 @@ export async function ensureStack(log: (s: string) => void = console.log): Promi
     5000,
   );
   await pollUntil("covclaimd", () => httpOk(`${COVCLAIMD_URL}/v1/preimage/covclaimd-pubkey`), 120_000);
+  if (!(await arkTimelocksMatch())) throw new Error("arkd did not apply the required regtest timelocks");
   // The stack's intent-solver lacks COVCLAIMD_URL in its env map; the overlay adds it.
   await applySolverOverlay();
   // The LN channel between the payer and the solver's node must be usable before any
