@@ -107,6 +107,42 @@ async function main(): Promise<void> {
       });
       if (offlineSwapCreator.close) runtime.addTransport({ close: offlineSwapCreator.close });
     }
+    const off = config.offlineReceive;
+    let covenantDestinations: import("./covenant-destination.js").CovenantDestinationProvider | undefined;
+    if (off.covenantDestinations) {
+      const { ContractManager, RestIndexerProvider, contractHandlers } = await import("@arkade-os/sdk");
+      const { covenantDestinationHandler } = await import("./covenant-contract.js");
+      const { sqliteContractStores } = await import("./contract-store.js");
+      // The SDK tracks, watches and spends these; registering the handler is what
+      // lets it build the script and pick a leaf without us restating either.
+      contractHandlers.register(covenantDestinationHandler);
+      // Always SQLite: this block is inside `if (db)`, and the rail needs the
+      // contracts to survive a restart. In memory they would not, the catch-up pass
+      // would find nothing, and a payment made while down could never settle.
+      const stores = await sqliteContractStores(db);
+      const contracts = await ContractManager.create({
+        indexerProvider: new RestIndexerProvider(off.arkServerUrl!),
+        ...stores,
+      });
+      const { createCovenantDestinationProvider } = await import("./covenant-destination.js");
+      covenantDestinations = createCovenantDestinationProvider({
+        arkServerUrl: off.arkServerUrl!,
+        covclaimdUrl: off.covclaimdUrl!,
+        recoveryDelaySeconds: off.covenantRecoveryDelaySeconds,
+        contracts,
+      });
+      // Event-driven, not polled: the manager pushes when an output lands, and its
+      // catch-up pass covers payments made while this process was down.
+      const { startCovenantWatcher } = await import("./covenant-watcher.js");
+      runtime.addStop(startCovenantWatcher(settlements, contracts));
+      const { createCovenantSweeper, startCovenantSweeper } = await import("./covenant-sweeper.js");
+      runtime.addStop(startCovenantSweeper(
+        createCovenantSweeper({ contracts, arkServerUrl: off.arkServerUrl!, emulatorUrl: off.emulatorUrl! }),
+        15_000,
+      ));
+      runtime.addTransport({ close: () => contracts.dispose() });
+      console.log(`covenant destinations: enabled (emulator=${off.emulatorUrl}, recovery=${off.covenantRecoveryDelaySeconds}s)`);
+    }
     deps = {
       repos,
       addressService,
@@ -116,9 +152,10 @@ async function main(): Promise<void> {
       settlements,
       offlineSwapCreator,
       offlineSwaps,
+      ...(covenantDestinations ? { covenantDestinations } : {}),
     };
-    // Neither timer below keeps its stop function: both are unref'd, and there is
-    // no process-shutdown hook for either to be called from.
+    // Every background scheduler registers its stop hook before the listeners
+    // begin accepting traffic.
     if (offlineSwapCreator) {
       const { startOfflineSettlementPoller } = await import("./offline-poller.js");
       runtime.addStop(startOfflineSettlementPoller(settlements, offlineSwapCreator, 15_000, offlineSwaps, logger));

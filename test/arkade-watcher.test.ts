@@ -81,6 +81,7 @@ function storeWith(...recs: { hash: string; amountMsat: number; createdAt?: numb
   return s;
 }
 
+
 describe("settleDestinationPayments", () => {
   it("flips a record when a covering payment is observed, with the txid as reference", async () => {
     const store = storeWith({ hash: "v1", amountMsat: 50_000 });
@@ -205,5 +206,30 @@ describe("arkade watcher end-to-end", () => {
     });
 
     await new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); });
+  });
+});
+
+describe("settleDestinationPayments failure reporting", () => {
+  // A misconfigured indexer looks exactly like an unreachable one and never
+  // resolves itself: without this the rail stops settling and says nothing.
+  it("reports an indexer it cannot reach instead of swallowing it", async () => {
+    const store = storeWith({ hash: "v1", amountMsat: 50_000 });
+    const failures: string[] = [];
+
+    const n = await settleDestinationPayments(
+      store,
+      new RestIndexerProvider("http://127.0.0.1:1"),
+      (stage, err) => failures.push(`${stage}: ${err instanceof Error ? err.message : String(err)}`),
+    );
+
+    expect(n).toBe(0);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toContain("static-address lookup");
+    expect(store.get("v1")!.settled).toBe(false);
+  });
+
+  it("still swallows failures when no reporter is supplied", async () => {
+    const store = storeWith({ hash: "v1", amountMsat: 50_000 });
+    await expect(settleDestinationPayments(store, new RestIndexerProvider("http://127.0.0.1:1"))).resolves.toBe(0);
   });
 });

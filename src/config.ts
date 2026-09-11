@@ -22,6 +22,12 @@ export interface OfflineReceiveConfig {
   selfClaim: boolean;
   /** Emulator base URL backing {@link selfClaim} — it co-signs the covenant leaf. */
   emulatorUrl?: string;
+  /** Give each arkade-rail payment its own covenant address instead of the user's
+   *  static one, so concurrent payments are told apart by script rather than by
+   *  amount and arrival window. Needs {@link emulatorUrl} for the sweep. */
+  covenantDestinations: boolean;
+  /** CSV delay, seconds, before the user may sweep a covenant destination alone. */
+  covenantRecoveryDelaySeconds: number;
 }
 
 export interface AppConfig {
@@ -96,6 +102,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
   const port = integer(env, "PORT", 3000, { min: 1, max: 65_535 });
   const dbPath = env.DB_PATH || undefined;
   const allowInsecureTokenStorage = env.ALLOW_INSECURE_TOKEN_STORAGE === "1";
+  const offlineReceive = buildOfflineReceive(env);
 
   let tokenEncryptionKey: Buffer | undefined;
   if (env.TOKEN_ENCRYPTION_KEY) {
@@ -105,6 +112,9 @@ export function loadConfig(env: Env = process.env): AppConfig {
     throw new Error(
       "TOKEN_ENCRYPTION_KEY is required when DB_PATH is set (or set ALLOW_INSECURE_TOKEN_STORAGE=1 for dev)",
     );
+  }
+  if (offlineReceive.covenantDestinations && (!dbPath || dbPath === ":memory:")) {
+    throw new Error("OFFLINE_COVENANT_DESTINATIONS=true requires a file-backed DB_PATH (contracts and settlement attribution must survive restart)");
   }
 
   const minSendable = integer(env, "MIN_SENDABLE", 1_000, { min: 1 });
@@ -133,7 +143,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
     maxSessionsPerIp: integer(env, "MAX_SESSIONS_PER_IP", 50, { min: 1 }),
     maxConcurrentOfflineQuotes: integer(env, "MAX_CONCURRENT_OFFLINE_QUOTES", 20, { min: 1 }),
     shutdownTimeoutMs: integer(env, "SHUTDOWN_TIMEOUT_MS", 15_000, { min: 1 }),
-    offlineReceive: buildOfflineReceive(env),
+    offlineReceive,
   };
 }
 
@@ -150,19 +160,47 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   const selfClaim = env.OFFLINE_SELF_CLAIM === "true";
   const emulatorUrl = env.OFFLINE_EMULATOR_URL ? httpUrl(env.OFFLINE_EMULATOR_URL, "OFFLINE_EMULATOR_URL") : undefined;
   const stampClaimPacket = env.OFFLINE_STAMP_CLAIM_PACKET === "true";
+  const covenantDestinations = env.OFFLINE_COVENANT_DESTINATIONS === "true";
   if (selfClaim && !emulatorUrl) {
     throw new Error("OFFLINE_SELF_CLAIM=true requires OFFLINE_EMULATOR_URL (the emulator co-signs the covenant claim)");
   }
-  if (emulatorUrl && !selfClaim) throw new Error("OFFLINE_EMULATOR_URL requires OFFLINE_SELF_CLAIM=true");
-  const anyOfflineSetting = hasCards || covclaimdUrl || arkServerUrl || nostrSecretKey || selfClaim || emulatorUrl || stampClaimPacket;
+  if (emulatorUrl && !selfClaim && !covenantDestinations) {
+    throw new Error("OFFLINE_EMULATOR_URL requires OFFLINE_SELF_CLAIM=true or OFFLINE_COVENANT_DESTINATIONS=true");
+  }
+  const anyOfflineSetting = hasCards || covclaimdUrl || arkServerUrl || nostrSecretKey || selfClaim || emulatorUrl || stampClaimPacket || covenantDestinations;
   if (anyOfflineSetting && (!covclaimdUrl || !arkServerUrl)) {
     throw new Error("offline receive requires COVCLAIMD_URL and ARK_SERVER_URL together; cards may come from env, file, or the admin database");
+  }
+  // Same reasoning as selfClaim: a payer must never be handed an address nothing
+  // can sweep, and by then their money is already at it.
+  if (covenantDestinations && !emulatorUrl) {
+    throw new Error("OFFLINE_COVENANT_DESTINATIONS=true requires OFFLINE_EMULATOR_URL (the emulator co-signs the sweep)");
+  }
+  if (covenantDestinations && !(covclaimdUrl && arkServerUrl)) {
+    throw new Error("OFFLINE_COVENANT_DESTINATIONS=true requires COVCLAIMD_URL and ARK_SERVER_URL (the covenant commits to their keys)");
+  }
+  const recoveryRaw = env.OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS;
+  // 512-second granularity, and 24h is not a multiple of it. Rejected here rather
+  // than rounded: BIP68 throws on anything else, and the only place that surfaces
+  // is per-payment derivation, which falls back to the static address and hands
+  // the payer the ambiguity this flag exists to remove.
+  const covenantRecoveryDelaySeconds = recoveryRaw ? Number(recoveryRaw) : 86_528;
+  if (!Number.isInteger(covenantRecoveryDelaySeconds) || covenantRecoveryDelaySeconds <= 0) {
+    throw new Error(`OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS must be a positive integer (got "${recoveryRaw}")`);
+  }
+  if (covenantRecoveryDelaySeconds % 512 !== 0) {
+    const near = Math.round(covenantRecoveryDelaySeconds / 512) * 512;
+    throw new Error(
+      `OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS must be a multiple of 512 (BIP68 encodes seconds in 512s units); got ${covenantRecoveryDelaySeconds}, nearest is ${near}`,
+    );
   }
   return {
     enabled: Boolean(covclaimdUrl && arkServerUrl),
     registryUrls,
     stampClaimPacket,
     selfClaim,
+    covenantDestinations,
+    covenantRecoveryDelaySeconds,
     ...(emulatorUrl ? { emulatorUrl } : {}),
     ...(cardsFile ? { cardsFile } : {}),
     ...(nostrSecretKey ? { nostrSecretKey } : {}),

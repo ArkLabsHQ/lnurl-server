@@ -126,6 +126,17 @@ const MIGRATIONS: Migration[] = [
   },
   {
     version: 7,
+    // Per-payment Arkade destinations. covenant_script is the attribution key and
+    // the join to the SDK contract that owns everything else about the covenant —
+    // its params, its vtxos and its watch state all live in `ark_contracts`.
+    up: `
+      ALTER TABLE settlements ADD COLUMN covenant_script TEXT;
+      CREATE UNIQUE INDEX uq_settlements_covenant_script
+        ON settlements(covenant_script) WHERE covenant_script IS NOT NULL;
+    `,
+  },
+  {
+    version: 8,
     up: `
       CREATE TABLE solver_cards (
         id         INTEGER PRIMARY KEY,
@@ -148,7 +159,7 @@ const MIGRATIONS: Migration[] = [
     `,
   },
   {
-    version: 8,
+    version: 9,
     up: `
       CREATE TABLE offline_swaps (
         payment_hash    TEXT PRIMARY KEY REFERENCES settlements(payment_hash) ON DELETE CASCADE,
@@ -176,7 +187,7 @@ export function runMigrations(db: Db, options: { legacySwapTtlMs?: number; now?:
   const row = db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number | null };
   const current = row.v ?? 0;
 
-  if (current >= 4 && current < 8) {
+  if (current >= 4 && current < 9) {
     const table = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'offline_swaps'").get();
     if (!table) {
       const legacy = db.prepare(

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { MemorySettlementStore } from "../src/settlement-store.js";
 
 describe("MemorySettlementStore", () => {
+
   it("creates, settles, and expires", () => {
     let t = 1000;
     const s = new MemorySettlementStore(5000, () => t);
@@ -62,7 +63,7 @@ describe("MemorySettlementStore", () => {
     s.create({ paymentHash: "vid2", pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination: "ark1xyz" }); // no amount
     s.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "sess" }); // lightning
 
-    expect(s.listPendingDestinations()).toEqual([{ paymentHash: "vid1", paymentDestination: "ark1xyz", amountMsat: 50000, createdAt: 1000 }]);
+    expect(s.listPendingDestinations()).toEqual([{ paymentHash: "vid1", paymentDestination: "ark1xyz", amountMsat: 50000, createdAt: 1000, covenantScript: null}]);
 
     expect(s.markObserved("missing", "tx")).toBe(false);
     expect(s.markObserved("vid1", "txid1")).toBe(true);
