@@ -76,6 +76,8 @@ export function createAdminApi(deps: AdminDeps): Router {
       const status = deps.discovery.status();
       return cardId === undefined
         ? status.ready
+        // Discovery labels DB cards as `db:<numeric id>:<operator label>`.
+        // Keep this prefix in sync with DiscoveryService.doRefresh().
         : status.sources.some((source) => source.source.startsWith(`db:${cardId}:`) && source.ok && source.marketCount > 0);
     }
     catch { return false; }

@@ -282,8 +282,10 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
               expectedAmount: recovery.expectedAmount,
               params: recovery.script,
             }));
-            const ctx = await context();
-            const address = restored.script.address(ctx.hrp, ctx.serverPubkey).encode();
+            // Recovery must remain valid across operator key rotation. The server
+            // key and network are persisted covenant data, not live dependencies.
+            const hrp = ArkAddress.decode(recovery.lockupAddress).hrp;
+            const address = restored.script.address(hrp, restored.script.options.server).encode();
             if (address !== recovery.lockupAddress) throw new Error("offline swap recovery lockup address mismatch");
             settings.selfClaimer!.register({ swapId, script: restored.script, expectedAmount: restored.expectedAmount });
           }

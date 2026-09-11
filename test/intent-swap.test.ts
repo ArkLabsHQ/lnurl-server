@@ -19,7 +19,9 @@ const covclaimdPub = hex.encode(secp256k1.getPublicKey(secp256k1.utils.randomSec
 const emulatorPub = hex.encode(secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true));
 const solverPub = hex.encode(secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true));
 const operatorPub = hex.encode(secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true));
+const rotatedOperatorPub = hex.encode(secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true));
 const operatorXonly = toXOnly(hex.decode(operatorPub), "operator");
+let activeOperatorPub = operatorPub;
 const solverRefundPkScript = new Uint8Array([0x51, 0x20, ...secp256k1.utils.randomSecretKey()]);
 const RECEIVE = new ArkAddress(secp256k1.utils.randomSecretKey(), secp256k1.utils.randomSecretKey(), "tark").encode();
 const CLAIM_PUBKEY = hex.encode(secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true));
@@ -161,7 +163,7 @@ beforeAll(async () => {
     serve((req, res) => {
       res.setHeader("content-type", "application/json");
       if (req.url === "/v1/info") {
-        res.end(JSON.stringify({ network: "mutinynet", signerPubkey: operatorPub, unilateralExitDelay: String(UNILATERAL_EXIT_DELAY) }));
+        res.end(JSON.stringify({ network: "mutinynet", signerPubkey: activeOperatorPub, unilateralExitDelay: String(UNILATERAL_EXIT_DELAY) }));
       } else {
         res.statusCode = 404;
         res.end("{}");
@@ -273,6 +275,27 @@ describe("createOfflineSwapCoordinator", () => {
     expect(typeof selfClaiming.selfClaim).toBe("function");
     // Absent without a claimer, so the poller can tell the two builds apart.
     expect(creator.selfClaim).toBeUndefined();
+  });
+
+  it("restores self-claim with the operator key committed in the recovery script", async () => {
+    const swap = await creator.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
+    const register = vi.fn();
+    const claim = vi.fn(async () => ({ state: "skipped", reason: "unfunded" } as const));
+    activeOperatorPub = rotatedOperatorPub;
+    try {
+      const restarted = await createOfflineSwapCoordinator(swapSettings({
+        discovery: { selectLightningReceive: () => [] },
+        covclaimdUrl: "http://127.0.0.1:1",
+        selfClaimer: { register, claim },
+      }));
+
+      await expect(restarted.selfClaim!(swap.swapId, swap.preimage, swap.recovery)).resolves.toEqual({ state: "skipped", reason: "unfunded" });
+      expect(register).toHaveBeenCalledWith(expect.objectContaining({ swapId: swap.swapId, expectedAmount: swap.recovery.expectedAmount }));
+      expect(claim).toHaveBeenCalledWith(swap.swapId, swap.preimage);
+      await restarted.close?.();
+    } finally {
+      activeOperatorPub = operatorPub;
+    }
   });
 
   it("follows solver status for isSettled", async () => {

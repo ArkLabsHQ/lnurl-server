@@ -42,3 +42,5 @@ Before shifting traffic, require a 200 from `/readyz`, inspect `/admin/api/disco
 Send `SIGTERM` and allow at least `SHUTDOWN_TIMEOUT_MS` plus a small orchestrator margin. The service first becomes unready, stops schedulers, closes SSE sessions/listeners and Nostr transports, then closes SQLite. A second signal forces termination.
 
 Treat an unavailable registry with a fresh cache as degraded but serviceable. Treat an expired cache with no manual card as unavailable. For solver failures, correlate the `X-Request-Id` response header with structured logs; token, preimage, invoice, authorization, and private-key fields are centrally redacted.
+
+Unsettled offline swaps use `VERIFY_TTL_MS` as their recovery window. A swap that expires while the service is stopped is not resumed after restart; size this TTL beyond the maximum invoice and expected outage window.

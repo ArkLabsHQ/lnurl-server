@@ -17,6 +17,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 export const REGTEST_DIR = join(HERE, "..", "..", "..", "regtest");
 export const ARKD_URL = process.env.E2E_ARKD_URL ?? "http://localhost:7070";
 export const COVCLAIMD_URL = process.env.E2E_COVCLAIMD_URL ?? "http://localhost:7271";
+export const EMULATOR_URL = process.env.E2E_EMULATOR_URL ?? "http://localhost:7073";
 export const SOLVER_HTTP_TEST_URL = process.env.E2E_SOLVER_HTTP_TEST_URL ?? "http://localhost:8787";
 export const ESPLORA_URL = process.env.E2E_ESPLORA_URL ?? "http://localhost:3000/api";
 
@@ -246,6 +247,15 @@ const compose = (args: string[], profile = "intent-solver") =>
     ],
     { cwd: REGTEST_DIR, env: STACK_ENV, timeout: 120_000 },
   );
+
+export async function stopCovclaimd(): Promise<void> {
+  await compose(["stop", "covclaimd"]);
+}
+
+export async function startCovclaimd(): Promise<void> {
+  await compose(["start", "covclaimd"]);
+  await pollUntil("covclaimd", () => httpOk(`${COVCLAIMD_URL}/v1/preimage/covclaimd-pubkey`), 120_000);
+}
 
 /** The payer↔solver LN channel must be announced/usable before any HTLC routes;
  *  stackIsUp answers before the stack's boltz setup finishes opening it, so poll

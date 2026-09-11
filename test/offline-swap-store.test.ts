@@ -60,4 +60,32 @@ describe("OfflineSwapStore", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM settlements").get()).toEqual({ n: 1 });
     db.close();
   });
+
+  it.each(["https://relay.example", "not a URL"])("rejects a persisted non-Nostr relay: %s", (relay) => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    const store = new OfflineSwapStore(db, 60_000, () => 1_000);
+    store.createAccepted({
+      paymentHash: "aa".repeat(32), pr: "lnbc1", sessionId: "offline:1", preimage: "bb".repeat(32), amountMsat: 1_000,
+      recovery: { version: 1, solverName: "one", solverPubkey: "11".repeat(32), relays: ["wss://relay.example"], rfqId: "22".repeat(32), lockupAddress: "tark1", expectedAmount: 1, script: {} },
+    });
+    db.prepare("UPDATE offline_swaps SET relays_json = ?").run(JSON.stringify([relay]));
+
+    expect(() => store.listPending()).toThrow("invalid offline swap relays");
+    db.close();
+  });
+
+  it("rejects a persisted recovery with no relays", () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    const store = new OfflineSwapStore(db, 60_000, () => 1_000);
+    store.createAccepted({
+      paymentHash: "aa".repeat(32), pr: "lnbc1", sessionId: "offline:1", preimage: "bb".repeat(32), amountMsat: 1_000,
+      recovery: { version: 1, solverName: "one", solverPubkey: "11".repeat(32), relays: ["wss://relay.example"], rfqId: "22".repeat(32), lockupAddress: "tark1", expectedAmount: 1, script: {} },
+    });
+    db.prepare("UPDATE offline_swaps SET relays_json = '[]'").run();
+
+    expect(() => store.listPending()).toThrow("invalid offline swap relays");
+    db.close();
+  });
 });

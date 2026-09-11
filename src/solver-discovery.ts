@@ -104,6 +104,8 @@ export class DiscoveryService {
   refresh(): Promise<void> {
     if (this.refreshing) {
       this.refreshQueued = true;
+      // The shared outer promise includes every queued do/while iteration, so
+      // callers observe the refresh they requested rather than a stale snapshot.
       return this.refreshing;
     }
     this.refreshing = (async () => {

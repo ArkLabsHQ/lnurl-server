@@ -40,6 +40,7 @@ import { DbSettlementStore } from "../../src/settlement-store.js";
 import { OfflineSwapStore } from "../../src/offline-swap-store.js";
 import { staticSettings } from "../../src/settings.js";
 import { createOfflineSwapCoordinator, type OfflineSwapCreator } from "../../src/intent-swap.js";
+import { createSelfClaimer } from "../../src/self-claim.js";
 import { httpTransport } from "../../src/vendor/arkade-swap/rfq.js";
 import { solverCard } from "../fixtures/solver-cards.js";
 import { startOfflineSettlementPoller } from "../../src/offline-poller.js";
@@ -53,7 +54,10 @@ import {
   nodeSqliteStorage,
   ARKD_URL,
   COVCLAIMD_URL,
+  EMULATOR_URL,
   SOLVER_HTTP_TEST_URL,
+  startCovclaimd,
+  stopCovclaimd,
 } from "./support/regtest.js";
 
 const AMOUNT_SATS = 5000;
@@ -77,9 +81,9 @@ function req(url: string, method: string, body?: unknown, token?: string) {
 
 // Under `stamped` no reveal is sent, so a settle proves the tx-stream ingress.
 describe.each([
-  { label: "reveal", stamp: false },
-  { label: "stamped", stamp: true },
-])("e2e: offline receive via the intents corridor ($label)", ({ stamp }) => {
+  { label: "self-claim", stamp: false, selfClaim: true },
+  { label: "stamped covclaimd", stamp: true, selfClaim: false },
+])("e2e: offline receive via the intents corridor ($label)", ({ stamp, selfClaim }) => {
   let db: Db | undefined;
   let server: http.Server | undefined;
   let baseUrl: string;
@@ -92,6 +96,8 @@ describe.each([
   const stateDir = mkdtempSync(join(tmpdir(), `lnurl-server-e2e-${stamp ? "stamped" : "reveal"}-`));
   const dbPath = join(stateDir, "lnurl-server.sqlite");
   let payer: { stop: () => void } | undefined;
+  let covclaimdStopped = false;
+  let selfClaimed = false;
 
   async function startLocal(): Promise<void> {
     db = openDb(dbPath);
@@ -102,6 +108,7 @@ describe.each([
     settlements = new DbSettlementStore(db, 3_600_000);
     const offlineSwaps = new OfflineSwapStore(db, 3_600_000);
     const card = solverCard("registry", 30, "regtest");
+    const realSelfClaimer = selfClaim ? createSelfClaimer({ arkServerUrl: ARKD_URL, emulatorUrl: EMULATOR_URL }) : undefined;
     creator = await createOfflineSwapCoordinator({
       discovery: { selectLightningReceive: () => [{
         name: card.name,
@@ -115,6 +122,14 @@ describe.each([
       covclaimdUrl: COVCLAIMD_URL,
       arkServerUrl: ARKD_URL,
       stampClaimPacket: stamp,
+      ...(realSelfClaimer ? { selfClaimer: {
+        register: (registration) => realSelfClaimer.register(registration),
+        claim: async (swapId, preimage) => {
+          const outcome = await realSelfClaimer.claim(swapId, preimage);
+          if (outcome.state === "claimed") selfClaimed = true;
+          return outcome;
+        },
+      } } : {}),
     });
     const defaults = { baseUrl: "", minSendable: 1000, maxSendable: 100_000_000_000, invoiceTimeoutMs: 30_000, registrationRateLimitPerMin: 1000 };
     const app = createServer(
@@ -177,6 +192,7 @@ describe.each([
   afterAll(async () => {
     payer?.stop();
     await stopLocal();
+    if (covclaimdStopped) await startCovclaimd();
     rmSync(stateDir, { recursive: true, force: true });
   });
 
@@ -196,6 +212,10 @@ describe.each([
     // Restart after invoice acceptance but before payment. The next process must
     // reconstruct the pinned solver and covenant claim entirely from SQLite.
     await stopLocal();
+    if (selfClaim) {
+      await stopCovclaimd();
+      covclaimdStopped = true;
+    }
     await startLocal();
     verifyUrl = `${baseUrl}/lnurl/verify/${paymentHash}`;
     expect(settlements.get(paymentHash)).toMatchObject({ swapId, settled: false });
@@ -267,6 +287,7 @@ describe.each([
     expect(payment?.status).toBe("SUCCEEDED");
     expect(payment?.payment_preimage).toBe(preimage);
     expect(Number(payment?.value_sat)).toBe(AMOUNT_SATS);
+    expect(selfClaimed).toBe(selfClaim);
 
     // And the covenant did its one job: the sats landed on the user's Arkade address.
     const script = hex.encode(ArkAddress.decode(receiver.arkadeAddress).pkScript);

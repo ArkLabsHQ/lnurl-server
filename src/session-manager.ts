@@ -18,6 +18,8 @@ export class SessionManager {
     const replacesExisting = Boolean(replacing && tokensEqual(replacing.token, replacingToken!));
     if (this.sessions.size - (replacesExisting ? 1 : 0) >= maxSessions) return false;
     let fromIp = 0;
+    // Intentionally O(n): MAX_SESSIONS bounds this scan (5,000 by default).
+    // Add per-IP counters only if production profiling shows this is material.
     for (const session of this.sessions.values()) if (session.ip === ip && session !== replacing) fromIp++;
     return fromIp < maxPerIp;
   }

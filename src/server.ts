@@ -83,6 +83,8 @@ async function createOfflineSwapAndRespond(args: {
     // Caller guarantees whole satoshis (rejected at the route otherwise).
     const swap = await creator.create({ amountSat: amountMsat / 1000, receiveAddress, claimPublicKey });
     const accepted = { paymentHash: swap.preimageHash, pr: swap.invoice, sessionId: `offline:${addressId}`, preimage: swap.preimage, amountMsat };
+    // With DB_PATH, OfflineSwapStore is the single atomic persistence boundary:
+    // it writes both settlement and restart recovery rows in one transaction.
     if (offlineSwaps) offlineSwaps.createAccepted({ ...accepted, recovery: swap.recovery });
     else store.create({ ...accepted, swapId: swap.swapId });
     res.json({
