@@ -47,9 +47,11 @@ async function main(): Promise<void> {
       registrationRateLimitPerMin: config.registrationRateLimitPerMin,
     });
     const settlements = new DbSettlementStore(db, config.verifyTtlMs);
+    let offlineSwaps: import("./offline-swap-store.js").OfflineSwapStore | undefined;
     let offlineSwapCreator: import("./intent-swap.js").OfflineSwapCreator | undefined;
     if (config.offlineReceive.enabled) {
       const { createOfflineSwapCoordinator } = await import("./intent-swap.js");
+      const { OfflineSwapStore } = await import("./offline-swap-store.js");
       const { DiscoveryService } = await import("./solver-discovery.js");
       const { isNetwork } = await import("@arkade-os/solver-discovery");
       const off = config.offlineReceive;
@@ -65,6 +67,7 @@ async function main(): Promise<void> {
         cacheStore: repos.solverRegistryCache,
       });
       await discovery.start();
+      offlineSwaps = new OfflineSwapStore(db, config.verifyTtlMs);
       let selfClaimer: import("./self-claim.js").SelfClaimer | undefined;
       if (off.selfClaim) {
         const { createSelfClaimer, checkEmulatorPairing } = await import("./self-claim.js");
@@ -89,12 +92,13 @@ async function main(): Promise<void> {
       settings,
       settlements,
       offlineSwapCreator,
+      offlineSwaps,
     };
     // Neither timer below keeps its stop function: both are unref'd, and there is
     // no process-shutdown hook for either to be called from.
     if (offlineSwapCreator) {
       const { startOfflineSettlementPoller } = await import("./offline-poller.js");
-      startOfflineSettlementPoller(settlements, offlineSwapCreator, 15_000);
+      startOfflineSettlementPoller(settlements, offlineSwapCreator, 15_000, offlineSwaps);
       const via = `cards:${config.offlineReceive.registryUrls[0] ?? config.offlineReceive.cardsFile}`;
       console.log(`offline receive: enabled (solver=${via})`);
     }

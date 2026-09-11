@@ -12,6 +12,7 @@ import { RateLimiter } from "./rate-limit.js";
 import { paymentHashFromBolt11 } from "./bolt11.js";
 import { MemorySettlementStore, type SettlementStore } from "./settlement-store.js";
 import type { OfflineSwapCreator } from "./intent-swap.js";
+import type { OfflineSwapStore } from "./offline-swap-store.js";
 import { ArkAddress } from "@arkade-os/sdk";
 import { advertisedOptions, resolvePaymentOption } from "./payment-options.js";
 import { applyQuote, type QuoteProvider, type PaymentQuote } from "./quote-provider.js";
@@ -47,6 +48,7 @@ export interface ServerDeps {
   /** When set, an offline LN address with a registered Arkade identity gets a
    *  server-orchestrated corridor swap instead of an "offline" error. */
   offlineSwapCreator?: OfflineSwapCreator;
+  offlineSwaps?: OfflineSwapStore;
   /** When set, enables LUD-XX unit-denominated quotes (advertises `units`, quotes callbacks). */
   quoteProvider?: QuoteProvider;
 }
@@ -59,6 +61,7 @@ export interface ServerDeps {
 async function createOfflineSwapAndRespond(args: {
   creator: OfflineSwapCreator;
   store: SettlementStore;
+  offlineSwaps?: OfflineSwapStore;
   baseUrl: string;
   amountMsat: number;
   receiveAddress: string;
@@ -69,18 +72,13 @@ async function createOfflineSwapAndRespond(args: {
   echoLightningOption?: boolean;
   res: express.Response;
 }): Promise<void> {
-  const { creator, store, baseUrl, amountMsat, receiveAddress, claimPublicKey, addressId, paymentQuote, echoLightningOption, res } = args;
+  const { creator, store, offlineSwaps, baseUrl, amountMsat, receiveAddress, claimPublicKey, addressId, paymentQuote, echoLightningOption, res } = args;
   try {
     // Caller guarantees whole satoshis (rejected at the route otherwise).
     const swap = await creator.create({ amountSat: amountMsat / 1000, receiveAddress, claimPublicKey });
-    store.create({
-      paymentHash: swap.preimageHash,
-      pr: swap.invoice,
-      sessionId: `offline:${addressId}`,
-      preimage: swap.preimage,
-      swapId: swap.swapId,
-      amountMsat,
-    });
+    const accepted = { paymentHash: swap.preimageHash, pr: swap.invoice, sessionId: `offline:${addressId}`, preimage: swap.preimage, amountMsat };
+    if (offlineSwaps) offlineSwaps.createAccepted({ ...accepted, recovery: swap.recovery });
+    else store.create({ ...accepted, swapId: swap.swapId });
     res.json({
       pr: swap.invoice,
       routes: [],
@@ -567,7 +565,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           return;
         }
         await createOfflineSwapAndRespond({
-          creator, store, baseUrl: settings.baseUrl(), amountMsat,
+          creator, store, offlineSwaps: deps.offlineSwaps, baseUrl: settings.baseUrl(), amountMsat,
           receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, paymentQuote,
           echoLightningOption: Boolean(paymentOptionId), res,
         });

@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { MemorySettlementStore } from "../src/settlement-store.js";
+import { DbSettlementStore, MemorySettlementStore } from "../src/settlement-store.js";
 import { settleOfflineSwaps } from "../src/offline-poller.js";
 import type { OfflineSwapCreator } from "../src/intent-swap.js";
+import { OfflineSwapStore } from "../src/offline-swap-store.js";
+import { openDb } from "../src/db/connection.js";
+import { runMigrations } from "../src/db/migrations.js";
 
 function creatorReporting(settledIds: string[]): OfflineSwapCreator {
   return {
@@ -89,5 +92,28 @@ describe("settleOfflineSwaps", () => {
     expect(n).toBe(0);
     expect(store.get("aa")!.settled).toBe(false);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("swap-1"), expect.any(Error));
+  });
+
+  it("drives status and self-claim from a persisted recovery row", async () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    const settlements = new DbSettlementStore(db, 60_000, () => 1_001);
+    const recovered = new OfflineSwapStore(db, 60_000, () => 1_000);
+    recovered.createAccepted({
+      paymentHash: "aa".repeat(32), pr: "lnbc1", sessionId: "offline:1", preimage: "bb".repeat(32), amountMsat: 5_000_000,
+      recovery: { version: 1, solverName: "primary", solverPubkey: "11".repeat(32), relays: ["wss://relay.example"], rfqId: "22".repeat(32), lockupAddress: "tark1", expectedAmount: 4_999, script: { sender: "33".repeat(32) } },
+    });
+    const seen: unknown[] = [];
+    const creator: OfflineSwapCreator = {
+      create: async () => { throw new Error("not used"); },
+      selfClaim: async (_swapId, _preimage, recovery) => { seen.push(recovery); return { state: "skipped", reason: "unfunded" }; },
+      isSettled: async (_swapId, recovery) => { seen.push(recovery); return true; },
+    };
+
+    expect(await settleOfflineSwaps(settlements, creator, recovered)).toBe(1);
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toMatchObject({ solverPubkey: "11".repeat(32), relays: ["wss://relay.example"] });
+    expect(settlements.get("aa".repeat(32))?.settled).toBe(true);
+    db.close();
   });
 });

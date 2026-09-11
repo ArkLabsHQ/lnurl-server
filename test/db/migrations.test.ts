@@ -11,7 +11,7 @@ function tableNames(db = openDb(":memory:")) {
 describe("runMigrations", () => {
   it("creates every table", () => {
     const { db, names } = tableNames();
-    for (const t of ["schema_migrations", "domains", "addresses", "blacklist", "api_keys", "settings", "settlements", "solver_cards", "solver_registry_cache"]) {
+    for (const t of ["schema_migrations", "domains", "addresses", "blacklist", "api_keys", "settings", "settlements", "solver_cards", "solver_registry_cache", "offline_swaps"]) {
       expect(names).toContain(t);
     }
     db.close();
@@ -21,7 +21,7 @@ describe("runMigrations", () => {
     const db = openDb(":memory:");
     runMigrations(db);
     const row = db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number };
-    expect(row.v).toBe(7);
+    expect(row.v).toBe(8);
     db.close();
   });
 
@@ -30,7 +30,16 @@ describe("runMigrations", () => {
     runMigrations(db);
     expect(() => runMigrations(db)).not.toThrow();
     const row = db.prepare("SELECT COUNT(*) AS c FROM schema_migrations").get() as { c: number };
-    expect(row.c).toBe(7);
+    expect(row.c).toBe(8);
+    db.close();
+  });
+
+  it("blocks migration 8 while legacy offline swaps remain unsettled", () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    db.exec("DROP TABLE offline_swaps; DELETE FROM schema_migrations WHERE version = 8;");
+    db.prepare("INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, created_at) VALUES ('aa', 'lnbc1', 'offline:1', 0, 'bb', 'legacy-rfq', ?)").run(Date.now());
+    expect(() => runMigrations(db)).toThrow(/upgrade blocked.*1 unsettled legacy offline swap/i);
     db.close();
   });
 });

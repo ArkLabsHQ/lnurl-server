@@ -282,6 +282,19 @@ describe("createOfflineSwapCoordinator", () => {
     expect(await creator.isSettled(swap.swapId)).toBe(false);
     solver.statuses.set(swap.swapId, "settled");
     expect(await creator.isSettled(swap.swapId)).toBe(true);
+
+    const endpoints: unknown[] = [];
+    const restarted = await createOfflineSwapCoordinator(swapSettings({
+      discovery: { selectLightningReceive: () => [] },
+      transportFactory: (endpoint) => { endpoints.push(endpoint); return httpTransport(solver.baseUrl); },
+    }));
+    expect(await restarted.isSettled(swap.swapId, swap.recovery)).toBe(true);
+    expect(endpoints).toEqual([expect.objectContaining({
+      name: swap.recovery.solverName,
+      discoveryPubkey: swap.recovery.solverPubkey,
+      relays: swap.recovery.relays,
+    })]);
+    await restarted.close?.();
   });
 
   it("refuses an invoice on a different payment hash", async () => {

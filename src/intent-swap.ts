@@ -33,6 +33,7 @@ import { paymentHashOf } from "./vendor/arkade-swap/onchainHtlc.js";
 import { invoiceFactsFromBolt11 } from "./bolt11.js";
 import type { DiscoveryService, SolverCandidate } from "./solver-discovery.js";
 import type { SelfClaimer, SelfClaimOutcome } from "./self-claim.js";
+import { deserializeSelfClaim } from "./self-claim-codec.js";
 
 export interface OfflineSwapParams {
   /** Invoice amount in satoshis — the payer pays exactly this (`amountSide: "from"`). */
@@ -72,9 +73,9 @@ export interface OfflineSwapCreator {
   /** Quote a solver-mediated receive paying `receiveAddress`. */
   create(params: OfflineSwapParams): Promise<OfflineSwapResult>;
   /** True once the solver reports the payer's invoice settled. */
-  isSettled(swapId: string): Promise<boolean>;
+  isSettled(swapId: string, recovery?: OfflineSwapRecoveryV1): Promise<boolean>;
   /** Present only under OFFLINE_SELF_CLAIM. @see SelfClaimer */
-  selfClaim?(swapId: string, preimage: string): Promise<SelfClaimOutcome>;
+  selfClaim?(swapId: string, preimage: string, recovery?: OfflineSwapRecoveryV1): Promise<SelfClaimOutcome>;
   /** Close the transport when present (a Nostr pool holds open relay sockets).
    *  Optional: process exit closes them anyway — cli has no shutdown hook today. */
   close?(): Promise<void>;
@@ -92,7 +93,7 @@ export interface IntentSwapSettings {
   stampClaimPacket?: boolean;
   /** Set under OFFLINE_SELF_CLAIM: pushes each lockup's covenant claim leaf. */
   selfClaimer?: SelfClaimer;
-  transportFactory?: (candidate: SolverCandidate) => RfqTransport;
+  transportFactory?: (candidate: Pick<SolverCandidate, "name" | "discoveryPubkey" | "relays">) => RfqTransport;
 }
 
 /** Operator + covclaimd facts a swap derivation needs. Refetched on a TTL so a
@@ -147,7 +148,7 @@ async function fetchCovclaimdKeys(covclaimdUrl: string): Promise<{ covclaimdPubk
 export async function createOfflineSwapCoordinator(settings: IntentSwapSettings): Promise<OfflineSwapCreator> {
   const arkProvider = new RestArkProvider(settings.arkServerUrl);
   const pinned = new Map<string, RfqTransport>();
-  const transportFor = settings.transportFactory ?? ((candidate: SolverCandidate) =>
+  const transportFor: (candidate: Pick<SolverCandidate, "name" | "discoveryPubkey" | "relays">) => RfqTransport = settings.transportFactory ?? ((candidate) =>
     nostrTransport(candidate.discoveryPubkey, candidate.relays, settings.nostrSecretKey));
 
   let cached: { at: number; ctx: Promise<CorridorContext> } | null = null;
@@ -251,15 +252,34 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
       throw new Error(`all solver candidates failed: ${failures.join("; ")}`);
     },
 
-    async isSettled(swapId) {
-      const transport = pinned.get(swapId);
+    async isSettled(swapId, recovery) {
+      let transport = pinned.get(swapId);
+      if (!transport && recovery) {
+        if (recovery.rfqId !== swapId) throw new Error("offline swap recovery RFQ id mismatch");
+        transport = transportFor({ name: recovery.solverName, discoveryPubkey: recovery.solverPubkey, relays: recovery.relays });
+        pinned.set(swapId, transport);
+      }
       if (!transport) throw new Error(`no pinned solver transport for swap ${swapId}`);
       const status = await transport.status(swapId);
       return status?.state === "settled";
     },
 
     ...(settings.selfClaimer
-      ? { selfClaim: (swapId: string, preimage: string) => settings.selfClaimer!.claim(swapId, preimage) }
+      ? { selfClaim: async (swapId: string, preimage: string, recovery?: OfflineSwapRecoveryV1) => {
+          if (recovery) {
+            if (recovery.rfqId !== swapId) throw new Error("offline swap recovery RFQ id mismatch");
+            const restored = deserializeSelfClaim(JSON.stringify({
+              version: recovery.version,
+              expectedAmount: recovery.expectedAmount,
+              params: recovery.script,
+            }));
+            const ctx = await context();
+            const address = restored.script.address(ctx.hrp, ctx.serverPubkey).encode();
+            if (address !== recovery.lockupAddress) throw new Error("offline swap recovery lockup address mismatch");
+            settings.selfClaimer!.register({ swapId, script: restored.script, expectedAmount: restored.expectedAmount });
+          }
+          return settings.selfClaimer!.claim(swapId, preimage);
+        } }
       : {}),
 
     close: async () => {

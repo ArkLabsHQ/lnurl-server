@@ -34,6 +34,7 @@ import { bootstrap } from "../../src/bootstrap.js";
 import { createRepositories } from "../../src/db/repositories/index.js";
 import { AddressService } from "../../src/address-service.js";
 import { DbSettlementStore } from "../../src/settlement-store.js";
+import { OfflineSwapStore } from "../../src/offline-swap-store.js";
 import { staticSettings } from "../../src/settings.js";
 import { createOfflineSwapCoordinator, type OfflineSwapCreator } from "../../src/intent-swap.js";
 import { httpTransport } from "../../src/vendor/arkade-swap/rfq.js";
@@ -114,6 +115,7 @@ describe.each([
     const repos = createRepositories(db);
     const addressService = new AddressService(repos, randomBytes(32));
     settlements = new DbSettlementStore(db, 3_600_000);
+    const offlineSwaps = new OfflineSwapStore(db, 3_600_000);
     const card = solverCard("registry", 30, "regtest");
     const creator: OfflineSwapCreator = await createOfflineSwapCoordinator({
       discovery: { selectLightningReceive: () => [{
@@ -132,14 +134,14 @@ describe.each([
     const defaults = { baseUrl: "", minSendable: 1000, maxSendable: 100_000_000_000, invoiceTimeoutMs: 30_000, registrationRateLimitPerMin: 1000 };
     const app = createServer(
       { port: 0, baseUrl: "", minSendable: 1000, maxSendable: 100_000_000_000, invoiceTimeoutMs: 30_000, trustProxy: false },
-      { repos, addressService, settings: staticSettings(defaults), settlements, offlineSwapCreator: creator },
+      { repos, addressService, settings: staticSettings(defaults), settlements, offlineSwapCreator: creator, offlineSwaps },
     );
     await new Promise<void>((resolve) => {
       server = http.createServer(app).listen(0, "127.0.0.1", resolve);
     });
     baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     defaults.baseUrl = baseUrl; // staticSettings reads it per request
-    stopPoller = startOfflineSettlementPoller(settlements, creator, 1000);
+    stopPoller = startOfflineSettlementPoller(settlements, creator, 1000, offlineSwaps);
 
     // Register the LN address + its Arkade receive identity, then go "offline".
     const reg = await req(`${baseUrl}/lnurl/address`, "POST", { token, username: "alice" });

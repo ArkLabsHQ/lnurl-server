@@ -147,6 +147,23 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 8,
+    up: `
+      CREATE TABLE offline_swaps (
+        payment_hash    TEXT PRIMARY KEY REFERENCES settlements(payment_hash) ON DELETE CASCADE,
+        rfq_id          TEXT NOT NULL UNIQUE,
+        solver_name     TEXT NOT NULL,
+        solver_pubkey   TEXT NOT NULL,
+        relays_json     TEXT NOT NULL,
+        recovery_version INTEGER NOT NULL,
+        recovery_json  TEXT NOT NULL,
+        lockup_address  TEXT NOT NULL,
+        expected_amount INTEGER NOT NULL,
+        created_at      INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 /** Apply all pending forward-only migrations inside a transaction each. */
@@ -156,6 +173,16 @@ export function runMigrations(db: Db): void {
   );
   const row = db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number | null };
   const current = row.v ?? 0;
+
+  if (current >= 4 && current < 8) {
+    const table = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'offline_swaps'").get();
+    if (!table) {
+      const legacy = db.prepare("SELECT COUNT(*) AS count FROM settlements WHERE swap_id IS NOT NULL AND settled = 0").get() as { count: number };
+      if (legacy.count > 0) {
+        throw new Error(`upgrade blocked: ${legacy.count} unsettled legacy offline swap(s) must drain first`);
+      }
+    }
+  }
 
   for (const m of MIGRATIONS) {
     if (m.version <= current) continue;
