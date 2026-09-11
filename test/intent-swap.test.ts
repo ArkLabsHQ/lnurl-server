@@ -7,6 +7,7 @@ import { ArkAddress, toXOnly } from "@arkade-os/sdk";
 import { createIntentSwapCreator, type OfflineSwapCreator } from "../src/intent-swap.js";
 import { receiveVtxoScript, unilateralClaimDelay } from "../src/vendor/arkade-swap/rfq.js";
 import { buildInvoice } from "./helpers/bolt11.js";
+import { registryIndex, solverCard } from "./fixtures/solver-cards.js";
 
 // Integration test of the real corridor creator against fake solver / covclaimd /
 // operator services over real HTTP (repo style, no module mocks). The fake solver
@@ -260,28 +261,11 @@ describe("createIntentSwapCreator", () => {
   });
 
   it("rejects out-of-bounds amounts with the card's numbers when discovered from a registry", async () => {
-    // A registry index whose only lightning-corridor card is bounded 1000–25000 sats.
-    // Its transport points nowhere usable — discovery alone is what we're proving.
+    const card = solverCard("registry", 30);
+    card.markets[0]!.max_quote_amount = "25000";
     const registry = await serve((_req, res) => {
       res.setHeader("content-type", "application/json");
-      res.end(
-        JSON.stringify({
-          markets: [
-            {
-              pair: "BTC/lightning:BTC",
-              quote_corridor: "lightning",
-              fee_bps: 30,
-              min_base_amount: "1000",
-              max_base_amount: "50000",
-              min_quote_amount: "1000",
-              max_quote_amount: "25000",
-              solver: "card-solver",
-              discovery_pubkey: "aa".repeat(32), // x-only Nostr pubkey
-              transports: { nostr: { relays: ["wss://relay.invalid"] } },
-            },
-          ],
-        }),
-      );
+      res.end(JSON.stringify(registryIndex(card, Math.floor(Date.now() / 1000))));
     });
     try {
       const discovered = await createIntentSwapCreator({ registryUrl: registry.baseUrl, covclaimdUrl: covclaimd.baseUrl, arkServerUrl: operator.baseUrl });

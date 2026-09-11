@@ -1,63 +1,251 @@
-// Solver discovery from a solver-registry index (see arkade-os/solver-registry). The
-// index is a flat, fee-sorted list of markets; corridor markets carry the RFQ
-// rendezvous (discovery_pubkey + transports) self-authenticated by the card's sig.
-// We filter to the lightning corridor and take the cheapest card — registry curation
-// is a convenience, not a trust anchor: the covenant enforces the trade's terms
-// regardless of which solver we talk to.
+import { readFile } from "node:fs/promises";
+import {
+  DEFAULT_MAX_AGE_SECONDS,
+  discover,
+  marketCorridor,
+  selectMarkets,
+  sideLimits,
+  validateCard,
+  type DiscoveredMarket,
+  type FetchLike,
+  type Network,
+  type SourceReport,
+} from "@arkade-os/solver-discovery";
+import type { SolverCardsRepo } from "./db/repositories/solver-cards.js";
+import type { SolverRegistryCacheRepo } from "./db/repositories/solver-registry-cache.js";
 
-/** A registry-index market entry for the lightning corridor. Amounts land in sats. */
+const DEFAULT_REFRESH_MS = 10 * 60_000;
+const MAX_CACHE_AGE_MS = DEFAULT_MAX_AGE_SECONDS * 1000;
+
+type CardStore = Pick<SolverCardsRepo, "listEnabled">;
+type CacheStore = Pick<SolverRegistryCacheRepo, "get" | "put">;
+
+export interface SolverCandidate {
+  name: string;
+  market: DiscoveredMarket;
+  discoveryPubkey: string;
+  relays: string[];
+  source: string;
+  sourceType: "registry" | "local";
+}
+
+export interface DiscoverySourceStatus extends SourceReport {
+  cache?: "fresh" | "expired";
+}
+
+export interface DiscoveryStatus {
+  ready: boolean;
+  generation: number;
+  refreshedAt: number | null;
+  nextRefreshAt: number | null;
+  candidateCount: number;
+  sources: DiscoverySourceStatus[];
+  warnings: string[];
+  reason?: string;
+}
+
+export interface DiscoveryServiceOptions {
+  network: Network;
+  registryUrls: string[];
+  cardsFile?: string;
+  cardStore: CardStore;
+  cacheStore: CacheStore;
+  fetchImpl?: FetchLike;
+  readFile?: (path: string) => Promise<string>;
+  now?: () => number;
+  refreshIntervalMs?: number;
+}
+
+interface Snapshot {
+  generation: number;
+  candidates: SolverCandidate[];
+  refreshedAt: number;
+  expiresAt: number;
+}
+
+export class DiscoveryService {
+  private readonly now: () => number;
+  private readonly readFile: (path: string) => Promise<string>;
+  private readonly refreshIntervalMs: number;
+  private readonly upstreamFetch: FetchLike;
+  private fileCards: unknown[] = [];
+  private snapshot: Snapshot | null = null;
+  private latestSources: DiscoverySourceStatus[] = [];
+  private latestWarnings: string[] = [];
+  private refreshing: Promise<void> | null = null;
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private nextRefreshAt: number | null = null;
+  private cacheUsed = new Set<string>();
+  private cacheExpired = new Set<string>();
+
+  constructor(private options: DiscoveryServiceOptions) {
+    this.now = options.now ?? Date.now;
+    this.readFile = options.readFile ?? ((path) => readFile(path, "utf8"));
+    this.refreshIntervalMs = options.refreshIntervalMs ?? DEFAULT_REFRESH_MS;
+    this.upstreamFetch = options.fetchImpl ?? (fetch as FetchLike);
+  }
+
+  async start(): Promise<void> {
+    this.fileCards = await this.loadFileCards();
+    await this.refresh();
+    if (this.refreshIntervalMs > 0) {
+      this.nextRefreshAt = this.now() + this.refreshIntervalMs;
+      this.timer = setInterval(() => {
+        this.nextRefreshAt = this.now() + this.refreshIntervalMs;
+        void this.refresh();
+      }, this.refreshIntervalMs);
+      this.timer.unref?.();
+    }
+  }
+
+  refresh(): Promise<void> {
+    if (this.refreshing) return this.refreshing;
+    this.refreshing = this.doRefresh().finally(() => { this.refreshing = null; });
+    return this.refreshing;
+  }
+
+  stop(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    this.nextRefreshAt = null;
+  }
+
+  selectLightningReceive(amountSat: number): SolverCandidate[] {
+    if (!Number.isSafeInteger(amountSat) || amountSat <= 0) return [];
+    const slip = this.options.network === "bitcoin" ? 0 : 1;
+    const markets = selectMarkets(this.snapshot?.candidates.map((candidate) => candidate.market) ?? [], {
+      baseId: `arkade:${this.options.network}/slip44:${slip}`,
+      quoteId: `bolt11:${this.options.network}/slip44:${slip}`,
+      wantSide: "base",
+    });
+    const allowed = new Set(markets.filter((market) => {
+      const limits = sideLimits(market, "quote");
+      return limits !== null && BigInt(amountSat) >= limits.min && BigInt(amountSat) <= limits.max;
+    }));
+    return (this.snapshot?.candidates ?? []).filter((candidate) => allowed.has(candidate.market));
+  }
+
+  status(): DiscoveryStatus {
+    const snapshot = this.snapshot && this.snapshot.expiresAt > this.now() ? this.snapshot : null;
+    return {
+      ready: Boolean(snapshot?.candidates.length),
+      generation: snapshot?.generation ?? 0,
+      refreshedAt: snapshot?.refreshedAt ?? null,
+      nextRefreshAt: this.nextRefreshAt,
+      candidateCount: snapshot?.candidates.length ?? 0,
+      sources: this.latestSources,
+      warnings: this.latestWarnings,
+      ...(!snapshot?.candidates.length ? { reason: "no usable lightning-receive solver cards" } : {}),
+    };
+  }
+
+  private async loadFileCards(): Promise<unknown[]> {
+    if (!this.options.cardsFile) return [];
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await this.readFile(this.options.cardsFile));
+    } catch (error) {
+      throw new Error(`${this.options.cardsFile}: ${error instanceof Error ? error.message : "cannot read card file"}`);
+    }
+    if (!Array.isArray(parsed)) throw new Error(`${this.options.cardsFile}: expected a JSON array of solver cards`);
+    parsed.forEach((card, index) => {
+      const result = validateCard(card);
+      if (!result.ok) throw new Error(`${this.options.cardsFile}: invalid card ${index}: ${result.errors.join("; ")}`);
+    });
+    return parsed;
+  }
+
+  private async doRefresh(): Promise<void> {
+    this.cacheUsed.clear();
+    this.cacheExpired.clear();
+    const dbCards = this.options.cardStore.listEnabled(this.options.network).map((row) => {
+      try { return { card: JSON.parse(row.cardJson), network: this.options.network, label: `db:${row.label}` }; }
+      catch { return { card: {}, network: this.options.network, label: `db:${row.label}` }; }
+    });
+    const fileCards = this.fileCards.map((card, index) => ({
+      card,
+      network: this.options.network,
+      label: `file:${this.options.cardsFile}:${index}`,
+    }));
+    const result = await discover({
+      network: this.options.network,
+      registries: this.options.registryUrls,
+      localCards: [...dbCards, ...fileCards],
+      fetchImpl: this.cacheAwareFetch,
+      now: Math.floor(this.now() / 1000),
+    });
+    const staleSources = new Set(result.sources.filter((source) => source.warnings.some((warning) => /index is stale/.test(warning))).map((source) => source.source));
+    const markets = result.markets.filter((market) => !staleSources.has(market.source));
+    const candidates = markets.flatMap((market): SolverCandidate[] => {
+      if (marketCorridor(market, "base") !== "arkade" || marketCorridor(market, "quote") !== "bolt11") return [];
+      const discoveryPubkey = market.discovery_pubkey;
+      const relays = market.transports?.nostr?.relays;
+      if (!discoveryPubkey || !relays?.length) return [];
+      return [{ name: market.solver, market, discoveryPubkey, relays: [...relays], source: market.source, sourceType: market.sourceType }];
+    });
+    this.latestSources = result.sources.map((source) => ({
+      ...source,
+      ...(this.cacheUsed.has(source.source) ? { cache: "fresh" as const } : {}),
+      ...(this.cacheExpired.has(source.source) ? { cache: "expired" as const } : {}),
+    }));
+    this.latestWarnings = result.warnings;
+    if (!candidates.length) {
+      if (this.snapshot && this.snapshot.expiresAt <= this.now()) this.snapshot = null;
+      return;
+    }
+    const hasLocal = candidates.some((candidate) => candidate.sourceType === "local");
+    this.snapshot = {
+      generation: (this.snapshot?.generation ?? 0) + 1,
+      candidates,
+      refreshedAt: this.now(),
+      expiresAt: hasLocal ? Number.POSITIVE_INFINITY : this.now() + MAX_CACHE_AGE_MS,
+    };
+  }
+
+  private cacheAwareFetch: FetchLike = async (input, init) => {
+    try {
+      const response = await this.upstreamFetch(input, init);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const body = await response.text();
+      this.options.cacheStore.put({ url: input, network: this.options.network, body, fetchedAt: this.now() });
+      return { ok: true, status: response.status, text: async () => body };
+    } catch (error) {
+      const cached = this.options.cacheStore.get(input, this.options.network);
+      if (cached && this.now() - cached.fetchedAt <= MAX_CACHE_AGE_MS) {
+        this.cacheUsed.add(input);
+        return { ok: true, status: 200, text: async () => cached.body };
+      }
+      if (cached) this.cacheExpired.add(input);
+      throw error;
+    }
+  };
+}
+
 export interface CorridorCard {
   name: string;
   discoveryPubkey: string;
   relays: string[];
   feeBps: number;
-  /** Bounds on the corridor's LIGHTNING leg (the quote side): what the payer pays. */
   minSat: number;
   maxSat: number;
 }
 
-interface IndexMarket {
-  quote_corridor?: unknown;
-  fee_bps?: unknown;
-  min_quote_amount?: unknown;
-  max_quote_amount?: unknown;
-  solver?: unknown;
-  discovery_pubkey?: unknown;
-  transports?: { nostr?: { relays?: unknown } };
-}
-
-function asCard(m: IndexMarket): CorridorCard | null {
-  if (m.quote_corridor !== "lightning") return null;
-  if (typeof m.discovery_pubkey !== "string" || !/^[0-9a-f]{64}$/i.test(m.discovery_pubkey)) return null;
-  const relays = m.transports?.nostr?.relays;
-  // The registry schema permits ws:// (regtest/dev relays terminate no TLS).
-  if (!Array.isArray(relays) || !relays.length || !relays.every((r) => typeof r === "string" && /^wss?:\/\//.test(r))) return null;
-  const minSat = Number(m.min_quote_amount);
-  const maxSat = Number(m.max_quote_amount);
-  if (!Number.isFinite(minSat) || !Number.isFinite(maxSat) || minSat < 0 || maxSat < minSat) return null;
-  return {
-    name: typeof m.solver === "string" ? m.solver : m.discovery_pubkey.slice(0, 8),
-    discoveryPubkey: m.discovery_pubkey.toLowerCase(),
-    relays: relays as string[],
-    feeBps: Number(m.fee_bps) || 0,
-    minSat,
-    maxSat,
-  };
-}
-
-/** Fetch a registry index and pick the lowest-fee lightning-corridor card.
- *  Returns null when the index serves no usable lightning corridor.
- *  The fetch is time-bounded: a hung registry must not stall startup forever. */
 export async function discoverLightningCorridor(
   registryUrl: string,
   fetchImpl: typeof fetch = fetch,
   timeoutMs = 10_000,
 ): Promise<CorridorCard | null> {
-  const res = await fetchImpl(registryUrl, { signal: AbortSignal.timeout(timeoutMs) });
-  if (!res.ok) throw new Error(`solver registry index: HTTP ${res.status}`);
-  const index = (await res.json()) as { markets?: unknown };
-  if (!Array.isArray(index.markets)) throw new Error("solver registry index: no markets array");
-  const cards = (index.markets as IndexMarket[]).map(asCard).filter((c): c is CorridorCard => c !== null);
-  cards.sort((a, b) => a.feeBps - b.feeBps);
-  return cards[0] ?? null;
+  const result = await discover({ registries: [registryUrl], fetchImpl: fetchImpl as FetchLike, timeoutMs });
+  const market = result.markets.find((candidate) => marketCorridor(candidate, "base") === "arkade" && marketCorridor(candidate, "quote") === "bolt11");
+  const relays = market?.transports?.nostr?.relays;
+  const limits = market ? sideLimits(market, "quote") : null;
+  if (!market?.discovery_pubkey || !relays?.length || !limits) return null;
+  return {
+    name: market.solver,
+    discoveryPubkey: market.discovery_pubkey,
+    relays: [...relays],
+    feeBps: market.fee_bps,
+    minSat: Number(limits.min),
+    maxSat: Number(limits.max),
+  };
 }
