@@ -124,6 +124,29 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE settlements ADD COLUMN amount_msat INTEGER;
     `,
   },
+  {
+    version: 7,
+    up: `
+      CREATE TABLE solver_cards (
+        id         INTEGER PRIMARY KEY,
+        label      TEXT NOT NULL,
+        network    TEXT NOT NULL,
+        card_json  TEXT NOT NULL,
+        enabled    INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX idx_solver_cards_network_enabled ON solver_cards(network, enabled);
+
+      CREATE TABLE solver_registry_cache (
+        url        TEXT NOT NULL,
+        network    TEXT NOT NULL,
+        body       TEXT NOT NULL,
+        fetched_at INTEGER NOT NULL,
+        PRIMARY KEY (url, network)
+      );
+    `,
+  },
 ];
 
 /** Apply all pending forward-only migrations inside a transaction each. */
