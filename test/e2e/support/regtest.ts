@@ -17,7 +17,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 export const REGTEST_DIR = join(HERE, "..", "..", "..", "regtest");
 export const ARKD_URL = process.env.E2E_ARKD_URL ?? "http://localhost:7070";
 export const COVCLAIMD_URL = process.env.E2E_COVCLAIMD_URL ?? "http://localhost:7271";
-export const SOLVER_URL = process.env.E2E_SOLVER_URL ?? "http://localhost:8787";
+export const EMULATOR_URL = process.env.E2E_EMULATOR_URL ?? "http://localhost:7073";
+export const SOLVER_HTTP_TEST_URL = process.env.E2E_SOLVER_HTTP_TEST_URL ?? "http://localhost:8787";
 export const ESPLORA_URL = process.env.E2E_ESPLORA_URL ?? "http://localhost:3000/api";
 
 /** The solver's throwaway regtest mnemonic — arkade-regtest's fixed, public, never-real-funds value. */
@@ -85,7 +86,7 @@ export async function stackIsUp(): Promise<boolean> {
   const checks = await Promise.all([
     httpOk(`${ARKD_URL}/v1/info`),
     httpOk(`${COVCLAIMD_URL}/v1/preimage/covclaimd-pubkey`),
-    httpOk(`${SOLVER_URL}/healthz`),
+    httpOk(`${SOLVER_HTTP_TEST_URL}/healthz`),
     (async () => {
       try {
         const info = await lncli<{ synced_to_chain: boolean }>("lnd", ["getinfo"]);
@@ -96,6 +97,22 @@ export async function stackIsUp(): Promise<boolean> {
     })(),
   ]);
   return checks.every(Boolean);
+}
+
+/** A timelock unit change invalidates existing VTXO scripts, so an old test
+ *  volume must be rebuilt rather than updated in place. */
+async function arkTimelocksMatch(): Promise<boolean> {
+  try {
+    const { stdout } = await run("docker", ["exec", "arkd", "arkd", "settings"], { timeout: 30_000 });
+    const settings = JSON.parse(stdout) as Record<string, string>;
+    return settings.unilateralExitDelay === STACK_ENV.ARKD_UNILATERAL_EXIT_DELAY
+      && settings.publicUnilateralExitDelay === STACK_ENV.ARKD_PUBLIC_UNILATERAL_EXIT_DELAY
+      && settings.boardingExitDelay === STACK_ENV.ARKD_BOARDING_EXIT_DELAY
+      && settings.checkpointExitDelay === STACK_ENV.ARKD_CHECKPOINT_EXIT_DELAY
+      && settings.vtxoTreeExpiry === STACK_ENV.ARKD_VTXO_TREE_EXPIRY;
+  } catch {
+    return false;
+  }
 }
 
 /** Build the intent-solver image from the checked-in commit if it is not local. */
@@ -121,13 +138,14 @@ export async function ensureStack(log: (s: string) => void = console.log): Promi
   }
   await ensureIntentSolverImage(log);
   if (await stackIsUp()) {
-    // A running stack may carry a solver from before the current image/overlay —
-    // refresh it, then reuse the stack.
-    await applySolverOverlay();
-    log("regtest stack already healthy; reusing it");
-    // If the stack predates a channel announcement (fresh chain), mature it.
-    await waitForLnChannel();
-    return;
+    if (await arkTimelocksMatch()) {
+      await applySolverOverlay();
+      log("regtest stack already healthy; reusing it");
+      await waitForLnChannel();
+      return;
+    }
+    log("regtest timelocks changed; rebuilding the test-owned stack and volumes...");
+    await run("node", ["regtest.mjs", "clean"], { cwd: REGTEST_DIR, env: STACK_ENV, timeout: 300_000 });
   }
   log("starting arkade-regtest stack (first boot pulls ~20 images; several minutes)...");
   const child: ChildProcess = spawn("node", ["regtest.mjs", "start"], { cwd: REGTEST_DIR, env: STACK_ENV, stdio: "inherit" });
@@ -141,6 +159,7 @@ export async function ensureStack(log: (s: string) => void = console.log): Promi
     5000,
   );
   await pollUntil("covclaimd", () => httpOk(`${COVCLAIMD_URL}/v1/preimage/covclaimd-pubkey`), 120_000);
+  if (!(await arkTimelocksMatch())) throw new Error("arkd did not apply the required regtest timelocks");
   // The stack's intent-solver lacks COVCLAIMD_URL in its env map; the overlay adds it.
   await applySolverOverlay();
   // The LN channel between the payer and the solver's node must be usable before any
@@ -229,6 +248,15 @@ const compose = (args: string[], profile = "intent-solver") =>
     { cwd: REGTEST_DIR, env: STACK_ENV, timeout: 120_000 },
   );
 
+export async function stopCovclaimd(): Promise<void> {
+  await compose(["stop", "covclaimd"]);
+}
+
+export async function startCovclaimd(): Promise<void> {
+  await compose(["start", "covclaimd"]);
+  await pollUntil("covclaimd", () => httpOk(`${COVCLAIMD_URL}/v1/preimage/covclaimd-pubkey`), 120_000);
+}
+
 /** The payer↔solver LN channel must be announced/usable before any HTLC routes;
  *  stackIsUp answers before the stack's boltz setup finishes opening it, so poll
  *  (mining each pass — a fresh chain's funding tx needs the blocks). */
@@ -258,7 +286,7 @@ export async function applySolverOverlay(): Promise<void> {
   );
   if (current.includes(imageId) && current.includes("COVCLAIMD_URL=")) return; // already applied
   await compose(["up", "-d", "--force-recreate", "--no-deps", "intent-solver"]);
-  await pollUntil("intent-solver", () => httpOk(`${SOLVER_URL}/healthz`), 180_000);
+  await pollUntil("intent-solver", () => httpOk(`${SOLVER_HTTP_TEST_URL}/healthz`), 180_000);
 }
 
 /**
@@ -305,6 +333,6 @@ export async function fundSolverFloat(log: (s: string) => void = console.log): P
     log(`solver float funded: ${balance.available} sats spendable`);
   } finally {
     await compose(["start", "intent-solver"]);
-    await pollUntil("intent-solver", () => httpOk(`${SOLVER_URL}/healthz`), 120_000);
+    await pollUntil("intent-solver", () => httpOk(`${SOLVER_HTTP_TEST_URL}/healthz`), 120_000);
   }
 }

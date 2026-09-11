@@ -8,7 +8,8 @@ import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
 import { AddressService } from "../src/address-service.js";
-import { MemorySettlementStore } from "../src/settlement-store.js";
+import { DbSettlementStore, MemorySettlementStore, type SettlementStore } from "../src/settlement-store.js";
+import { OfflineSwapStore } from "../src/offline-swap-store.js";
 import { encryptToken } from "../src/crypto.js";
 import { deriveSessionId } from "../src/session-id.js";
 import type { OfflineSwapCreator, OfflineSwapParams, OfflineSwapResult } from "../src/intent-swap.js";
@@ -42,6 +43,16 @@ class FakeCreator implements OfflineSwapCreator {
       preimage: "11".repeat(32),
       preimageHash: this.hashHex,
       lockupAddress: RECEIVE,
+      recovery: {
+        version: 1,
+        solverName: "fake",
+        solverPubkey: "11".repeat(32),
+        relays: ["wss://relay.invalid"],
+        rfqId: "swap-1",
+        lockupAddress: RECEIVE,
+        expectedAmount: params.amountSat,
+        script: {},
+      },
     };
   }
   async isSettled(swapId: string): Promise<boolean> {
@@ -49,7 +60,7 @@ class FakeCreator implements OfflineSwapCreator {
   }
 }
 
-function start(repos: Repositories, creator?: OfflineSwapCreator, settlements?: MemorySettlementStore) {
+function start(repos: Repositories, creator?: OfflineSwapCreator, settlements?: SettlementStore, offlineSwaps?: OfflineSwapStore) {
   const server = http.createServer();
   const addressService = new AddressService(repos, KEY);
   return new Promise<{ baseUrl: string; close: () => Promise<void> }>((resolve) => {
@@ -60,7 +71,7 @@ function start(repos: Repositories, creator?: OfflineSwapCreator, settlements?: 
         "request",
         createServer(
           { ...CONFIG, baseUrl },
-          { repos, addressService, settlements, offlineSwapCreator: creator },
+          { repos, addressService, settlements, offlineSwapCreator: creator, offlineSwaps },
         ),
       );
       resolve({ baseUrl, close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }) });
@@ -109,15 +120,17 @@ describe("offline receive", () => {
   it("creates a swap and returns invoice + verify when the wallet is offline", async () => {
     const hash = "9a" + "00".repeat(31);
     const creator = new FakeCreator(hash);
-    const settlements = new MemorySettlementStore(60_000);
+    const settlements = new DbSettlementStore(db, 60_000);
+    const offlineSwaps = new OfflineSwapStore(db, 60_000);
     repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
-    ctx = await start(repos, creator, settlements);
+    ctx = await start(repos, creator, settlements, offlineSwaps);
 
     const res = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=50000`, "GET", "domain.com");
     expect(res.body.pr).toBe(buildInvoice(hash));
     expect(res.body.verify).toBe(`${ctx.baseUrl}/lnurl/verify/${hash}`);
     // amount converted msat -> sat, and the user's identity forwarded
     expect(creator.created[0]).toEqual({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
+    expect(offlineSwaps.listPending()[0]?.recovery).toMatchObject({ solverName: "fake", rfqId: "swap-1" });
 
     // verify is registered but not yet settled (poller hasn't run)
     const v = await req(`${ctx.baseUrl}/lnurl/verify/${hash}`, "GET", "domain.com");
@@ -144,6 +157,19 @@ describe("offline receive", () => {
     expect(creator.created).toHaveLength(0);
   });
 
+  it("does not consume quote capacity for rejected sub-satoshi amounts", async () => {
+    const creator = new FakeCreator("9a".repeat(32));
+    repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
+    ctx = await start(repos, creator, new MemorySettlementStore(60_000));
+    for (let i = 0; i < 20; i++) {
+      const rejected = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=50001`, "GET", "domain.com");
+      expect(rejected.body.status).toBe("ERROR");
+    }
+    const accepted = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=50000`, "GET", "domain.com");
+    expect(accepted.body.pr).toBeDefined();
+    expect(creator.created).toHaveLength(1);
+  });
+
   it("returns an LNURL error when swap creation fails", async () => {
     const creator: OfflineSwapCreator = {
       create: async () => { throw new Error("solver refused: amount_out_of_range"); },
@@ -153,7 +179,7 @@ describe("offline receive", () => {
     ctx = await start(repos, creator, new MemorySettlementStore(60_000));
     const res = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=50000`, "GET", "domain.com");
     expect(res.body.status).toBe("ERROR");
-    expect(String(res.body.reason)).toMatch(/amount_out_of_range/);
+    expect(String(res.body.reason)).toBe("Unable to create offline invoice");
     // nothing recorded: no verify URL exists for a swap that was never created
   });
 

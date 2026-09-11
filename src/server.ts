@@ -1,6 +1,6 @@
 import express from "express";
 import cors from "cors";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { SessionManager } from "./session-manager.js";
 import { openApiSpec } from "./openapi.js";
 import type { Repositories } from "./db/repositories/index.js";
@@ -12,6 +12,9 @@ import { RateLimiter } from "./rate-limit.js";
 import { paymentHashFromBolt11 } from "./bolt11.js";
 import { MemorySettlementStore, type SettlementStore } from "./settlement-store.js";
 import type { OfflineSwapCreator } from "./intent-swap.js";
+import type { OfflineSwapStore } from "./offline-swap-store.js";
+import { HealthRegistry } from "./health.js";
+import { createLogger, type Logger } from "./logger.js";
 import { ArkAddress } from "@arkade-os/sdk";
 import { advertisedOptions, resolvePaymentOption } from "./payment-options.js";
 import { applyQuote, type QuoteProvider, type PaymentQuote } from "./quote-provider.js";
@@ -48,11 +51,14 @@ export interface ServerDeps {
   /** When set, an offline LN address with a registered Arkade identity gets a
    *  server-orchestrated corridor swap instead of an "offline" error. */
   offlineSwapCreator?: OfflineSwapCreator;
+  offlineSwaps?: OfflineSwapStore;
   /** When set, the arkade rail hands out a per-payment covenant address instead of the
    *  user's static one, so concurrent payments are told apart by script. */
   covenantDestinations?: CovenantDestinationProvider;
   /** When set, enables LUD-XX unit-denominated quotes (advertises `units`, quotes callbacks). */
   quoteProvider?: QuoteProvider;
+  health?: HealthRegistry;
+  logger?: Logger;
 }
 
 // Create a solver-mediated receive swap for an offline receiver and return the hold
@@ -63,6 +69,7 @@ export interface ServerDeps {
 async function createOfflineSwapAndRespond(args: {
   creator: OfflineSwapCreator;
   store: SettlementStore;
+  offlineSwaps?: OfflineSwapStore;
   baseUrl: string;
   amountMsat: number;
   receiveAddress: string;
@@ -72,19 +79,18 @@ async function createOfflineSwapAndRespond(args: {
   /** LUD-XX: echo the explicitly-selected lightning option on the pr response. */
   echoLightningOption?: boolean;
   res: express.Response;
+  logger: Logger;
+  requestId: string;
 }): Promise<void> {
-  const { creator, store, baseUrl, amountMsat, receiveAddress, claimPublicKey, addressId, paymentQuote, echoLightningOption, res } = args;
+  const { creator, store, offlineSwaps, baseUrl, amountMsat, receiveAddress, claimPublicKey, addressId, paymentQuote, echoLightningOption, res, logger, requestId } = args;
   try {
     // Caller guarantees whole satoshis (rejected at the route otherwise).
     const swap = await creator.create({ amountSat: amountMsat / 1000, receiveAddress, claimPublicKey });
-    store.create({
-      paymentHash: swap.preimageHash,
-      pr: swap.invoice,
-      sessionId: `offline:${addressId}`,
-      preimage: swap.preimage,
-      swapId: swap.swapId,
-      amountMsat,
-    });
+    const accepted = { paymentHash: swap.preimageHash, pr: swap.invoice, sessionId: `offline:${addressId}`, preimage: swap.preimage, amountMsat };
+    // With DB_PATH, OfflineSwapStore is the single atomic persistence boundary:
+    // it writes both settlement and restart recovery rows in one transaction.
+    if (offlineSwaps) offlineSwaps.createAccepted({ ...accepted, recovery: swap.recovery });
+    else store.create({ ...accepted, swapId: swap.swapId });
     res.json({
       pr: swap.invoice,
       routes: [],
@@ -93,7 +99,8 @@ async function createOfflineSwapAndRespond(args: {
       ...(echoLightningOption ? { paymentOption: "lightning" } : {}),
     } satisfies LnurlPayCallbackResponse);
   } catch (err) {
-    res.json({ status: "ERROR", reason: err instanceof Error ? err.message : "Failed to create swap" } satisfies LnurlErrorResponse);
+    logger.warn("offline_quote_failed", { requestId, error: err });
+    res.json({ status: "ERROR", reason: "Unable to create offline invoice" } satisfies LnurlErrorResponse);
   }
 }
 
@@ -148,7 +155,10 @@ async function requestInvoiceAndRespond(args: {
 
 export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): express.Express {
   const app = express();
+  app.disable("x-powered-by");
   const sessions = deps?.sessions ?? new SessionManager();
+  const health = deps?.health ?? new HealthRegistry();
+  const logger = deps?.logger ?? createLogger();
   // LUD-21 settlement records. DB-backed when provided, else in-memory with TTL.
   const store: SettlementStore = deps?.settlements ?? new MemorySettlementStore(config.verifyTtlMs ?? 86_400_000);
   // Light per-IP guard for the public verify-polling endpoint.
@@ -171,6 +181,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     baseUrl: config.baseUrl,
     registrationRateLimitPerMin: 10,
   });
+  let offlineQuotes = 0;
 
   // Default: trust exactly one proxy hop so req.ip reflects the real client IP behind
   // a single LB/CDN. Set trustProxy to a higher number for deeper proxy stacks, or false
@@ -183,7 +194,19 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       allowedHeaders: ["Content-Type", "Authorization"],
     }),
   );
-  app.use(express.json());
+  app.use(express.json({ limit: "64kb" }));
+  app.use((_req, res, next) => {
+    const requestId = randomUUID();
+    res.locals.requestId = requestId;
+    res.setHeader("X-Request-Id", requestId);
+    next();
+  });
+
+  app.get("/livez", (_req, res) => res.json({ status: "live" }));
+  app.get("/readyz", (_req, res) => {
+    const snapshot = health.snapshot();
+    res.status(snapshot.status === "ready" ? 200 : 503).json(snapshot);
+  });
 
   // ─── GET / ─────────────────────────────────────────────────────────
   // Serves Redocly API docs as the home page.
@@ -224,6 +247,10 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     const HEX_RE = /^[0-9a-f]+$/i;
     if (providedToken != null && (typeof providedToken !== "string" || providedToken.length < 32 || !HEX_RE.test(providedToken))) {
       res.status(400).json({ error: "token must be a hex string of at least 32 characters" });
+      return;
+    }
+    if (!sessions.canAccept(req.ip, config.maxSessions ?? 5_000, config.maxSessionsPerIp ?? 50, providedToken)) {
+      res.status(429).json({ error: "Session limit reached" });
       return;
     }
 
@@ -582,16 +609,26 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           res.json({ status: "ERROR", reason: `Amount must be between ${min} and ${max} millisats` } satisfies LnurlErrorResponse);
           return;
         }
-        // The corridor deals in whole sats; sub-sat amounts would truncate silently.
+        // The corridor deals in whole sats; reject before reserving capacity.
         if (amountMsat % 1000 !== 0) {
           res.json({ status: "ERROR", reason: "Amount must be a whole number of satoshis" } satisfies LnurlErrorResponse);
           return;
         }
-        await createOfflineSwapAndRespond({
-          creator, store, baseUrl: settings.baseUrl(), amountMsat,
-          receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, paymentQuote,
-          echoLightningOption: Boolean(paymentOptionId), res,
-        });
+        if (offlineQuotes >= (config.maxConcurrentOfflineQuotes ?? 20)) {
+          res.status(429).json({ status: "ERROR", reason: "Offline quote capacity reached" } satisfies LnurlErrorResponse);
+          return;
+        }
+        offlineQuotes++;
+        try {
+          await createOfflineSwapAndRespond({
+            creator, store, offlineSwaps: deps.offlineSwaps, baseUrl: settings.baseUrl(), amountMsat,
+            receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, paymentQuote,
+            echoLightningOption: Boolean(paymentOptionId), res,
+            logger, requestId: res.locals.requestId as string,
+          });
+        } finally {
+          offlineQuotes--;
+        }
         return;
       }
 

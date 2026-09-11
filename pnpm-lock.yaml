@@ -11,6 +11,9 @@ importers:
       '@arkade-os/sdk':
         specifier: 0.4.68
         version: 0.4.68
+      '@arkade-os/solver-discovery':
+        specifier: 0.2.4
+        version: 0.2.4
       '@noble/ciphers':
         specifier: 2.1.1
         version: 2.1.1
@@ -30,7 +33,7 @@ importers:
         specifier: ^2.8.5
         version: 2.8.6
       express:
-        specifier: ^5.2.1
+        specifier: 5.2.1
         version: 5.2.1
       nostr-tools:
         specifier: ^2.25.2
@@ -107,6 +110,10 @@ packages:
         optional: true
       expo-task-manager:
         optional: true
+
+  '@arkade-os/solver-discovery@0.2.4':
+    resolution: {integrity: sha512-iLjcZhnNmzndD6KLbgmMbyYL/JqmMYA2gSOn6MrESAMHWuF68CRtqn9ijvnDJDz8BzYXuFMZ/ghZfLjIvrdAdA==}
+    engines: {node: '>=18'}
 
   '@bitcoinerlab/descriptors-core@3.1.7':
     resolution: {integrity: sha512-7VccUDvKcHK7RF07Vo19Obax9jO3wlPWIXtvXy61GBqXptKv156O9Z4+sm2py1CuxPRpTXHlvH70G4KVVDoKlw==}
@@ -1601,6 +1608,8 @@ snapshots:
       - bufferutil
       - ecpair
       - utf-8-validate
+
+  '@arkade-os/solver-discovery@0.2.4': {}
 
   '@bitcoinerlab/descriptors-core@3.1.7(@noble/curves@2.0.1)(@noble/hashes@2.0.1)(@scure/base@2.0.0)(@scure/bip32@2.4.0)(@scure/btc-signer@2.0.1)':
     dependencies:

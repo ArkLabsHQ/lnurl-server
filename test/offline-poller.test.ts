@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { MemorySettlementStore } from "../src/settlement-store.js";
+import { DbSettlementStore, MemorySettlementStore } from "../src/settlement-store.js";
 import { settleOfflineSwaps } from "../src/offline-poller.js";
 import type { OfflineSwapCreator } from "../src/intent-swap.js";
+import { OfflineSwapStore } from "../src/offline-swap-store.js";
+import { openDb } from "../src/db/connection.js";
+import { runMigrations } from "../src/db/migrations.js";
 
 function creatorReporting(settledIds: string[]): OfflineSwapCreator {
   return {
@@ -20,19 +23,24 @@ describe("settleOfflineSwaps", () => {
     store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
     store.create({ paymentHash: "bb", pr: "lnbc2", sessionId: "offline:2", preimage: "feed", swapId: "swap-2" });
 
-    const n = await settleOfflineSwaps(store, creatorReporting(["swap-1"]));
+    const creator = creatorReporting(["swap-1"]);
+    creator.prune = vi.fn(async () => {});
+    creator.release = vi.fn(async () => {});
+    const n = await settleOfflineSwaps(store, creator);
 
     expect(n).toBe(1);
     expect(store.get("aa")).toMatchObject({ settled: true, preimage: "beef" });
     expect(store.get("bb")!.settled).toBe(false);
     expect(store.listPendingSwaps().map((p) => p.swapId)).toEqual(["swap-2"]);
+    expect(creator.prune).toHaveBeenCalledWith(["swap-1", "swap-2"]);
+    expect(creator.release).toHaveBeenCalledWith("swap-1");
   });
 
   it("claims the lockup before checking status, since the claim is what makes the solver settle", async () => {
     const store = new MemorySettlementStore(60_000);
     store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
     const calls: [string, string][] = [];
-    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const log = vi.spyOn(console, "info").mockImplementation(() => {});
 
     const n = await settleOfflineSwaps(store, {
       ...creatorReporting(["swap-1"]),
@@ -44,6 +52,7 @@ describe("settleOfflineSwaps", () => {
 
     expect(calls).toEqual([["swap-1", "beef"]]);
     expect(n).toBe(1);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_self_claimed"'));
     expect(log).toHaveBeenCalledWith(expect.stringContaining("ark-tx-1"));
   });
 
@@ -59,7 +68,7 @@ describe("settleOfflineSwaps", () => {
 
     expect(n).toBe(1);
     expect(store.get("aa")!.settled).toBe(true);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("self-claim failed"), expect.any(Error));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_self_claim_failed"'));
   });
 
   it("warns rather than revealing the preimage for an underfunded lockup", async () => {
@@ -72,7 +81,7 @@ describe("settleOfflineSwaps", () => {
       selfClaim: async () => ({ state: "skipped", reason: "underfunded" }),
     });
 
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("underfunded"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_underfunded"'));
   });
 
   it("leaves a swap pending when the status check throws, and names it in a warning", async () => {
@@ -88,6 +97,30 @@ describe("settleOfflineSwaps", () => {
 
     expect(n).toBe(0);
     expect(store.get("aa")!.settled).toBe(false);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("swap-1"), expect.any(Error));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_status_failed"'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("swap-1"));
+  });
+
+  it("drives status and self-claim from a persisted recovery row", async () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    const settlements = new DbSettlementStore(db, 60_000, () => 1_001);
+    const recovered = new OfflineSwapStore(db, 60_000, () => 1_000);
+    recovered.createAccepted({
+      paymentHash: "aa".repeat(32), pr: "lnbc1", sessionId: "offline:1", preimage: "bb".repeat(32), amountMsat: 5_000_000,
+      recovery: { version: 1, solverName: "primary", solverPubkey: "11".repeat(32), relays: ["wss://relay.example"], rfqId: "22".repeat(32), lockupAddress: "tark1", expectedAmount: 4_999, script: { sender: "33".repeat(32) } },
+    });
+    const seen: unknown[] = [];
+    const creator: OfflineSwapCreator = {
+      create: async () => { throw new Error("not used"); },
+      selfClaim: async (_swapId, _preimage, recovery) => { seen.push(recovery); return { state: "skipped", reason: "unfunded" }; },
+      isSettled: async (_swapId, recovery) => { seen.push(recovery); return true; },
+    };
+
+    expect(await settleOfflineSwaps(settlements, creator, recovered)).toBe(1);
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toMatchObject({ solverPubkey: "11".repeat(32), relays: ["wss://relay.example"] });
+    expect(settlements.get("aa".repeat(32))?.settled).toBe(true);
+    db.close();
   });
 });

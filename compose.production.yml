@@ -1,0 +1,23 @@
+services:
+  lnurl-server:
+    image: ${LNURL_SERVER_IMAGE}
+    restart: unless-stopped
+    env_file: .env.production
+    ports:
+      - "127.0.0.1:3000:3000"
+    expose:
+      - "3001"
+    volumes:
+      - lnurl-data:/data
+      - ./solver-cards.json:/run/config/solver-cards.json:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/readyz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    stop_grace_period: 20s
+
+volumes:
+  lnurl-data:
+    name: lnurl-data

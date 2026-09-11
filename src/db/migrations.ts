@@ -135,22 +135,76 @@ const MIGRATIONS: Migration[] = [
         ON settlements(covenant_script) WHERE covenant_script IS NOT NULL;
     `,
   },
+  {
+    version: 8,
+    up: `
+      CREATE TABLE solver_cards (
+        id         INTEGER PRIMARY KEY,
+        label      TEXT NOT NULL,
+        network    TEXT NOT NULL,
+        card_json  TEXT NOT NULL,
+        enabled    INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX idx_solver_cards_network_enabled ON solver_cards(network, enabled);
+
+      CREATE TABLE solver_registry_cache (
+        url        TEXT NOT NULL,
+        network    TEXT NOT NULL,
+        body       TEXT NOT NULL,
+        fetched_at INTEGER NOT NULL,
+        PRIMARY KEY (url, network)
+      );
+    `,
+  },
+  {
+    version: 9,
+    up: `
+      CREATE TABLE offline_swaps (
+        payment_hash    TEXT PRIMARY KEY REFERENCES settlements(payment_hash) ON DELETE CASCADE,
+        rfq_id          TEXT NOT NULL UNIQUE,
+        solver_name     TEXT NOT NULL,
+        solver_pubkey   TEXT NOT NULL,
+        relays_json     TEXT NOT NULL,
+        recovery_version INTEGER NOT NULL,
+        recovery_json  TEXT NOT NULL,
+        lockup_address  TEXT NOT NULL,
+        expected_amount INTEGER NOT NULL,
+        created_at      INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 /** Apply all pending forward-only migrations inside a transaction each. */
-export function runMigrations(db: Db): void {
+export function runMigrations(db: Db, options: { legacySwapTtlMs?: number; now?: () => number } = {}): void {
+  const now = options.now ?? Date.now;
+  const legacySwapTtlMs = options.legacySwapTtlMs ?? 86_400_000;
   db.exec(
     "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);",
   );
   const row = db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number | null };
   const current = row.v ?? 0;
 
+  if (current >= 4 && current < 9) {
+    const table = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'offline_swaps'").get();
+    if (!table) {
+      const legacy = db.prepare(
+        "SELECT COUNT(*) AS count FROM settlements WHERE swap_id IS NOT NULL AND settled = 0 AND created_at > ?",
+      ).get(now() - legacySwapTtlMs) as { count: number };
+      if (legacy.count > 0) {
+        throw new Error(`upgrade blocked: ${legacy.count} unsettled legacy offline swap(s) must drain first`);
+      }
+    }
+  }
+
   for (const m of MIGRATIONS) {
     if (m.version <= current) continue;
     db.exec("BEGIN");
     try {
       db.exec(m.up);
-      db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)").run(m.version, Date.now());
+      db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)").run(m.version, now());
       db.exec("COMMIT");
     } catch (err) {
       db.exec("ROLLBACK");

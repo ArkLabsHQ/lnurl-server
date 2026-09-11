@@ -66,3 +66,20 @@ export interface BlacklistRow {
   reason: string | null;
   createdAt: number;
 }
+
+export interface SolverCardRow {
+  id: number;
+  label: string;
+  network: string;
+  cardJson: string;
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SolverRegistryCacheRow {
+  url: string;
+  network: string;
+  body: string;
+  fetchedAt: number;
+}

@@ -1,12 +1,14 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import http from "node:http";
 import { createHash } from "node:crypto";
 import { base64, hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { ArkAddress, toXOnly } from "@arkade-os/sdk";
-import { createIntentSwapCreator, type OfflineSwapCreator } from "../src/intent-swap.js";
-import { receiveVtxoScript, unilateralClaimDelay } from "../src/vendor/arkade-swap/rfq.js";
+import { createOfflineSwapCoordinator, type IntentSwapSettings, type OfflineSwapCreator } from "../src/intent-swap.js";
+import { httpTransport, receiveVtxoScript, unilateralClaimDelay } from "../src/vendor/arkade-swap/rfq.js";
+import type { SolverCandidate } from "../src/solver-discovery.js";
 import { buildInvoice } from "./helpers/bolt11.js";
+import { solverCard } from "./fixtures/solver-cards.js";
 
 // Integration test of the real corridor creator against fake solver / covclaimd /
 // operator services over real HTTP (repo style, no module mocks). The fake solver
@@ -17,7 +19,9 @@ const covclaimdPub = hex.encode(secp256k1.getPublicKey(secp256k1.utils.randomSec
 const emulatorPub = hex.encode(secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true));
 const solverPub = hex.encode(secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true));
 const operatorPub = hex.encode(secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true));
+const rotatedOperatorPub = hex.encode(secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true));
 const operatorXonly = toXOnly(hex.decode(operatorPub), "operator");
+let activeOperatorPub = operatorPub;
 const solverRefundPkScript = new Uint8Array([0x51, 0x20, ...secp256k1.utils.randomSecretKey()]);
 const RECEIVE = new ArkAddress(secp256k1.utils.randomSecretKey(), secp256k1.utils.randomSecretKey(), "tark").encode();
 const CLAIM_PUBKEY = hex.encode(secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true));
@@ -117,6 +121,34 @@ let operator: { baseUrl: string; close: () => Promise<void> };
 let solver: FakeSolver;
 let creator: OfflineSwapCreator;
 
+function candidate(name = "registry"): SolverCandidate {
+  return {
+    name,
+    discoveryPubkey: solverPub.slice(2),
+    relays: ["wss://relay.invalid"],
+    source: `manual:${name}`,
+    sourceType: "local",
+    market: {
+      ...solverCard("registry", 30, "mutinynet").markets[0]!,
+      solver: name,
+      discovery_pubkey: solverPub.slice(2),
+      transports: { nostr: { relays: ["wss://relay.invalid"] } },
+      source: `manual:${name}`,
+      sourceType: "local",
+    },
+  };
+}
+
+function swapSettings(overrides: Partial<IntentSwapSettings> = {}): IntentSwapSettings {
+  return {
+    discovery: { selectLightningReceive: () => [candidate()] },
+    covclaimdUrl: covclaimd.baseUrl,
+    arkServerUrl: operator.baseUrl,
+    transportFactory: () => httpTransport(solver.baseUrl),
+    ...overrides,
+  };
+}
+
 beforeAll(async () => {
   [covclaimd, operator, solver] = await Promise.all([
     serve((req, res) => {
@@ -131,7 +163,7 @@ beforeAll(async () => {
     serve((req, res) => {
       res.setHeader("content-type", "application/json");
       if (req.url === "/v1/info") {
-        res.end(JSON.stringify({ network: "mutinynet", signerPubkey: operatorPub, unilateralExitDelay: String(UNILATERAL_EXIT_DELAY) }));
+        res.end(JSON.stringify({ network: "mutinynet", signerPubkey: activeOperatorPub, unilateralExitDelay: String(UNILATERAL_EXIT_DELAY) }));
       } else {
         res.statusCode = 404;
         res.end("{}");
@@ -139,14 +171,52 @@ beforeAll(async () => {
     }),
     startFakeSolver(),
   ]);
-  creator = await createIntentSwapCreator({ solverUrl: solver.baseUrl, covclaimdUrl: covclaimd.baseUrl, arkServerUrl: operator.baseUrl });
+  creator = await createOfflineSwapCoordinator(swapSettings());
 });
 
 afterAll(async () => {
   await Promise.all([covclaimd.close(), operator.close(), solver.close()]);
 });
 
-describe("createIntentSwapCreator", () => {
+describe("createOfflineSwapCoordinator", () => {
+  it("fails over before invoice acceptance and pins the successful solver", async () => {
+    const attempts: string[] = [];
+    const candidates = ["unavailable", "registry"].map((name): SolverCandidate => ({
+      name,
+      discoveryPubkey: solverPub.slice(2),
+      relays: ["wss://relay.invalid"],
+      source: `manual:${name}`,
+      sourceType: "local",
+      market: {
+        ...solverCard("registry", 30, "mutinynet").markets[0]!,
+        solver: name,
+        discovery_pubkey: solverPub.slice(2),
+        transports: { nostr: { relays: ["wss://relay.invalid"] } },
+        source: `manual:${name}`,
+        sourceType: "local",
+      },
+    }));
+    const failover = await createOfflineSwapCoordinator({
+      discovery: { selectLightningReceive: () => candidates },
+      covclaimdUrl: covclaimd.baseUrl,
+      arkServerUrl: operator.baseUrl,
+      transportFactory: (candidate) => ({
+        requestQuote: async (request) => {
+          attempts.push(candidate.name);
+          if (candidate.name === "unavailable") throw new Error("timeout");
+          const transport = (await import("../src/vendor/arkade-swap/rfq.js")).httpTransport(solver.baseUrl);
+          try { return await transport.requestQuote(request); } finally { await transport.close(); }
+        },
+        status: async () => null,
+        close: async () => {},
+      }),
+    });
+
+    const swap = await failover.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
+    expect(attempts).toEqual(["unavailable", "registry"]);
+    expect(swap.recovery).toMatchObject({ version: 1, solverName: "registry", solverPubkey: solverPub.slice(2), rfqId: swap.swapId });
+  });
+
   it("quotes a corridor receive and returns the solver's hold invoice", async () => {
     const swap = await creator.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
 
@@ -154,7 +224,7 @@ describe("createIntentSwapCreator", () => {
     expect(swap.swapId).toMatch(/^[0-9a-f]{64}$/);
     expect(swap.invoice).toMatch(/^lnbc500000p1/);
 
-    const r = solver.requests[0];
+    const r = solver.requests.at(-1)!;
     expect(r.type).toBe("rfq_request");
     expect(r.pair).toBe("lightning:BTC->arkade:BTC");
     expect(r.amount_side).toBe("from");
@@ -170,12 +240,7 @@ describe("createIntentSwapCreator", () => {
   });
 
   it("sends the stampable packet, naming our covclaimd, when asked to", async () => {
-    const stamping = await createIntentSwapCreator({
-      solverUrl: solver.baseUrl,
-      covclaimdUrl: covclaimd.baseUrl,
-      arkServerUrl: operator.baseUrl,
-      stampClaimPacket: true,
-    });
+    const stamping = await createOfflineSwapCoordinator(swapSettings({ stampClaimPacket: true }));
     await stamping.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
 
     const packet = base64.decode(solver.requests.at(-1)!.profile.claim_packet);
@@ -192,16 +257,13 @@ describe("createIntentSwapCreator", () => {
 
   it("registers the lockup for self-claim without touching the quote's receiver role", async () => {
     const registrations: { swapId: string; expectedAmount: number; lockup: string }[] = [];
-    const selfClaiming = await createIntentSwapCreator({
-      solverUrl: solver.baseUrl,
-      covclaimdUrl: covclaimd.baseUrl,
-      arkServerUrl: operator.baseUrl,
+    const selfClaiming = await createOfflineSwapCoordinator(swapSettings({
       selfClaimer: {
         register: (r) =>
           registrations.push({ swapId: r.swapId, expectedAmount: r.expectedAmount, lockup: r.script.address("tark", operatorXonly).encode() }),
         claim: async () => ({ state: "skipped", reason: "unfunded" }),
       },
-    });
+    }));
 
     const swap = await selfClaiming.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
 
@@ -215,6 +277,27 @@ describe("createIntentSwapCreator", () => {
     expect(creator.selfClaim).toBeUndefined();
   });
 
+  it("restores self-claim with the operator key committed in the recovery script", async () => {
+    const swap = await creator.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
+    const register = vi.fn();
+    const claim = vi.fn(async () => ({ state: "skipped", reason: "unfunded" } as const));
+    activeOperatorPub = rotatedOperatorPub;
+    try {
+      const restarted = await createOfflineSwapCoordinator(swapSettings({
+        discovery: { selectLightningReceive: () => [] },
+        covclaimdUrl: "http://127.0.0.1:1",
+        selfClaimer: { register, claim },
+      }));
+
+      await expect(restarted.selfClaim!(swap.swapId, swap.preimage, swap.recovery)).resolves.toEqual({ state: "skipped", reason: "unfunded" });
+      expect(register).toHaveBeenCalledWith(expect.objectContaining({ swapId: swap.swapId, expectedAmount: swap.recovery.expectedAmount }));
+      expect(claim).toHaveBeenCalledWith(swap.swapId, swap.preimage);
+      await restarted.close?.();
+    } finally {
+      activeOperatorPub = operatorPub;
+    }
+  });
+
   it("follows solver status for isSettled", async () => {
     const swap = await creator.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
     expect(await creator.isSettled(swap.swapId)).toBe(false); // 404 → unknown
@@ -222,6 +305,32 @@ describe("createIntentSwapCreator", () => {
     expect(await creator.isSettled(swap.swapId)).toBe(false);
     solver.statuses.set(swap.swapId, "settled");
     expect(await creator.isSettled(swap.swapId)).toBe(true);
+
+    const endpoints: unknown[] = [];
+    const restarted = await createOfflineSwapCoordinator(swapSettings({
+      discovery: { selectLightningReceive: () => [] },
+      transportFactory: (endpoint) => { endpoints.push(endpoint); return httpTransport(solver.baseUrl); },
+    }));
+    expect(await restarted.isSettled(swap.swapId, swap.recovery)).toBe(true);
+    expect(endpoints).toEqual([expect.objectContaining({
+      name: swap.recovery.solverName,
+      discoveryPubkey: swap.recovery.solverPubkey,
+      relays: swap.recovery.relays,
+    })]);
+    await restarted.close?.();
+  });
+
+  it("closes a terminal swap transport once and removes it from the pinned set", async () => {
+    const close = vi.fn(async () => {});
+    const bounded = await createOfflineSwapCoordinator(swapSettings({
+      transportFactory: () => ({ ...httpTransport(solver.baseUrl), close }),
+    }));
+    const swap = await bounded.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
+    await bounded.release?.(swap.swapId);
+    await bounded.release?.(swap.swapId);
+    await bounded.prune?.([]);
+    expect(close).toHaveBeenCalledTimes(1);
+    await bounded.close?.();
   });
 
   it("refuses an invoice on a different payment hash", async () => {
@@ -259,47 +368,23 @@ describe("createIntentSwapCreator", () => {
     expect(solver.requests).toHaveLength(requestsBefore); // neither attempt reached the solver
   });
 
-  it("rejects out-of-bounds amounts with the card's numbers when discovered from a registry", async () => {
-    // A registry index whose only lightning-corridor card is bounded 1000–25000 sats.
-    // Its transport points nowhere usable — discovery alone is what we're proving.
-    const registry = await serve((_req, res) => {
-      res.setHeader("content-type", "application/json");
-      res.end(
-        JSON.stringify({
-          markets: [
-            {
-              pair: "BTC/lightning:BTC",
-              quote_corridor: "lightning",
-              fee_bps: 30,
-              min_base_amount: "1000",
-              max_base_amount: "50000",
-              min_quote_amount: "1000",
-              max_quote_amount: "25000",
-              solver: "card-solver",
-              discovery_pubkey: "aa".repeat(32), // x-only Nostr pubkey
-              transports: { nostr: { relays: ["wss://relay.invalid"] } },
-            },
-          ],
-        }),
-      );
-    });
-    try {
-      const discovered = await createIntentSwapCreator({ registryUrl: registry.baseUrl, covclaimdUrl: covclaimd.baseUrl, arkServerUrl: operator.baseUrl });
-      await expect(discovered.create({ amountSat: 500, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY })).rejects.toThrow(/1000–25000/);
-    } finally {
-      await registry.close();
-    }
+  it("rejects amounts unsupported by every discovered card", async () => {
+    const discovered = await createOfflineSwapCoordinator(swapSettings({
+      discovery: { selectLightningReceive: () => [] },
+    }));
+    await expect(discovered.create({ amountSat: 500, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY })).rejects.toThrow(/no solver card supports/);
   });
 
-  it("throws at construction when discovery finds no lightning corridor", async () => {
-    const registry = await serve((_req, res) => {
-      res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ markets: [{ pair: "BTC/USDT", fee_bps: 30 }] }));
-    });
-    try {
-      await expect(createIntentSwapCreator({ registryUrl: registry.baseUrl, covclaimdUrl: covclaimd.baseUrl, arkServerUrl: operator.baseUrl })).rejects.toThrow(/no lightning-corridor/);
-    } finally {
-      await registry.close();
-    }
+  it("does not try a backup after accepting a validated invoice", async () => {
+    const attempts: string[] = [];
+    const noRequote = await createOfflineSwapCoordinator(swapSettings({
+      discovery: { selectLightningReceive: () => [candidate("primary"), candidate("backup")] },
+      transportFactory: (selected) => {
+        attempts.push(selected.name);
+        return httpTransport(solver.baseUrl);
+      },
+    }));
+    await noRequote.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
+    expect(attempts).toEqual(["primary"]);
   });
 });

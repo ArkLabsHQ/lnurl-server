@@ -36,13 +36,14 @@ describe("loadConfig", () => {
     expect(loadConfig({ ...base, VERIFY_TTL_MS: "1000" }).verifyTtlMs).toBe(1000);
   });
 
-  it("reads offline-receive config and reports enabled only when all three are set", () => {
+  it("reads card-only offline-receive config", () => {
     const off = loadConfig({ ...base });
     expect(off.offlineReceive.enabled).toBe(false);
 
     const on = loadConfig({
       ...base,
-      SOLVER_URL: "https://solver.example",
+      SOLVER_REGISTRY_URLS: "https://one.example/mutinynet.json, https://two.example/mutinynet.json",
+      SOLVER_CARDS_FILE: "/run/config/solvers.json",
       COVCLAIMD_URL: "https://covclaimd.example:7071",
       ARK_SERVER_URL: "https://mutinynet.arkade.sh",
     });
@@ -52,64 +53,62 @@ describe("loadConfig", () => {
       selfClaim: false,
       covenantDestinations: false,
       covenantRecoveryDelaySeconds: 86_528,
-      solverUrl: "https://solver.example",
+      registryUrls: ["https://one.example/mutinynet.json", "https://two.example/mutinynet.json"],
+      cardsFile: "/run/config/solvers.json",
       covclaimdUrl: "https://covclaimd.example:7071",
       arkServerUrl: "https://mutinynet.arkade.sh",
     });
     // Opt-in, exact string only: an older solver strands a stamped packet.
-    expect(loadConfig({ ...base, OFFLINE_STAMP_CLAIM_PACKET: "true" }).offlineReceive.stampClaimPacket).toBe(true);
+    expect(loadConfig({
+      ...base,
+      SOLVER_CARDS_FILE: "/cards.json",
+      COVCLAIMD_URL: "https://covclaimd.example",
+      ARK_SERVER_URL: "https://ark.example",
+      OFFLINE_STAMP_CLAIM_PACKET: "true",
+    }).offlineReceive.stampClaimPacket).toBe(true);
     expect(loadConfig({ ...base, OFFLINE_STAMP_CLAIM_PACKET: "1" }).offlineReceive.stampClaimPacket).toBe(false);
 
-    // partial config → disabled (missing covclaimd + operator)
-    expect(loadConfig({ ...base, SOLVER_URL: "https://solver.example" }).offlineReceive.enabled).toBe(false);
+    expect(() => loadConfig({ ...base, SOLVER_CARDS_FILE: "/cards.json" })).toThrow(/COVCLAIMD_URL.*ARK_SERVER_URL/);
   });
 
-  it("enables offline receive via the Nostr solver transport (pubkey + relays)", () => {
-    const on = loadConfig({
+  it("allows persisted admin cards to be the only discovery source", () => {
+    const config = loadConfig({
       ...base,
-      SOLVER_PUBKEY: "3f831510a6d7678d0c90d7d6fbc4057720517e2e30681ef4c87cc57aaf57e8d5",
-      NOSTR_RELAYS: "wss://nostr.arkade.sh, wss://relay.example",
-      COVCLAIMD_URL: "https://covclaimd.example:7071",
-      ARK_SERVER_URL: "https://mutinynet.arkade.sh",
+      DB_PATH: "/data/lnurl.sqlite",
+      ALLOW_INSECURE_TOKEN_STORAGE: "1",
+      COVCLAIMD_URL: "https://covclaimd.example",
+      ARK_SERVER_URL: "https://ark.example",
     });
-    expect(on.offlineReceive).toMatchObject({
-      enabled: true,
-      solverPubkey: "3f831510a6d7678d0c90d7d6fbc4057720517e2e30681ef4c87cc57aaf57e8d5",
-      nostrRelays: ["wss://nostr.arkade.sh", "wss://relay.example"],
-    });
-    // pubkey without relays is not a transport
-    expect(
-      loadConfig({
-        ...base,
-        SOLVER_PUBKEY: "3f831510a6d7678d0c90d7d6fbc4057720517e2e30681ef4c87cc57aaf57e8d5",
-        COVCLAIMD_URL: "https://covclaimd.example:7071",
-        ARK_SERVER_URL: "https://mutinynet.arkade.sh",
-      }).offlineReceive.enabled,
-    ).toBe(false);
+    expect(config.offlineReceive).toMatchObject({ enabled: true, registryUrls: [] });
   });
 
-  it("accepts ws:// relays (regtest/dev) but rejects non-WS schemes at load", () => {
-    const dev = loadConfig({
-      ...base,
-      SOLVER_PUBKEY: "3f831510a6d7678d0c90d7d6fbc4057720517e2e30681ef4c87cc57aaf57e8d5",
-      NOSTR_RELAYS: "ws://localhost:7777",
-      COVCLAIMD_URL: "https://covclaimd.example:7071",
-      ARK_SERVER_URL: "https://mutinynet.arkade.sh",
-    });
-    expect(dev.offlineReceive.nostrRelays).toEqual(["ws://localhost:7777"]);
-    expect(() =>
-      loadConfig({
-        ...base,
-        SOLVER_PUBKEY: "3f831510a6d7678d0c90d7d6fbc4057720517e2e30681ef4c87cc57aaf57e8d5",
-        NOSTR_RELAYS: "http://relay.example",
-        COVCLAIMD_URL: "https://covclaimd.example:7071",
-        ARK_SERVER_URL: "https://mutinynet.arkade.sh",
-      }),
-    ).toThrow(/ws\(s\):\/\//);
+  it.each(["SOLVER_URL", "SOLVER_PUBKEY", "NOSTR_RELAYS", "SOLVER_REGISTRY_URL"])(
+    "rejects removed %s configuration",
+    (name) => expect(() => loadConfig({ ...base, [name]: "configured" })).toThrow(new RegExp(`${name}.*removed`, "i")),
+  );
+
+  it.each([
+    ["PORT", "0"],
+    ["PORT", "abc"],
+    ["MIN_SENDABLE", "-1"],
+    ["MAX_SENDABLE", "1.5"],
+    ["INVOICE_TIMEOUT_MS", "NaN"],
+    ["MAX_SESSIONS", "0"],
+    ["MAX_SESSIONS_PER_IP", "-1"],
+    ["MAX_CONCURRENT_OFFLINE_QUOTES", "1.5"],
+  ])("rejects invalid %s=%s", (name, value) => {
+    expect(() => loadConfig({ ...base, [name]: value })).toThrow(name);
   });
 
   it("reads the self-claim flag and its emulator URL, and fails loudly without one", () => {
-    const on = loadConfig({ ...base, OFFLINE_SELF_CLAIM: "true", OFFLINE_EMULATOR_URL: "https://emulator.example" });
+    const on = loadConfig({
+      ...base,
+      SOLVER_CARDS_FILE: "/cards.json",
+      COVCLAIMD_URL: "https://covclaimd.example",
+      ARK_SERVER_URL: "https://ark.example",
+      OFFLINE_SELF_CLAIM: "true",
+      OFFLINE_EMULATOR_URL: "https://emulator.example",
+    });
     expect(on.offlineReceive.selfClaim).toBe(true);
     expect(on.offlineReceive.emulatorUrl).toBe("https://emulator.example");
     // No key: the covenant leaf is signed by the operator and the emulator.
@@ -117,10 +116,21 @@ describe("loadConfig", () => {
 
     // Opt-in, exact string only — same discipline as the stamp flag.
     expect(loadConfig({ ...base }).offlineReceive.selfClaim).toBe(false);
-    expect(loadConfig({ ...base, OFFLINE_SELF_CLAIM: "1", OFFLINE_EMULATOR_URL: "https://e.example" }).offlineReceive.selfClaim).toBe(false);
+    expect(loadConfig({
+      ...base,
+      SOLVER_CARDS_FILE: "/cards.json",
+      COVCLAIMD_URL: "https://covclaimd.example",
+      ARK_SERVER_URL: "https://ark.example",
+      OFFLINE_SELF_CLAIM: "1",
+    }).offlineReceive.selfClaim).toBe(false);
 
     expect(() => loadConfig({ ...base, OFFLINE_SELF_CLAIM: "true" })).toThrow(/OFFLINE_EMULATOR_URL/);
     expect(() => loadConfig({ ...base, OFFLINE_EMULATOR_URL: "emulator.example" })).toThrow(/http\(s\)/);
+  });
+
+  it("rejects malformed registry and dependency URLs", () => {
+    expect(() => loadConfig({ ...base, SOLVER_REGISTRY_URLS: "ftp://registry.example" })).toThrow(/SOLVER_REGISTRY_URLS/);
+    expect(() => loadConfig({ ...base, COVCLAIMD_URL: "covclaimd.example" })).toThrow(/COVCLAIMD_URL/);
   });
 
   it("reads the covenant-destination flag, and refuses a config nothing could sweep", () => {
@@ -137,7 +147,7 @@ describe("loadConfig", () => {
 
     expect(loadConfig({ ...base }).offlineReceive.covenantDestinations).toBe(false);
     expect(
-      loadConfig({ ...withUrls, OFFLINE_COVENANT_DESTINATIONS: "1", OFFLINE_EMULATOR_URL: "https://e.example" })
+      loadConfig({ ...withUrls, OFFLINE_COVENANT_DESTINATIONS: "1" })
         .offlineReceive.covenantDestinations,
     ).toBe(false);
 
@@ -198,16 +208,4 @@ describe("loadConfig", () => {
     expect(cfg.offlineReceive.covenantRecoveryDelaySeconds % 512).toBe(0);
   });
 
-  it("enables offline receive via a solver registry index URL", () => {
-    const on = loadConfig({
-      ...base,
-      SOLVER_REGISTRY_URL: "https://arkade-os.github.io/solver-registry/mutinynet.json",
-      COVCLAIMD_URL: "https://covclaimd.example:7071",
-      ARK_SERVER_URL: "https://mutinynet.arkade.sh",
-    });
-    expect(on.offlineReceive).toMatchObject({
-      enabled: true,
-      registryUrl: "https://arkade-os.github.io/solver-registry/mutinynet.json",
-    });
-  });
 });
