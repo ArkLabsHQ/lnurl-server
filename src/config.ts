@@ -1,15 +1,9 @@
-/** Server-orchestrated offline receive over the Arkade intents corridor
- *  (`lightning:BTC -> arkade:BTC` solver quote + covclaimd claim).
- *  Enabled when COVCLAIMD_URL + ARK_SERVER_URL are set and a solver transport is
- *  configured: SOLVER_URL (HTTP, dev/custom), SOLVER_PUBKEY + NOSTR_RELAYS (Nostr,
- *  the production transport), or SOLVER_REGISTRY_URL (discover from a registry index). */
+/** Server-orchestrated offline receive over the Arkade intents corridor. */
 export interface OfflineReceiveConfig {
   enabled: boolean;
-  solverUrl?: string;
-  solverPubkey?: string;
-  nostrRelays?: string[];
+  registryUrls: string[];
+  cardsFile?: string;
   nostrSecretKey?: string;
-  registryUrl?: string;
   covclaimdUrl?: string;
   arkServerUrl?: string;
   /**
@@ -50,6 +44,43 @@ export interface AppConfig {
 
 type Env = Record<string, string | undefined>;
 
+const REMOVED_SOLVER_CONFIG = ["SOLVER_URL", "SOLVER_PUBKEY", "NOSTR_RELAYS", "SOLVER_REGISTRY_URL"] as const;
+
+function integer(env: Env, name: string, fallback: number, opts: { min: number; max?: number }): number {
+  const raw = env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < opts.min || (opts.max !== undefined && value > opts.max)) {
+    const range = opts.max === undefined ? `>= ${opts.min}` : `${opts.min}..${opts.max}`;
+    throw new Error(`${name} must be an integer in ${range}`);
+  }
+  return value;
+}
+
+function httpUrl(raw: string, name: string): string {
+  let value: URL;
+  try {
+    value = new URL(raw);
+  } catch {
+    throw new Error(`${name} must be an absolute http(s) URL`);
+  }
+  if (!/^https?:$/.test(value.protocol) || value.username || value.password) {
+    throw new Error(`${name} must be an absolute http(s) URL without credentials`);
+  }
+  return raw;
+}
+
+function csvHttpUrls(raw: string | undefined, name: string): string[] {
+  if (raw === undefined || raw.trim() === "") return [];
+  return raw.split(",").map((entry) => httpUrl(entry.trim(), name));
+}
+
+function rejectRemovedSolverConfig(env: Env): void {
+  for (const name of REMOVED_SOLVER_CONFIG) {
+    if (env[name] !== undefined) throw new Error(`${name} has been removed; configure solver cards instead`);
+  }
+}
+
 function parseKey(raw: string): Buffer {
   const buf = /^[0-9a-fA-F]+$/.test(raw) && raw.length % 2 === 0 ? Buffer.from(raw, "hex") : Buffer.from(raw, "base64");
   if (buf.length !== 32) throw new Error("TOKEN_ENCRYPTION_KEY must decode to 32 bytes (hex or base64)");
@@ -57,7 +88,8 @@ function parseKey(raw: string): Buffer {
 }
 
 export function loadConfig(env: Env = process.env): AppConfig {
-  const port = Number(env.PORT) || 3000;
+  rejectRemovedSolverConfig(env);
+  const port = integer(env, "PORT", 3000, { min: 1, max: 65_535 });
   const dbPath = env.DB_PATH || undefined;
   const allowInsecureTokenStorage = env.ALLOW_INSECURE_TOKEN_STORAGE === "1";
 
@@ -71,59 +103,69 @@ export function loadConfig(env: Env = process.env): AppConfig {
     );
   }
 
+  const minSendable = integer(env, "MIN_SENDABLE", 1_000, { min: 1 });
+  const maxSendable = integer(env, "MAX_SENDABLE", 100_000_000_000, { min: 1 });
+  if (maxSendable < minSendable) throw new Error("MAX_SENDABLE must be greater than or equal to MIN_SENDABLE");
+  const baseUrl = env.BASE_URL ? httpUrl(env.BASE_URL, "BASE_URL") : `http://localhost:${port}`;
+  const adminPort = integer(env, "ADMIN_PORT", 3001, { min: 1, max: 65_535 });
+  if (dbPath && adminPort === port) throw new Error("ADMIN_PORT must differ from PORT when DB_PATH is set");
+
   return {
     port,
-    baseUrl: env.BASE_URL || `http://localhost:${port}`,
-    minSendable: Number(env.MIN_SENDABLE) || 1_000,
-    maxSendable: Number(env.MAX_SENDABLE) || 100_000_000_000,
-    invoiceTimeoutMs: Number(env.INVOICE_TIMEOUT_MS) || 30_000,
-    verifyTtlMs: Number(env.VERIFY_TTL_MS) || 86_400_000,
+    baseUrl,
+    minSendable,
+    maxSendable,
+    invoiceTimeoutMs: integer(env, "INVOICE_TIMEOUT_MS", 30_000, { min: 1 }),
+    verifyTtlMs: integer(env, "VERIFY_TTL_MS", 86_400_000, { min: 1 }),
     dbPath,
-    adminPort: Number(env.ADMIN_PORT) || 3001,
+    adminPort,
     adminBind: env.ADMIN_BIND || "127.0.0.1",
     tokenEncryptionKey,
     allowInsecureTokenStorage,
     bootstrapDomain: env.BOOTSTRAP_DOMAIN || undefined,
-    registrationRateLimitPerMin: Number(env.REGISTRATION_RATE_LIMIT) || 10,
-    trustProxy: /^\d+$/.test(env.TRUST_PROXY ?? "") ? Number(env.TRUST_PROXY) : env.TRUST_PROXY === "false" ? false : 1,
+    registrationRateLimitPerMin: integer(env, "REGISTRATION_RATE_LIMIT", 10, { min: 1 }),
+    trustProxy: parseTrustProxy(env.TRUST_PROXY),
     offlineReceive: buildOfflineReceive(env),
   };
 }
 
 function buildOfflineReceive(env: Env): OfflineReceiveConfig {
-  const solverUrl = env.SOLVER_URL || undefined;
-  const solverPubkey = env.SOLVER_PUBKEY || undefined;
-  const nostrRelays = env.NOSTR_RELAYS?.split(",").map((r) => r.trim()).filter(Boolean);
-  // ws:// is valid (regtest/dev relays terminate no TLS); anything else fails at
-  // startup rather than as a runtime connection error.
-  for (const r of nostrRelays ?? []) {
-    if (!/^wss?:\/\//.test(r)) throw new Error(`NOSTR_RELAYS entries must be ws(s):// URLs (got "${r}")`);
-  }
+  const registryUrls = csvHttpUrls(env.SOLVER_REGISTRY_URLS, "SOLVER_REGISTRY_URLS");
+  const cardsFile = env.SOLVER_CARDS_FILE?.trim() || undefined;
   const nostrSecretKey = env.NOSTR_SECRET_KEY || undefined;
-  const registryUrl = env.SOLVER_REGISTRY_URL || undefined;
-  const covclaimdUrl = env.COVCLAIMD_URL || undefined;
-  const arkServerUrl = env.ARK_SERVER_URL || undefined;
-  const hasTransport = Boolean(solverUrl || (solverPubkey && nostrRelays?.length) || registryUrl);
+  if (nostrSecretKey && !/^[0-9a-f]{64}$/i.test(nostrSecretKey)) {
+    throw new Error("NOSTR_SECRET_KEY must be 64-char hex");
+  }
+  const covclaimdUrl = env.COVCLAIMD_URL ? httpUrl(env.COVCLAIMD_URL, "COVCLAIMD_URL") : undefined;
+  const arkServerUrl = env.ARK_SERVER_URL ? httpUrl(env.ARK_SERVER_URL, "ARK_SERVER_URL") : undefined;
+  const hasCards = registryUrls.length > 0 || cardsFile !== undefined;
   const selfClaim = env.OFFLINE_SELF_CLAIM === "true";
-  const emulatorUrl = env.OFFLINE_EMULATOR_URL || undefined;
-  // At load, not at claim time: by then a lockup is funded and the clock is running.
+  const emulatorUrl = env.OFFLINE_EMULATOR_URL ? httpUrl(env.OFFLINE_EMULATOR_URL, "OFFLINE_EMULATOR_URL") : undefined;
+  const stampClaimPacket = env.OFFLINE_STAMP_CLAIM_PACKET === "true";
   if (selfClaim && !emulatorUrl) {
     throw new Error("OFFLINE_SELF_CLAIM=true requires OFFLINE_EMULATOR_URL (the emulator co-signs the covenant claim)");
   }
-  if (emulatorUrl && !/^https?:\/\//.test(emulatorUrl)) {
-    throw new Error(`OFFLINE_EMULATOR_URL must be an http(s):// URL (got "${emulatorUrl}")`);
+  if (emulatorUrl && !selfClaim) throw new Error("OFFLINE_EMULATOR_URL requires OFFLINE_SELF_CLAIM=true");
+  const anyOfflineSetting = hasCards || covclaimdUrl || arkServerUrl || nostrSecretKey || selfClaim || emulatorUrl || stampClaimPacket;
+  if (anyOfflineSetting && (!hasCards || !covclaimdUrl || !arkServerUrl)) {
+    throw new Error("offline receive requires solver cards, COVCLAIMD_URL, and ARK_SERVER_URL together");
   }
   return {
-    enabled: Boolean(hasTransport && covclaimdUrl && arkServerUrl),
-    stampClaimPacket: env.OFFLINE_STAMP_CLAIM_PACKET === "true",
+    enabled: Boolean(hasCards && covclaimdUrl && arkServerUrl),
+    registryUrls,
+    stampClaimPacket,
     selfClaim,
     ...(emulatorUrl ? { emulatorUrl } : {}),
-    ...(solverUrl ? { solverUrl } : {}),
-    ...(solverPubkey ? { solverPubkey } : {}),
-    ...(nostrRelays?.length ? { nostrRelays } : {}),
+    ...(cardsFile ? { cardsFile } : {}),
     ...(nostrSecretKey ? { nostrSecretKey } : {}),
-    ...(registryUrl ? { registryUrl } : {}),
     ...(covclaimdUrl ? { covclaimdUrl } : {}),
     ...(arkServerUrl ? { arkServerUrl } : {}),
   };
+}
+
+function parseTrustProxy(raw: string | undefined): number | boolean {
+  if (raw === undefined || raw === "") return 1;
+  if (raw === "false") return false;
+  if (!/^\d+$/.test(raw)) throw new Error("TRUST_PROXY must be false or a non-negative integer");
+  return Number(raw);
 }

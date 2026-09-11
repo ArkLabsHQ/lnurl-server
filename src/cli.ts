@@ -2,6 +2,7 @@ import { createServer } from "./server.js";
 import { loadConfig } from "./config.js";
 import { SessionManager } from "./session-manager.js";
 import type { Db } from "./db/connection.js";
+import { pathToFileURL } from "node:url";
 
 /** Open + migrate + bootstrap the DB when configured; null in in-memory mode. */
 export async function initPersistence(opts: {
@@ -58,11 +59,8 @@ async function main(): Promise<void> {
         void checkEmulatorPairing({ covclaimdUrl: off.covclaimdUrl!, emulatorUrl: off.emulatorUrl! });
       }
       offlineSwapCreator = await createIntentSwapCreator({
-        solverUrl: off.solverUrl,
-        solverPubkey: off.solverPubkey,
-        nostrRelays: off.nostrRelays,
         nostrSecretKey: off.nostrSecretKey,
-        registryUrl: off.registryUrl,
+        registryUrl: off.registryUrls[0],
         covclaimdUrl: off.covclaimdUrl!,
         arkServerUrl: off.arkServerUrl!,
         stampClaimPacket: off.stampClaimPacket,
@@ -83,7 +81,7 @@ async function main(): Promise<void> {
     if (offlineSwapCreator) {
       const { startOfflineSettlementPoller } = await import("./offline-poller.js");
       startOfflineSettlementPoller(settlements, offlineSwapCreator, 15_000);
-      const via = config.offlineReceive.solverUrl ?? (config.offlineReceive.solverPubkey ? `nostr:${config.offlineReceive.solverPubkey}` : `registry:${config.offlineReceive.registryUrl}`);
+      const via = `cards:${config.offlineReceive.registryUrls[0] ?? config.offlineReceive.cardsFile}`;
       console.log(`offline receive: enabled (solver=${via})`);
     }
     // The destination rail (paymentOptions: arkade) settles by observation, not by
@@ -123,7 +121,9 @@ async function main(): Promise<void> {
   });
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

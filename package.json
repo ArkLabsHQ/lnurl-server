@@ -23,13 +23,14 @@
   },
   "dependencies": {
     "@arkade-os/sdk": "0.4.68",
+    "@arkade-os/solver-discovery": "0.2.4",
     "@noble/ciphers": "2.1.1",
     "@noble/curves": "2.0.1",
     "@noble/hashes": "2.0.1",
     "@scure/base": "^2.0.0",
     "@scure/btc-signer": "2.0.1",
     "cors": "^2.8.5",
-    "express": "^5.1.0",
+    "express": "5.2.1",
     "nostr-tools": "^2.25.2"
   },
   "devDependencies": {
