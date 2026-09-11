@@ -46,6 +46,7 @@ try {
   const run = await exec("docker", [
     "run", "-d", "--rm", "--name", name,
     "-p", "127.0.0.1::3000",
+    "--add-host", "host.docker.internal:host-gateway",
     "--mount", `type=volume,src=${volume},dst=/data`,
     "--mount", `type=bind,src=${cardPath},dst=/run/solver-cards.json,readonly`,
     "-e", "DB_PATH=/data/lnurl.sqlite",
