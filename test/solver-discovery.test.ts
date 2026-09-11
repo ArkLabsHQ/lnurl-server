@@ -109,6 +109,33 @@ describe("DiscoveryService", () => {
     service.stop();
   });
 
+  it("immediately clears a local-only snapshot when the last pasted card is removed", async () => {
+    const cards = new CardStore();
+    cards.rows.push({
+      id: 1,
+      label: "manual",
+      network: "bitcoin",
+      cardJson: JSON.stringify(solverCard("cheap", 10)),
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const service = new DiscoveryService({
+      network: "bitcoin",
+      registryUrls: [],
+      cardStore: cards,
+      cacheStore: new CacheStore(),
+      refreshIntervalMs: 0,
+    });
+
+    await service.start();
+    expect(service.status()).toMatchObject({ ready: true, candidateCount: 1 });
+    cards.rows = [];
+    await service.refresh();
+    expect(service.status()).toMatchObject({ ready: false, candidateCount: 0 });
+    service.stop();
+  });
+
   it("fails startup when a configured card file contains an invalid card", async () => {
     const service = new DiscoveryService({
       network: "bitcoin",

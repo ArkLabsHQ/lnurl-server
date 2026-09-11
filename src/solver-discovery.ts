@@ -192,7 +192,19 @@ export class DiscoveryService {
     }));
     this.latestWarnings = result.warnings;
     if (!candidates.length) {
-      if (this.snapshot && this.snapshot.expiresAt <= this.now()) this.snapshot = null;
+      const failedRegistries = new Set(result.sources
+        .filter((source) => source.sourceType === "registry" && !source.ok)
+        .map((source) => source.source));
+      const fallback = this.snapshot?.candidates.filter((candidate) =>
+        candidate.sourceType === "registry" && failedRegistries.has(candidate.source)) ?? [];
+      const fallbackExpiry = this.snapshot
+        ? Math.min(this.snapshot.expiresAt, this.snapshot.refreshedAt + MAX_CACHE_AGE_MS)
+        : 0;
+      if (this.snapshot && fallback.length && fallbackExpiry > this.now()) {
+        this.snapshot = { ...this.snapshot, candidates: fallback, expiresAt: fallbackExpiry };
+      } else {
+        this.snapshot = null;
+      }
       return;
     }
     const hasLocal = candidates.some((candidate) => candidate.sourceType === "local");
