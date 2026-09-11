@@ -23,7 +23,8 @@ export const ESPLORA_URL = process.env.E2E_ESPLORA_URL ?? "http://localhost:3000
 /** The solver's throwaway regtest mnemonic — arkade-regtest's fixed, public, never-real-funds value. */
 export const SOLVER_MNEMONIC = "planet travel grab found idle ripple acoustic hero normal mixed rich lamp";
 
-const INTENT_SOLVER_IMAGE = process.env.E2E_INTENT_SOLVER_IMAGE ?? "intent-solver:e2e";
+export const INTENT_SOLVER_COMMIT = "4daa6c9bc3765282d51f67a871d037583f09368d";
+const INTENT_SOLVER_IMAGE = process.env.E2E_INTENT_SOLVER_IMAGE ?? `intent-solver:e2e-${INTENT_SOLVER_COMMIT.slice(0, 12)}`;
 // rc.5 attaches PrevArkTx to claims — the fix for the emulator >= v0.0.7 rejection
 // (arkade-os/covclaimd#10). Emulator follows the stack's own default.
 const COVCLAIMD_IMAGE = process.env.E2E_COVCLAIMD_IMAGE ?? "ghcr.io/arkade-os/covclaimd:v0.0.1-rc.5";
@@ -97,15 +98,15 @@ export async function stackIsUp(): Promise<boolean> {
   return checks.every(Boolean);
 }
 
-/** Build the intent-solver image from upstream master if it's not in the local docker. */
+/** Build the intent-solver image from the checked-in commit if it is not local. */
 export async function ensureIntentSolverImage(log: (s: string) => void = console.log): Promise<void> {
   const probe = await run("docker", ["image", "inspect", INTENT_SOLVER_IMAGE]).catch(() => null);
   if (probe) return;
   log(`building ${INTENT_SOLVER_IMAGE} from ${INTENT_SOLVER_REPO} (one-time, several minutes)...`);
   const dir = join(BUILD_CACHE, "intent-solver");
-  if (!existsSync(join(dir, "packages"))) {
-    await run("git", ["clone", "--depth", "1", INTENT_SOLVER_REPO, dir], { timeout: 300_000 });
-  }
+  if (!existsSync(join(dir, ".git"))) await run("git", ["clone", "--no-checkout", INTENT_SOLVER_REPO, dir], { timeout: 300_000 });
+  await run("git", ["fetch", "--depth", "1", "origin", INTENT_SOLVER_COMMIT], { cwd: dir, timeout: 300_000 });
+  await run("git", ["checkout", "--detach", INTENT_SOLVER_COMMIT], { cwd: dir, timeout: 60_000 });
   await run("docker", ["build", "-f", "packages/solver-app/Dockerfile", "-t", INTENT_SOLVER_IMAGE, "."], {
     cwd: dir,
     timeout: 1_800_000,

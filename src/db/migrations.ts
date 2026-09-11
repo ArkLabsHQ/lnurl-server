@@ -124,6 +124,17 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE settlements ADD COLUMN amount_msat INTEGER;
     `,
   },
+  {
+    version: 7,
+    // Per-payment Arkade destinations. covenant_script is the attribution key and
+    // the join to the SDK contract that owns everything else about the covenant —
+    // its params, its vtxos and its watch state all live in `ark_contracts`.
+    up: `
+      ALTER TABLE settlements ADD COLUMN covenant_script TEXT;
+      CREATE UNIQUE INDEX uq_settlements_covenant_script
+        ON settlements(covenant_script) WHERE covenant_script IS NOT NULL;
+    `,
+  },
 ];
 
 /** Apply all pending forward-only migrations inside a transaction each. */
