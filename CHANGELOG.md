@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Solver discovery** — with `SOLVER_REGISTRY_URL` set (and no explicit solver transport), the cheapest lightning-corridor solver is picked from a [solver-registry](https://arkade-os.github.io/solver-registry/) index (`src/solver-discovery.ts`), and its card's amount bounds are enforced before quoting (`amount … is outside the corridor's min–max sats bounds` instead of a bare solver refusal). Also: the callback's `pr` response now echoes `paymentOption: "lightning"` when the wallet explicitly selected it (LUD-XX SHOULD).
 - **Admin settlements view** — `GET /admin/api/settlements` (filter: `settled`, `option`, `limit`) lists LUD-21 settlement records (relay invoices, offline corridor swaps, destination-rail payments) newest-first, never exposing preimages or invoices; plus a Settlements tab in the admin SPA with a 5s live poll.
 
+### Security
+- **Patched express's transitive dependencies** — `path-to-regexp` 8.3.0 → 8.4.2 (high severity), `qs` 6.15.0 → 6.16.0, and `body-parser` 2.2.2 → 2.3.0, which between them clear every advisory open against code this server actually ships. Lockfile only: express 5.2.1 is already the newest release, and the ranges it and `router` declare already allowed the patched versions, so nothing in `package.json` changed. The advisories left open after this are all dev-only (`vite`, `postcss`, `nanoid`, `esbuild`, and the `form-data` under `supertest`) and none reach the published image, whose final stage installs `--prod` and copies only `dist`.
+
 ## 0.2.6 - 2026-06-04
 
 ### Added

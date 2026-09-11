@@ -16,7 +16,6 @@ import {
   RestArkProvider,
   RestEmulatorProvider,
   RestIndexerProvider,
-  Transaction,
   attachPrevArkTxs,
   buildOffchainTx,
   setArkPsbtField,
@@ -122,7 +121,8 @@ export function createSelfClaimer(opts: {
       if (vtxo.value < reg.expectedAmount) return { state: "skipped", reason: "underfunded" };
 
       const [leaf, arkadeScript] = reg.script.nonInteractiveClaim();
-      const payTo = reg.script.options.nonInteractiveParameters!.receiverPkScript;
+      const payTo = reg.script.options.nonInteractiveParameters?.receiverPkScript;
+      if (!payTo) throw new Error(`self-claim: registration for ${swapId} carries no nonInteractiveParameters`);
       const packet = EmulatorPacket.create([{ vin: 0, script: arkadeScript, witness: RawWitness.encode([]) }]);
       const info = await arkProvider.getInfo();
       // The covenant checks the output at the SPENT INPUT's index: payout stays 0.
@@ -136,12 +136,15 @@ export function createSelfClaimer(opts: {
       setArkPsbtField(arkTx, 0, ConditionWitness, [hex.decode(preimage)]);
       setArkPsbtField(checkpoints[0]!, 0, ConditionWitness, [hex.decode(preimage)]);
 
-      const res = await emulator.submitTx(
+      await emulator.submitTx(
         base64.encode(arkTx.toPSBT()),
         checkpoints.map((c) => base64.encode(c.toPSBT())),
       );
       registry.delete(swapId);
-      return { state: "claimed", arkTxid: Transaction.fromPSBT(base64.decode(res.signedArkTx)).id };
+      // Not read back from the reply: a txid commits to no witness data, so the
+      // emulator's signatures cannot change it. Sound while this input stays
+      // taproot-only — a scriptSig one could gain a finalScriptSig server-side.
+      return { state: "claimed", arkTxid: arkTx.id };
     },
   };
 }
