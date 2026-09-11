@@ -20,7 +20,8 @@ RUN pnpm build
 FROM base AS prod
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile --prod
-COPY --from=build /app/dist ./dist
+COPY --from=build --chown=node:node /app/dist ./dist
+RUN mkdir -p /data && chown node:node /data
 
 ENV PORT=3000
 ENV ADMIN_PORT=3001
@@ -32,5 +33,9 @@ ENV INVOICE_TIMEOUT_MS=30000
 
 EXPOSE 3000 3001
 VOLUME ["/data"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:3000/readyz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+
+USER node
 
 CMD ["node", "--experimental-sqlite", "dist/cli.js"]

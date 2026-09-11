@@ -239,7 +239,7 @@ export function createAdminApi(deps: AdminDeps): Router {
       dbPath: config.dbPath ?? null,
       trustProxy: config.trustProxy,
       bootstrapDomain: config.bootstrapDomain ?? null,
-      tokenEncryptionKey: config.tokenEncryptionKey ? "set" : config.allowInsecureTokenStorage ? "insecure (plaintext)" : "unset",
+      tokenEncryptionKey: config.tokenEncryptionKey ? "set" : config.allowInsecureTokenStorage ? "insecure fallback" : "unset",
     },
   }));
   r.patch("/settings", (req, res) => {

@@ -89,7 +89,7 @@ docker run -p 3000:3000 \
   ghcr.io/arklabshq/lnurl-server:latest
 ```
 
-The admin port (3001) is **not** published in the example above. See [Admin backend](#admin-backend--port-3001) for how to expose it safely.
+The image runs as the unprivileged `node` user, writes state only under `/data`, and checks `/readyz`. For the single-instance reference deployment and backup/restore procedure, see [`compose.production.yml`](compose.production.yml) and [`docs/operations.md`](docs/operations.md). The admin port (3001) is not published in the example above.
 
 ## Wallet Integration
 
@@ -127,11 +127,11 @@ The database uses Node's built-in `node:sqlite` module (requires `--experimental
 
 ### Encryption at rest
 
-When `DB_PATH` is set, `TOKEN_ENCRYPTION_KEY` is **required**. Wallet session tokens are stored encrypted (AES-256-GCM) so a database dump cannot be used to impersonate wallets.
+When `DB_PATH` is set, choose a private `TOKEN_ENCRYPTION_KEY` or explicitly set `ALLOW_INSECURE_TOKEN_STORAGE=1`. With a private key, wallet session tokens are stored with AES-256-GCM so a database dump alone cannot impersonate wallets. The insecure fallback makes no such confidentiality claim.
 
 - `TOKEN_ENCRYPTION_KEY` — 32-byte secret, encoded as hex (64 chars) or base64 (44 chars).  
   Generate: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
-- `ALLOW_INSECURE_TOKEN_STORAGE=1` — **dev only** escape hatch that stores tokens in plaintext without requiring `TOKEN_ENCRYPTION_KEY`. Do not use in production.
+- `ALLOW_INSECURE_TOKEN_STORAGE=1` — explicit escape hatch that uses the source-known fallback key instead of requiring `TOKEN_ENCRYPTION_KEY`. It prevents accidental plaintext rows but provides no protection against anyone with the source and database. Use it only when that tradeoff is acceptable.
 
 ## LN Address (LUD-16)
 
@@ -162,7 +162,7 @@ Constraints enforced per domain:
 
 Normally an LN address only resolves while the wallet's SSE session is connected. With offline receive, a wallet can receive while disconnected: the server quotes a **solver-mediated swap over the Arkade intents corridor** (`lightning:BTC -> arkade:BTC`) and hands the payer the solver's hold invoice. When the payer pays, the solver funds a VHTLC pinned to the user's Arkade address, and a **covclaimd** daemon claims it on the user's behalf — constrained by covenant (`enforcePayTo`) to pay only that address, so neither the solver nor the daemon can redirect funds.
 
-Enable it by setting a solver transport — `SOLVER_REGISTRY_URL` (discover the cheapest lightning-corridor solver from a [registry index](https://arkade-os.github.io/solver-registry/), e.g. `…/mutinynet.json`), or `SOLVER_PUBKEY` + `NOSTR_RELAYS` (pin a solver directly), or `SOLVER_URL` (HTTP, dev/custom solvers) — plus `COVCLAIMD_URL` and `ARK_SERVER_URL`. A wallet then registers its receive identity on an owned address:
+Enable it with `SOLVER_REGISTRY_URLS` and/or `SOLVER_CARDS_FILE`, plus `COVCLAIMD_URL` and `ARK_SERVER_URL`. Discovery uses `@arkade-os/solver-discovery`, merges registry, startup-file, and admin-pasted cards, ranks compatible Lightning-receive markets, and fails over only before an invoice is accepted. Pasted cards are managed in the admin UI's **Solvers** tab and activate immediately. A wallet then registers its receive identity on an owned address:
 
 > **`COVCLAIMD_URL` must name the same covclaimd instance the solver reveals to.** The protocol does not carry that choice: this server seals the preimage to the key its own `COVCLAIMD_URL` reports, while the solver reveals to whichever daemon *its* operator configured. Point them at different daemons and every offline receive funds, fails to claim, and refunds — covclaimd correctly refuses a packet it cannot decrypt, the solver retries that refusal until the refund deadline, and the only trace is in the solver operator's logs, not yours. Until [arkade-os/intent-solver#46](https://github.com/arkade-os/intent-solver/issues/46) moves the choice in band, confirm the pairing with whoever runs the solver.
 
@@ -192,7 +192,7 @@ Normally covclaimd is the only thing that claims the solver's lockup, and it nee
 
 > **`OFFLINE_EMULATOR_URL` must name the emulator whose key is baked into the covenant.** That key comes from `COVCLAIMD_URL`'s `emulator_pub_key`, so the two must agree — point them at different emulators and every push is refused, the same pairing hazard as `COVCLAIMD_URL` itself. Startup checks this and logs a warning naming both keys if they disagree; it never refuses to start, and it stays silent when either service is unreachable, so a boot-time blip is not mistaken for a misconfiguration. An emulator that has rotated its key still counts as a match, since covenants built under the retired key remain satisfiable.
 
-covclaimd stays configured and keeps working alongside this: both push the same leaf to the same destination, so they race harmlessly and the loser's push simply fails. The claim fires from the offline settlement poller once the indexer shows a spendable VTXO at the lockup, is skipped when the lockup is funded below the quote's `to_amount` (revealing the preimage for less would let the solver settle the payer's invoice in full), and is safe to retry: an already-spent lockup is a no-op. Claim registrations live in memory, so swaps quoted before a restart fall back to covclaimd.
+covclaimd stays configured and keeps working alongside this: both push the same leaf to the same destination, so they race harmlessly and the loser's push simply fails. The claim fires from the offline settlement poller once the indexer shows a spendable VTXO at the lockup, is skipped when the lockup is funded below the quote's `to_amount`, and is safe to retry. Accepted swaps persist the pinned solver, relay set, RFQ id, amount, and versioned VHTLC reconstruction fields atomically with the settlement, so status polling and self-claim resume after restart.
 
 ## Payment options (LUD-XX)
 
@@ -263,6 +263,10 @@ The Docker image binds to `0.0.0.0` so isolation happens at the container/proxy 
 | DELETE | `/admin/api/blacklist/:id` | Remove blacklist entry |
 | GET | `/admin/api/sessions` | List active session IDs |
 | GET | `/admin/api/settlements` | List settlement records (filter: `settled`, `option`, `limit`) — preimages/pr never exposed |
+| GET/POST | `/admin/api/solver-cards` | List or paste a manual solver card |
+| PUT/PATCH/DELETE | `/admin/api/solver-cards/:id` | Replace, enable/disable, or delete a card |
+| GET | `/admin/api/discovery` | Inspect active candidates, sources, cache use, and warnings |
+| POST | `/admin/api/discovery/refresh` | Refresh discovery immediately |
 
 The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 
@@ -281,10 +285,8 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `MAX_SENDABLE` | `100000000000` | Maximum sendable amount in millisats |
 | `INVOICE_TIMEOUT_MS` | `30000` | How long to wait (ms) for the wallet to provide a bolt11 |
 | `VERIFY_TTL_MS` | `86400000` | How long (ms) LUD-21 settlement records are retained for `verify` polling |
-| `SOLVER_URL` | — | Intent-solver RFQ HTTP base URL (dev/custom solvers). Alternatively configure the Nostr transport below. |
-| `SOLVER_REGISTRY_URL` | — | Solver-registry index URL — discover the cheapest lightning-corridor solver (bounds from its card are enforced before quoting). The card is read at startup; a solver changing its bounds takes effect on restart. Alternative to pinning `SOLVER_PUBKEY`. |
-| `SOLVER_PUBKEY` | — | Solver's x-only discovery pubkey (hex) for Nostr RFQ — the production transport. Needs `NOSTR_RELAYS`. |
-| `NOSTR_RELAYS` | — | Comma-separated `wss://` relay URLs the solver listens on. |
+| `SOLVER_REGISTRY_URLS` | — | Comma-separated solver-registry index URLs. Successful bodies are cached for up to seven days. |
+| `SOLVER_CARDS_FILE` | — | Startup JSON file containing an array of manually pinned cards. Cards can also be pasted into the admin UI and persisted in SQLite. |
 | `NOSTR_SECRET_KEY` | — | 32-byte hex Nostr identity for the RFQ transport; ephemeral per boot when unset. **Key material** — treat it like a private key; prefer the ephemeral default unless a stable identity is genuinely required. |
 | `COVCLAIMD_URL` | — | covclaimd daemon base URL (non-interactive VHTLC claims). Must be the same instance the solver reveals to — see the warning under [Offline receive](#offline-receive-opt-in). |
 | `ARK_SERVER_URL` | — | Arkade operator URL (e.g. `https://mutinynet.arkade.sh`) — signer key, exit delay and network are read from it. |
@@ -292,13 +294,17 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `OFFLINE_SELF_CLAIM` | `false` | `true` pushes each lockup's `nonInteractiveClaim` leaf here as well as covclaimd, so covclaimd stops being a single point of failure. Needs no key — the leaf is signed by the operator and the emulator, and gated on the preimage this server already holds. Requires `OFFLINE_EMULATOR_URL`. See [Self-claim](#self-claim-offline_self_claim-default-off). |
 | `OFFLINE_EMULATOR_URL` | — | Emulator base URL backing `OFFLINE_SELF_CLAIM` — it co-signs the covenant leaf after checking the spend pays the user. Must be the emulator whose `emulator_pub_key` `COVCLAIMD_URL` reports. Missing with the flag on, the server refuses to start. |
 | `DB_PATH` | — | Path to SQLite database file. Omit for in-memory-only mode. |
-| `TOKEN_ENCRYPTION_KEY` | — | 32-byte AES key (hex or base64). Required when `DB_PATH` is set. |
-| `ALLOW_INSECURE_TOKEN_STORAGE` | — | Set to `1` to skip token encryption in dev (plaintext storage). |
+| `TOKEN_ENCRYPTION_KEY` | — | 32-byte AES key (hex or base64). Required with `DB_PATH` unless the insecure fallback is explicitly allowed. |
+| `ALLOW_INSECURE_TOKEN_STORAGE` | — | Set to `1` to use the source-known fallback key and accept that database token confidentiality is not provided. |
 | `ADMIN_PORT` | `3001` | Admin backend port |
 | `ADMIN_BIND` | `127.0.0.1` | Admin bind address (`0.0.0.0` in Docker) |
 | `BOOTSTRAP_DOMAIN` | — | Domain name to create on first startup if no domains exist |
 | `REGISTRATION_RATE_LIMIT` | `10` | Max address registration requests per minute per IP |
 | `TRUST_PROXY` | `1` | Express `trust proxy` value — number of hops or `false` |
+| `MAX_SESSIONS` | `5000` | Global concurrent SSE session cap |
+| `MAX_SESSIONS_PER_IP` | `50` | Concurrent SSE session cap per resolved client IP |
+| `MAX_CONCURRENT_OFFLINE_QUOTES` | `20` | Global in-flight offline RFQ cap |
+| `SHUTDOWN_TIMEOUT_MS` | `15000` | Grace period before lingering HTTP connections are forced closed |
 
 ## Development
 

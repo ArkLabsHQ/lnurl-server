@@ -29,6 +29,7 @@ async function main(): Promise<void> {
   const logger = createLogger();
 
   const db = await initPersistence({ dbPath: config.dbPath, bootstrapDomain: config.bootstrapDomain });
+  if (config.offlineReceive.enabled && !db) throw new Error("offline receive requires DB_PATH for durable accepted-swap recovery");
   const sessions = new SessionManager();
   runtime.addStop(() => sessions.shutdown("service shutdown"));
   if (db) {

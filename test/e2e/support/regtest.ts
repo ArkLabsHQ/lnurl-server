@@ -17,7 +17,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 export const REGTEST_DIR = join(HERE, "..", "..", "..", "regtest");
 export const ARKD_URL = process.env.E2E_ARKD_URL ?? "http://localhost:7070";
 export const COVCLAIMD_URL = process.env.E2E_COVCLAIMD_URL ?? "http://localhost:7271";
-export const SOLVER_URL = process.env.E2E_SOLVER_URL ?? "http://localhost:8787";
+export const SOLVER_HTTP_TEST_URL = process.env.E2E_SOLVER_HTTP_TEST_URL ?? "http://localhost:8787";
 export const ESPLORA_URL = process.env.E2E_ESPLORA_URL ?? "http://localhost:3000/api";
 
 /** The solver's throwaway regtest mnemonic — arkade-regtest's fixed, public, never-real-funds value. */
@@ -84,7 +84,7 @@ export async function stackIsUp(): Promise<boolean> {
   const checks = await Promise.all([
     httpOk(`${ARKD_URL}/v1/info`),
     httpOk(`${COVCLAIMD_URL}/v1/preimage/covclaimd-pubkey`),
-    httpOk(`${SOLVER_URL}/healthz`),
+    httpOk(`${SOLVER_HTTP_TEST_URL}/healthz`),
     (async () => {
       try {
         const info = await lncli<{ synced_to_chain: boolean }>("lnd", ["getinfo"]);
@@ -257,7 +257,7 @@ export async function applySolverOverlay(): Promise<void> {
   );
   if (current.includes(imageId) && current.includes("COVCLAIMD_URL=")) return; // already applied
   await compose(["up", "-d", "--force-recreate", "--no-deps", "intent-solver"]);
-  await pollUntil("intent-solver", () => httpOk(`${SOLVER_URL}/healthz`), 180_000);
+  await pollUntil("intent-solver", () => httpOk(`${SOLVER_HTTP_TEST_URL}/healthz`), 180_000);
 }
 
 /**
@@ -304,6 +304,6 @@ export async function fundSolverFloat(log: (s: string) => void = console.log): P
     log(`solver float funded: ${balance.available} sats spendable`);
   } finally {
     await compose(["start", "intent-solver"]);
-    await pollUntil("intent-solver", () => httpOk(`${SOLVER_URL}/healthz`), 120_000);
+    await pollUntil("intent-solver", () => httpOk(`${SOLVER_HTTP_TEST_URL}/healthz`), 120_000);
   }
 }

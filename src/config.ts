@@ -155,11 +155,11 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   }
   if (emulatorUrl && !selfClaim) throw new Error("OFFLINE_EMULATOR_URL requires OFFLINE_SELF_CLAIM=true");
   const anyOfflineSetting = hasCards || covclaimdUrl || arkServerUrl || nostrSecretKey || selfClaim || emulatorUrl || stampClaimPacket;
-  if (anyOfflineSetting && (!hasCards || !covclaimdUrl || !arkServerUrl)) {
-    throw new Error("offline receive requires solver cards, COVCLAIMD_URL, and ARK_SERVER_URL together");
+  if (anyOfflineSetting && (!covclaimdUrl || !arkServerUrl)) {
+    throw new Error("offline receive requires COVCLAIMD_URL and ARK_SERVER_URL together; cards may come from env, file, or the admin database");
   }
   return {
-    enabled: Boolean(hasCards && covclaimdUrl && arkServerUrl),
+    enabled: Boolean(covclaimdUrl && arkServerUrl),
     registryUrls,
     stampClaimPacket,
     selfClaim,

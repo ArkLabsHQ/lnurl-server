@@ -46,7 +46,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/):
 - `src/session-manager.ts` — Session lifecycle, SSE streaming, invoice request/response flow
 - `src/types.ts` — Shared TypeScript types
 - `src/cli.ts` — CLI entrypoint reading config from env vars
-- `src/intent-swap.ts` — Offline receive: solver-quoted `lightning:BTC -> arkade:BTC` corridor swaps (config `SOLVER_URL` or `SOLVER_PUBKEY` + `NOSTR_RELAYS`, plus `COVCLAIMD_URL` + `ARK_SERVER_URL`)
+- `src/intent-swap.ts` — Offline receive: card-discovered `lightning:BTC -> arkade:BTC` corridor swaps (`SOLVER_REGISTRY_URLS` / `SOLVER_CARDS_FILE`, plus `COVCLAIMD_URL` + `ARK_SERVER_URL`)
 - `src/self-claim.ts` — Optional server-side lockup claim (`OFFLINE_SELF_CLAIM` + `OFFLINE_EMULATOR_URL`): pushes the covenant's `nonInteractiveClaim` leaf — operator + emulator signatures, gated on the preimage we hold — so covclaimd isn't a single point of failure. Needs no key; the covenant pins the payout to the user. Never the collaborative `claim` leaf, which has no output constraint
 - `src/arkade-watcher.ts` — Destination-rail settlement watcher (indexer polling for `paymentOptions: arkade` records)
 - `src/payment-options.ts` — LUD-XX paymentOptions rail registry (advertise + resolve)

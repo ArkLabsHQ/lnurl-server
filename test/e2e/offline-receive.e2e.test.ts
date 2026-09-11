@@ -50,7 +50,7 @@ import {
   nodeSqliteStorage,
   ARKD_URL,
   COVCLAIMD_URL,
-  SOLVER_URL,
+  SOLVER_HTTP_TEST_URL,
 } from "./support/regtest.js";
 
 const AMOUNT_SATS = 5000;
@@ -126,7 +126,7 @@ describe.each([
         source: "e2e-fixture",
         sourceType: "local",
       }] },
-      transportFactory: () => httpTransport(SOLVER_URL),
+      transportFactory: () => httpTransport(SOLVER_HTTP_TEST_URL),
       covclaimdUrl: COVCLAIMD_URL,
       arkServerUrl: ARKD_URL,
       stampClaimPacket: stamp,
@@ -190,7 +190,7 @@ describe.each([
       "verify settled",
       async () => {
         if (swapId) {
-          const raw = (await fetch(`${SOLVER_URL}/v1/rfq/${swapId}`)
+          const raw = (await fetch(`${SOLVER_HTTP_TEST_URL}/v1/rfq/${swapId}`)
             .then((r) => (r.ok ? r.json() : null))
             .catch(() => null)) as { state?: string; profile?: { lockup_address?: string } } | null;
           lockupAddress ||= String(raw?.profile?.lockup_address ?? "");

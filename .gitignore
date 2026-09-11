@@ -3,6 +3,7 @@ dist/
 *.tsbuildinfo
 .env
 .env.local
+.env.production
 package-lock.json
 
 .e2e-cache/

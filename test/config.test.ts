@@ -69,6 +69,17 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...base, SOLVER_CARDS_FILE: "/cards.json" })).toThrow(/COVCLAIMD_URL.*ARK_SERVER_URL/);
   });
 
+  it("allows persisted admin cards to be the only discovery source", () => {
+    const config = loadConfig({
+      ...base,
+      DB_PATH: "/data/lnurl.sqlite",
+      ALLOW_INSECURE_TOKEN_STORAGE: "1",
+      COVCLAIMD_URL: "https://covclaimd.example",
+      ARK_SERVER_URL: "https://ark.example",
+    });
+    expect(config.offlineReceive).toMatchObject({ enabled: true, registryUrls: [] });
+  });
+
   it.each(["SOLVER_URL", "SOLVER_PUBKEY", "NOSTR_RELAYS", "SOLVER_REGISTRY_URL"])(
     "rejects removed %s configuration",
     (name) => expect(() => loadConfig({ ...base, [name]: "configured" })).toThrow(new RegExp(`${name}.*removed`, "i")),
