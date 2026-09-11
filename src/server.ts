@@ -586,16 +586,16 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           res.json({ status: "ERROR", reason: `Amount must be between ${min} and ${max} millisats` } satisfies LnurlErrorResponse);
           return;
         }
+        // The corridor deals in whole sats; reject before reserving capacity.
+        if (amountMsat % 1000 !== 0) {
+          res.json({ status: "ERROR", reason: "Amount must be a whole number of satoshis" } satisfies LnurlErrorResponse);
+          return;
+        }
         if (offlineQuotes >= (config.maxConcurrentOfflineQuotes ?? 20)) {
           res.status(429).json({ status: "ERROR", reason: "Offline quote capacity reached" } satisfies LnurlErrorResponse);
           return;
         }
         offlineQuotes++;
-        // The corridor deals in whole sats; sub-sat amounts would truncate silently.
-        if (amountMsat % 1000 !== 0) {
-          res.json({ status: "ERROR", reason: "Amount must be a whole number of satoshis" } satisfies LnurlErrorResponse);
-          return;
-        }
         try {
           await createOfflineSwapAndRespond({
             creator, store, offlineSwaps: deps.offlineSwaps, baseUrl: settings.baseUrl(), amountMsat,

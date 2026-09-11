@@ -27,4 +27,16 @@ describe("runtime shutdown", () => {
     expect(lines[0]).not.toContain("hidden");
     expect(JSON.parse(lines[0]!)).toMatchObject({ event: "request", token: "[REDACTED]", error: { message: "safe message" } });
   });
+
+  it("bounds and sanitizes secrets embedded in error messages", () => {
+    const lines: string[] = [];
+    const logger = createLogger({ info: (line) => { lines.push(String(line)); }, warn: () => {}, error: () => {} });
+    const invoice = `lnbc1${"q".repeat(100)}`;
+    logger.info("failure", { error: new Error(`token=wallet-secret\ninvoice ${invoice} ${"a".repeat(1_000)}`) });
+    const parsed = JSON.parse(lines[0]!) as { error: { message: string } };
+    expect(parsed.error.message).not.toContain("wallet-secret");
+    expect(parsed.error.message).not.toContain(invoice);
+    expect(parsed.error.message).not.toContain("\n");
+    expect(parsed.error.message.length).toBeLessThanOrEqual(512);
+  });
 });

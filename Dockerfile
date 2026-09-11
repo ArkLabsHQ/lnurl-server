@@ -1,7 +1,6 @@
 FROM node:22-slim AS base
-# Pin pnpm to a version satisfying engines.pnpm (>=10.25.0 <11) and matching the
-# pnpm-10 lockfile format; `pnpm@latest` now resolves to 11.x which the engines field rejects.
-RUN corepack enable && corepack prepare pnpm@10.29.2 --activate
+# Match packageManager exactly so local, CI, and image installs use one toolchain.
+RUN corepack enable && corepack prepare pnpm@10.25.0 --activate
 WORKDIR /app
 
 # Install dependencies

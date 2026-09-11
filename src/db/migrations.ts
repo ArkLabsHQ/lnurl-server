@@ -167,7 +167,9 @@ const MIGRATIONS: Migration[] = [
 ];
 
 /** Apply all pending forward-only migrations inside a transaction each. */
-export function runMigrations(db: Db): void {
+export function runMigrations(db: Db, options: { legacySwapTtlMs?: number; now?: () => number } = {}): void {
+  const now = options.now ?? Date.now;
+  const legacySwapTtlMs = options.legacySwapTtlMs ?? 86_400_000;
   db.exec(
     "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);",
   );
@@ -177,7 +179,9 @@ export function runMigrations(db: Db): void {
   if (current >= 4 && current < 8) {
     const table = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'offline_swaps'").get();
     if (!table) {
-      const legacy = db.prepare("SELECT COUNT(*) AS count FROM settlements WHERE swap_id IS NOT NULL AND settled = 0").get() as { count: number };
+      const legacy = db.prepare(
+        "SELECT COUNT(*) AS count FROM settlements WHERE swap_id IS NOT NULL AND settled = 0 AND created_at > ?",
+      ).get(now() - legacySwapTtlMs) as { count: number };
       if (legacy.count > 0) {
         throw new Error(`upgrade blocked: ${legacy.count} unsettled legacy offline swap(s) must drain first`);
       }
@@ -189,7 +193,7 @@ export function runMigrations(db: Db): void {
     db.exec("BEGIN");
     try {
       db.exec(m.up);
-      db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)").run(m.version, Date.now());
+      db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)").run(m.version, now());
       db.exec("COMMIT");
     } catch (err) {
       db.exec("ROLLBACK");

@@ -42,4 +42,16 @@ describe("runMigrations", () => {
     expect(() => runMigrations(db)).toThrow(/upgrade blocked.*1 unsettled legacy offline swap/i);
     db.close();
   });
+
+  it("allows migration 8 after legacy offline swaps expire", () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    db.exec("DROP TABLE offline_swaps; DELETE FROM schema_migrations WHERE version = 8;");
+    db.prepare("INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, created_at) VALUES ('aa', 'lnbc1', 'offline:1', 0, 'bb', 'legacy-rfq', 8000)").run();
+
+    expect(() => runMigrations(db, { legacySwapTtlMs: 1000, now: () => 10_000 })).not.toThrow();
+    const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'offline_swaps'").get();
+    expect(table).toBeTruthy();
+    db.close();
+  });
 });

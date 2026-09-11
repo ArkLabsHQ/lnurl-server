@@ -73,7 +73,9 @@ describe("admin API", () => {
     failRefresh = false;
     const id = created.body.card.id;
     expect((await request(app).patch(`/admin/api/solver-cards/${id}`).send({ enabled: false })).body.card.enabled).toBe(false);
+    expect(refreshCalls).toBe(2);
     expect((await request(app).delete(`/admin/api/solver-cards/${id}`)).status).toBe(202);
+    expect(refreshCalls).toBe(3);
     expect(repos.solverCards.list()).toEqual([]);
   });
 

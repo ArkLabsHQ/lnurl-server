@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import http from "node:http";
 import { createHash } from "node:crypto";
 import { base64, hex } from "@scure/base";
@@ -295,6 +295,19 @@ describe("createOfflineSwapCoordinator", () => {
       relays: swap.recovery.relays,
     })]);
     await restarted.close?.();
+  });
+
+  it("closes a terminal swap transport once and removes it from the pinned set", async () => {
+    const close = vi.fn(async () => {});
+    const bounded = await createOfflineSwapCoordinator(swapSettings({
+      transportFactory: () => ({ ...httpTransport(solver.baseUrl), close }),
+    }));
+    const swap = await bounded.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
+    await bounded.release?.(swap.swapId);
+    await bounded.release?.(swap.swapId);
+    await bounded.prune?.([]);
+    expect(close).toHaveBeenCalledTimes(1);
+    await bounded.close?.();
   });
 
   it("refuses an invoice on a different payment hash", async () => {

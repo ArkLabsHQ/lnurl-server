@@ -157,6 +157,19 @@ describe("offline receive", () => {
     expect(creator.created).toHaveLength(0);
   });
 
+  it("does not consume quote capacity for rejected sub-satoshi amounts", async () => {
+    const creator = new FakeCreator("9a".repeat(32));
+    repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
+    ctx = await start(repos, creator, new MemorySettlementStore(60_000));
+    for (let i = 0; i < 20; i++) {
+      const rejected = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=50001`, "GET", "domain.com");
+      expect(rejected.body.status).toBe("ERROR");
+    }
+    const accepted = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=50000`, "GET", "domain.com");
+    expect(accepted.body.pr).toBeDefined();
+    expect(creator.created).toHaveLength(1);
+  });
+
   it("returns an LNURL error when swap creation fails", async () => {
     const creator: OfflineSwapCreator = {
       create: async () => { throw new Error("solver refused: amount_out_of_range"); },

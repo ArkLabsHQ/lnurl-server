@@ -76,8 +76,11 @@ export interface OfflineSwapCreator {
   isSettled(swapId: string, recovery?: OfflineSwapRecoveryV1): Promise<boolean>;
   /** Present only under OFFLINE_SELF_CLAIM. @see SelfClaimer */
   selfClaim?(swapId: string, preimage: string, recovery?: OfflineSwapRecoveryV1): Promise<SelfClaimOutcome>;
-  /** Close the transport when present (a Nostr pool holds open relay sockets).
-   *  Optional: process exit closes them anyway — cli has no shutdown hook today. */
+  /** Close and forget one terminal swap's pinned transport. */
+  release?(swapId: string): Promise<void>;
+  /** Close transports whose swaps are no longer in durable pending storage. */
+  prune?(activeSwapIds: readonly string[]): Promise<void>;
+  /** Close every remaining transport during graceful shutdown. */
   close?(): Promise<void>;
 }
 
@@ -141,15 +144,21 @@ async function fetchCovclaimdKeys(covclaimdUrl: string): Promise<{ covclaimdPubk
 
 /**
  * Real creator over a vendored RFQ corridor client (see src/vendor/arkade-swap/).
- * The live path (a real solver + covclaimd + operator) is not exercised in CI — the
- * integration test drives this against fake HTTP servers implementing the same wire
- * contracts. Mutinynet/mainnet verification is the deployment's to do once.
+ * Unit tests use fake transports; the funded E2E exercises a real solver,
+ * covclaimd, and operator through a test-only HTTP RFQ adapter. Nostr transport
+ * remains part of the deployment canary on the target network.
  */
 export async function createOfflineSwapCoordinator(settings: IntentSwapSettings): Promise<OfflineSwapCreator> {
   const arkProvider = new RestArkProvider(settings.arkServerUrl);
   const pinned = new Map<string, RfqTransport>();
   const transportFor: (candidate: Pick<SolverCandidate, "name" | "discoveryPubkey" | "relays">) => RfqTransport = settings.transportFactory ?? ((candidate) =>
     nostrTransport(candidate.discoveryPubkey, candidate.relays, settings.nostrSecretKey));
+  const release = async (swapId: string): Promise<void> => {
+    const transport = pinned.get(swapId);
+    if (!transport) return;
+    pinned.delete(swapId);
+    await transport.close().catch(() => {});
+  };
 
   let cached: { at: number; ctx: Promise<CorridorContext> } | null = null;
   const context = (): Promise<CorridorContext> => {
@@ -281,6 +290,14 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
           return settings.selfClaimer!.claim(swapId, preimage);
         } }
       : {}),
+
+    release,
+    prune: async (activeSwapIds) => {
+      const active = new Set(activeSwapIds);
+      await Promise.allSettled([...pinned.keys()]
+        .filter((swapId) => !active.has(swapId))
+        .map((swapId) => release(swapId)));
+    },
 
     close: async () => {
       await Promise.allSettled([...new Set(pinned.values())].map((transport) => transport.close()));

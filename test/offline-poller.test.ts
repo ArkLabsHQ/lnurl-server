@@ -23,19 +23,24 @@ describe("settleOfflineSwaps", () => {
     store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
     store.create({ paymentHash: "bb", pr: "lnbc2", sessionId: "offline:2", preimage: "feed", swapId: "swap-2" });
 
-    const n = await settleOfflineSwaps(store, creatorReporting(["swap-1"]));
+    const creator = creatorReporting(["swap-1"]);
+    creator.prune = vi.fn(async () => {});
+    creator.release = vi.fn(async () => {});
+    const n = await settleOfflineSwaps(store, creator);
 
     expect(n).toBe(1);
     expect(store.get("aa")).toMatchObject({ settled: true, preimage: "beef" });
     expect(store.get("bb")!.settled).toBe(false);
     expect(store.listPendingSwaps().map((p) => p.swapId)).toEqual(["swap-2"]);
+    expect(creator.prune).toHaveBeenCalledWith(["swap-1", "swap-2"]);
+    expect(creator.release).toHaveBeenCalledWith("swap-1");
   });
 
   it("claims the lockup before checking status, since the claim is what makes the solver settle", async () => {
     const store = new MemorySettlementStore(60_000);
     store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
     const calls: [string, string][] = [];
-    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const log = vi.spyOn(console, "info").mockImplementation(() => {});
 
     const n = await settleOfflineSwaps(store, {
       ...creatorReporting(["swap-1"]),
@@ -47,6 +52,7 @@ describe("settleOfflineSwaps", () => {
 
     expect(calls).toEqual([["swap-1", "beef"]]);
     expect(n).toBe(1);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_self_claimed"'));
     expect(log).toHaveBeenCalledWith(expect.stringContaining("ark-tx-1"));
   });
 
@@ -62,7 +68,7 @@ describe("settleOfflineSwaps", () => {
 
     expect(n).toBe(1);
     expect(store.get("aa")!.settled).toBe(true);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("self-claim failed"), expect.any(Error));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_self_claim_failed"'));
   });
 
   it("warns rather than revealing the preimage for an underfunded lockup", async () => {
@@ -75,7 +81,7 @@ describe("settleOfflineSwaps", () => {
       selfClaim: async () => ({ state: "skipped", reason: "underfunded" }),
     });
 
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("underfunded"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_underfunded"'));
   });
 
   it("leaves a swap pending when the status check throws, and names it in a warning", async () => {
@@ -91,7 +97,8 @@ describe("settleOfflineSwaps", () => {
 
     expect(n).toBe(0);
     expect(store.get("aa")!.settled).toBe(false);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("swap-1"), expect.any(Error));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_status_failed"'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("swap-1"));
   });
 
   it("drives status and self-claim from a persisted recovery row", async () => {

@@ -1,13 +1,13 @@
 /**
  * E2E: offline Lightning receive through the intents corridor, for real.
  *
- * The full funded path, no fakes anywhere: this repo's lnurl-server (in-process,
- * wired exactly like cli.ts) quotes a `lightning:BTC->arkade:BTC` swap with the
- * regtest intent-solver over its HTTP API; the stack's counterparty LND pays the
- * hold invoice for real; the solver funds a VHTLC pinned to the user's registered
- * Arkade address; covclaimd decrypts OUR sealed claim packet (the vendored
- * sealClaimPacket) and claims; the solver settles the HTLC; the server's settlement
- * poller flips LUD-21 verify via the solver's RFQ status.
+ * The full funded settlement path: this repo's lnurl-server uses its production
+ * persistence and recovery wiring with a test-only HTTP RFQ adapter to quote a
+ * `lightning:BTC->arkade:BTC` swap with the regtest intent-solver; the stack's
+ * counterparty LND pays the hold invoice for real; the solver funds a VHTLC
+ * pinned to the user's registered Arkade address; covclaimd decrypts OUR sealed
+ * claim packet (the vendored sealClaimPacket) and claims; the solver settles the
+ * HTLC; the server's settlement poller flips LUD-21 verify via the solver's RFQ status.
  *
  * Assertions that no fake can make: the payer's own node reports SUCCEEDED with the
  * preimage; `verify` reveals that same preimage; and the VTXO landed on the user's
@@ -162,7 +162,8 @@ describe.each([
     };
     await wallet.dispose();
 
-    // lnurl-server, in-process, file-backed DB mode — the same wiring as cli.ts.
+    // lnurl-server, in-process, with production persistence/recovery and a
+    // test-only HTTP RFQ adapter for deterministic funded regtest coverage.
     console.log("[setup] starting lnurl-server…");
     await startLocal();
 

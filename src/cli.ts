@@ -8,13 +8,14 @@ import { pathToFileURL } from "node:url";
 export async function initPersistence(opts: {
   dbPath?: string;
   bootstrapDomain?: string;
+  verifyTtlMs?: number;
 }): Promise<Db | null> {
   if (!opts.dbPath) return null;
   const { openDb } = await import("./db/connection.js");
   const { runMigrations } = await import("./db/migrations.js");
   const { bootstrap } = await import("./bootstrap.js");
   const db = openDb(opts.dbPath);
-  runMigrations(db);
+  runMigrations(db, { legacySwapTtlMs: opts.verifyTtlMs });
   bootstrap(db, { bootstrapDomain: opts.bootstrapDomain });
   return db;
 }
@@ -28,7 +29,7 @@ async function main(): Promise<void> {
   const runtime = createRuntime(health, config.shutdownTimeoutMs);
   const logger = createLogger();
 
-  const db = await initPersistence({ dbPath: config.dbPath, bootstrapDomain: config.bootstrapDomain });
+  const db = await initPersistence({ dbPath: config.dbPath, bootstrapDomain: config.bootstrapDomain, verifyTtlMs: config.verifyTtlMs });
   if (config.offlineReceive.enabled && !db) throw new Error("offline receive requires DB_PATH for durable accepted-swap recovery");
   const sessions = new SessionManager();
   runtime.addStop(() => sessions.shutdown("service shutdown"));
@@ -120,7 +121,7 @@ async function main(): Promise<void> {
     // no process-shutdown hook for either to be called from.
     if (offlineSwapCreator) {
       const { startOfflineSettlementPoller } = await import("./offline-poller.js");
-      runtime.addStop(startOfflineSettlementPoller(settlements, offlineSwapCreator, 15_000, offlineSwaps));
+      runtime.addStop(startOfflineSettlementPoller(settlements, offlineSwapCreator, 15_000, offlineSwaps, logger));
       const via = `cards:${config.offlineReceive.registryUrls[0] ?? config.offlineReceive.cardsFile}`;
       console.log(`offline receive: enabled (solver=${via})`);
     }

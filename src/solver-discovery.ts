@@ -74,10 +74,12 @@ export class DiscoveryService {
   private latestSources: DiscoverySourceStatus[] = [];
   private latestWarnings: string[] = [];
   private refreshing: Promise<void> | null = null;
+  private refreshQueued = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private nextRefreshAt: number | null = null;
   private cacheUsed = new Set<string>();
   private cacheExpired = new Set<string>();
+  private fetchedBodies = new Map<string, string>();
 
   constructor(private options: DiscoveryServiceOptions) {
     this.now = options.now ?? Date.now;
@@ -100,8 +102,16 @@ export class DiscoveryService {
   }
 
   refresh(): Promise<void> {
-    if (this.refreshing) return this.refreshing;
-    this.refreshing = this.doRefresh().finally(() => { this.refreshing = null; });
+    if (this.refreshing) {
+      this.refreshQueued = true;
+      return this.refreshing;
+    }
+    this.refreshing = (async () => {
+      do {
+        this.refreshQueued = false;
+        await this.doRefresh();
+      } while (this.refreshQueued);
+    })().finally(() => { this.refreshing = null; });
     return this.refreshing;
   }
 
@@ -160,6 +170,7 @@ export class DiscoveryService {
   private async doRefresh(): Promise<void> {
     this.cacheUsed.clear();
     this.cacheExpired.clear();
+    this.fetchedBodies.clear();
     const dbCards = this.options.cardStore.listEnabled(this.options.network).map((row) => {
       try { return { card: JSON.parse(row.cardJson), network: this.options.network, label: `db:${row.id}:${row.label}` }; }
       catch { return { card: {}, network: this.options.network, label: `db:${row.id}:${row.label}` }; }
@@ -177,6 +188,12 @@ export class DiscoveryService {
       now: Math.floor(this.now() / 1000),
     });
     const staleSources = new Set(result.sources.filter((source) => source.warnings.some((warning) => /index is stale/.test(warning))).map((source) => source.source));
+    for (const source of result.sources) {
+      const body = this.fetchedBodies.get(source.source);
+      if (source.sourceType === "registry" && source.ok && body && !staleSources.has(source.source)) {
+        this.options.cacheStore.put({ url: source.source, network: this.options.network, body, fetchedAt: this.now() });
+      }
+    }
     const markets = result.markets.filter((market) => !staleSources.has(market.source));
     const candidates = markets.flatMap((market): SolverCandidate[] => {
       if (marketCorridor(market, "base") !== "arkade" || marketCorridor(market, "quote") !== "bolt11") return [];
@@ -221,7 +238,7 @@ export class DiscoveryService {
       const response = await this.upstreamFetch(input, init);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const body = await response.text();
-      this.options.cacheStore.put({ url: input, network: this.options.network, body, fetchedAt: this.now() });
+      this.fetchedBodies.set(input, body);
       return { ok: true, status: response.status, text: async () => body };
     } catch (error) {
       const cached = this.options.cacheStore.get(input, this.options.network);

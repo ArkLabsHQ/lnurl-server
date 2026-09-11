@@ -113,7 +113,8 @@ export function createAdminApi(deps: AdminDeps): Router {
     if (typeof enabled !== "boolean") { res.status(400).json({ error: "enabled must be boolean" }); return; }
     const row = repos.solverCards.setEnabled(Number(req.params.id), enabled);
     if (!row) { res.status(404).json({ error: "solver card not found" }); return; }
-    res.status(202).json({ persisted: true, active: enabled && await refreshDiscovery(row.id), card: cardResponse(row) });
+    const active = await refreshDiscovery(enabled ? row.id : undefined);
+    res.status(202).json({ persisted: true, active: enabled && active, card: cardResponse(row) });
   });
   r.delete("/solver-cards/:id", async (req, res) => {
     if (!repos.solverCards.delete(Number(req.params.id))) { res.status(404).json({ error: "solver card not found" }); return; }
