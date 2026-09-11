@@ -130,6 +130,8 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
     // derivation throw and every payment fall back to the static address.
     const recoveryDelaySeconds = loadConfig({
       NODE_ENV: "test",
+      DB_PATH: "unused-e2e.sqlite",
+      ALLOW_INSECURE_TOKEN_STORAGE: "1",
       COVCLAIMD_URL,
       ARK_SERVER_URL: ARKD_URL,
       OFFLINE_COVENANT_DESTINATIONS: "true",

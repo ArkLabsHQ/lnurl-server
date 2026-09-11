@@ -26,9 +26,6 @@ export interface SettlementRecord {
   /** Set on destination records with a per-payment covenant address; null for the
    *  static-address shape and for lightning. @see covenant-destination.ts */
   covenantScript: string | null;
-  /** When the sweeper last moved this destination on, and the tx that did it.
-   *  Null on a funded record means the sweep has not run — which nothing else
-   *  distinguishes from swept, since an already-swept address reads as unfunded. */
   createdAt: number;
   settledAt: number | null;
 }
@@ -168,7 +165,6 @@ export class MemorySettlementStore implements SettlementStore {
     return out;
   }
 
-
   markObserved(paymentHash: string, reference: string): boolean {
     const r = this.get(paymentHash);
     if (!r || r.settled) return false; // idempotent: never overwrite a settlement's reference
@@ -177,7 +173,6 @@ export class MemorySettlementStore implements SettlementStore {
     r.settledAt = this.now();
     return true;
   }
-
 
   isReferenceUsed(reference: string): boolean {
     for (const r of this.map.values()) if (r.paymentReference === reference) return true;
@@ -317,7 +312,6 @@ export class DbSettlementStore implements SettlementStore {
     }));
   }
 
-
   markObserved(paymentHash: string, reference: string): boolean {
     // Idempotent: a second observation must not overwrite the first's reference.
     const info = this.db
@@ -327,7 +321,6 @@ export class DbSettlementStore implements SettlementStore {
       .run(reference, this.now(), paymentHash, this.now() - this.ttlMs);
     return info.changes > 0;
   }
-
 
   isReferenceUsed(reference: string): boolean {
     return Boolean(this.db.prepare("SELECT 1 FROM settlements WHERE payment_reference = ? LIMIT 1").get(reference));

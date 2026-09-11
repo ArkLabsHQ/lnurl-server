@@ -31,19 +31,34 @@ function settleFrom(
  * The catch-up pass is not belt-and-braces: a payment that lands while the process is
  * down produces no event when it comes back, and the record would never settle.
  */
-export function startCovenantWatcher(store: SettlementStore, contracts: IContractManager): () => void {
+export function startCovenantWatcher(store: SettlementStore, contracts: IContractManager, catchUpRetryMs = 15_000): () => void {
   const unsubscribe = contracts.onContractEvent((event) => {
     if (event.type !== "vtxo_received" || event.contract.type !== COVENANT_CONTRACT_TYPE) return;
     settleFrom(store, event.contractScript, event.vtxos);
   });
 
-  void catchUp(store, contracts).catch((err) => {
-    // The subscription is already live, so a failure here costs the backlog, not
-    // everything after it. Loud because nothing retries it.
-    console.warn("covenant watcher: catch-up pass failed, payments made while down stay unsettled:", err);
-  });
+  let stopped = false;
+  let retry: ReturnType<typeof setTimeout> | undefined;
+  const runCatchUp = async (): Promise<void> => {
+    try {
+      await catchUp(store, contracts);
+    } catch (err) {
+      // The subscription covers new arrivals, but a transient startup failure must
+      // not strand the backlog until the next process restart.
+      console.warn("covenant watcher: catch-up pass failed; retrying:", err);
+      if (!stopped) {
+        retry = setTimeout(() => void runCatchUp(), catchUpRetryMs);
+        retry.unref?.();
+      }
+    }
+  };
+  void runCatchUp();
 
-  return unsubscribe;
+  return () => {
+    stopped = true;
+    if (retry) clearTimeout(retry);
+    unsubscribe();
+  };
 }
 
 /** Settle anything already funded at subscribe time — the events for those are gone. */

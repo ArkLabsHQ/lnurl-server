@@ -66,6 +66,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
   const port = Number(env.PORT) || 3000;
   const dbPath = env.DB_PATH || undefined;
   const allowInsecureTokenStorage = env.ALLOW_INSECURE_TOKEN_STORAGE === "1";
+  const offlineReceive = buildOfflineReceive(env);
 
   let tokenEncryptionKey: Buffer | undefined;
   if (env.TOKEN_ENCRYPTION_KEY) {
@@ -75,6 +76,9 @@ export function loadConfig(env: Env = process.env): AppConfig {
     throw new Error(
       "TOKEN_ENCRYPTION_KEY is required when DB_PATH is set (or set ALLOW_INSECURE_TOKEN_STORAGE=1 for dev)",
     );
+  }
+  if (offlineReceive.covenantDestinations && (!dbPath || dbPath === ":memory:")) {
+    throw new Error("OFFLINE_COVENANT_DESTINATIONS=true requires a file-backed DB_PATH (contracts and settlement attribution must survive restart)");
   }
 
   return {
@@ -92,7 +96,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
     bootstrapDomain: env.BOOTSTRAP_DOMAIN || undefined,
     registrationRateLimitPerMin: Number(env.REGISTRATION_RATE_LIMIT) || 10,
     trustProxy: /^\d+$/.test(env.TRUST_PROXY ?? "") ? Number(env.TRUST_PROXY) : env.TRUST_PROXY === "false" ? false : 1,
-    offlineReceive: buildOfflineReceive(env),
+    offlineReceive,
   };
 }
 

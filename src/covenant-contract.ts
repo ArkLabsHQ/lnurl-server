@@ -87,10 +87,13 @@ export const covenantDestinationHandler: ContractHandler<CovenantContractParams,
    *  a counterparty that is online now, which `collaborative` is exactly asking about. */
   getSpendablePaths(script, contract, context): PathSelection[] {
     const [sweep, collaborative, recovery] = pathsFor(script, contract);
-    const elapsed = (context.chainTime ?? context.currentTime) / 1000 - contract.createdAt / 1000;
+    const fundedAt = context.vtxo?.status.block_time;
+    const nowSeconds = Math.floor(context.chainTime ?? context.currentTime / 1000);
     const out: PathSelection[] = [];
     if (context.collaborative) out.push(sweep!, collaborative!);
-    if (elapsed >= deserialize(contract.params).recoveryDelaySeconds) out.push(recovery!);
+    // CSV is relative to this VTXO's confirmation, never contract creation. If
+    // that anchor is unavailable, withholding recovery is the only safe answer.
+    if (fundedAt !== undefined && nowSeconds - fundedAt >= deserialize(contract.params).recoveryDelaySeconds) out.push(recovery!);
     return out;
   },
 

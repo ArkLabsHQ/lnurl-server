@@ -103,6 +103,29 @@ describe("startCovenantWatcher", () => {
 
     expect(store.get("v1")!.settled).toBe(false);
   });
+
+  it("retries a failed startup catch-up so downtime payments are not stranded", async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const store = storeWith([{ hash: "v1", script: "512011", amountMsat: 50_000 }]);
+      const { manager } = fakeManager([{ script: "512011", vtxos: [{ txid: "tx-while-down", value: 50 }] }]);
+      const getContracts = manager.getContractsWithVtxos as unknown as ReturnType<typeof vi.fn>;
+      getContracts.mockRejectedValueOnce(new Error("indexer unavailable"));
+
+      const stop = startCovenantWatcher(store, manager, 1_000);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.get("v1")!.settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(store.get("v1")).toMatchObject({ settled: true, paymentReference: "tx-while-down" });
+      expect(getContracts).toHaveBeenCalledTimes(2);
+      stop();
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("catchUp", () => {

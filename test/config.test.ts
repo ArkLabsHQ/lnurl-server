@@ -127,6 +127,8 @@ describe("loadConfig", () => {
     const withUrls = { ...base, COVCLAIMD_URL: "https://cc.example", ARK_SERVER_URL: "https://ark.example" };
     const on = loadConfig({
       ...withUrls,
+      DB_PATH: "/data/x.db",
+      ALLOW_INSECURE_TOKEN_STORAGE: "1",
       OFFLINE_COVENANT_DESTINATIONS: "true",
       OFFLINE_EMULATOR_URL: "https://emulator.example",
     });
@@ -145,6 +147,18 @@ describe("loadConfig", () => {
     expect(() =>
       loadConfig({ ...base, OFFLINE_COVENANT_DESTINATIONS: "true", OFFLINE_EMULATOR_URL: "https://emulator.example" }),
     ).toThrow(/COVCLAIMD_URL and ARK_SERVER_URL/);
+    expect(() => loadConfig({
+      ...withUrls,
+      OFFLINE_COVENANT_DESTINATIONS: "true",
+      OFFLINE_EMULATOR_URL: "https://emulator.example",
+    })).toThrow(/DB_PATH/);
+    expect(() => loadConfig({
+      ...withUrls,
+      DB_PATH: ":memory:",
+      ALLOW_INSECURE_TOKEN_STORAGE: "1",
+      OFFLINE_COVENANT_DESTINATIONS: "true",
+      OFFLINE_EMULATOR_URL: "https://emulator.example",
+    })).toThrow(/file-backed DB_PATH/);
   });
 
   it("rejects a non-positive covenant recovery delay rather than building an unspendable leaf", () => {
@@ -152,6 +166,8 @@ describe("loadConfig", () => {
       ...base,
       COVCLAIMD_URL: "https://cc.example",
       ARK_SERVER_URL: "https://ark.example",
+      DB_PATH: "/data/x.db",
+      ALLOW_INSECURE_TOKEN_STORAGE: "1",
       OFFLINE_COVENANT_DESTINATIONS: "true",
       OFFLINE_EMULATOR_URL: "https://emulator.example",
       OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS: v,
@@ -174,6 +190,8 @@ describe("loadConfig", () => {
       ...base,
       COVCLAIMD_URL: "https://cc.example",
       ARK_SERVER_URL: "https://ark.example",
+      DB_PATH: "/data/x.db",
+      ALLOW_INSECURE_TOKEN_STORAGE: "1",
       OFFLINE_COVENANT_DESTINATIONS: "true",
       OFFLINE_EMULATOR_URL: "https://emulator.example",
     });

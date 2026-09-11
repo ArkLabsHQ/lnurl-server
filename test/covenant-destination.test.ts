@@ -31,6 +31,8 @@ describe("deriveCovenantDestination", () => {
   it("derives at the shipped default recovery delay", () => {
     const { offlineReceive } = loadConfig({
       NODE_ENV: "test",
+      DB_PATH: "unused-test.sqlite",
+      ALLOW_INSECURE_TOKEN_STORAGE: "1",
       COVCLAIMD_URL: "https://cc.example",
       ARK_SERVER_URL: "https://ark.example",
       OFFLINE_COVENANT_DESTINATIONS: "true",

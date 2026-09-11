@@ -71,15 +71,29 @@ describe("covenantDestinationHandler", () => {
     expect(handler.selectPath(script, contract(), { collaborative: false, currentTime: Date.now() })).toBeNull();
   });
 
-  it("withholds the recovery path until its CSV has elapsed", () => {
+  it("measures CSV from the VTXO confirmation using seconds-typed chain time", () => {
     const script = handler.createScript(handler.serializeParams(params));
     const fresh = contract();
-    const now = Date.now();
+    const fundedAt = 1_700_000_000;
+    const vtxo = { status: { block_time: fundedAt } } as never;
 
-    expect(handler.getSpendablePaths(script, fresh, { collaborative: true, currentTime: now })).toHaveLength(2);
+    expect(handler.getSpendablePaths(script, fresh, {
+      collaborative: true, currentTime: (fundedAt + 10_000) * 1000, chainTime: fundedAt + 4095, vtxo,
+    })).toHaveLength(2);
     expect(
-      handler.getSpendablePaths(script, fresh, { collaborative: true, currentTime: now + 4097 * 1000 }),
+      handler.getSpendablePaths(script, fresh, {
+        collaborative: true, currentTime: fundedAt * 1000, chainTime: fundedAt + 4096, vtxo,
+      }),
     ).toHaveLength(3);
+  });
+
+  it("withholds CSV recovery until funding time is known", () => {
+    const script = handler.createScript(handler.serializeParams(params));
+    const oldContract = { ...contract(), createdAt: 1 };
+
+    expect(handler.getSpendablePaths(script, oldContract, {
+      collaborative: true, currentTime: Date.now(),
+    })).toHaveLength(2);
   });
 
   it("keeps these outputs out of generic wallet spending", () => {

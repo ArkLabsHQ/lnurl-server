@@ -27,4 +27,3 @@ export async function sqliteContractStores(db: Db) {
   const exec = executor(db);
   return { contractRepository: new SQLiteContractRepository(exec), walletRepository: new SQLiteWalletRepository(exec) };
 }
-
