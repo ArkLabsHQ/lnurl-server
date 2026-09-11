@@ -84,9 +84,38 @@ export const adminOpenApiSpec = {
     { name: "API Keys" },
     { name: "Blacklist" },
     { name: "Sessions" },
+    { name: "Solver discovery" },
     { name: "Settings" },
   ],
   paths: {
+    "/discovery": {
+      get: {
+        summary: "Get the active solver discovery snapshot",
+        tags: ["Solver discovery"],
+        responses: { "200": { description: "Discovery status" }, ...errorResponse("503", "Discovery is disabled") },
+      },
+    },
+    "/discovery/refresh": {
+      post: {
+        summary: "Refresh registries and pasted cards now",
+        tags: ["Solver discovery"],
+        responses: { "200": { description: "Refreshed discovery status" }, ...errorResponse("503", "Discovery is disabled") },
+      },
+    },
+    "/solver-cards": {
+      get: { summary: "List pasted solver cards", tags: ["Solver discovery"], responses: { "200": { description: "Persisted cards" } } },
+      post: {
+        summary: "Validate and persist a pasted solver card",
+        tags: ["Solver discovery"],
+        requestBody: jsonBody({ type: "object", required: ["label", "card"], properties: { label: { type: "string" }, card: { type: "object" } } }),
+        responses: { "202": { description: "Persisted; active reports whether the refreshed snapshot is usable" }, ...errorResponse("400", "Invalid solver card") },
+      },
+    },
+    "/solver-cards/{id}": {
+      put: { summary: "Replace a pasted solver card", tags: ["Solver discovery"], parameters: [idParam], responses: { "202": { description: "Replaced and refreshed" } } },
+      patch: { summary: "Enable or disable a pasted solver card", tags: ["Solver discovery"], parameters: [idParam], requestBody: jsonBody({ type: "object", required: ["enabled"], properties: { enabled: { type: "boolean" } } }), responses: { "202": { description: "Updated and refreshed" } } },
+      delete: { summary: "Delete a pasted solver card", tags: ["Solver discovery"], parameters: [idParam], responses: { "202": { description: "Deleted and refreshed" } } },
+    },
     // ── Domains ──────────────────────────────────────────────
     "/domains": {
       get: {

@@ -9,6 +9,8 @@ import { isSettingKey, SettingsError } from "./settings.js";
 import type { AppConfig } from "./config.js";
 import type { SettlementStore } from "./settlement-store.js";
 import { adminOpenApiSpec } from "./admin-openapi.js";
+import { validateCard } from "@arkade-os/solver-discovery";
+import type { DiscoveryService } from "./solver-discovery.js";
 
 const ADMIN_DOCS_HTML = `<!DOCTYPE html>
 <html>
@@ -38,6 +40,7 @@ export interface AdminDeps {
   config: AppConfig;
   /** Settlement records view (offline swaps, destination payments, relay invoices). */
   settlements?: SettlementStore;
+  discovery?: Pick<DiscoveryService, "status" | "refresh">;
 }
 
 const VALID_ALLOCATION_MODES = new Set(["self", "random", "admin"]);
@@ -50,6 +53,72 @@ function isValidAllocationModes(x: unknown): boolean {
 export function createAdminApi(deps: AdminDeps): Router {
   const { repos, addressService, sessions, settings, config } = deps;
   const r = Router();
+
+  r.get("/discovery", (_req, res) => {
+    if (!deps.discovery) { res.status(503).json({ error: "solver discovery is not configured", code: "discovery_unavailable" }); return; }
+    res.json(deps.discovery.status());
+  });
+  r.post("/discovery/refresh", async (_req, res) => {
+    if (!deps.discovery) { res.status(503).json({ error: "solver discovery is not configured", code: "discovery_unavailable" }); return; }
+    await deps.discovery.refresh();
+    res.json(deps.discovery.status());
+  });
+
+  const cardResponse = (row: ReturnType<typeof repos.solverCards.create>) => ({
+    ...row,
+    card: JSON.parse(row.cardJson),
+    cardJson: undefined,
+  });
+  const refreshDiscovery = async (cardId?: number): Promise<boolean> => {
+    if (!deps.discovery) return false;
+    try {
+      await deps.discovery.refresh();
+      const status = deps.discovery.status();
+      return cardId === undefined
+        ? status.ready
+        : status.sources.some((source) => source.source.startsWith(`db:${cardId}:`) && source.ok && source.marketCount > 0);
+    }
+    catch { return false; }
+  };
+  const cardInput = (body: unknown): { label: string; network: string; cardJson: string } | { error: string; details?: string[] } => {
+    if (!deps.discovery) return { error: "solver discovery is not configured" };
+    const b = (body ?? {}) as { label?: unknown; card?: unknown };
+    const label = typeof b.label === "string" ? b.label.trim() : "";
+    if (!label || label.length > 100) return { error: "label must be 1-100 characters" };
+    const checked = validateCard(b.card);
+    if (!checked.ok) return { error: "invalid solver card", details: checked.errors };
+    const cardJson = JSON.stringify(b.card);
+    if (Buffer.byteLength(cardJson) > 128 * 1024) return { error: "solver card exceeds 128 KiB" };
+    return { label, network: deps.discovery.status().network, cardJson };
+  };
+
+  r.get("/solver-cards", (_req, res) => res.json(repos.solverCards.list().map(cardResponse)));
+  r.post("/solver-cards", async (req, res) => {
+    const input = cardInput(req.body);
+    if ("error" in input) { res.status(400).json({ error: input.error, code: "invalid_solver_card", details: input.details ?? [] }); return; }
+    const row = repos.solverCards.create(input);
+    const active = await refreshDiscovery(row.id);
+    res.status(202).json({ persisted: true, active, card: cardResponse(row) });
+  });
+  r.put("/solver-cards/:id", async (req, res) => {
+    const id = Number(req.params.id);
+    if (!repos.solverCards.get(id)) { res.status(404).json({ error: "solver card not found" }); return; }
+    const input = cardInput(req.body);
+    if ("error" in input) { res.status(400).json({ error: input.error, code: "invalid_solver_card", details: input.details ?? [] }); return; }
+    const row = repos.solverCards.replace(id, input)!;
+    res.status(202).json({ persisted: true, active: await refreshDiscovery(row.id), card: cardResponse(row) });
+  });
+  r.patch("/solver-cards/:id", async (req, res) => {
+    const enabled = (req.body ?? {}).enabled;
+    if (typeof enabled !== "boolean") { res.status(400).json({ error: "enabled must be boolean" }); return; }
+    const row = repos.solverCards.setEnabled(Number(req.params.id), enabled);
+    if (!row) { res.status(404).json({ error: "solver card not found" }); return; }
+    res.status(202).json({ persisted: true, active: enabled && await refreshDiscovery(row.id), card: cardResponse(row) });
+  });
+  r.delete("/solver-cards/:id", async (req, res) => {
+    if (!repos.solverCards.delete(Number(req.params.id))) { res.status(404).json({ error: "solver card not found" }); return; }
+    res.status(202).json({ persisted: false, active: await refreshDiscovery() });
+  });
 
   // ── Domains ───────────────────────────────────────────────
   r.get("/domains", (_req, res) => res.json(repos.domains.list()));

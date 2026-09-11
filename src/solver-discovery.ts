@@ -34,6 +34,7 @@ export interface DiscoverySourceStatus extends SourceReport {
 }
 
 export interface DiscoveryStatus {
+  network: Network;
   ready: boolean;
   generation: number;
   refreshedAt: number | null;
@@ -128,6 +129,7 @@ export class DiscoveryService {
   status(): DiscoveryStatus {
     const snapshot = this.snapshot && this.snapshot.expiresAt > this.now() ? this.snapshot : null;
     return {
+      network: this.options.network,
       ready: Boolean(snapshot?.candidates.length),
       generation: snapshot?.generation ?? 0,
       refreshedAt: snapshot?.refreshedAt ?? null,
@@ -159,8 +161,8 @@ export class DiscoveryService {
     this.cacheUsed.clear();
     this.cacheExpired.clear();
     const dbCards = this.options.cardStore.listEnabled(this.options.network).map((row) => {
-      try { return { card: JSON.parse(row.cardJson), network: this.options.network, label: `db:${row.label}` }; }
-      catch { return { card: {}, network: this.options.network, label: `db:${row.label}` }; }
+      try { return { card: JSON.parse(row.cardJson), network: this.options.network, label: `db:${row.id}:${row.label}` }; }
+      catch { return { card: {}, network: this.options.network, label: `db:${row.id}:${row.label}` }; }
     });
     const fileCards = this.fileCards.map((card, index) => ({
       card,

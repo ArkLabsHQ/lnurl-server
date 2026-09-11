@@ -13,8 +13,10 @@ import { createAdminApi } from "../src/admin-api.js";
 import { loadConfig } from "../src/config.js";
 import { SettingsService } from "../src/settings.js";
 import { DbSettlementStore } from "../src/settlement-store.js";
+import { solverCard } from "./fixtures/solver-cards.js";
 
 let db: Db; let repos: Repositories; let app: express.Express; let sessions: SessionManager; let settlements: DbSettlementStore;
+let refreshCalls: number; let failRefresh: boolean;
 beforeEach(() => {
   db = openDb(":memory:"); runMigrations(db); repos = createRepositories(db);
   sessions = new SessionManager();
@@ -26,10 +28,55 @@ beforeEach(() => {
     baseUrl: config.baseUrl, registrationRateLimitPerMin: config.registrationRateLimitPerMin,
   });
   app = express(); app.use(express.json());
-  app.use("/admin/api", createAdminApi({ repos, addressService: svc, sessions, settings, config, settlements }));
+  refreshCalls = 0;
+  failRefresh = false;
+  const discovery = {
+    status: () => ({
+      network: "mutinynet" as const, ready: true, generation: refreshCalls, refreshedAt: Date.now(), nextRefreshAt: null, candidateCount: 1,
+      sources: repos.solverCards.listEnabled("mutinynet").map((row) => ({ source: `db:${row.id}:${row.label}`, sourceType: "local" as const, ok: true, marketCount: 1, warnings: [] })),
+      warnings: [],
+    }),
+    refresh: async () => { refreshCalls++; if (failRefresh) throw new Error("registry unavailable"); },
+  };
+  app.use("/admin/api", createAdminApi({ repos, addressService: svc, sessions, settings, config, settlements, discovery }));
 });
 
 describe("admin API", () => {
+  it("rejects an invalid solver card without persisting or refreshing", async () => {
+    const res = await request(app).post("/admin/api/solver-cards").send({ label: "bad", card: {} });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("invalid_solver_card");
+    expect(repos.solverCards.list()).toEqual([]);
+    expect(refreshCalls).toBe(0);
+  });
+
+  it("persists a pasted solver card and refreshes the active snapshot", async () => {
+    const res = await request(app).post("/admin/api/solver-cards").send({ label: "primary", card: solverCard("registry", 30, "mutinynet") });
+    expect(res.status).toBe(202);
+    expect(res.body).toMatchObject({ persisted: true, active: true, card: { label: "primary", network: "mutinynet", enabled: true } });
+    expect(refreshCalls).toBe(1);
+    const listed = await request(app).get("/admin/api/solver-cards");
+    expect(listed.body[0].card.name).toBe("registry");
+  });
+
+  it("exposes discovery status and supports an immediate refresh", async () => {
+    expect((await request(app).get("/admin/api/discovery")).body).toMatchObject({ network: "mutinynet", ready: true });
+    const refreshed = await request(app).post("/admin/api/discovery/refresh").send({});
+    expect(refreshed.status).toBe(200);
+    expect(refreshCalls).toBe(1);
+  });
+
+  it("reports persisted but inactive when refresh fails, then enables and deletes the row", async () => {
+    failRefresh = true;
+    const created = await request(app).post("/admin/api/solver-cards").send({ label: "backup", card: solverCard("backup", 40, "mutinynet") });
+    expect(created.body).toMatchObject({ persisted: true, active: false });
+    failRefresh = false;
+    const id = created.body.card.id;
+    expect((await request(app).patch(`/admin/api/solver-cards/${id}`).send({ enabled: false })).body.card.enabled).toBe(false);
+    expect((await request(app).delete(`/admin/api/solver-cards/${id}`)).status).toBe(202);
+    expect(repos.solverCards.list()).toEqual([]);
+  });
+
   it("creates and lists domains", async () => {
     const create = await request(app).post("/admin/api/domains").send({ domain: "domain.com", allocationModes: ["self", "random"] });
     expect(create.status).toBe(201);

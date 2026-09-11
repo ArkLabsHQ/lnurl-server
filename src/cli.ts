@@ -49,6 +49,7 @@ async function main(): Promise<void> {
     const settlements = new DbSettlementStore(db, config.verifyTtlMs);
     let offlineSwaps: import("./offline-swap-store.js").OfflineSwapStore | undefined;
     let offlineSwapCreator: import("./intent-swap.js").OfflineSwapCreator | undefined;
+    let solverDiscovery: import("./solver-discovery.js").DiscoveryService | undefined;
     if (config.offlineReceive.enabled) {
       const { createOfflineSwapCoordinator } = await import("./intent-swap.js");
       const { OfflineSwapStore } = await import("./offline-swap-store.js");
@@ -67,6 +68,7 @@ async function main(): Promise<void> {
         cacheStore: repos.solverRegistryCache,
       });
       await discovery.start();
+      solverDiscovery = discovery;
       offlineSwaps = new OfflineSwapStore(db, config.verifyTtlMs);
       let selfClaimer: import("./self-claim.js").SelfClaimer | undefined;
       if (off.selfClaim) {
@@ -112,7 +114,7 @@ async function main(): Promise<void> {
     console.log(`persistence: enabled at ${config.dbPath} (${deps.repos.domains.list().length} domain(s))`);
 
     const { createAdminServer } = await import("./admin-server.js");
-    createAdminServer({ repos, addressService, sessions, settings, config, settlements }).listen(config.adminPort, config.adminBind, () => {
+    createAdminServer({ repos, addressService, sessions, settings, config, settlements, discovery: solverDiscovery }).listen(config.adminPort, config.adminBind, () => {
       console.log(`admin server on http://${config.adminBind}:${config.adminPort} (front with a proxy)`);
     });
   } else {

@@ -1,8 +1,8 @@
 import { Fragment, useEffect, useState } from "react";
 import { api } from "./api.js";
 
-type Tab = "Dashboard" | "Sessions" | "Settlements" | "Domains" | "Addresses" | "API Keys" | "Blacklist" | "Settings";
-const TABS: Tab[] = ["Dashboard", "Sessions", "Settlements", "Domains", "Addresses", "API Keys", "Blacklist", "Settings"];
+type Tab = "Dashboard" | "Solvers" | "Sessions" | "Settlements" | "Domains" | "Addresses" | "API Keys" | "Blacklist" | "Settings";
+const TABS: Tab[] = ["Dashboard", "Solvers", "Sessions", "Settlements", "Domains", "Addresses", "API Keys", "Blacklist", "Settings"];
 const ALLOCATION_MODES = ["self", "random", "admin"] as const;
 
 interface Domain {
@@ -63,6 +63,7 @@ export function App() {
         </a>
       </nav>
       {tab === "Dashboard" && <Dashboard />}
+      {tab === "Solvers" && <Solvers />}
       {tab === "Sessions" && <Sessions />}
       {tab === "Settlements" && <Settlements />}
       {tab === "Domains" && <Domains />}
@@ -104,6 +105,86 @@ function Dashboard() {
 }
 function Card({ label, value }: { label: string; value: number }) {
   return <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 16, minWidth: 120 }}><div style={{ fontSize: 28 }}>{value}</div><div style={{ color: "#666" }}>{label}</div></div>;
+}
+
+interface SolverCardRow { id: number; label: string; network: string; enabled: boolean; updatedAt: number; card: { name?: string; discovery_pubkey?: string } }
+interface DiscoveryView {
+  network: string;
+  ready: boolean;
+  candidateCount: number;
+  refreshedAt: number | null;
+  sources: Array<{ source: string; ok: boolean; marketCount: number; error?: string; cache?: string }>;
+  warnings: string[];
+  reason?: string;
+}
+
+function Solvers() {
+  const [cards, setCards] = useState<SolverCardRow[]>([]);
+  const [status, setStatus] = useState<DiscoveryView>();
+  const [label, setLabel] = useState("");
+  const [json, setJson] = useState("");
+  const [err, setErr] = useState<string>();
+  const load = () => Promise.all([api.get<SolverCardRow[]>("/solver-cards"), api.get<DiscoveryView>("/discovery")])
+    .then(([nextCards, nextStatus]) => { setCards(nextCards); setStatus(nextStatus); setErr(undefined); })
+    .catch((e: Error) => setErr(e.message));
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
+  const add = async () => {
+    try {
+      const card = JSON.parse(json) as unknown;
+      await api.post("/solver-cards", { label, card });
+      setLabel(""); setJson(""); await load();
+    } catch (e) { setErr(errMsg(e)); }
+  };
+  const toggle = async (row: SolverCardRow) => {
+    try { await api.patch(`/solver-cards/${row.id}`, { enabled: !row.enabled }); await load(); }
+    catch (e) { setErr(errMsg(e)); }
+  };
+  const remove = async (row: SolverCardRow) => {
+    if (!confirm(`Delete solver card “${row.label}”?`)) return;
+    try { await api.del(`/solver-cards/${row.id}`); await load(); } catch (e) { setErr(errMsg(e)); }
+  };
+  const refresh = async () => {
+    try { await api.post("/discovery/refresh", {}); await load(); } catch (e) { setErr(errMsg(e)); }
+  };
+
+  return (
+    <div>
+      {err && <p style={{ color: "crimson" }}>{err}</p>}
+      <div style={{ borderLeft: `5px solid ${status?.ready ? "#16834b" : "#b42318"}`, padding: "8px 12px", marginBottom: 18, background: "#f6f7f8" }}>
+        <strong>{status?.ready ? "Routing ready" : "Routing unavailable"}</strong>
+        <span style={{ color: "#555" }}> · {status?.candidateCount ?? 0} candidate{status?.candidateCount === 1 ? "" : "s"} · {status?.network ?? "unknown network"}</span>{" "}
+        <button onClick={refresh}>Refresh now</button>
+        {status?.reason && <div style={{ color: "#8a2c22", marginTop: 4 }}>{status.reason}</div>}
+      </div>
+
+      <h3 style={{ fontSize: 15, marginBottom: 4 }}>Paste a solver card</h3>
+      <p style={{ color: "#666", marginTop: 0 }}>The server validates the card, saves it for this network, and refreshes routing immediately.</p>
+      <div style={{ display: "grid", gap: 8, marginBottom: 22 }}>
+        <input aria-label="Card label" placeholder="Card label" value={label} onChange={(e) => setLabel(e.target.value)} />
+        <textarea aria-label="Solver card JSON" placeholder="Paste solver card JSON" value={json} onChange={(e) => setJson(e.target.value)} rows={10} spellCheck={false} style={{ width: "100%", boxSizing: "border-box", fontFamily: "ui-monospace, monospace", fontSize: 12 }} />
+        <div><button onClick={add} disabled={!label.trim() || !json.trim()}>Save card</button></div>
+      </div>
+
+      <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 22 }}>
+        <thead><tr><Th>Label</Th><Th>Solver</Th><Th>Network</Th><Th>State</Th><Th>Updated</Th><Th /></tr></thead>
+        <tbody>{cards.map((row) => <tr key={row.id}>
+          <Td>{row.label}</Td><Td>{row.card.name ?? "unnamed"}</Td><Td>{row.network}</Td><Td>{row.enabled ? "enabled" : "disabled"}</Td><Td>{ago(row.updatedAt)}</Td>
+          <Td><button onClick={() => toggle(row)}>{row.enabled ? "Disable" : "Enable"}</button>{" "}<button onClick={() => remove(row)}>Delete</button></Td>
+        </tr>)}</tbody>
+      </table>
+      {cards.length === 0 && <p style={{ color: "#777" }}>No pasted cards yet. Registry cards still appear in the source list below.</p>}
+
+      <h3 style={{ fontSize: 15, marginBottom: 4 }}>Discovery sources</h3>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead><tr><Th>Source</Th><Th>State</Th><Th>Markets</Th><Th>Cache</Th></tr></thead>
+        <tbody>{status?.sources.map((source) => <tr key={`${source.source}:${source.cache ?? "live"}`}>
+          <Td><code>{source.source}</code></Td><Td>{source.ok ? "healthy" : source.error ?? "failed"}</Td><Td>{source.marketCount}</Td><Td>{source.cache ?? "live"}</Td>
+        </tr>)}</tbody>
+      </table>
+      {status?.warnings.map((warning) => <p key={warning} style={{ color: "#8a5a00" }}>{warning}</p>)}
+    </div>
+  );
 }
 
 function Sessions() {
