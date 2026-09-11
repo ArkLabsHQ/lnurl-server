@@ -49,8 +49,22 @@ async function main(): Promise<void> {
     const settlements = new DbSettlementStore(db, config.verifyTtlMs);
     let offlineSwapCreator: import("./intent-swap.js").OfflineSwapCreator | undefined;
     if (config.offlineReceive.enabled) {
-      const { createIntentSwapCreator } = await import("./intent-swap.js");
+      const { createOfflineSwapCoordinator } = await import("./intent-swap.js");
+      const { DiscoveryService } = await import("./solver-discovery.js");
+      const { isNetwork } = await import("@arkade-os/solver-discovery");
       const off = config.offlineReceive;
+      const infoResponse = await fetch(`${off.arkServerUrl}/v1/info`);
+      if (!infoResponse.ok) throw new Error(`Arkade info endpoint: HTTP ${infoResponse.status}`);
+      const network = (await infoResponse.json() as { network?: unknown }).network;
+      if (!isNetwork(network)) throw new Error(`Arkade info endpoint returned unsupported network ${String(network)}`);
+      const discovery = new DiscoveryService({
+        network,
+        registryUrls: off.registryUrls,
+        cardsFile: off.cardsFile,
+        cardStore: repos.solverCards,
+        cacheStore: repos.solverRegistryCache,
+      });
+      await discovery.start();
       let selfClaimer: import("./self-claim.js").SelfClaimer | undefined;
       if (off.selfClaim) {
         const { createSelfClaimer, checkEmulatorPairing } = await import("./self-claim.js");
@@ -58,9 +72,9 @@ async function main(): Promise<void> {
         console.log(`offline self-claim: enabled (emulator=${off.emulatorUrl})`);
         void checkEmulatorPairing({ covclaimdUrl: off.covclaimdUrl!, emulatorUrl: off.emulatorUrl! });
       }
-      offlineSwapCreator = await createIntentSwapCreator({
+      offlineSwapCreator = await createOfflineSwapCoordinator({
+        discovery,
         nostrSecretKey: off.nostrSecretKey,
-        registryUrl: off.registryUrls[0],
         covclaimdUrl: off.covclaimdUrl!,
         arkServerUrl: off.arkServerUrl!,
         stampClaimPacket: off.stampClaimPacket,

@@ -35,7 +35,9 @@ import { createRepositories } from "../../src/db/repositories/index.js";
 import { AddressService } from "../../src/address-service.js";
 import { DbSettlementStore } from "../../src/settlement-store.js";
 import { staticSettings } from "../../src/settings.js";
-import { createIntentSwapCreator, type OfflineSwapCreator } from "../../src/intent-swap.js";
+import { createOfflineSwapCoordinator, type OfflineSwapCreator } from "../../src/intent-swap.js";
+import { httpTransport } from "../../src/vendor/arkade-swap/rfq.js";
+import { solverCard } from "../fixtures/solver-cards.js";
 import { startOfflineSettlementPoller } from "../../src/offline-poller.js";
 import {
   ensureStack,
@@ -112,8 +114,17 @@ describe.each([
     const repos = createRepositories(db);
     const addressService = new AddressService(repos, randomBytes(32));
     settlements = new DbSettlementStore(db, 3_600_000);
-    const creator: OfflineSwapCreator = await createIntentSwapCreator({
-      solverUrl: SOLVER_URL,
+    const card = solverCard("registry", 30, "regtest");
+    const creator: OfflineSwapCreator = await createOfflineSwapCoordinator({
+      discovery: { selectLightningReceive: () => [{
+        name: card.name,
+        market: { ...card.markets[0]!, solver: card.name, discovery_pubkey: card.discovery_pubkey!, transports: card.transports!, source: "e2e-fixture", sourceType: "local" },
+        discoveryPubkey: card.discovery_pubkey!,
+        relays: card.transports!.nostr!.relays,
+        source: "e2e-fixture",
+        sourceType: "local",
+      }] },
+      transportFactory: () => httpTransport(SOLVER_URL),
       covclaimdUrl: COVCLAIMD_URL,
       arkServerUrl: ARKD_URL,
       stampClaimPacket: stamp,

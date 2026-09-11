@@ -17,11 +17,10 @@
 import { randomBytes } from "node:crypto";
 import { base64, hex } from "@scure/base";
 import { encodeClientClaimPacket } from "./claim-packet.js";
-import { ArkAddress, RestArkProvider, getNetwork, toXOnly, type NetworkName } from "@arkade-os/sdk";
+import { ArkAddress, RestArkProvider, VHTLCV2ContractHandler, getNetwork, toXOnly, type NetworkName } from "@arkade-os/sdk";
 import {
   assertReceivable,
   deriveLightningReceive,
-  httpTransport,
   lightningReceiveRequest,
   newRfqId,
   unilateralClaimDelay,
@@ -32,7 +31,7 @@ import { sealClaimPacket } from "./vendor/arkade-swap/claimPacket.js";
 import { nostrRfqTransport } from "./vendor/arkade-swap/nostr.js";
 import { paymentHashOf } from "./vendor/arkade-swap/onchainHtlc.js";
 import { invoiceFactsFromBolt11 } from "./bolt11.js";
-import { discoverLightningCorridor, type CorridorCard } from "./solver-discovery.js";
+import type { DiscoveryService, SolverCandidate } from "./solver-discovery.js";
 import type { SelfClaimer, SelfClaimOutcome } from "./self-claim.js";
 
 export interface OfflineSwapParams {
@@ -55,6 +54,18 @@ export interface OfflineSwapResult {
   /** Payment hash — the LUD-21 verify key. */
   preimageHash: string;
   lockupAddress: string;
+  recovery: OfflineSwapRecoveryV1;
+}
+
+export interface OfflineSwapRecoveryV1 {
+  version: 1;
+  solverName: string;
+  solverPubkey: string;
+  relays: string[];
+  rfqId: string;
+  lockupAddress: string;
+  expectedAmount: number;
+  script: Record<string, string>;
 }
 
 export interface OfflineSwapCreator {
@@ -70,17 +81,9 @@ export interface OfflineSwapCreator {
 }
 
 export interface IntentSwapSettings {
-  /** Intent solver's RFQ HTTP base URL (`POST /v1/swap`, `GET /v1/rfq/:id`) — dev/custom solvers. */
-  solverUrl?: string;
-  /** Solver's x-only discovery pubkey (hex) — Nostr RFQ, the production transport. */
-  solverPubkey?: string;
-  /** Nostr relays (wss://…) the solver listens on. */
-  nostrRelays?: string[];
+  discovery: Pick<DiscoveryService, "selectLightningReceive">;
   /** 32-byte hex Nostr identity for the transport; ephemeral per boot when unset. */
   nostrSecretKey?: string;
-  /** Solver-registry index URL — discover the cheapest lightning-corridor solver.
-   *  Used only when neither SOLVER_URL nor SOLVER_PUBKEY is configured. */
-  registryUrl?: string;
   /** covclaimd base URL — its pubkey endpoint keys the sealed claim packet. */
   covclaimdUrl: string;
   /** Arkade operator URL — signer key, exit delay and network come from its getInfo. */
@@ -89,6 +92,7 @@ export interface IntentSwapSettings {
   stampClaimPacket?: boolean;
   /** Set under OFFLINE_SELF_CLAIM: pushes each lockup's covenant claim leaf. */
   selfClaimer?: SelfClaimer;
+  transportFactory?: (candidate: SolverCandidate) => RfqTransport;
 }
 
 /** Operator + covclaimd facts a swap derivation needs. Refetched on a TTL so a
@@ -102,22 +106,6 @@ interface CorridorContext {
 }
 
 const CONTEXT_TTL_MS = 5 * 60_000;
-
-/** HTTP when a solver URL is configured (dev/custom), Nostr directed-RFQ otherwise —
- *  the production transport deployed solvers actually listen on. With only a registry
- *  index configured, the solver is discovered from it (cheapest lightning corridor). */
-async function buildTransport(settings: IntentSwapSettings): Promise<{ transport: RfqTransport; card: CorridorCard | null }> {
-  if (settings.solverUrl) return { transport: httpTransport(settings.solverUrl), card: null };
-  if (settings.solverPubkey && settings.nostrRelays?.length) {
-    return { transport: nostrTransport(settings.solverPubkey, settings.nostrRelays, settings.nostrSecretKey), card: null };
-  }
-  if (settings.registryUrl) {
-    const card = await discoverLightningCorridor(settings.registryUrl);
-    if (!card) throw new Error(`no lightning-corridor solver in registry index ${settings.registryUrl}`);
-    return { transport: nostrTransport(card.discoveryPubkey, card.relays, settings.nostrSecretKey), card };
-  }
-  throw new Error("offline receive needs a solver transport: SOLVER_URL, SOLVER_PUBKEY + NOSTR_RELAYS, or SOLVER_REGISTRY_URL");
-}
 
 function nostrTransport(solverPubkey: string, relays: string[], nostrSecretKey?: string): RfqTransport {
   if (!/^[0-9a-f]{64}$/i.test(solverPubkey)) {
@@ -156,9 +144,11 @@ async function fetchCovclaimdKeys(covclaimdUrl: string): Promise<{ covclaimdPubk
  * integration test drives this against fake HTTP servers implementing the same wire
  * contracts. Mutinynet/mainnet verification is the deployment's to do once.
  */
-export async function createIntentSwapCreator(settings: IntentSwapSettings): Promise<OfflineSwapCreator> {
-  const { transport, card } = await buildTransport(settings);
+export async function createOfflineSwapCoordinator(settings: IntentSwapSettings): Promise<OfflineSwapCreator> {
   const arkProvider = new RestArkProvider(settings.arkServerUrl);
+  const pinned = new Map<string, RfqTransport>();
+  const transportFor = settings.transportFactory ?? ((candidate: SolverCandidate) =>
+    nostrTransport(candidate.discoveryPubkey, candidate.relays, settings.nostrSecretKey));
 
   let cached: { at: number; ctx: Promise<CorridorContext> } | null = null;
   const context = (): Promise<CorridorContext> => {
@@ -191,86 +181,79 @@ export async function createIntentSwapCreator(settings: IntentSwapSettings): Pro
       } catch {
         throw new Error("receiveAddress is not a valid Arkade address");
       }
-      // Discovered card bounds: reject out-of-range amounts with the actual numbers
-      // instead of the solver's bare refusal reason. The card is read once at
-      // construction — a solver changing its corridor bounds takes effect on restart.
-      if (card && (params.amountSat < card.minSat || params.amountSat > card.maxSat)) {
-        throw new Error(`amount ${params.amountSat} sats is outside the corridor's ${card.minSat}–${card.maxSat} sats bounds`);
-      }
-
-      const preimage = randomBytes(32);
-      const paymentHash = paymentHashOf(preimage);
-      const rfqId = newRfqId();
       const ctx = await context();
       if (payout.hrp !== ctx.hrp) {
         throw new Error(`receiveAddress prefix ${payout.hrp} does not match operator network (${ctx.hrp})`);
       }
-      const sealed = await sealClaimPacket({ preimage, covclaimdPubkey: ctx.covclaimdPubkey });
-      // The packet shape names our covclaimd in a TLV the solver stamps on chain,
-      // so the solver never has to have been pointed at the same one we were.
-      const claimPacket = settings.stampClaimPacket
-        ? base64.encode(
-            encodeClientClaimPacket({
-              ciphertext: base64.decode(sealed.ciphertext),
-              covclaimdPubkey: ctx.covclaimdPubkey,
-            }),
-          )
-        : sealed.ciphertext;
+      const candidates = settings.discovery.selectLightningReceive(params.amountSat);
+      if (!candidates.length) throw new Error(`no solver card supports a ${params.amountSat} sat lightning receive`);
+      const failures: string[] = [];
 
-      const quote = await transport.requestQuote(
-        lightningReceiveRequest({
-          rfqId,
-          paymentHash,
-          payoutAddress: params.receiveAddress,
-          payoutPubkey,
-          claimPacket,
-          amount: params.amountSat,
-          amountSide: "from",
-        }),
-      );
-      // Upstream's assertQuotedAmount is module-private; these are its two checks
-      // for amountSide "from" — the invoice must ask exactly what the payer chose.
-      // TRACKING DEBT: when the vendor exit plan lands (@arkade-os/swap release),
-      // switch to the package's public receive API rather than hand-replicating
-      // the guard — a third upstream check would silently pass us by until then.
-      if (quote.from_amount !== params.amountSat) {
-        throw new Error(`solver quoted from_amount ${quote.from_amount}, not the requested ${params.amountSat}`);
+      for (const candidate of candidates) {
+        const transport = transportFor(candidate);
+        try {
+          const preimage = randomBytes(32);
+          const paymentHash = paymentHashOf(preimage);
+          const rfqId = newRfqId();
+          const sealed = await sealClaimPacket({ preimage, covclaimdPubkey: ctx.covclaimdPubkey });
+          const claimPacket = settings.stampClaimPacket
+            ? base64.encode(encodeClientClaimPacket({ ciphertext: base64.decode(sealed.ciphertext), covclaimdPubkey: ctx.covclaimdPubkey }))
+            : sealed.ciphertext;
+          const quote = await transport.requestQuote(lightningReceiveRequest({
+            rfqId,
+            paymentHash,
+            payoutAddress: params.receiveAddress,
+            payoutPubkey,
+            claimPacket,
+            amount: params.amountSat,
+            amountSide: "from",
+          }));
+          if (quote.from_amount !== params.amountSat) {
+            throw new Error(`solver quoted from_amount ${quote.from_amount}, not the requested ${params.amountSat}`);
+          }
+          if (quote.to_amount > quote.from_amount) throw new Error("solver quote pays out more than it takes in");
+          const derived = deriveLightningReceive({
+            quote,
+            paymentHash,
+            payoutPubkey,
+            payoutAddress: params.receiveAddress,
+            serverPubkey: ctx.serverPubkey,
+            emulatorPubkey: ctx.emulatorPubkey,
+            claimDelay: ctx.claimDelay,
+            hrp: ctx.hrp,
+          });
+          const { payDeadline } = verifyReceiveInvoice({ invoice: derived.invoice, decode: invoiceFactsFromBolt11, paymentHash, quote });
+          assertReceivable({ quote, payDeadline, now: Math.floor(Date.now() / 1000) });
+          settings.selfClaimer?.register({ swapId: rfqId, script: derived.script, expectedAmount: quote.to_amount });
+          pinned.set(rfqId, transport);
+          return {
+            swapId: rfqId,
+            invoice: derived.invoice,
+            preimage: hex.encode(preimage),
+            preimageHash: paymentHash,
+            lockupAddress: derived.address,
+            recovery: {
+              version: 1,
+              solverName: candidate.name,
+              solverPubkey: candidate.discoveryPubkey,
+              relays: [...candidate.relays],
+              rfqId,
+              lockupAddress: derived.address,
+              expectedAmount: quote.to_amount,
+              script: VHTLCV2ContractHandler.serializeParams(derived.script.options),
+            },
+          };
+        } catch (error) {
+          await transport.close().catch(() => {});
+          failures.push(`${candidate.name}: ${error instanceof Error ? error.message : "failed"}`);
+        }
       }
-      if (quote.to_amount > quote.from_amount) {
-        throw new Error("solver quote pays out more than it takes in");
-      }
-
-      const derived = deriveLightningReceive({
-        quote,
-        paymentHash,
-        payoutPubkey,
-        payoutAddress: params.receiveAddress,
-        serverPubkey: ctx.serverPubkey,
-        emulatorPubkey: ctx.emulatorPubkey,
-        claimDelay: ctx.claimDelay,
-        hrp: ctx.hrp,
-      });
-      const { payDeadline } = verifyReceiveInvoice({
-        invoice: derived.invoice,
-        decode: invoiceFactsFromBolt11,
-        paymentHash,
-        quote,
-      });
-      assertReceivable({ quote, payDeadline, now: Math.floor(Date.now() / 1000) });
-      // After the gates so a refused quote leaves nothing registered; before the
-      // return so no payer holds an invoice the poller cannot claim against.
-      settings.selfClaimer?.register({ swapId: rfqId, script: derived.script, expectedAmount: quote.to_amount });
-
-      return {
-        swapId: rfqId,
-        invoice: derived.invoice,
-        preimage: hex.encode(preimage),
-        preimageHash: paymentHash,
-        lockupAddress: derived.address,
-      };
+      throw new Error(`all solver candidates failed: ${failures.join("; ")}`);
     },
 
     async isSettled(swapId) {
+      const transport = pinned.get(swapId);
+      if (!transport) throw new Error(`no pinned solver transport for swap ${swapId}`);
       const status = await transport.status(swapId);
       return status?.state === "settled";
     },
@@ -279,6 +262,9 @@ export async function createIntentSwapCreator(settings: IntentSwapSettings): Pro
       ? { selfClaim: (swapId: string, preimage: string) => settings.selfClaimer!.claim(swapId, preimage) }
       : {}),
 
-    close: () => transport.close(),
+    close: async () => {
+      await Promise.allSettled([...new Set(pinned.values())].map((transport) => transport.close()));
+      pinned.clear();
+    },
   };
 }

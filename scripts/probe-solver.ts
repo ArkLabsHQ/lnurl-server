@@ -15,7 +15,8 @@ import http from "node:http";
 import { hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { ArkAddress, getNetwork, resolveEmulatorPubkey } from "@arkade-os/sdk";
-import { createIntentSwapCreator } from "../src/intent-swap.js";
+import { createOfflineSwapCoordinator } from "../src/intent-swap.js";
+import type { SolverCandidate } from "../src/solver-discovery.js";
 
 const solverPubkey = process.argv[2] ?? "3f831510a6d7678d0c90d7d6fbc4057720517e2e30681ef4c87cc57aaf57e8d5";
 const relay = process.argv[3] ?? "wss://nostr.arkade.sh";
@@ -46,7 +47,32 @@ console.log(`relay    ${relay}`);
 console.log(`operator ${arkServerUrl}`);
 console.log(`covclaimd ${covclaimdUrl}${realCovclaimdUrl ? " (real daemon)" : " (local fake, pinned emulator key)"}`);
 
-const creator = await createIntentSwapCreator({ solverPubkey, nostrRelays: [relay], covclaimdUrl, arkServerUrl });
+const candidate: SolverCandidate = {
+  name: "manual-probe",
+  discoveryPubkey: solverPubkey,
+  relays: [relay],
+  source: "manual:probe",
+  sourceType: "local",
+  market: {
+    base_asset: { id: "arkade:mutinynet/slip44:1", name: "Bitcoin", ticker: "BTC", decimals: 8 },
+    quote_asset: { id: "bolt11:mutinynet/slip44:1", name: "Bitcoin", ticker: "BTC", decimals: 8 },
+    fee_bps: 0,
+    min_base_amount: "1",
+    max_base_amount: "100000000",
+    min_quote_amount: "1",
+    max_quote_amount: "100000000",
+    solver: "manual-probe",
+    discovery_pubkey: solverPubkey,
+    transports: { nostr: { relays: [relay] } },
+    source: "manual:probe",
+    sourceType: "local",
+  },
+};
+const creator = await createOfflineSwapCoordinator({
+  discovery: { selectLightningReceive: () => [candidate] },
+  covclaimdUrl,
+  arkServerUrl,
+});
 // Arkade address keys are x-only 32-byte keys, not raw scalars.
 const receiveAddress = new ArkAddress(
   secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true).slice(1),

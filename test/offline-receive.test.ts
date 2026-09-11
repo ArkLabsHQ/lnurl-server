@@ -42,6 +42,16 @@ class FakeCreator implements OfflineSwapCreator {
       preimage: "11".repeat(32),
       preimageHash: this.hashHex,
       lockupAddress: RECEIVE,
+      recovery: {
+        version: 1,
+        solverName: "fake",
+        solverPubkey: "11".repeat(32),
+        relays: ["wss://relay.invalid"],
+        rfqId: "swap-1",
+        lockupAddress: RECEIVE,
+        expectedAmount: params.amountSat,
+        script: {},
+      },
     };
   }
   async isSettled(swapId: string): Promise<boolean> {

@@ -220,32 +220,3 @@ export class DiscoveryService {
     }
   };
 }
-
-export interface CorridorCard {
-  name: string;
-  discoveryPubkey: string;
-  relays: string[];
-  feeBps: number;
-  minSat: number;
-  maxSat: number;
-}
-
-export async function discoverLightningCorridor(
-  registryUrl: string,
-  fetchImpl: typeof fetch = fetch,
-  timeoutMs = 10_000,
-): Promise<CorridorCard | null> {
-  const result = await discover({ registries: [registryUrl], fetchImpl: fetchImpl as FetchLike, timeoutMs });
-  const market = result.markets.find((candidate) => marketCorridor(candidate, "base") === "arkade" && marketCorridor(candidate, "quote") === "bolt11");
-  const relays = market?.transports?.nostr?.relays;
-  const limits = market ? sideLimits(market, "quote") : null;
-  if (!market?.discovery_pubkey || !relays?.length || !limits) return null;
-  return {
-    name: market.solver,
-    discoveryPubkey: market.discovery_pubkey,
-    relays: [...relays],
-    feeBps: market.fee_bps,
-    minSat: Number(limits.min),
-    maxSat: Number(limits.max),
-  };
-}
