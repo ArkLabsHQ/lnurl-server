@@ -39,6 +39,10 @@ export interface AppConfig {
   bootstrapDomain?: string;
   registrationRateLimitPerMin: number;
   trustProxy: number | boolean;
+  maxSessions: number;
+  maxSessionsPerIp: number;
+  maxConcurrentOfflineQuotes: number;
+  shutdownTimeoutMs: number;
   offlineReceive: OfflineReceiveConfig;
 }
 
@@ -125,6 +129,10 @@ export function loadConfig(env: Env = process.env): AppConfig {
     bootstrapDomain: env.BOOTSTRAP_DOMAIN || undefined,
     registrationRateLimitPerMin: integer(env, "REGISTRATION_RATE_LIMIT", 10, { min: 1 }),
     trustProxy: parseTrustProxy(env.TRUST_PROXY),
+    maxSessions: integer(env, "MAX_SESSIONS", 5_000, { min: 1 }),
+    maxSessionsPerIp: integer(env, "MAX_SESSIONS_PER_IP", 50, { min: 1 }),
+    maxConcurrentOfflineQuotes: integer(env, "MAX_CONCURRENT_OFFLINE_QUOTES", 20, { min: 1 }),
+    shutdownTimeoutMs: integer(env, "SHUTDOWN_TIMEOUT_MS", 15_000, { min: 1 }),
     offlineReceive: buildOfflineReceive(env),
   };
 }

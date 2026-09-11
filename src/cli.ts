@@ -21,9 +21,20 @@ export async function initPersistence(opts: {
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  const { HealthRegistry } = await import("./health.js");
+  const { createRuntime } = await import("./runtime.js");
+  const { createLogger } = await import("./logger.js");
+  const health = new HealthRegistry();
+  const runtime = createRuntime(health, config.shutdownTimeoutMs);
+  const logger = createLogger();
 
   const db = await initPersistence({ dbPath: config.dbPath, bootstrapDomain: config.bootstrapDomain });
   const sessions = new SessionManager();
+  runtime.addStop(() => sessions.shutdown("service shutdown"));
+  if (db) {
+    runtime.setDatabase(db);
+    health.register("persistence", () => ({ ok: runtime.resources().dbOpen, detail: "SQLite open" }));
+  }
   let deps: import("./server.js").ServerDeps | undefined;
 
   if (db) {
@@ -68,7 +79,14 @@ async function main(): Promise<void> {
         cacheStore: repos.solverRegistryCache,
       });
       await discovery.start();
+      runtime.addStop(() => discovery.stop());
       solverDiscovery = discovery;
+      health.register("solverDiscovery", () => ({
+        ok: discovery.status().ready,
+        detail: discovery.status().ready ? `${discovery.status().candidateCount} candidate(s)` : discovery.status().reason,
+      }));
+      const covclaimdProbe = await fetch(`${off.covclaimdUrl}/v1/preimage/covclaimd-pubkey`);
+      if (!covclaimdProbe.ok) throw new Error(`covclaimd pubkey endpoint: HTTP ${covclaimdProbe.status}`);
       offlineSwaps = new OfflineSwapStore(db, config.verifyTtlMs);
       let selfClaimer: import("./self-claim.js").SelfClaimer | undefined;
       if (off.selfClaim) {
@@ -85,6 +103,7 @@ async function main(): Promise<void> {
         stampClaimPacket: off.stampClaimPacket,
         ...(selfClaimer ? { selfClaimer } : {}),
       });
+      if (offlineSwapCreator.close) runtime.addTransport({ close: offlineSwapCreator.close });
     }
     deps = {
       repos,
@@ -100,7 +119,7 @@ async function main(): Promise<void> {
     // no process-shutdown hook for either to be called from.
     if (offlineSwapCreator) {
       const { startOfflineSettlementPoller } = await import("./offline-poller.js");
-      startOfflineSettlementPoller(settlements, offlineSwapCreator, 15_000, offlineSwaps);
+      runtime.addStop(startOfflineSettlementPoller(settlements, offlineSwapCreator, 15_000, offlineSwaps));
       const via = `cards:${config.offlineReceive.registryUrls[0] ?? config.offlineReceive.cardsFile}`;
       console.log(`offline receive: enabled (solver=${via})`);
     }
@@ -108,15 +127,16 @@ async function main(): Promise<void> {
     // preimage: watch the indexer for payments to registered Arkade addresses.
     if (config.offlineReceive.arkServerUrl) {
       const { startArkadeWatcher } = await import("./arkade-watcher.js");
-      startArkadeWatcher(settlements, config.offlineReceive.arkServerUrl, 15_000);
+      runtime.addStop(startArkadeWatcher(settlements, config.offlineReceive.arkServerUrl, 15_000));
       console.log(`arkade watcher: enabled (indexer=${config.offlineReceive.arkServerUrl})`);
     }
     console.log(`persistence: enabled at ${config.dbPath} (${deps.repos.domains.list().length} domain(s))`);
 
     const { createAdminServer } = await import("./admin-server.js");
-    createAdminServer({ repos, addressService, sessions, settings, config, settlements, discovery: solverDiscovery }).listen(config.adminPort, config.adminBind, () => {
+    const adminServer = createAdminServer({ repos, addressService, sessions, settings, config, settlements, discovery: solverDiscovery }).listen(config.adminPort, config.adminBind, () => {
       console.log(`admin server on http://${config.adminBind}:${config.adminPort} (front with a proxy)`);
     });
+    runtime.addServer(adminServer);
   } else {
     console.log("persistence: disabled (in-memory mode)");
   }
@@ -130,15 +150,30 @@ async function main(): Promise<void> {
       invoiceTimeoutMs: config.invoiceTimeoutMs,
       verifyTtlMs: config.verifyTtlMs,
       trustProxy: config.trustProxy,
+      maxSessions: config.maxSessions,
+      maxSessionsPerIp: config.maxSessionsPerIp,
+      maxConcurrentOfflineQuotes: config.maxConcurrentOfflineQuotes,
     },
-    deps,
+    deps ? { ...deps, health, logger } : { health, logger } as never,
   );
 
-  app.listen(config.port, () => {
+  const publicServer = app.listen(config.port, () => {
     console.log(`arkade-lnurl listening on ${config.baseUrl}`);
     console.log(`  min: ${config.minSendable} msat, max: ${config.maxSendable} msat`);
     console.log(`  invoice timeout: ${config.invoiceTimeoutMs}ms`);
   });
+  runtime.addServer(publicServer);
+
+  let signals = 0;
+  const shutdown = (signal: string) => {
+    if (++signals > 1) process.exit(1);
+    void runtime.shutdown(signal).then(() => process.exit(0), (error) => {
+      logger.error("shutdown_failed", { signal, error });
+      process.exit(1);
+    });
+  };
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
+  process.once("SIGINT", () => shutdown("SIGINT"));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

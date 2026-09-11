@@ -13,6 +13,15 @@ function tokensEqual(a: string, b: string): boolean {
 export class SessionManager {
   private sessions = new Map<string, Session>();
 
+  canAccept(ip: string | undefined, maxSessions: number, maxPerIp: number, replacingToken?: string): boolean {
+    const replacing = replacingToken ? this.sessions.get(deriveSessionId(replacingToken)) : undefined;
+    const replacesExisting = Boolean(replacing && tokensEqual(replacing.token, replacingToken!));
+    if (this.sessions.size - (replacesExisting ? 1 : 0) >= maxSessions) return false;
+    let fromIp = 0;
+    for (const session of this.sessions.values()) if (session.ip === ip && session !== replacing) fromIp++;
+    return fromIp < maxPerIp;
+  }
+
   /** Create a new session and wire up the SSE response.
    *  When `providedToken` is supplied the sessionId is derived from it
    *  deterministically, so reconnecting produces the same LNURL.
@@ -203,5 +212,14 @@ export class SessionManager {
         ? { amountMsat: s.pendingInvoice.amountMsat, comment: s.pendingInvoice.comment, since: s.pendingInvoice.since }
         : null,
     }));
+  }
+
+  shutdown(reason: string): void {
+    for (const id of this.activeSessionIds()) {
+      const session = this.sessions.get(id)!;
+      try { this.sendEvent(id, { type: "error", data: { error: `Service shutting down: ${reason}` } }); } catch {}
+      this.destroy(id);
+      try { session.sseRes.end(); } catch {}
+    }
   }
 }

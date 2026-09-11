@@ -166,7 +166,7 @@ describe("offline receive", () => {
     ctx = await start(repos, creator, new MemorySettlementStore(60_000));
     const res = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=50000`, "GET", "domain.com");
     expect(res.body.status).toBe("ERROR");
-    expect(String(res.body.reason)).toMatch(/amount_out_of_range/);
+    expect(String(res.body.reason)).toBe("Unable to create offline invoice");
     // nothing recorded: no verify URL exists for a swap that was never created
   });
 

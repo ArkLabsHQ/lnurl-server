@@ -80,6 +80,9 @@ describe("loadConfig", () => {
     ["MIN_SENDABLE", "-1"],
     ["MAX_SENDABLE", "1.5"],
     ["INVOICE_TIMEOUT_MS", "NaN"],
+    ["MAX_SESSIONS", "0"],
+    ["MAX_SESSIONS_PER_IP", "-1"],
+    ["MAX_CONCURRENT_OFFLINE_QUOTES", "1.5"],
   ])("rejects invalid %s=%s", (name, value) => {
     expect(() => loadConfig({ ...base, [name]: value })).toThrow(name);
   });
