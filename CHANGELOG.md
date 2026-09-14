@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.3.3 - 2026-09-14
+
 ### Added
 - **Request tracing (`TRACE_REQUESTS=1`, default off)** — one structured completion line per request through the existing logger, on both the public and admin servers, including unmatched routes Express answers with a 404, so an operator behind a reverse proxy can tell "no request arrived" from "a request arrived and matched nothing". The line carries method, path, `Host`, response status, duration in ms, the `X-Request-Id` the app attaches, and the `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Real-Ip` headers. With the flag on, startup also logs the resolved public config (base URL, ports, admin bind, `trustProxy`, Arkade network and indexer URL, discovery sources/candidates and readiness). Off, no lines are added.
+
+### Fixed
+- **The OpenAPI spec claimed `0.2.6` on every release since 0.3.0** — `src/openapi.ts` hardcoded `info.version`, so `/openapi.json` on the 0.3.2 image still reported `0.2.6`, and the admin spec, which sources its version from the public spec, inherited it. The version now lives in one literal (`src/version.ts`) used by both specs and the startup log, and a test pins it to `package.json` so a release that updates only one of the two fails CI. The `arkade-lnurl listening on …` line now carries the version, so `docker logs` tells an operator which build is running without probing a route.
 
 ## 0.3.2 - 2026-09-14
 
