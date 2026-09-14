@@ -1,3 +1,5 @@
+import { VERSION } from "./version.js";
+
 export const openApiSpec = {
   openapi: "3.0.3",
   info: {
@@ -9,7 +11,7 @@ export const openApiSpec = {
       "creates reverse swaps on-the-fly and returns bolt11 invoices. " +
       "When persistence is enabled, wallets can also register " +
       "Lightning Addresses (LUD-16) served from the `.well-known` routes.",
-    version: "0.2.6",
+    version: VERSION,
     license: { name: "MIT" },
   },
   servers: [{ url: "/" }],

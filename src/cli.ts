@@ -1,5 +1,6 @@
 import { createServer } from "./server.js";
 import { loadConfig } from "./config.js";
+import { VERSION } from "./version.js";
 import { SessionManager } from "./session-manager.js";
 import type { Db } from "./db/connection.js";
 import { pathToFileURL } from "node:url";
@@ -220,7 +221,7 @@ async function main(): Promise<void> {
   );
 
   const publicServer = app.listen(config.port, () => {
-    console.log(`arkade-lnurl listening on ${config.baseUrl}`);
+    console.log(`arkade-lnurl listening on ${config.baseUrl} (v${VERSION})`);
     console.log(`  min: ${config.minSendable} msat, max: ${config.maxSendable} msat`);
     console.log(`  invoice timeout: ${config.invoiceTimeoutMs}ms`);
   });
