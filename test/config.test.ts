@@ -77,7 +77,7 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...base, SOLVER_CARDS_FILE: "/cards.json" })).toThrow(/ARK_SERVER_URL/);
   });
 
-  it("allows persisted admin cards to be the only discovery source", () => {
+  it("allows persisted admin cards alongside the default registry", () => {
     const config = loadConfig({
       ...base,
       DB_PATH: "/data/lnurl.sqlite",
@@ -85,7 +85,17 @@ describe("loadConfig", () => {
       COVCLAIMD_URL: "https://covclaimd.example",
       ARK_SERVER_URL: "https://ark.example",
     });
-    expect(config.offlineReceive).toMatchObject({ enabled: true, registryUrls: [] });
+    expect(config.offlineReceive).toMatchObject({ enabled: true, registryUrls: undefined });
+  });
+
+  it("leaves omitted registry URLs undefined so discovery follows the network default", () => {
+    const config = loadConfig({
+      ...base,
+      COVCLAIMD_URL: "https://covclaimd.example",
+      ARK_SERVER_URL: "https://ark.example",
+    });
+
+    expect(config.offlineReceive).toMatchObject({ enabled: true, registryUrls: undefined });
   });
 
   it("allows self-claim without COVCLAIMD_URL, omitting the claim packet", () => {

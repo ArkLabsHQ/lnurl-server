@@ -1,7 +1,7 @@
 /** Server-orchestrated offline receive over the Arkade intents corridor. */
 export interface OfflineReceiveConfig {
   enabled: boolean;
-  registryUrls: string[];
+  registryUrls?: string[];
   cardsFile?: string;
   nostrSecretKey?: string;
   covclaimdUrl?: string;
@@ -153,7 +153,9 @@ export function loadConfig(env: Env = process.env): AppConfig {
 }
 
 function buildOfflineReceive(env: Env): OfflineReceiveConfig {
-  const registryUrls = csvHttpUrls(env.SOLVER_REGISTRY_URLS, "SOLVER_REGISTRY_URLS");
+  const registryUrls = env.SOLVER_REGISTRY_URLS === undefined
+    ? undefined
+    : csvHttpUrls(env.SOLVER_REGISTRY_URLS, "SOLVER_REGISTRY_URLS");
   const cardsFile = env.SOLVER_CARDS_FILE?.trim() || undefined;
   const nostrSecretKey = env.NOSTR_SECRET_KEY || undefined;
   if (nostrSecretKey && !/^[0-9a-f]{64}$/i.test(nostrSecretKey)) {
@@ -161,7 +163,7 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   }
   const covclaimdUrl = env.COVCLAIMD_URL ? httpUrl(env.COVCLAIMD_URL, "COVCLAIMD_URL") : undefined;
   const arkServerUrl = env.ARK_SERVER_URL ? httpUrl(env.ARK_SERVER_URL, "ARK_SERVER_URL") : undefined;
-  const hasCards = registryUrls.length > 0 || cardsFile !== undefined;
+  const hasCards = (registryUrls?.length ?? 0) > 0 || cardsFile !== undefined;
   const selfClaim = env.OFFLINE_SELF_CLAIM === "true";
   const emulatorUrl = env.OFFLINE_EMULATOR_URL ? httpUrl(env.OFFLINE_EMULATOR_URL, "OFFLINE_EMULATOR_URL") : undefined;
   const stampClaimPacket = env.OFFLINE_STAMP_CLAIM_PACKET === "true";

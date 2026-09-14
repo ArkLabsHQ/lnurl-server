@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+- **An omitted solver-registry override left production unready** — discovery now follows `@arkade-os/solver-discovery`'s published per-network registry when `SOLVER_REGISTRY_URLS` is absent. A non-empty variable still overrides the default, while an explicitly empty variable disables registry discovery. If initial discovery finds no usable Lightning-receive card, startup now exits instead of serving an unready process.
+
 ## 0.3.4 - 2026-09-14
 
 ### Fixed

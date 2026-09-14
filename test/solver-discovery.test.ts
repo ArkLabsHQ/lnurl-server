@@ -74,6 +74,47 @@ describe("DiscoveryService", () => {
     service.stop();
   });
 
+  it("follows the published network registry when registry URLs are omitted", async () => {
+    const requested: string[] = [];
+    const service = new DiscoveryService({
+      network: "bitcoin",
+      registryUrls: undefined,
+      cardStore: new CardStore(),
+      cacheStore: new CacheStore(),
+      fetchImpl: async (url) => {
+        requested.push(url);
+        return response(registryIndex(solverCard("registry", 30), 1_000));
+      },
+      now: () => 1_000_000,
+      refreshIntervalMs: 0,
+    });
+
+    await service.start();
+    expect(requested).toEqual(["https://arkade-os.github.io/solver-registry/bitcoin.json"]);
+    expect(service.status()).toMatchObject({ ready: true, candidateCount: 1 });
+    service.stop();
+  });
+
+  it("fails startup when discovery finds no usable lightning-receive candidates", async () => {
+    const service = new DiscoveryService({
+      network: "bitcoin",
+      registryUrls: [registryUrl],
+      cardStore: new CardStore(),
+      cacheStore: new CacheStore(),
+      fetchImpl: async () => response({
+        version: 0,
+        network: "bitcoin",
+        generated_at: 1_000,
+        commit: "a".repeat(40),
+        markets: [],
+      }),
+      refreshIntervalMs: 0,
+    });
+
+    await expect(service.start()).rejects.toThrow(/no usable lightning-receive solver cards/);
+    service.stop();
+  });
+
   it("refuses an asset receive even though its corridors are the right ones", async () => {
     const service = new DiscoveryService({
       network: "bitcoin",
@@ -123,8 +164,7 @@ describe("DiscoveryService", () => {
       now: () => now,
       refreshIntervalMs: 0,
     });
-    await expired.start();
-    expect(expired.status()).toMatchObject({ ready: false, candidateCount: 0 });
+    await expect(expired.start()).rejects.toThrow(/no usable lightning-receive solver cards/);
     expired.stop();
   });
 
@@ -136,8 +176,7 @@ describe("DiscoveryService", () => {
       network: "bitcoin", registryUrls: [registryUrl], cardStore: new CardStore(), cacheStore: cache,
       fetchImpl: async () => response({ invalid: true }), now: () => 1_000_000, refreshIntervalMs: 0,
     });
-    await corrupt.start();
-    expect(corrupt.status().ready).toBe(false);
+    await expect(corrupt.start()).rejects.toThrow(/no usable lightning-receive solver cards/);
     expect(cache.row?.body).toBe(goodBody);
     corrupt.stop();
 
