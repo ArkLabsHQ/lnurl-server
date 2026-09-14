@@ -20,6 +20,7 @@ import { advertisedOptions, resolvePaymentOption } from "./payment-options.js";
 import { applyQuote, type QuoteProvider, type PaymentQuote } from "./quote-provider.js";
 import type { CovenantDestinationProvider, DerivedDestination } from "./covenant-destination.js";
 import { staticSettings, type RuntimeSettings } from "./settings.js";
+import { requestTraceMiddleware } from "./request-trace.js";
 import type {
   LnurlServiceConfig,
   LnurlPayMetadata,
@@ -159,6 +160,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
   const sessions = deps?.sessions ?? new SessionManager();
   const health = deps?.health ?? new HealthRegistry();
   const logger = deps?.logger ?? createLogger();
+  if (config.traceRequests) app.use(requestTraceMiddleware(logger));
   // LUD-21 settlement records. DB-backed when provided, else in-memory with TTL.
   const store: SettlementStore = deps?.settlements ?? new MemorySettlementStore(config.verifyTtlMs ?? 86_400_000);
   // Light per-IP guard for the public verify-polling endpoint.

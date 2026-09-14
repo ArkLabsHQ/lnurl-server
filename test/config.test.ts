@@ -27,6 +27,12 @@ describe("loadConfig", () => {
     expect(cfg.tokenEncryptionKey).toBeUndefined();
   });
 
+  it("reads the request-tracing flag, the exact string 1 only", () => {
+    expect(loadConfig({ ...base }).traceRequests).toBe(false);
+    expect(loadConfig({ ...base, TRACE_REQUESTS: "1" }).traceRequests).toBe(true);
+    expect(loadConfig({ ...base, TRACE_REQUESTS: "true" }).traceRequests).toBe(false);
+  });
+
   it("rejects a key that is not 32 bytes", () => {
     expect(() => loadConfig({ ...base, DB_PATH: "/data/x.db", TOKEN_ENCRYPTION_KEY: "abcd" })).toThrow(/32 bytes/);
   });

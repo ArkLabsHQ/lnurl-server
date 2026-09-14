@@ -38,6 +38,7 @@ async function main(): Promise<void> {
     health.register("persistence", () => ({ ok: runtime.resources().dbOpen, detail: "SQLite open" }));
   }
   let deps: import("./server.js").ServerDeps | undefined;
+  let solverDiscovery: import("./solver-discovery.js").DiscoveryService | undefined;
 
   if (db) {
     const { createRepositories } = await import("./db/repositories/index.js");
@@ -62,7 +63,6 @@ async function main(): Promise<void> {
     const settlements = new DbSettlementStore(db, config.verifyTtlMs);
     let offlineSwaps: import("./offline-swap-store.js").OfflineSwapStore | undefined;
     let offlineSwapCreator: import("./intent-swap.js").OfflineSwapCreator | undefined;
-    let solverDiscovery: import("./solver-discovery.js").DiscoveryService | undefined;
     if (config.offlineReceive.enabled) {
       const { createOfflineSwapCoordinator } = await import("./intent-swap.js");
       const { OfflineSwapStore } = await import("./offline-swap-store.js");
@@ -178,12 +178,28 @@ async function main(): Promise<void> {
     console.log(`persistence: enabled at ${config.dbPath} (${deps.repos.domains.list().length} domain(s))`);
 
     const { createAdminServer } = await import("./admin-server.js");
-    const adminServer = createAdminServer({ repos, addressService, sessions, settings, config, settlements, discovery: solverDiscovery }).listen(config.adminPort, config.adminBind, () => {
+    const adminServer = createAdminServer({ repos, addressService, sessions, settings, config, settlements, discovery: solverDiscovery, logger }).listen(config.adminPort, config.adminBind, () => {
       console.log(`admin server on http://${config.adminBind}:${config.adminPort} (front with a proxy)`);
     });
     runtime.addServer(adminServer);
   } else {
     console.log("persistence: disabled (in-memory mode)");
+  }
+
+  if (config.traceRequests) {
+    const discovery = solverDiscovery?.status();
+    logger.info("startup_config", {
+      baseUrl: config.baseUrl,
+      port: config.port,
+      adminPort: config.adminPort,
+      adminBind: config.adminBind,
+      trustProxy: config.trustProxy,
+      arkadeNetwork: discovery?.network,
+      indexerUrl: config.offlineReceive.arkServerUrl,
+      discoverySources: discovery?.sources.length,
+      discoveryCandidates: discovery?.candidateCount,
+      discoveryReady: discovery?.ready,
+    });
   }
 
   const app = createServer(
@@ -195,6 +211,7 @@ async function main(): Promise<void> {
       invoiceTimeoutMs: config.invoiceTimeoutMs,
       verifyTtlMs: config.verifyTtlMs,
       trustProxy: config.trustProxy,
+      traceRequests: config.traceRequests,
       maxSessions: config.maxSessions,
       maxSessionsPerIp: config.maxSessionsPerIp,
       maxConcurrentOfflineQuotes: config.maxConcurrentOfflineQuotes,
