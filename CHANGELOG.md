@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.3.1 - 2026-09-14
+
 ### Fixed
 - **Covclaimd-optional offline receive** — `OFFLINE_SELF_CLAIM=true` with `OFFLINE_EMULATOR_URL` no longer requires `COVCLAIMD_URL`. The RFQ omits the optional `claim_packet` and the solver funds anyway, waiting for this server's own covenant claim; `OFFLINE_COVENANT_DESTINATIONS` likewise needs only `ARK_SERVER_URL` + `OFFLINE_EMULATOR_URL`.
 
