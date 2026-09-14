@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.3.3 - 2026-09-14
+
 ### Added
 - **Request tracing (`TRACE_REQUESTS=1`, default off)** — one structured completion line per request through the existing logger, on both the public and admin servers, including unmatched routes Express answers with a 404, so an operator behind a reverse proxy can tell "no request arrived" from "a request arrived and matched nothing". The line carries method, path, `Host`, response status, duration in ms, the `X-Request-Id` the app attaches, and the `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Real-Ip` headers. With the flag on, startup also logs the resolved public config (base URL, ports, admin bind, `trustProxy`, Arkade network and indexer URL, discovery sources/candidates and readiness). Off, no lines are added.
 
