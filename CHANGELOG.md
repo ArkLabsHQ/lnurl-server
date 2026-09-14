@@ -5,7 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.3.4 - 2026-09-14
+
+### Fixed
+- **The served spec omitted the health endpoints** — `GET /livez` and `GET /readyz` (with its `{ status, components, reason? }` body and the 503 it answers while unready) were registered by `src/server.ts` but absent from `src/openapi.ts`, so neither the Redoc page nor `/openapi.json` mentioned the probes an orchestrator uses. Both are now documented.
+- **The public spec under-described the SSE session contract** — `POST /lnurl/session` now documents the optional `{ token }` body that makes a session reconnectable, the 400 / 409 / 429 rejections returned before the stream opens, and the `error` stream event. The LUD-16 callback's bolt11 branch now includes the `paymentOption: "lightning"` echo, and the Arkade-identity route's 400 describes both of its invalid-input cases.
+- **The admin spec was thinner than the code on solver cards and API keys** — `PUT /solver-cards/{id}` had no request body at all, and the PUT/PATCH/DELETE responses omitted the 400/404 failures the routes return; `GET /solver-cards` and the mutation responses now carry the persisted card shape. API-key responses include the `createdAt` / `lastUsedAt` fields the repo returns. (Path and method coverage itself was audited against the router and already complete — the docs/spec meta endpoints stay undocumented by design.)
+
+### Added
+- **A route/spec drift guard** (`test/openapi-routes.test.ts`) — builds the real apps with `createServer` and `createAdminServer`, walks the Express 5 router stacks, and asserts both that every registered method+path pair is documented in the matching spec and that every documented operation is registered, with an explicit allowlist for the docs/spec meta endpoints (`GET /`, `GET /openapi.json`, admin `GET /docs`). It also fetches both specs through the real HTTP apps, so a spec that no longer serialises fails the suite too.
 
 ## 0.3.3 - 2026-09-14
 
