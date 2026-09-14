@@ -1,5 +1,5 @@
 import { bech32 } from "@scure/base";
-import type { InvoiceFacts } from "./vendor/arkade-swap/rfq.js";
+import type { InvoiceFacts } from "@arkade-os/swap";
 
 /** Extract the payment hash (lowercase hex) from a bolt11 invoice, or null if it
  *  can't be parsed. Local + dependency-free: bech32-decodes the invoice and walks

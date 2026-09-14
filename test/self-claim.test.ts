@@ -15,7 +15,7 @@ import {
   toXOnly,
 } from "@arkade-os/sdk";
 import { createSelfClaimer } from "../src/self-claim.js";
-import { receiveVtxoScript, unilateralClaimDelay } from "../src/vendor/arkade-swap/rfq.js";
+import { receiveVtxoScript, unilateralClaimDelay } from "@arkade-os/swap";
 
 // Against a fake Arkade operator + emulator over real HTTP, repo style. The fake
 // echoes, so what these prove is the tx WE build: leaf, destination, no signature.

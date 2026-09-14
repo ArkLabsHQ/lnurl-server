@@ -46,7 +46,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/):
 - `src/session-manager.ts` — Session lifecycle, SSE streaming, invoice request/response flow
 - `src/types.ts` — Shared TypeScript types
 - `src/cli.ts` — CLI entrypoint reading config from env vars
-- `src/intent-swap.ts` — Offline receive: card-discovered `lightning:BTC -> arkade:BTC` corridor swaps (`SOLVER_REGISTRY_URLS` / `SOLVER_CARDS_FILE`, plus `COVCLAIMD_URL` + `ARK_SERVER_URL`)
+- `src/intent-swap.ts` — Offline receive: card-discovered `lightning:BTC -> arkade:BTC` corridor swaps via the published `@arkade-os/swap` package (`SOLVER_REGISTRY_URLS` / `SOLVER_CARDS_FILE`, plus `COVCLAIMD_URL` + `ARK_SERVER_URL`)
 - `src/self-claim.ts` — Optional server-side lockup claim (`OFFLINE_SELF_CLAIM` + `OFFLINE_EMULATOR_URL`): pushes the covenant's `nonInteractiveClaim` leaf — operator + emulator signatures, gated on the preimage we hold — so covclaimd isn't a single point of failure. Needs no key; the covenant pins the payout to the user. Never the collaborative `claim` leaf, which has no output constraint
 - `src/covenant-destination.ts` + `src/covenant-sweeper.ts` — Per-payment arkade-rail addresses (`OFFLINE_COVENANT_DESTINATIONS`): three leaves (covenant sweep pinned to the user's static address, user+operator, user-alone CSV), so the script identifies the payment instead of amount/arrival guesswork. Every leaf must be a valid vtxo script — arkd rejects a taptree containing anything else, which is why the per-payment nonce rides in the condition
 - `src/arkade-watcher.ts` — Static-address destination-rail watcher: those payments land at an address the server does not control, so amount/window correlation is all there is. Covenant destinations do not come through here
@@ -55,7 +55,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/):
 - `src/payment-options.ts` — LUD-XX paymentOptions rail registry (advertise + resolve)
 - `src/quote-provider.ts` — LUD-XX paymentQuote framework (injected rate oracle seam)
 - `src/settlement-store.ts` + `src/offline-poller.ts` — LUD-21 settlement records (memory/SQLite) and the offline-swap status poller
-- `src/vendor/arkade-swap/` — byte-exact vendored corridor client from arkade-os/ts-sdk (see its README; delete once `@arkade-os/swap` ships receive corridors)
 - `scripts/probe-solver.ts` — live solver quote probe (operator diagnostic; funds nothing)
 - `scripts/probe-covenant.ts` — the same for the covenant rail: derives a destination from a network's real operator + emulator keys, so a config that would silently fall back to the static address fails here instead of on a payer's money
 - `scripts/inspect-funding.ts` — why a funded lockup never claimed: reports the claim packet and output taptree covclaimd needs, both of which it declines at debug level

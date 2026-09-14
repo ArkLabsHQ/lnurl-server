@@ -175,7 +175,7 @@ curl -X POST https://pay.example.com/lnurl/address/alice/arkade \
 
 After that, if a payer pays `alice@pay.example.com` while the wallet is offline, the server returns the solver's hold invoice and reports settlement through the LUD-21 `verify` URL (polled from the solver's RFQ status). The server never holds the user's keys or funds — it generates the swap preimage and hands it to covclaimd encrypted (sealed into the quote request, so it never touches the solver in plaintext).
 
-> The corridor client is vendored at `src/vendor/arkade-swap/` (byte-exact from `arkade-os/ts-sdk` — see its README for the exit plan) until `@arkade-os/swap` ships a release carrying the receive corridors. The wire contract is integration-tested against fake HTTP services and was **live-probed against the public mutinynet solver** (`scripts/probe-solver.ts`) — quote, hold-invoice binding, and covenant derivation all verified. A full funded swap (payer pays, covclaimd claims) remains the operator's pre-production check.
+> The corridor client is the published `@arkade-os/swap` package. The wire contract is integration-tested against fake HTTP services and was **live-probed against the public mutinynet solver** (`scripts/probe-solver.ts`) — quote, hold-invoice binding, and covenant derivation all verified. A full funded swap (payer pays, covclaimd claims) remains the operator's pre-production check.
 
 ### Self-claim (`OFFLINE_SELF_CLAIM`, default off)
 

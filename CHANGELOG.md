@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.3.0 - 2026-09-14
+
+### Changed
+- **Latest SDKs** — `@arkade-os/sdk` 0.4.68 → 0.4.72 (`@arkade-os/solver-discovery` stays at 0.2.4, already latest). The offline-receive corridor client moves off the vendored `src/vendor/arkade-swap/` copy onto the published `@arkade-os/swap@0.0.18`, which now ships the `lightning:BTC -> arkade:BTC` receive corridors. Adapts to the SDK's watch-only contract events (`isContractVtxoEvent` gate in `src/covenant-watcher.ts`).
+
 ### Added
 - **Production runtime and card-only solver discovery** — uses `@arkade-os/solver-discovery` across multiple registries, cached indexes, startup cards, and cards pasted into the admin UI. Direct `SOLVER_URL` / pubkey / relay configuration is removed. Accepted offline swaps atomically persist solver and VHTLC recovery state for restart-safe polling/self-claim. Adds liveness/readiness endpoints, resource caps, redacted structured logs, graceful shutdown, a non-root image, reference Compose deployment, and an operations runbook.
 - **Self-claim (`OFFLINE_SELF_CLAIM`, default off)** — the server can push the solver-funded lockup's `nonInteractiveClaim` leaf itself, while the covenant and emulator still constrain payment to the user's registered address. Claims skip underfunded lockups, are safe to retry, and never block status polling. Versioned VHTLC reconstruction data is now persisted atomically with accepted swaps, so self-claim resumes after restart.

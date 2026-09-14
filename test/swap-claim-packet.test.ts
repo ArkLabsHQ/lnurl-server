@@ -2,9 +2,9 @@ import { describe, it, expect } from "vitest";
 import { hkdfSync, createDecipheriv } from "node:crypto";
 import { base64, hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
-import { sealClaimPacket } from "../src/vendor/arkade-swap/claimPacket.js";
+import { sealClaimPacket } from "@arkade-os/swap";
 
-// Cross-implementation check: the vendored sealClaimPacket must produce blobs that
+// Cross-implementation check: the published sealClaimPacket must produce blobs that
 // covclaimd's pkg/preimage/crypto.go Decrypt accepts. This mirror is written directly
 // from the Go source: ECDH x-coordinate (32 bytes) -> HKDF-SHA256(salt=ephPub,
 // info="covclaimd/preimage/v1") -> AES-256-GCM with ephPub as AAD; wire layout
@@ -25,7 +25,7 @@ function covclaimdDecrypt(recipientPriv: Uint8Array, b64: string): Uint8Array {
   return new Uint8Array(Buffer.concat([decipher.update(ct.subarray(0, -16)), decipher.final()]));
 }
 
-describe("sealClaimPacket (vendored) vs covclaimd's wire scheme", () => {
+describe("sealClaimPacket (published) vs covclaimd's wire scheme", () => {
   const covPriv = secp256k1.utils.randomSecretKey();
   const covPub = secp256k1.getPublicKey(covPriv, true);
 

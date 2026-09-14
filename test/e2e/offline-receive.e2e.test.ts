@@ -6,7 +6,7 @@
  * `lightning:BTC->arkade:BTC` swap with the regtest intent-solver; the stack's
  * counterparty LND pays the hold invoice for real; the solver funds a VHTLC
  * pinned to the user's registered Arkade address; covclaimd decrypts OUR sealed
- * claim packet (the vendored sealClaimPacket) and claims; the solver settles the
+ * claim packet (the published sealClaimPacket) and claims; the solver settles the
  * HTLC; the server's settlement poller flips LUD-21 verify via the solver's RFQ status.
  *
  * Assertions that no fake can make: the payer's own node reports SUCCEEDED with the
@@ -41,7 +41,7 @@ import { OfflineSwapStore } from "../../src/offline-swap-store.js";
 import { staticSettings } from "../../src/settings.js";
 import { createOfflineSwapCoordinator, type OfflineSwapCreator } from "../../src/intent-swap.js";
 import { createSelfClaimer } from "../../src/self-claim.js";
-import { httpTransport } from "../../src/vendor/arkade-swap/rfq.js";
+import { httpTransport } from "@arkade-os/swap";
 import { solverCard } from "../fixtures/solver-cards.js";
 import { startOfflineSettlementPoller } from "../../src/offline-poller.js";
 import {

@@ -9,11 +9,14 @@ importers:
   .:
     dependencies:
       '@arkade-os/sdk':
-        specifier: 0.4.68
-        version: 0.4.68
+        specifier: 0.4.72
+        version: 0.4.72
       '@arkade-os/solver-discovery':
         specifier: 0.2.4
         version: 0.2.4
+      '@arkade-os/swap':
+        specifier: 0.0.18
+        version: 0.0.18(nostr-tools@2.25.2(typescript@5.9.3))
       '@noble/ciphers':
         specifier: 2.1.1
         version: 2.1.1
@@ -90,8 +93,8 @@ importers:
 
 packages:
 
-  '@arkade-os/sdk@0.4.68':
-    resolution: {integrity: sha512-+kMos3HCre1v9caEFadeVXuFpD+/MiVYGcNIx8MRQKfkZ7DSX3S4cpTn1mygpHhvxySwGT3ad9yeR8C7HQ3Y4A==}
+  '@arkade-os/sdk@0.4.72':
+    resolution: {integrity: sha512-u0h+oLu+l9//VBQxroIgHjXTdfQsOZZGfmXKkmZj5SzaozsDH6L2FDUbUtzGlNZF/UBKqcwwBHb4PzsP8unjZQ==}
     engines: {node: '>=22.12.0 <27'}
     peerDependencies:
       '@react-native-async-storage/async-storage': '>=1.0.0'
@@ -114,6 +117,14 @@ packages:
   '@arkade-os/solver-discovery@0.2.4':
     resolution: {integrity: sha512-iLjcZhnNmzndD6KLbgmMbyYL/JqmMYA2gSOn6MrESAMHWuF68CRtqn9ijvnDJDz8BzYXuFMZ/ghZfLjIvrdAdA==}
     engines: {node: '>=18'}
+
+  '@arkade-os/swap@0.0.18':
+    resolution: {integrity: sha512-9z0T9GolRkvUsTQg2bvqGb6EpUf2yIAOp0TVEXjTpQETkyoBX/X2rQ9NBDd8hTUE8bKQZKOW9FxwOG+QaxxeYw==}
+    peerDependencies:
+      nostr-tools: ^2.12.0
+    peerDependenciesMeta:
+      nostr-tools:
+        optional: true
 
   '@bitcoinerlab/descriptors-core@3.1.7':
     resolution: {integrity: sha512-7VccUDvKcHK7RF07Vo19Obax9jO3wlPWIXtvXy61GBqXptKv156O9Z4+sm2py1CuxPRpTXHlvH70G4KVVDoKlw==}
@@ -1590,7 +1601,7 @@ packages:
 
 snapshots:
 
-  '@arkade-os/sdk@0.4.68':
+  '@arkade-os/sdk@0.4.72':
     dependencies:
       '@bitcoinerlab/descriptors-scure': 3.1.7
       '@marcbachmann/cel-js': 8.0.0
@@ -1611,7 +1622,31 @@ snapshots:
 
   '@arkade-os/solver-discovery@0.2.4': {}
 
-  '@bitcoinerlab/descriptors-core@3.1.7(@noble/curves@2.0.1)(@noble/hashes@2.0.1)(@scure/base@2.0.0)(@scure/bip32@2.4.0)(@scure/btc-signer@2.0.1)':
+  '@arkade-os/swap@0.0.18(nostr-tools@2.25.2(typescript@5.9.3))':
+    dependencies:
+      '@arkade-os/sdk': 0.4.72
+      '@arkade-os/solver-discovery': 0.2.4
+      '@noble/ciphers': 2.1.1
+      '@noble/curves': 2.0.1
+      '@noble/hashes': 2.0.1
+      '@scure/base': 2.0.0
+      '@scure/btc-signer': 2.0.1
+    optionalDependencies:
+      nostr-tools: 2.25.2(typescript@5.9.3)
+    transitivePeerDependencies:
+      - '@ledgerhq/ledger-bitcoin'
+      - '@react-native-async-storage/async-storage'
+      - bip32
+      - bitcoinjs-lib
+      - bufferutil
+      - ecpair
+      - expo
+      - expo-background-task
+      - expo-sqlite
+      - expo-task-manager
+      - utf-8-validate
+
+  '@bitcoinerlab/descriptors-core@3.1.7(@noble/curves@2.0.1)(@noble/hashes@2.0.1)(@scure/base@2.4.0)(@scure/bip32@2.4.0)(@scure/btc-signer@2.0.1)':
     dependencies:
       '@bitcoinerlab/miniscript': 2.0.0
       lodash.memoize: 4.1.2
@@ -1620,16 +1655,16 @@ snapshots:
     optionalDependencies:
       '@noble/curves': 2.0.1
       '@noble/hashes': 2.0.1
-      '@scure/base': 2.0.0
+      '@scure/base': 2.4.0
       '@scure/bip32': 2.4.0
       '@scure/btc-signer': 2.0.1
 
   '@bitcoinerlab/descriptors-scure@3.1.7':
     dependencies:
-      '@bitcoinerlab/descriptors-core': 3.1.7(@noble/curves@2.0.1)(@noble/hashes@2.0.1)(@scure/base@2.0.0)(@scure/bip32@2.4.0)(@scure/btc-signer@2.0.1)
+      '@bitcoinerlab/descriptors-core': 3.1.7(@noble/curves@2.0.1)(@noble/hashes@2.0.1)(@scure/base@2.4.0)(@scure/bip32@2.4.0)(@scure/btc-signer@2.0.1)
       '@noble/curves': 2.0.1
       '@noble/hashes': 2.0.1
-      '@scure/base': 2.0.0
+      '@scure/base': 2.4.0
       '@scure/bip32': 2.4.0
       '@scure/btc-signer': 2.0.1
     transitivePeerDependencies:

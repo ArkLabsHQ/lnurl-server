@@ -92,7 +92,7 @@ try {
   // paid, so `false` is the only correct answer — what matters is that it answered.
   const settled = await creator.isSettled(swap.swapId);
   console.log(`  status check  replied, settled=${settled} (expected false — nothing was paid)`);
-  console.log("\n=> the receive corridor is served and the wire contract matches the vendored client.");
+  console.log("\n=> the receive corridor is served and the wire contract matches the published client.");
   process.exitCode = 0;
 } catch (err) {
   console.log(`\nquote failed: ${err instanceof Error ? err.message : String(err)}`);

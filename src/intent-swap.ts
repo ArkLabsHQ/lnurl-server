@@ -9,7 +9,7 @@
 // covenant-constrained claim pays only the user, which is why a preimage may sit in
 // the settlements table pre-settlement.
 //
-// The corridor client is vendored at src/vendor/arkade-swap/ (see its README);
+// The corridor client is the published `@arkade-os/swap` package;
 // `ReverseSwapCreator` from the Boltz era is replaced by `OfflineSwapCreator`, same
 // interface shape. The settlement poller reads solver status, so "settled" means the
 // solver settled the payer's hold invoice, not merely that a lockup exists.
@@ -23,13 +23,13 @@ import {
   deriveLightningReceive,
   lightningReceiveRequest,
   newRfqId,
+  paymentHashOf,
+  sealClaimPacket,
   unilateralClaimDelay,
   verifyReceiveInvoice,
   type RfqTransport,
-} from "./vendor/arkade-swap/rfq.js";
-import { sealClaimPacket } from "./vendor/arkade-swap/claimPacket.js";
-import { nostrRfqTransport } from "./vendor/arkade-swap/nostr.js";
-import { paymentHashOf } from "./vendor/arkade-swap/onchainHtlc.js";
+} from "@arkade-os/swap";
+import { nostrRfqTransport } from "@arkade-os/swap/nostr";
 import { invoiceFactsFromBolt11 } from "./bolt11.js";
 import type { DiscoveryService, SolverCandidate } from "./solver-discovery.js";
 import type { SelfClaimer, SelfClaimOutcome } from "./self-claim.js";
@@ -143,7 +143,7 @@ async function fetchCovclaimdKeys(covclaimdUrl: string): Promise<{ covclaimdPubk
 }
 
 /**
- * Real creator over a vendored RFQ corridor client (see src/vendor/arkade-swap/).
+ * Real creator over the published RFQ corridor client (`@arkade-os/swap`).
  * Unit tests use fake transports; the funded E2E exercises a real solver,
  * covclaimd, and operator through a test-only HTTP RFQ adapter. Nostr transport
  * remains part of the deployment canary on the target network.

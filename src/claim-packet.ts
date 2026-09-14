@@ -1,6 +1,5 @@
 /**
- * ClaimPacket TLV codec, mirroring covclaimd `pkg/preimage/packet.go`. Not in
- * `src/vendor/arkade-swap/`, whose exit plan deletes that directory wholesale.
+ * ClaimPacket TLV codec, mirroring covclaimd `pkg/preimage/packet.go`.
  */
 
 /** Arkade extension packet type covclaimd scans the arkd tx stream for. */

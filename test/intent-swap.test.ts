@@ -5,7 +5,7 @@ import { base64, hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { ArkAddress, toXOnly } from "@arkade-os/sdk";
 import { createOfflineSwapCoordinator, type IntentSwapSettings, type OfflineSwapCreator } from "../src/intent-swap.js";
-import { httpTransport, receiveVtxoScript, unilateralClaimDelay } from "../src/vendor/arkade-swap/rfq.js";
+import { httpTransport, receiveVtxoScript, unilateralClaimDelay } from "@arkade-os/swap";
 import type { SolverCandidate } from "../src/solver-discovery.js";
 import { buildInvoice } from "./helpers/bolt11.js";
 import { solverCard } from "./fixtures/solver-cards.js";
@@ -204,7 +204,7 @@ describe("createOfflineSwapCoordinator", () => {
         requestQuote: async (request) => {
           attempts.push(candidate.name);
           if (candidate.name === "unavailable") throw new Error("timeout");
-          const transport = (await import("../src/vendor/arkade-swap/rfq.js")).httpTransport(solver.baseUrl);
+          const transport = (await import("@arkade-os/swap")).httpTransport(solver.baseUrl);
           try { return await transport.requestQuote(request); } finally { await transport.close(); }
         },
         status: async () => null,

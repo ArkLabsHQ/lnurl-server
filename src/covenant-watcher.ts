@@ -5,7 +5,7 @@
 // The static-address rail still needs arkade-watcher.ts: those payments arrive at an
 // address the server does not control, with only amount and arrival time to go on.
 
-import type { IContractManager } from "@arkade-os/sdk";
+import { isContractVtxoEvent, type IContractManager } from "@arkade-os/sdk";
 import type { SettlementStore } from "./settlement-store.js";
 import { COVENANT_CONTRACT_TYPE } from "./covenant-contract.js";
 
@@ -33,7 +33,7 @@ function settleFrom(
  */
 export function startCovenantWatcher(store: SettlementStore, contracts: IContractManager, catchUpRetryMs = 15_000): () => void {
   const unsubscribe = contracts.onContractEvent((event) => {
-    if (event.type !== "vtxo_received" || event.contract.type !== COVENANT_CONTRACT_TYPE) return;
+    if (event.type !== "vtxo_received" || !isContractVtxoEvent(event) || event.contract.type !== COVENANT_CONTRACT_TYPE) return;
     settleFrom(store, event.contractScript, event.vtxos);
   });
 
