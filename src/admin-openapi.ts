@@ -63,6 +63,24 @@ const jsonBody = (schema: object, required = true) => ({
   content: { "application/json": { schema } },
 });
 
+const SolverCard = {
+  type: "object",
+  properties: {
+    id: { type: "integer" },
+    label: { type: "string" },
+    network: { type: "string" },
+    enabled: { type: "boolean" },
+    card: { type: "object", description: "The validated solver card as pasted" },
+    createdAt: { type: "integer" },
+    updatedAt: { type: "integer" },
+  },
+} as const;
+
+const solverCardMutation = {
+  type: "object",
+  properties: { persisted: { type: "boolean" }, active: { type: "boolean" }, card: SolverCard },
+} as const;
+
 export const adminOpenApiSpec = {
   openapi: "3.0.3",
   info: {
@@ -103,18 +121,53 @@ export const adminOpenApiSpec = {
       },
     },
     "/solver-cards": {
-      get: { summary: "List pasted solver cards", tags: ["Solver discovery"], responses: { "200": { description: "Persisted cards" } } },
+      get: {
+        summary: "List pasted solver cards",
+        tags: ["Solver discovery"],
+        responses: { "200": { description: "Persisted cards", content: { "application/json": { schema: { type: "array", items: SolverCard } } } } },
+      },
       post: {
         summary: "Validate and persist a pasted solver card",
         tags: ["Solver discovery"],
         requestBody: jsonBody({ type: "object", required: ["label", "card"], properties: { label: { type: "string" }, card: { type: "object" } } }),
-        responses: { "202": { description: "Persisted; active reports whether the refreshed snapshot is usable" }, ...errorResponse("400", "Invalid solver card") },
+        responses: {
+          "202": { description: "Persisted; active reports whether the refreshed snapshot is usable", content: { "application/json": { schema: solverCardMutation } } },
+          ...errorResponse("400", "Invalid solver card"),
+        },
       },
     },
     "/solver-cards/{id}": {
-      put: { summary: "Replace a pasted solver card", tags: ["Solver discovery"], parameters: [idParam], responses: { "202": { description: "Replaced and refreshed" } } },
-      patch: { summary: "Enable or disable a pasted solver card", tags: ["Solver discovery"], parameters: [idParam], requestBody: jsonBody({ type: "object", required: ["enabled"], properties: { enabled: { type: "boolean" } } }), responses: { "202": { description: "Updated and refreshed" } } },
-      delete: { summary: "Delete a pasted solver card", tags: ["Solver discovery"], parameters: [idParam], responses: { "202": { description: "Deleted and refreshed" } } },
+      put: {
+        summary: "Replace a pasted solver card",
+        tags: ["Solver discovery"],
+        parameters: [idParam],
+        requestBody: jsonBody({ type: "object", required: ["label", "card"], properties: { label: { type: "string" }, card: { type: "object" } } }),
+        responses: {
+          "202": { description: "Replaced and refreshed", content: { "application/json": { schema: solverCardMutation } } },
+          ...errorResponse("400", "Invalid solver card"),
+          ...errorResponse("404", "Solver card not found"),
+        },
+      },
+      patch: {
+        summary: "Enable or disable a pasted solver card",
+        tags: ["Solver discovery"],
+        parameters: [idParam],
+        requestBody: jsonBody({ type: "object", required: ["enabled"], properties: { enabled: { type: "boolean" } } }),
+        responses: {
+          "202": { description: "Updated and refreshed", content: { "application/json": { schema: solverCardMutation } } },
+          ...errorResponse("400", "enabled must be boolean"),
+          ...errorResponse("404", "Solver card not found"),
+        },
+      },
+      delete: {
+        summary: "Delete a pasted solver card",
+        tags: ["Solver discovery"],
+        parameters: [idParam],
+        responses: {
+          "202": { description: "Deleted and refreshed", content: { "application/json": { schema: { type: "object", properties: { persisted: { type: "boolean", enum: [false] }, active: { type: "boolean" } } } } } },
+          ...errorResponse("404", "Solver card not found"),
+        },
+      },
     },
     // ── Domains ──────────────────────────────────────────────
     "/domains": {
@@ -240,6 +293,8 @@ export const adminOpenApiSpec = {
               label: { type: "string", nullable: true },
               status: { type: "string", enum: ["active", "revoked"] },
               domainId: { type: "integer", nullable: true, description: "Scope; null = all domains" },
+              createdAt: { type: "integer" },
+              lastUsedAt: { type: "integer", nullable: true },
             },
           } } } } },
         },
@@ -264,6 +319,8 @@ export const adminOpenApiSpec = {
               status: { type: "string" },
               domainId: { type: "integer", nullable: true },
               key: { type: "string", description: "Raw API key — shown only here" },
+              createdAt: { type: "integer" },
+              lastUsedAt: { type: "integer", nullable: true },
             },
           } } } },
         },
