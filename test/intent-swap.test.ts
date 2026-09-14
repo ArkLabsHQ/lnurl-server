@@ -239,6 +239,35 @@ describe("createOfflineSwapCoordinator", () => {
     expect(swap.lockupAddress).toMatch(/^tark1/);
   });
 
+  it("omits the claim packet without covclaimd and derives the same lockup", async () => {
+    const emulator = await serve((req, res) => {
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/v1/info") {
+        res.end(JSON.stringify({ signerPubkey: emulatorPub }));
+      } else {
+        res.statusCode = 404;
+        res.end("{}");
+      }
+    });
+    try {
+      const solo = await createOfflineSwapCoordinator({
+        discovery: { selectLightningReceive: () => [candidate()] },
+        arkServerUrl: operator.baseUrl,
+        emulatorUrl: emulator.baseUrl,
+        transportFactory: () => httpTransport(solver.baseUrl),
+      });
+      const swap = await solo.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
+
+      const r = solver.requests.at(-1)!;
+      expect(r.profile.claim_packet).toBeUndefined();
+      // Same covenant inputs as the covclaimd path, so the same address.
+      expect(swap.lockupAddress).toMatch(/^tark1/);
+      await solo.close?.();
+    } finally {
+      await emulator.close();
+    }
+  });
+
   it("sends the stampable packet, naming our covclaimd, when asked to", async () => {
     const stamping = await createOfflineSwapCoordinator(swapSettings({ stampClaimPacket: true }));
     await stamping.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });

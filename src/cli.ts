@@ -87,20 +87,25 @@ async function main(): Promise<void> {
         ok: discovery.status().ready,
         detail: discovery.status().ready ? `${discovery.status().candidateCount} candidate(s)` : discovery.status().reason,
       }));
-      const covclaimdProbe = await fetch(`${off.covclaimdUrl}/v1/preimage/covclaimd-pubkey`);
-      if (!covclaimdProbe.ok) throw new Error(`covclaimd pubkey endpoint: HTTP ${covclaimdProbe.status}`);
+      const covclaimdProbe = off.covclaimdUrl
+        ? await fetch(`${off.covclaimdUrl}/v1/preimage/covclaimd-pubkey`)
+        : null;
+      if (covclaimdProbe && !covclaimdProbe.ok) throw new Error(`covclaimd pubkey endpoint: HTTP ${covclaimdProbe.status}`);
       offlineSwaps = new OfflineSwapStore(db, config.verifyTtlMs);
       let selfClaimer: import("./self-claim.js").SelfClaimer | undefined;
       if (off.selfClaim) {
         const { createSelfClaimer, checkEmulatorPairing } = await import("./self-claim.js");
         selfClaimer = createSelfClaimer({ arkServerUrl: off.arkServerUrl!, emulatorUrl: off.emulatorUrl! });
-        console.log(`offline self-claim: enabled (emulator=${off.emulatorUrl})`);
-        void checkEmulatorPairing({ covclaimdUrl: off.covclaimdUrl!, emulatorUrl: off.emulatorUrl! });
+        console.log(`offline self-claim: enabled (emulator=${off.emulatorUrl}${off.covclaimdUrl ? "" : ", no covclaimd — RFQ omits the claim packet"})`);
+        if (off.covclaimdUrl) {
+          void checkEmulatorPairing({ covclaimdUrl: off.covclaimdUrl!, emulatorUrl: off.emulatorUrl! });
+        }
       }
       offlineSwapCreator = await createOfflineSwapCoordinator({
         discovery,
         nostrSecretKey: off.nostrSecretKey,
-        covclaimdUrl: off.covclaimdUrl!,
+        ...(off.covclaimdUrl ? { covclaimdUrl: off.covclaimdUrl } : {}),
+        ...(off.emulatorUrl ? { emulatorUrl: off.emulatorUrl } : {}),
         arkServerUrl: off.arkServerUrl!,
         stampClaimPacket: off.stampClaimPacket,
         ...(selfClaimer ? { selfClaimer } : {}),
@@ -127,7 +132,8 @@ async function main(): Promise<void> {
       const { createCovenantDestinationProvider } = await import("./covenant-destination.js");
       covenantDestinations = createCovenantDestinationProvider({
         arkServerUrl: off.arkServerUrl!,
-        covclaimdUrl: off.covclaimdUrl!,
+        ...(off.covclaimdUrl ? { covclaimdUrl: off.covclaimdUrl } : {}),
+        ...(off.emulatorUrl ? { emulatorUrl: off.emulatorUrl } : {}),
         recoveryDelaySeconds: off.covenantRecoveryDelaySeconds,
         contracts,
       });
