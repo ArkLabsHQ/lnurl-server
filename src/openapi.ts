@@ -16,15 +16,78 @@ export const openApiSpec = {
   },
   servers: [{ url: "/" }],
   paths: {
+    "/livez": {
+      get: {
+        summary: "Liveness probe",
+        description:
+          "Process liveness for orchestrators: 200 while the process is running. " +
+          "It makes no statement about dependencies — use `/readyz` for that.",
+        tags: ["Health"],
+        responses: {
+          "200": {
+            description: "Process is live",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: { status: { type: "string", enum: ["live"] } },
+                  required: ["status"],
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    "/readyz": {
+      get: {
+        summary: "Readiness probe",
+        description:
+          "Reports whether the process is accepting traffic and every registered dependency " +
+          "check passes. Returns 503 (with the same body) when a component is not ok or the " +
+          "process has begun shutting down.",
+        tags: ["Health"],
+        responses: {
+          "200": {
+            description: "Ready — all registered components report ok",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/HealthSnapshot" } } },
+          },
+          "503": {
+            description: "Unready — a component reported not ok, or the process is shutting down",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/HealthSnapshot" } } },
+          },
+        },
+      },
+    },
     "/lnurl/session": {
       post: {
         summary: "Open LNURL session",
         description:
-          "Opens an SSE stream. The first event is `session_created` " +
-          "with `{ sessionId, lnurl, token }`. Subsequent `invoice_request` " +
-          "events arrive when a payer requests an invoice. Closing the " +
+          "Opens an SSE stream (`event: <type>` + `data: <json>`). The first event is " +
+          "`session_created` with `{ sessionId, lnurl, token }`. Each `invoice_request` " +
+          "carries `{ amountMsat, comment? }` when a payer asks for an invoice, and `error` " +
+          "carries `{ error }` (e.g. the stream was closed by an operator). Closing the " +
           "stream deactivates the LNURL.",
         tags: ["Session"],
+        requestBody: {
+          required: false,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  token: {
+                    type: "string",
+                    description:
+                      "Optional wallet token (hex, ≥32 chars). When sent, the session id is " +
+                      "derived from it, so reconnecting with the same token reuses the LNURL; " +
+                      "omitted for an ephemeral random session.",
+                  },
+                },
+              },
+            },
+          },
+        },
         responses: {
           "200": {
             description: "SSE stream opened",
@@ -36,6 +99,9 @@ export const openApiSpec = {
               },
             },
           },
+          "400": { description: "token must be a hex string of at least 32 characters" },
+          "409": { description: "Session ID derived from the token is already in use" },
+          "429": { description: "Session limit reached" },
         },
       },
     },
@@ -441,7 +507,7 @@ export const openApiSpec = {
         },
         responses: {
           "200": { description: "Identity stored", content: { "application/json": { schema: { type: "object", properties: { ok: { type: "boolean" } } } } } },
-          "400": { description: "Missing arkadeAddress or invalid claimPublicKey" },
+          "400": { description: "Missing arkadeAddress, a non-compressed/invalid claimPublicKey, or a malformed arkadeAddress" },
           "401": { description: "Missing auth token" },
           "404": { description: "Unknown domain, or address not found / not owned by this token" },
         },
@@ -560,8 +626,11 @@ export const openApiSpec = {
                             receive: { $ref: "#/components/schemas/AmountObject" },
                             fees: { type: "array", items: { type: "object", properties: { amount: { type: "string" }, unit: { type: "string" }, description: { type: "string" } } } },
                           },
+                          required: ["requested", "payment"],
                         },
+                        paymentOption: { type: "string", description: "LUD-XX: echoed as `lightning` when the wallet explicitly selected that rail" },
                       },
+                      required: ["pr", "routes"],
                     },
                     {
                       type: "object",
@@ -593,6 +662,27 @@ export const openApiSpec = {
         description: "An amount denominated in a unit; strings avoid JSON integer-precision loss",
         properties: { amount: { type: "string" }, unit: { type: "string", description: "e.g. msat, USD" } },
         required: ["amount", "unit"],
+      },
+      HealthComponent: {
+        type: "object",
+        properties: {
+          ok: { type: "boolean" },
+          detail: { type: "string", description: "Human-readable explanation of the component state" },
+        },
+        required: ["ok"],
+      },
+      HealthSnapshot: {
+        type: "object",
+        properties: {
+          status: { type: "string", enum: ["ready", "unready"] },
+          components: {
+            type: "object",
+            description: "One entry per registered dependency check (e.g. persistence, solverDiscovery)",
+            additionalProperties: { $ref: "#/components/schemas/HealthComponent" },
+          },
+          reason: { type: "string", description: "Present once shutdown has begun" },
+        },
+        required: ["status", "components"],
       },
     },
     securitySchemes: {
