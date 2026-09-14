@@ -19,6 +19,8 @@ export interface LnurlServiceConfig {
   /** Trust X-Forwarded-* headers from a reverse proxy (default: 1 hop). Pass a number for
    *  the hop count, true to trust all, or false to disable. */
   trustProxy?: number | boolean;
+  /** Log one structured completion line per request (default: off). */
+  traceRequests?: boolean;
   maxSessions?: number;
   maxSessionsPerIp?: number;
   maxConcurrentOfflineQuotes?: number;

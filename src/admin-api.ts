@@ -11,6 +11,7 @@ import type { SettlementStore } from "./settlement-store.js";
 import { adminOpenApiSpec } from "./admin-openapi.js";
 import { validateCard } from "@arkade-os/solver-discovery";
 import type { DiscoveryService } from "./solver-discovery.js";
+import type { Logger } from "./logger.js";
 
 const ADMIN_DOCS_HTML = `<!DOCTYPE html>
 <html>
@@ -41,6 +42,7 @@ export interface AdminDeps {
   /** Settlement records view (offline swaps, destination payments, relay invoices). */
   settlements?: SettlementStore;
   discovery?: Pick<DiscoveryService, "status" | "refresh">;
+  logger?: Logger;
 }
 
 const VALID_ALLOCATION_MODES = new Set(["self", "random", "admin"]);

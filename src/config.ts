@@ -47,6 +47,7 @@ export interface AppConfig {
   bootstrapDomain?: string;
   registrationRateLimitPerMin: number;
   trustProxy: number | boolean;
+  traceRequests: boolean;
   maxSessions: number;
   maxSessionsPerIp: number;
   maxConcurrentOfflineQuotes: number;
@@ -104,6 +105,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
   const port = integer(env, "PORT", 3000, { min: 1, max: 65_535 });
   const dbPath = env.DB_PATH || undefined;
   const allowInsecureTokenStorage = env.ALLOW_INSECURE_TOKEN_STORAGE === "1";
+  const traceRequests = env.TRACE_REQUESTS === "1";
   const offlineReceive = buildOfflineReceive(env);
 
   let tokenEncryptionKey: Buffer | undefined;
@@ -141,6 +143,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
     bootstrapDomain: env.BOOTSTRAP_DOMAIN || undefined,
     registrationRateLimitPerMin: integer(env, "REGISTRATION_RATE_LIMIT", 10, { min: 1 }),
     trustProxy: parseTrustProxy(env.TRUST_PROXY),
+    traceRequests,
     maxSessions: integer(env, "MAX_SESSIONS", 5_000, { min: 1 }),
     maxSessionsPerIp: integer(env, "MAX_SESSIONS_PER_IP", 50, { min: 1 }),
     maxConcurrentOfflineQuotes: integer(env, "MAX_CONCURRENT_OFFLINE_QUOTES", 20, { min: 1 }),

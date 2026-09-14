@@ -323,6 +323,7 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `BOOTSTRAP_DOMAIN` | — | Domain name to create on first startup if no domains exist |
 | `REGISTRATION_RATE_LIMIT` | `10` | Max address registration requests per minute per IP |
 | `TRUST_PROXY` | `1` | Express `trust proxy` value — number of hops or `false` |
+| `TRACE_REQUESTS` | — | Set to `1` to log one structured line per request — method, path, `Host`, status, duration, request id, and the `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Real-Ip` headers — on both the public and admin servers, plus the resolved startup config. Unmatched 404s are logged too, so no line at all means the request never reached the process. Off by default. |
 | `MAX_SESSIONS` | `5000` | Global concurrent SSE session cap |
 | `MAX_SESSIONS_PER_IP` | `50` | Concurrent SSE session cap per resolved client IP |
 | `MAX_CONCURRENT_OFFLINE_QUOTES` | `20` | Global in-flight offline RFQ cap |
