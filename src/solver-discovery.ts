@@ -3,7 +3,6 @@ import {
   DEFAULT_MAX_AGE_SECONDS,
   discover,
   marketCorridor,
-  selectMarkets,
   sideLimits,
   validateCard,
   type DiscoveredMarket,
@@ -11,6 +10,7 @@ import {
   type Network,
   type SourceReport,
 } from "@arkade-os/solver-discovery";
+import { solverLightningRendezvous } from "@arkade-os/swap";
 import type { SolverCardsRepo } from "./db/repositories/solver-cards.js";
 import type { SolverRegistryCacheRepo } from "./db/repositories/solver-registry-cache.js";
 
@@ -123,19 +123,31 @@ export class DiscoveryService {
     this.nextRefreshAt = null;
   }
 
-  selectLightningReceive(amountSat: number): SolverCandidate[] {
+  /**
+   * The candidates that can fund a lightning receive of `amountSat`.
+   *
+   * Matching is delegated to the SDK's rendezvous rule rather than a leg-id
+   * query, because the registry publishes corridor cards in the legacy v0
+   * shape (`base_asset.id: "btc"` + `quote_corridor: "lightning"`), whose
+   * `marketLegKey` renders as `arkade:btc`/`lightning:btc` — so a query naming
+   * only the canonical CAIP-19 ids matches none of them, and the rail went
+   * dark for every solver that publishes that way. The SDK rule accepts both
+   * forms and additionally rejects a market whose base leg is not BTC, which a
+   * corridor check alone cannot tell.
+   *
+   * All candidates are filtered, not just the best, so the caller keeps its
+   * failover list. `emulatorPubkey` is required: the covenant commits to the
+   * emulator's key, so a quote from a deployment we have no key for could only
+   * fund a lockup nothing can claim.
+   */
+  selectLightningReceive(amountSat: number, emulatorPubkey: Uint8Array): SolverCandidate[] {
     if (!Number.isSafeInteger(amountSat) || amountSat <= 0) return [];
-    const slip = this.options.network === "bitcoin" ? 0 : 1;
-    const markets = selectMarkets(this.snapshot?.candidates.map((candidate) => candidate.market) ?? [], {
-      baseId: `arkade:${this.options.network}/slip44:${slip}`,
-      quoteId: `bolt11:${this.options.network}/slip44:${slip}`,
-      wantSide: "base",
-    });
-    const allowed = new Set(markets.filter((market) => {
-      const limits = sideLimits(market, "quote");
-      return limits !== null && BigInt(amountSat) >= limits.min && BigInt(amountSat) <= limits.max;
-    }));
-    return (this.snapshot?.candidates ?? []).filter((candidate) => allowed.has(candidate.market));
+    return (this.snapshot?.candidates ?? []).filter((candidate) =>
+      // The payout side has to be receive-capable, which the rendezvous rule
+      // does not ask — it only sizes the payer's side.
+      sideLimits(candidate.market, "base") !== null &&
+      solverLightningRendezvous([candidate.market], amountSat, emulatorPubkey) !== undefined,
+    );
   }
 
   status(): DiscoveryStatus {
