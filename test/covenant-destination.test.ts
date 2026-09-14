@@ -136,4 +136,20 @@ describe("createCovenantDestinationProvider", () => {
     expect(() => provider(-512)).toThrow(/positive multiple of 512/);
     expect(() => provider(86_528)).not.toThrow();
   });
+
+  it("accepts an emulator URL in place of covclaimd", () => {
+    expect(() =>
+      createCovenantDestinationProvider({
+        arkServerUrl: "https://ark.example",
+        emulatorUrl: "https://emulator.example",
+        recoveryDelaySeconds: 86_528,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      createCovenantDestinationProvider({
+        arkServerUrl: "https://ark.example",
+        recoveryDelaySeconds: 86_528,
+      } as never),
+    ).toThrow(/covclaimdUrl or emulatorUrl/);
+  });
 });

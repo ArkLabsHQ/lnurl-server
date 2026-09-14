@@ -68,7 +68,7 @@ describe("loadConfig", () => {
     }).offlineReceive.stampClaimPacket).toBe(true);
     expect(loadConfig({ ...base, OFFLINE_STAMP_CLAIM_PACKET: "1" }).offlineReceive.stampClaimPacket).toBe(false);
 
-    expect(() => loadConfig({ ...base, SOLVER_CARDS_FILE: "/cards.json" })).toThrow(/COVCLAIMD_URL.*ARK_SERVER_URL/);
+    expect(() => loadConfig({ ...base, SOLVER_CARDS_FILE: "/cards.json" })).toThrow(/ARK_SERVER_URL/);
   });
 
   it("allows persisted admin cards to be the only discovery source", () => {
@@ -80,6 +80,41 @@ describe("loadConfig", () => {
       ARK_SERVER_URL: "https://ark.example",
     });
     expect(config.offlineReceive).toMatchObject({ enabled: true, registryUrls: [] });
+  });
+
+  it("allows self-claim without COVCLAIMD_URL, omitting the claim packet", () => {
+    const config = loadConfig({
+      ...base,
+      SOLVER_CARDS_FILE: "/cards.json",
+      ARK_SERVER_URL: "https://ark.example",
+      OFFLINE_SELF_CLAIM: "true",
+      OFFLINE_EMULATOR_URL: "https://emulator.example",
+    });
+    expect(config.offlineReceive).toMatchObject({
+      enabled: true,
+      selfClaim: true,
+      emulatorUrl: "https://emulator.example",
+      arkServerUrl: "https://ark.example",
+    });
+    expect(config.offlineReceive).not.toHaveProperty("covclaimdUrl");
+
+    // ...but stamping still names a covclaimd, so it still needs one.
+    expect(() => loadConfig({
+      ...base,
+      SOLVER_CARDS_FILE: "/cards.json",
+      ARK_SERVER_URL: "https://ark.example",
+      OFFLINE_SELF_CLAIM: "true",
+      OFFLINE_EMULATOR_URL: "https://emulator.example",
+      OFFLINE_STAMP_CLAIM_PACKET: "true",
+    })).toThrow(/COVCLAIMD_URL/);
+
+    // ...and the operator URL is never optional: nothing derives without it.
+    expect(() => loadConfig({
+      ...base,
+      SOLVER_CARDS_FILE: "/cards.json",
+      OFFLINE_SELF_CLAIM: "true",
+      OFFLINE_EMULATOR_URL: "https://emulator.example",
+    })).toThrow(/ARK_SERVER_URL/);
   });
 
   it.each(["SOLVER_URL", "SOLVER_PUBKEY", "NOSTR_RELAYS", "SOLVER_REGISTRY_URL"])(
@@ -151,12 +186,23 @@ describe("loadConfig", () => {
         .offlineReceive.covenantDestinations,
     ).toBe(false);
 
-    // A payer must never be handed an address nothing can sweep, so both the
-    // emulator and the keys the covenant commits to are required up front.
+    // A payer must never be handed an address nothing can sweep, so the
+    // emulator and the operator key are required up front. Covclaimd is not:
+    // the arkade rail never touches it.
     expect(() => loadConfig({ ...withUrls, OFFLINE_COVENANT_DESTINATIONS: "true" })).toThrow(/OFFLINE_EMULATOR_URL/);
     expect(() =>
       loadConfig({ ...base, OFFLINE_COVENANT_DESTINATIONS: "true", OFFLINE_EMULATOR_URL: "https://emulator.example" }),
-    ).toThrow(/COVCLAIMD_URL and ARK_SERVER_URL/);
+    ).toThrow(/ARK_SERVER_URL/);
+    const covenantOnly = loadConfig({
+      ...base,
+      DB_PATH: "/data/x.db",
+      ALLOW_INSECURE_TOKEN_STORAGE: "1",
+      ARK_SERVER_URL: "https://ark.example",
+      OFFLINE_COVENANT_DESTINATIONS: "true",
+      OFFLINE_EMULATOR_URL: "https://emulator.example",
+    });
+    expect(covenantOnly.offlineReceive.covenantDestinations).toBe(true);
+    expect(covenantOnly.offlineReceive.enabled).toBe(false);
     expect(() => loadConfig({
       ...withUrls,
       OFFLINE_COVENANT_DESTINATIONS: "true",
