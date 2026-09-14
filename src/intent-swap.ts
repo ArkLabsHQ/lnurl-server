@@ -232,7 +232,7 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
       if (payout.hrp !== ctx.hrp) {
         throw new Error(`receiveAddress prefix ${payout.hrp} does not match operator network (${ctx.hrp})`);
       }
-      const candidates = settings.discovery.selectLightningReceive(params.amountSat);
+      const candidates = settings.discovery.selectLightningReceive(params.amountSat, ctx.emulatorPubkey);
       if (!candidates.length) throw new Error(`no solver card supports a ${params.amountSat} sat lightning receive`);
       const failures: string[] = [];
 

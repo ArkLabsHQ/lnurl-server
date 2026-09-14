@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.3.2 - 2026-09-14
+
+### Fixed
+- **Offline receive matched none of the registry's corridor cards** — solver selection queried the market set by exact leg id (`arkade:<network>/slip44:<slip>` / `bolt11:<network>/slip44:<slip>`), but the published registry indexes its corridor cards in the legacy v0 shape (`base_asset.id: "btc"` + `quote_corridor: "lightning"`), whose leg keys render as `arkade:btc`/`lightning:btc`. `selectMarkets` compares leg keys as strings, so the two never met and every offline receive answered `no solver card supports a N sat lightning receive`. Selection now delegates to `solverLightningRendezvous`, which accepts both id forms and also rejects a market whose base leg is not BTC — a check the corridor test alone cannot make. The runner-up candidates are still returned in ranked order, so per-quote solver failover is unchanged; the emulator x-only key is now a required argument, since the covenant commits to it. A regression test pins the registry's live short-id shape.
+
 ## 0.3.1 - 2026-09-14
 
 ### Fixed

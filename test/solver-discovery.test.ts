@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { DiscoveryService } from "../src/solver-discovery.js";
-import { registryIndex, solverCard } from "./fixtures/solver-cards.js";
+import { legacyAssetSolverCard, legacyBtcSolverCard, registryIndex, solverCard } from "./fixtures/solver-cards.js";
 
 const registryUrl = "https://registry.test/bitcoin.json";
+// x-only; the covenant commits to an emulator key, so selection requires one.
+const EMULATOR = new Uint8Array(32).fill(7);
 
 class CardStore {
   rows: Array<{ id: number; label: string; network: string; cardJson: string; enabled: boolean; createdAt: number; updatedAt: number }> = [];
@@ -46,9 +48,45 @@ describe("DiscoveryService", () => {
     });
 
     await service.start();
-    expect(service.selectLightningReceive(10_000).map((candidate) => candidate.name))
+    expect(service.selectLightningReceive(10_000, EMULATOR).map((candidate) => candidate.name))
       .toEqual(["cheap", "backup", "registry"]);
     expect(service.status()).toMatchObject({ ready: true, candidateCount: 3, generation: 1 });
+    service.stop();
+  });
+
+  it("selects a corridor card published in the registry's legacy short-id form", async () => {
+    const service = new DiscoveryService({
+      network: "bitcoin",
+      registryUrls: [registryUrl],
+      cardStore: new CardStore(),
+      cacheStore: new CacheStore(),
+      fetchImpl: async () => response(registryIndex(legacyBtcSolverCard("registry", 30), 1_000)),
+      now: () => 1_000_000,
+      refreshIntervalMs: 0,
+    });
+
+    await service.start();
+    expect(service.selectLightningReceive(10_000, EMULATOR).map((candidate) => candidate.name)).toEqual(["registry"]);
+    // The payer's side caps at 25_000 sats on this card.
+    expect(service.selectLightningReceive(25_001, EMULATOR)).toEqual([]);
+    // Below the payer-side floor.
+    expect(service.selectLightningReceive(999, EMULATOR)).toEqual([]);
+    service.stop();
+  });
+
+  it("refuses an asset receive even though its corridors are the right ones", async () => {
+    const service = new DiscoveryService({
+      network: "bitcoin",
+      registryUrls: [registryUrl],
+      cardStore: new CardStore(),
+      cacheStore: new CacheStore(),
+      fetchImpl: async () => response(registryIndex(legacyAssetSolverCard("registry", 30), 1_000)),
+      now: () => 1_000_000,
+      refreshIntervalMs: 0,
+    });
+
+    await service.start();
+    expect(service.selectLightningReceive(10_000, EMULATOR)).toEqual([]);
     service.stop();
   });
 
@@ -127,7 +165,7 @@ describe("DiscoveryService", () => {
     body = { invalid: true };
     await service.refresh();
     expect(service.status()).toMatchObject({ ready: true, candidateCount: 1, generation: 1 });
-    expect(service.selectLightningReceive(10_000)[0]?.name).toBe("registry");
+    expect(service.selectLightningReceive(10_000, EMULATOR)[0]?.name).toBe("registry");
     service.stop();
   });
 
