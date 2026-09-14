@@ -166,7 +166,7 @@ async function main(): Promise<void> {
     if (offlineSwapCreator) {
       const { startOfflineSettlementPoller } = await import("./offline-poller.js");
       runtime.addStop(startOfflineSettlementPoller(settlements, offlineSwapCreator, 15_000, offlineSwaps, logger));
-      const via = `cards:${config.offlineReceive.registryUrls[0] ?? config.offlineReceive.cardsFile}`;
+      const via = `cards:${config.offlineReceive.registryUrls?.[0] ?? config.offlineReceive.cardsFile ?? "network-default"}`;
       console.log(`offline receive: enabled (solver=${via})`);
     }
     // The destination rail (paymentOptions: arkade) settles by observation, not by
