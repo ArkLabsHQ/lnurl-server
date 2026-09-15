@@ -21,6 +21,16 @@ describe("classification", () => {
     expect(isValidLnUrl("not-an-lnurl")).toBe(false);
     expect(isValidLnUrl("lnurl1notvalidbech32")).toBe(false);
   });
+
+  // BIP-173 forbids mixed case so that case-mangling in transit cannot slip
+  // past the checksum. Lowercasing before decoding would silently accept a
+  // corrupted string, so the input is decoded exactly as given.
+  it("rejects a mixed-case lnurl", () => {
+    const enc = encodeLnurl("https://x.example/lnurl/abc");
+    const mixed = enc.slice(0, 10).toUpperCase() + enc.slice(10).toLowerCase();
+    expect(isLnUrl(mixed)).toBe(false);
+    expect(isValidLnUrl(mixed)).toBe(false);
+  });
 });
 
 describe("toPayRequestUrl", () => {

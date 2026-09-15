@@ -49,8 +49,11 @@ export interface LnurlClient {
 
 export function createLnurlClient(opts?: LnurlClientOptions): LnurlClient {
   const baseUrl = opts?.baseUrl;
-  // Bound so a destructured global fetch still sends with the right receiver.
-  const fetchImpl: FetchImpl = opts?.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  // Looked up per call, not bound once: a client built at module scope would
+  // otherwise capture whatever `fetch` existed at import time, silently ignoring
+  // a mock, polyfill or service worker installed later. Called off globalThis so
+  // the receiver is right.
+  const fetchImpl: FetchImpl = opts?.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
   const needBase = (method: string): string => {
     if (!baseUrl) throw new LnurlError(`baseUrl is required for ${method}`);
     return baseUrl;
