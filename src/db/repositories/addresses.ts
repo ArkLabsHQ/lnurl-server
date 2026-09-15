@@ -1,6 +1,7 @@
 import type { Db } from "../connection.js";
 import type { EncryptedToken } from "../../crypto.js";
 import type { AddressRow, AddressStatus, CreateAddressParams } from "../types.js";
+import { parseDisabledRails, serializeDisabledRails, type RailId } from "../../rails.js";
 
 interface AddressRecord {
   id: number;
@@ -15,6 +16,7 @@ interface AddressRecord {
   metadata: string | null;
   arkade_address: string | null;
   claim_public_key: string | null;
+  disabled_rails: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -39,6 +41,7 @@ function rowToAddress(r: AddressRecord): AddressRow {
     metadata: r.metadata,
     arkadeAddress: r.arkade_address,
     claimPublicKey: r.claim_public_key,
+    disabledRails: parseDisabledRails(r.disabled_rails),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -105,6 +108,13 @@ export class AddressesRepo {
     this.db
       .prepare("UPDATE addresses SET arkade_address = ?, claim_public_key = ?, updated_at = ? WHERE id = ?")
       .run(arkadeAddress, claimPublicKey, Date.now(), id);
+  }
+
+  /** Replace the per-address rail policy (operator-controlled, per LNURL). */
+  setDisabledRails(id: number, rails: readonly RailId[]): void {
+    this.db
+      .prepare("UPDATE addresses SET disabled_rails = ?, updated_at = ? WHERE id = ?")
+      .run(serializeDisabledRails(rails), Date.now(), id);
   }
 
   list(filter: { domainId?: number; status?: AddressStatus; q?: string } = {}): AddressRow[] {

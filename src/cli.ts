@@ -84,10 +84,13 @@ async function main(): Promise<void> {
       await discovery.start();
       runtime.addStop(() => discovery.stop());
       solverDiscovery = discovery;
+      // Optional capability: no usable card keeps the interactive LNURL relay ready
+      // while readiness still reports the outage and sessionless callbacks fail loudly.
       health.register("solverDiscovery", () => ({
         ok: discovery.status().ready,
         detail: discovery.status().ready ? `${discovery.status().candidateCount} candidate(s)` : discovery.status().reason,
-      }));
+      }), { required: false });
+      if (!discovery.status().ready) logger.warn("offline_receive_unavailable", { reason: discovery.status().reason });
       const covclaimdProbe = off.covclaimdUrl
         ? await fetch(`${off.covclaimdUrl}/v1/preimage/covclaimd-pubkey`)
         : null;
@@ -159,6 +162,8 @@ async function main(): Promise<void> {
       settlements,
       offlineSwapCreator,
       offlineSwaps,
+      ...(solverDiscovery ? { solverDiscovery } : {}),
+      ...(config.offlineReceive.arkServerUrl ? { arkServerUrl: config.offlineReceive.arkServerUrl } : {}),
       ...(covenantDestinations ? { covenantDestinations } : {}),
     };
     // Every background scheduler registers its stop hook before the listeners
