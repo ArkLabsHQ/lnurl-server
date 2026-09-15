@@ -1,0 +1,22 @@
+{
+  "name": "@arkade-os/lnurl-client",
+  "version": "0.3.4",
+  "description": "Full-duplex client for the lnurl-server protocol (payer and receiver)",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "sideEffects": false,
+  "publishConfig": { "access": "public" },
+  "dependencies": {
+    "@noble/hashes": "2.0.1",
+    "@scure/base": "^2.0.0"
+  },
+  "engines": { "node": ">=22.12.0" }
+}
