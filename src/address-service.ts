@@ -4,10 +4,11 @@ import type { AddressRow, DomainRow } from "./db/types.js";
 import { encryptToken, hashSecret } from "./crypto.js";
 import { deriveSessionId } from "./session-id.js";
 import { validateUsername, randomUsername, isValidToken } from "./usernames.js";
+import { normalizeDisabledRails } from "./rails.js";
 
 export type ProvisioningCode =
   | "invalid_token" | "invalid_username" | "forbidden_mode"
-  | "blacklisted" | "taken" | "limit_reached" | "invalid_claim";
+  | "blacklisted" | "taken" | "limit_reached" | "invalid_claim" | "invalid_rails";
 
 export class ProvisioningError extends Error {
   constructor(public code: ProvisioningCode, message: string) {
@@ -87,6 +88,17 @@ export class AddressService {
     if (!a || a.sessionId !== deriveSessionId(token)) return false;
     this.repos.addresses.updateStatus(a.id, "revoked");
     return true;
+  }
+
+  /** Replace the per-address rail policy (operator-controlled, per LNURL). */
+  setRailPolicy(id: number, rails: unknown): void {
+    let normalized;
+    try {
+      normalized = normalizeDisabledRails(rails);
+    } catch (err) {
+      throw new ProvisioningError("invalid_rails", err instanceof Error ? err.message : "invalid rail policy");
+    }
+    this.repos.addresses.setDisabledRails(id, normalized);
   }
 
   /** Set the Arkade receive identity for offline receive on an owned address. */

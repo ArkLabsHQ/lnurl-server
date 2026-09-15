@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- **Pluggable receive rails with per-address policy** — every backend (interactive lightning, solver-mediated offline swap `bolt11->arkade-btc`, direct arkade destination, per-payment covenant destinations) is one entry in the rail registry (`src/rails.ts`), so future transports (including `onchain` BTC -> arkade BTC offline receive) slot in with no plumbing changes. `GET /admin/api/rails` lists what the process wired, each LN address carries its own disabled set (`PATCH /admin/api/addresses/{id}/rails`, or the Rails controls in the admin UI), and the payRequest advertises only the surviving rails.
+
 ### Fixed
-- **An omitted solver-registry override left offline receive unavailable** — discovery now follows `@arkade-os/solver-discovery`'s published per-network registry when `SOLVER_REGISTRY_URLS` is absent. A non-empty variable still overrides the default, while an explicitly empty variable disables registry discovery. If no usable Lightning-receive card is available, the interactive LNURL relay remains ready while readiness and the admin discovery view report the unavailable optional capability.
+- **An omitted solver-registry override left offline receive unavailable** — discovery now follows `@arkade-os/solver-discovery`'s published per-network registry when `SOLVER_REGISTRY_URLS` is absent. A non-empty variable still overrides the default, while an explicitly empty variable disables registry discovery. If no usable Lightning-receive card is available, the interactive LNURL relay remains ready while readiness and the admin discovery view report the unavailable optional capability; sessionless offline callbacks fail loudly per request instead of stalling.
 
 ## 0.3.4 - 2026-09-14
 

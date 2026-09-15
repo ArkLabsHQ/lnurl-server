@@ -18,6 +18,10 @@ The published registry for `ARKADE_NETWORK` is used when `SOLVER_REGISTRY_URLS` 
 
 Paste a card in the admin UI's Solvers tab. The response distinguishes `persisted` from `active`; a valid card can remain inactive when it targets another network or the refreshed snapshot cannot use it. Registry responses are cached for at most seven days. When no current registry or manual card can serve Lightning receive, sessionless offline callbacks return an error while the live-session relay remains available.
 
+## Receive rails
+
+`GET /admin/api/rails` shows what the process wired (interactive lightning, offline swap, arkade destination, covenant destinations). Each LN address adds its own policy: the admin UI Addresses tab (Rails) or `PATCH /admin/api/addresses/{id}/rails` with `{ "disabledRails": [...] }` disables rails for one address. The payRequest advertises only the surviving rails; a disabled or unavailable rail answers its callbacks with an explicit LNURL error instead of stalling.
+
 ## Backup and restore
 
 Quiesce writes before copying SQLite. The safest sequence is:

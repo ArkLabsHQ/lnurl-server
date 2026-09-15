@@ -91,6 +91,9 @@ export class DiscoveryService {
   async start(): Promise<void> {
     this.fileCards = await this.loadFileCards();
     await this.refresh();
+    // Solver discovery is optional: starting without candidates keeps the
+    // interactive LNURL relay ready; sessionless offline callbacks fail loudly
+    // per request instead. See src/rails.ts.
     if (this.refreshIntervalMs > 0) {
       this.nextRefreshAt = this.now() + this.refreshIntervalMs;
       this.timer = setInterval(() => {

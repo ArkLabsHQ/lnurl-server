@@ -1,4 +1,5 @@
 import type { EncryptedToken } from "../crypto.js";
+import type { RailId } from "../rails.js";
 
 export type AllocationMode = "self" | "random" | "admin";
 export type AddressStatus = "reserved" | "active" | "revoked";
@@ -45,6 +46,8 @@ export interface AddressRow {
   arkadeAddress: string | null;
   /** Compressed claim public key (hex) for offline reverse swaps; null if unset. */
   claimPublicKey: string | null;
+  /** Rail ids the operator disabled for this address (per-LNURL policy). */
+  disabledRails: RailId[];
   createdAt: number;
   updatedAt: number;
 }

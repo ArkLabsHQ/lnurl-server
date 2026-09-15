@@ -1,8 +1,8 @@
 import { Fragment, useEffect, useState } from "react";
 import { api } from "./api.js";
 
-type Tab = "Dashboard" | "Solvers" | "Sessions" | "Settlements" | "Domains" | "Addresses" | "API Keys" | "Blacklist" | "Settings";
-const TABS: Tab[] = ["Dashboard", "Solvers", "Sessions", "Settlements", "Domains", "Addresses", "API Keys", "Blacklist", "Settings"];
+type Tab = "Dashboard" | "Rails" | "Solvers" | "Sessions" | "Settlements" | "Domains" | "Addresses" | "API Keys" | "Blacklist" | "Settings";
+const TABS: Tab[] = ["Dashboard", "Rails", "Solvers", "Sessions", "Settlements", "Domains", "Addresses", "API Keys", "Blacklist", "Settings"];
 const ALLOCATION_MODES = ["self", "random", "admin"] as const;
 
 interface Domain {
@@ -18,7 +18,9 @@ interface Domain {
   minSendable: number | null;
   maxSendable: number | null;
 }
-interface Address { id: number; username: string; domain: string | null; status: string; online: boolean }
+interface Address { id: number; username: string; domain: string | null; status: string; online: boolean; disabledRails: string[]; rails: AddressRail[] }
+interface AddressRail { id: string; label: string; enabled: boolean; available: boolean; reason?: string }
+interface ServerRail { id: string; label: string; description: string; configured: boolean; ready: boolean; reason?: string }
 interface ApiKey { id: number; label: string | null; status: string; domainId: number | null }
 interface BlacklistEntry { id: number; username: string; domainId: number | null; reason: string | null }
 interface SessionAddress { username: string; domain: string | null; status: string }
@@ -63,6 +65,7 @@ export function App() {
         </a>
       </nav>
       {tab === "Dashboard" && <Dashboard />}
+      {tab === "Rails" && <Rails />}
       {tab === "Solvers" && <Solvers />}
       {tab === "Sessions" && <Sessions />}
       {tab === "Settlements" && <Settlements />}
@@ -187,6 +190,32 @@ function Solvers() {
   );
 }
 
+function Rails() {
+  const [rails, setRails] = useState<ServerRail[]>([]);
+  const [err, setErr] = useState<string>();
+  const reload = () => api.get<{ rails: ServerRail[] }>("/rails").then((r) => { setRails(r.rails); setErr(undefined); }).catch((e: Error) => setErr(e.message));
+  useEffect(() => { reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
+  const stateOf = (rail: ServerRail) => (rail.ready ? "ready" : rail.configured ? "unavailable" : "not configured");
+  return (
+    <div>
+      {err && <p style={{ color: "crimson" }}>{err}</p>}
+      <p style={{ color: "#666", marginTop: 0 }}>
+        Every receive backend in this process. Toggle rails per address in the Addresses tab; paste solver cards in the Solvers tab.{" "}
+        <button onClick={reload}>Refresh</button>
+      </p>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead><tr><Th>Rail</Th><Th>What it does</Th><Th>State</Th><Th>Detail</Th></tr></thead>
+        <tbody>{rails.map((rail) => (
+          <tr key={rail.id}>
+            <Td>{rail.label}</Td><Td>{rail.description}</Td><Td>{stateOf(rail)}</Td><Td>{rail.reason ?? "ok"}</Td>
+          </tr>
+        ))}</tbody>
+      </table>
+      {rails.length === 0 && <p style={{ color: "#999" }}>No rail data yet.</p>}
+    </div>
+  );
+}
 function Sessions() {
   const [items, setItems] = useState<SessionRow[]>([]);
   const [err, setErr] = useState<string>();
@@ -436,6 +465,7 @@ function Addresses() {
   const del = async (id: number) => {
     try { await api.del(`/addresses/${id}`); reload(); } catch (e) { setMutErr(errMsg(e)); }
   };
+  const [railsFor, setRailsFor] = useState<number>();
 
   return (
     <div>
@@ -460,21 +490,52 @@ function Addresses() {
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <thead><tr><Th>Address</Th><Th>Status</Th><Th>Live</Th><Th /></tr></thead>
         <tbody>{items.map((a) => (
-          <tr key={a.id}>
-            <Td>{a.username}@{a.domain}</Td><Td>{a.status}</Td><Td>{a.online ? "online" : "offline"}</Td>
-            <Td>
-              {a.status === "revoked"
-                ? <button onClick={() => setStatusOf(a.id, "active")}>Reactivate</button>
-                : <button onClick={() => setStatusOf(a.id, "revoked")}>Revoke</button>}{" "}
-              <button onClick={() => del(a.id)}>Delete</button>
-            </Td>
-          </tr>
+          <Fragment key={a.id}>
+            <tr>
+              <Td>{a.username}@{a.domain}</Td><Td>{a.status}</Td><Td>{a.online ? "online" : "offline"}</Td>
+              <Td>
+                <button onClick={() => setRailsFor(railsFor === a.id ? undefined : a.id)}>{railsFor === a.id ? "Close" : "Rails"}</button>{" "}
+                {a.status === "revoked"
+                  ? <button onClick={() => setStatusOf(a.id, "active")}>Reactivate</button>
+                  : <button onClick={() => setStatusOf(a.id, "revoked")}>Revoke</button>}{" "}
+                <button onClick={() => del(a.id)}>Delete</button>
+              </Td>
+            </tr>
+            {railsFor === a.id && <AddressRails address={a} onChanged={reload} />}
+          </Fragment>
         ))}</tbody>
       </table>
     </div>
   );
 }
 
+function AddressRails({ address, onChanged }: { address: Address; onChanged: () => void }) {
+  const [err, setErr] = useState<string>();
+  const [saving, setSaving] = useState(false);
+  const toggle = async (railId: string, enabled: boolean) => {
+    const next = enabled ? address.disabledRails.filter((r) => r !== railId) : [...address.disabledRails, railId];
+    setSaving(true);
+    try { await api.patch(`/addresses/${address.id}/rails`, { disabledRails: next }); setErr(undefined); onChanged(); }
+    catch (e) { setErr(errMsg(e)); }
+    finally { setSaving(false); }
+  };
+  return (
+    <tr>
+      <td colSpan={4} style={{ background: "#fafafa", padding: 12 }}>
+        {err && <p style={{ color: "crimson" }}>{err}</p>}
+        <div style={{ display: "grid", gap: 6 }}>
+          {address.rails.map((rail) => (
+            <label key={rail.id} style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+              <input type="checkbox" checked={rail.enabled} disabled={saving} onChange={(e) => toggle(rail.id, e.target.checked)} />
+              <span><strong>{rail.label}</strong> - {rail.available ? "serving" : rail.reason ?? "unavailable"}</span>
+            </label>
+          ))}
+        </div>
+        <p style={{ color: "#666", marginBottom: 0 }}>Unchecking removes the rail from this address payRequest and fails its callbacks loudly. Server-wide state lives in the Rails tab.</p>
+      </td>
+    </tr>
+  );
+}
 function ApiKeys() {
   const { items, reload, err } = useList<ApiKey>("/api-keys");
   const domains = useList<Domain>("/domains");
