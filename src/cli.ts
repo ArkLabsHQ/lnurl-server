@@ -87,7 +87,8 @@ async function main(): Promise<void> {
       health.register("solverDiscovery", () => ({
         ok: discovery.status().ready,
         detail: discovery.status().ready ? `${discovery.status().candidateCount} candidate(s)` : discovery.status().reason,
-      }));
+      }), { required: false });
+      if (!discovery.status().ready) logger.warn("offline_receive_unavailable", { reason: discovery.status().reason });
       const covclaimdProbe = off.covclaimdUrl
         ? await fetch(`${off.covclaimdUrl}/v1/preimage/covclaimd-pubkey`)
         : null;

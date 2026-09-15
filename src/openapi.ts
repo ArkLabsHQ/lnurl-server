@@ -677,7 +677,7 @@ export const openApiSpec = {
           status: { type: "string", enum: ["ready", "unready"] },
           components: {
             type: "object",
-            description: "One entry per registered dependency check (e.g. persistence, solverDiscovery)",
+            description: "One entry per registered critical dependency or optional capability (e.g. persistence, solverDiscovery)",
             additionalProperties: { $ref: "#/components/schemas/HealthComponent" },
           },
           reason: { type: "string", description: "Present once shutdown has begun" },
