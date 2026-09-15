@@ -1,7 +1,7 @@
 // LUD-XX paymentOptions: advertise multiple payment rails on a LUD-06 payRequest
-// and resolve the wallet's selection. Kept as a small registry so future rails
-// (assets, stablecoin<->arkade swaps, ...) slot in as new cases without touching
-// the callback plumbing.
+// and resolve the wallet's selection. The rail registry lives in ./rails.js -
+// this module keeps the historical identity-only rule for unit scope. The rail-aware
+// helpers (advertisedRailOptions etc) live in ./rails.js - prefer those for routes.
 
 /** A payment option advertised in the payRequest (LUD-XX). */
 export interface PaymentOption {

@@ -16,7 +16,8 @@ import type { OfflineSwapStore } from "./offline-swap-store.js";
 import { HealthRegistry } from "./health.js";
 import { createLogger, type Logger } from "./logger.js";
 import { ArkAddress } from "@arkade-os/sdk";
-import { advertisedOptions, resolvePaymentOption } from "./payment-options.js";
+import { resolvePaymentOption } from "./payment-options.js";
+import { advertisedRailOptions, effectiveRails, type AddressRailState, type ServerRailCaps } from "./rails.js";
 import { applyQuote, type QuoteProvider, type PaymentQuote } from "./quote-provider.js";
 import type { CovenantDestinationProvider, DerivedDestination } from "./covenant-destination.js";
 import { staticSettings, type RuntimeSettings } from "./settings.js";
@@ -58,6 +59,10 @@ export interface ServerDeps {
   covenantDestinations?: CovenantDestinationProvider;
   /** When set, enables LUD-XX unit-denominated quotes (advertises `units`, quotes callbacks). */
   quoteProvider?: QuoteProvider;
+  /** Solver discovery snapshot (when wired): the offline-swap rail reads readiness per request instead of blocking startup. */
+  solverDiscovery?: { status(): { ready: boolean; reason?: string } };
+  /** Arkade indexer base URL (settlement observation for the arkade rail). */
+  arkServerUrl?: string;
   health?: HealthRegistry;
   logger?: Logger;
 }
@@ -174,6 +179,20 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
   // When configured, enables LUD-XX unit-denominated quotes.
   const quoteProvider = deps?.quoteProvider;
   const covenantDestinations = deps?.covenantDestinations;
+  // Rail capabilities: one object describing which backends this process wired.
+  // Unknown discovery state (no service injected, e.g. unit scope) assumes ready so a
+  // wired creator keeps its historical behavior; the coordinator still fails loudly
+  // per request when a quote cannot be served.
+  const discoveryStatus = deps?.solverDiscovery?.status();
+  const railCaps: ServerRailCaps = {
+    offlineSwapCreator: Boolean(creator),
+    discoveryReady: discoveryStatus?.ready ?? true,
+    ...(discoveryStatus?.reason ? { discoveryReason: discoveryStatus.reason } : {}),
+    ...(deps?.arkServerUrl ? { arkServerUrl: deps.arkServerUrl } : {}),
+    covenantDestinations: Boolean(covenantDestinations),
+  };
+  const railStatesFor = (address: { arkadeAddress: string | null; claimPublicKey: string | null; disabledRails: readonly unknown[] }): Map<string, AddressRailState> =>
+    new Map(effectiveRails(address, railCaps).map((s) => [s.id, s]));
   // Soft settings are read per-request so DB-backed overrides take effect without a restart.
   // No DB (library/in-memory mode) → fall back to the static config values.
   const settings: RuntimeSettings = deps?.settings ?? staticSettings({
@@ -472,7 +491,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         return;
       }
       const origin = `${req.protocol}://${domain.domain}`;
-      const options = advertisedOptions(address);
+      const options = advertisedRailOptions({ arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, disabledRails: address.disabledRails }, railCaps);
       const units = quoteProvider?.units() ?? [];
       const response: LnurlPayMetadata = {
         tag: "payRequest",
@@ -524,6 +543,12 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         res.json({ status: "ERROR", reason: resolved.reason } satisfies LnurlErrorResponse);
         return;
       }
+      // Per-address rail policy: a disabled rail fails loudly instead of serving.
+      const railStates = railStatesFor(address);
+      if (resolved.kind === "destination" && railStates.get("arkade")?.enabled === false) {
+        res.json({ status: "ERROR", reason: "paymentOption arkade is disabled for this address" } satisfies LnurlErrorResponse);
+        return;
+      }
 
       // LUD-XX paymentQuote: a unit-denominated request is quoted to a msat amount by the
       // injected provider (lightning path only). Absent unit ⇒ amount stays msat.
@@ -569,7 +594,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         // The script identifies the payment outright. On failure fall back to the
         // static address: ambiguous, but being paid beats refusing.
         let derived: DerivedDestination | undefined;
-        if (covenantDestinations && address.arkadeAddress && address.claimPublicKey) {
+        if (covenantDestinations && railStates.get("covenant")?.available && address.arkadeAddress && address.claimPublicKey) {
           try {
             derived = await covenantDestinations.derive({
               arkadeAddress: address.arkadeAddress,
@@ -603,6 +628,17 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       // Arkade identity, so the server quotes a corridor swap paying it (covclaimd claims it).
       // The corridor never touches the session, so a sessionless address is served too.
       if (creator && address.arkadeAddress && address.claimPublicKey && (!address.sessionId || !sessions.isActive(address.sessionId))) {
+        // Sessionless receive is the offline-swap rail: a disabled policy or an
+        // unready discovery fails loudly per request while the process keeps
+        // serving interactive sessions (never a silent stall).
+        if (railStates.get("offline-swap")?.enabled === false) {
+          res.json({ status: "ERROR", reason: "offline receive is disabled for this address" } satisfies LnurlErrorResponse);
+          return;
+        }
+        if (!railCaps.discoveryReady) {
+          res.json({ status: "ERROR", reason: `offline receive unavailable: ${railCaps.discoveryReason ?? "no usable lightning-receive solver cards"}` } satisfies LnurlErrorResponse);
+          return;
+        }
         if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) {
           res.status(429).json({ status: "ERROR", reason: "Too many requests" } satisfies LnurlErrorResponse);
           return;
@@ -637,6 +673,11 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       // The lightning relay needs a live session to request the invoice from.
       if (!address.sessionId) {
         res.json({ status: "ERROR", reason: `${username}@${domain.domain} is currently offline` } satisfies LnurlErrorResponse);
+        return;
+      }
+
+      if (railStates.get("interactive-lightning")?.enabled === false) {
+        res.json({ status: "ERROR", reason: "lightning receive is disabled for this address" } satisfies LnurlErrorResponse);
         return;
       }
 

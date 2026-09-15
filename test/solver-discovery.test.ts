@@ -95,7 +95,7 @@ describe("DiscoveryService", () => {
     service.stop();
   });
 
-  it("fails startup when discovery finds no usable lightning-receive candidates", async () => {
+  it("starts without candidates so the interactive LNURL relay remains available", async () => {
     const service = new DiscoveryService({
       network: "bitcoin",
       registryUrls: [registryUrl],
@@ -111,7 +111,8 @@ describe("DiscoveryService", () => {
       refreshIntervalMs: 0,
     });
 
-    await expect(service.start()).rejects.toThrow(/no usable lightning-receive solver cards/);
+    await expect(service.start()).resolves.toBeUndefined();
+    expect(service.status()).toMatchObject({ ready: false, candidateCount: 0, reason: "no usable lightning-receive solver cards" });
     service.stop();
   });
 
@@ -164,7 +165,8 @@ describe("DiscoveryService", () => {
       now: () => now,
       refreshIntervalMs: 0,
     });
-    await expect(expired.start()).rejects.toThrow(/no usable lightning-receive solver cards/);
+    await expired.start();
+    expect(expired.status()).toMatchObject({ ready: false, candidateCount: 0 });
     expired.stop();
   });
 
@@ -176,7 +178,8 @@ describe("DiscoveryService", () => {
       network: "bitcoin", registryUrls: [registryUrl], cardStore: new CardStore(), cacheStore: cache,
       fetchImpl: async () => response({ invalid: true }), now: () => 1_000_000, refreshIntervalMs: 0,
     });
-    await expect(corrupt.start()).rejects.toThrow(/no usable lightning-receive solver cards/);
+    await corrupt.start();
+    expect(corrupt.status()).toMatchObject({ ready: false, candidateCount: 0 });
     expect(cache.row?.body).toBe(goodBody);
     corrupt.stop();
 

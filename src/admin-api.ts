@@ -12,6 +12,7 @@ import { adminOpenApiSpec } from "./admin-openapi.js";
 import { validateCard } from "@arkade-os/solver-discovery";
 import type { DiscoveryService } from "./solver-discovery.js";
 import type { Logger } from "./logger.js";
+import { describeServerRails, effectiveRails, type ServerRailCaps } from "./rails.js";
 
 const ADMIN_DOCS_HTML = `<!DOCTYPE html>
 <html>
@@ -55,6 +56,21 @@ function isValidAllocationModes(x: unknown): boolean {
 export function createAdminApi(deps: AdminDeps): Router {
   const { repos, addressService, sessions, settings, config } = deps;
   const r = Router();
+
+  // Server rail capabilities: what this process wired (the operator view of "it all").
+  // Per-address states ride on the addresses list; policy edits go to /addresses/:id/rails.
+  const serverCaps = (): ServerRailCaps => {
+    const status = deps.discovery?.status();
+    return {
+      offlineSwapCreator: config.offlineReceive.enabled,
+      discoveryReady: status?.ready ?? false,
+      ...(status?.reason ? { discoveryReason: status.reason } : {}),
+      ...(config.offlineReceive.arkServerUrl ? { arkServerUrl: config.offlineReceive.arkServerUrl } : {}),
+      covenantDestinations: config.offlineReceive.covenantDestinations,
+    };
+  };
+
+  r.get("/rails", (_req, res) => res.json({ rails: describeServerRails(serverCaps()) }));
 
   r.get("/discovery", (_req, res) => {
     if (!deps.discovery) { res.status(503).json({ error: "solver discovery is not configured", code: "discovery_unavailable" }); return; }
@@ -158,6 +174,8 @@ export function createAdminApi(deps: AdminDeps): Router {
       return {
         id: a.id, username: a.username, domain: domain?.domain ?? null, status: a.status,
         sessionId: a.sessionId, online: a.sessionId ? online.has(a.sessionId) : false, createdAt: a.createdAt,
+        disabledRails: a.disabledRails,
+        rails: effectiveRails({ arkadeAddress: a.arkadeAddress, claimPublicKey: a.claimPublicKey, disabledRails: a.disabledRails }, serverCaps()),
       };
     }));
   });
@@ -185,6 +203,22 @@ export function createAdminApi(deps: AdminDeps): Router {
     if (status !== "active" && status !== "revoked") { res.status(400).json({ error: "status must be active or revoked" }); return; }
     repos.addresses.updateStatus(Number(req.params.id), status);
     res.json({ ok: true });
+  });
+  r.patch("/addresses/:id/rails", (req, res) => {
+    const id = Number(req.params.id);
+    if (!repos.addresses.getById(id)) { res.status(404).json({ error: "address not found" }); return; }
+    try {
+      addressService.setRailPolicy(id, (req.body ?? {}).disabledRails);
+    } catch (err) {
+      if (err instanceof ProvisioningError) { res.status(400).json({ error: err.message, code: err.code }); return; }
+      throw err;
+    }
+    const updated = repos.addresses.getById(id)!;
+    res.json({
+      id: updated.id,
+      disabledRails: updated.disabledRails,
+      rails: effectiveRails({ arkadeAddress: updated.arkadeAddress, claimPublicKey: updated.claimPublicKey, disabledRails: updated.disabledRails }, serverCaps()),
+    });
   });
   r.delete("/addresses/:id", (req, res) => { repos.addresses.delete(Number(req.params.id)); res.json({ ok: true }); });
 

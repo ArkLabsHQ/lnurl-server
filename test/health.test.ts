@@ -19,4 +19,17 @@ describe("health endpoints", () => {
     expect((await request(app).get("/readyz")).status).toBe(503);
     expect((await request(app).get("/livez")).status).toBe(200);
   });
+
+  it("reports an optional unavailable capability without rejecting interactive traffic", async () => {
+    const health = new HealthRegistry();
+    health.register("solverDiscovery", () => ({ ok: false, detail: "no usable lightning-receive solver cards" }), { required: false });
+    const app = createServer(config, { health } as never);
+
+    const ready = await request(app).get("/readyz");
+    expect(ready.status).toBe(200);
+    expect(ready.body).toMatchObject({
+      status: "ready",
+      components: { solverDiscovery: { ok: false, detail: "no usable lightning-receive solver cards" } },
+    });
+  });
 });

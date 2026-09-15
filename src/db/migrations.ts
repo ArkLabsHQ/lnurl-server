@@ -175,6 +175,13 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 10,
+    // Per-address rail policy: rail ids the operator disabled for one LN address.
+    up: `
+      ALTER TABLE addresses ADD COLUMN disabled_rails TEXT NOT NULL DEFAULT '[]';
+    `,
+  },
 ];
 
 /** Apply all pending forward-only migrations inside a transaction each. */

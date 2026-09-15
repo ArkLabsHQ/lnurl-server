@@ -10,13 +10,17 @@ Run one instance against one SQLite file. Put the public port behind TLS and put
 4. Set `LNURL_SERVER_IMAGE` to a pinned tag or digest, then run `docker compose --env-file .env.production -f compose.production.yml up -d`.
 5. Route public HTTPS traffic to port 3000. Route authenticated operator traffic to port 3001 over the internal Docker network; do not publish port 3001 directly.
 
-`GET /livez` means the process can answer HTTP. `GET /readyz` means it is accepting traffic and all registered critical checks pass. An offline-receive deployment exits at startup when discovery finds no usable Lightning-receive card; after a healthy start, a fresh cached registry remains serviceable through a transient refresh failure. Remove an instance from service when readiness returns 503, but restart it only when liveness fails or an operator has identified a persistent dependency/configuration fault.
+`GET /livez` means the process can answer HTTP. `GET /readyz` means it is accepting traffic and all registered critical checks pass. Solver discovery is optional: if no usable Lightning-receive card is available, the interactive LNURL relay remains ready while the `solverDiscovery` component and `/admin/api/discovery` report the unavailable capability. After a healthy discovery, a fresh cached registry remains serviceable through a transient refresh failure. Remove an instance from service when readiness returns 503, but restart it only when liveness fails or an operator has identified a persistent dependency/configuration fault.
 
 ## Solver cards
 
 The published registry for `ARKADE_NETWORK` is used when `SOLVER_REGISTRY_URLS` is unset; provide a non-empty list to override it or an empty value to disable registries. Manual cards remain an additional source. `SOLVER_URL`, `SOLVER_PUBKEY`, `NOSTR_RELAYS`, and singular `SOLVER_REGISTRY_URL` are rejected at startup.
 
-Paste a card in the admin UI's Solvers tab. The response distinguishes `persisted` from `active`; a valid card can remain inactive when it targets another network or the refreshed snapshot cannot use it. Registry responses are cached for at most seven days. Readiness fails when no current registry or manual card can serve Lightning receive.
+Paste a card in the admin UI's Solvers tab. The response distinguishes `persisted` from `active`; a valid card can remain inactive when it targets another network or the refreshed snapshot cannot use it. Registry responses are cached for at most seven days. When no current registry or manual card can serve Lightning receive, sessionless offline callbacks return an error while the live-session relay remains available.
+
+## Receive rails
+
+`GET /admin/api/rails` shows what the process wired (interactive lightning, offline swap, arkade destination, covenant destinations). Each LN address adds its own policy: the admin UI Addresses tab (Rails) or `PATCH /admin/api/addresses/{id}/rails` with `{ "disabledRails": [...] }` disables rails for one address. The payRequest advertises only the surviving rails; a disabled or unavailable rail answers its callbacks with an explicit LNURL error instead of stalling.
 
 ## Backup and restore
 
