@@ -4,6 +4,10 @@ import { resolve, requestInvoice, pollVerify } from "./payer.js";
 import { openSession } from "./session.js";
 import type { InvoiceResponder, LnurlSession, OpenSessionOptions, SessionHandlers } from "./session.js";
 import { deriveSessionToken, deriveSessionId } from "./token.js";
+// Exported because a consumer validates user input before it has a client:
+// the wallet's send form and its tests need isValidLnUrl on its own.
+import { isLnAddress, isLnUrl, isValidLnUrl, toPayRequestUrl } from "./encoding.js";
+import type { LnurlSurface } from "./encoding.js";
 import { listAddresses, registerAddress, registerArkadeIdentity, revokeAddress } from "./addresses.js";
 import type {
   AddressListEntry,
@@ -71,6 +75,10 @@ export function createLnurlClient(opts?: LnurlClientOptions): LnurlClient {
 export {
   deriveSessionId,
   deriveSessionToken,
+  isLnAddress,
+  isLnUrl,
+  isValidLnUrl,
+  toPayRequestUrl,
   listAddresses,
   LnurlError,
   LnurlTimeoutError,
@@ -94,6 +102,7 @@ export type {
   InvoiceResponder,
   InvoiceResult,
   LnurlSession,
+  LnurlSurface,
   OpenSessionOptions,
   PayRequest,
   PaymentOption,
