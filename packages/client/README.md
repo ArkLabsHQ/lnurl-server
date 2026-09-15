@@ -71,4 +71,36 @@ Two shapes, both surfaced as `LnurlError`:
 
 ## Transport
 
-The receiver session is POST-SSE over `fetch`: `openSession` POSTs a JSON body to `/lnurl/session` and reads the event stream from `response.body`. It is not `EventSource` - `EventSource` is GET-only and cannot send the JSON body or the `Authorization` header this protocol needs. A runtime whose `fetch` does not give a readable `response.body` is unsupported: `openSession` fails loudly instead of hanging.
+The receiver session is POST-SSE over `fetch`: `openSession` POSTs a JSON body to `/lnurl/session` and reads the event stream from `response.body`.
+
+**It is not `EventSource`, and cannot be.** `EventSource` is GET-only and carries neither a request body nor headers, while this protocol needs both — the session token goes in the POST body, and the invoice and settled calls are Bearer-authed. That is a property of the server's endpoint rather than a choice this package makes. The practical cost is that reconnect and backoff are implemented here instead of inherited from the platform.
+
+The only requirement is therefore a `fetch` whose `Response` exposes a readable `response.body`. `openSession` throws `LnurlTransportError` immediately when it does not, rather than hanging.
+
+### React Native / Expo
+
+React Native's global `fetch` does **not** expose a readable `response.body`, so inject [`expo/fetch`](https://docs.expo.dev/versions/latest/sdk/expo/#fetch), which does. This is the same approach `@arkade-os/ts-sdk` takes for its own SSE streams.
+
+```ts
+import { fetch as expoFetch } from 'expo/fetch'
+import { createLnurlClient } from '@arkade-os/lnurl-client'
+
+const client = createLnurlClient({
+  baseUrl: 'https://lnurl.example.com',
+  fetchImpl: expoFetch,
+})
+```
+
+No cast is needed: `FetchImpl` is a structural signature — `(input: string, init?: RequestInit) => Promise<Response>` — rather than `typeof globalThis.fetch`, so any conforming implementation is assignable. The same seam takes an instrumented fetch, one that adds headers, or a test double:
+
+```ts
+const client = createLnurlClient({
+  baseUrl: 'https://lnurl.example.com',
+  fetchImpl: (url, init) =>
+    fetch(url, { ...init, headers: { ...init?.headers, 'X-App': 'wallet' } }),
+})
+```
+
+Passing nothing resolves `globalThis.fetch` **per call** rather than binding it once, so a client constructed at module scope still picks up a fetch installed later — a mock in a test, a polyfill, or a service worker.
+
+The payer surface (`resolve`, `requestInvoice`, `pollVerify`) is plain request/response and works anywhere `fetch` exists, streaming or not.

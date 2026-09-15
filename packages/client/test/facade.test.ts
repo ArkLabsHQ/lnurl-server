@@ -24,6 +24,22 @@ describe("createLnurlClient", () => {
     expect(typeof deriveSessionToken).toBe("function");
   });
 
+  // React Native has no readable response.body on its global fetch, so Expo
+  // consumers must inject expo/fetch — whose signature is not identical to the
+  // DOM one. If FetchImpl narrows back to `typeof globalThis.fetch`, this stops
+  // compiling and they are forced into an `as unknown as` cast.
+  it("accepts a structurally-different fetch, as expo/fetch requires", async () => {
+    const expoStyleFetch = (input: string | { toString(): string }, init?: RequestInit): Promise<Response> => {
+      void input;
+      void init;
+      return Promise.resolve(
+        new Response(JSON.stringify([]), { status: 200, headers: { "content-type": "application/json" } }),
+      );
+    };
+    const client = createLnurlClient({ baseUrl: "https://x", fetchImpl: expoStyleFetch });
+    await expect(client.listAddresses("tok")).resolves.toEqual([]);
+  });
+
   // A client built at module scope is constructed before a test installs its
   // fetch mock. Binding globalThis.fetch once at construction would capture the
   // real one and ignore the mock, which fails silently and looks like a network

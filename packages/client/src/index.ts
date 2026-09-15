@@ -31,22 +31,111 @@ import type {
   VerifyStatus,
 } from "./types.js";
 
+/**
+ * Options for `createLnurlClient`. Everything is optional: payer-only
+ * callers omit `baseUrl` entirely and inject nothing when the global `fetch`
+ * will do.
+ */
 export interface LnurlClientOptions {
+  /**
+   * Server root, needed ONLY for receiver/management calls (`openSession`,
+   * `registerAddress`, `listAddresses`, `revokeAddress`,
+   * `registerArkadeIdentity`). The payer surface is host-agnostic — an
+   * address resolves against its own domain and a bech32 LNURL against its
+   * decoded URL — so `createLnurlClient()` with no argument is valid for
+   * payer-only use. Those methods throw `LnurlError` when it is missing.
+   */
   baseUrl?: string;
+  /**
+   * `fetch` implementation to call. Defaults to resolving `globalThis.fetch`
+   * per call, not once at construction, so a client built at module scope
+   * still sees a fetch installed later (mock, polyfill, service worker).
+   */
   fetchImpl?: FetchImpl;
 }
 
+/**
+ * The single facade both roles use: host-agnostic payer calls plus
+ * `baseUrl`-bound receiver/management calls sharing one `fetch`.
+ */
 export interface LnurlClient {
+  /**
+   * Fetches the payRequest for a lightning address or bech32 LNURL.
+   *
+   * @param input - A lightning address or bech32 LNURL.
+   * @returns The payRequest with its fetch source attached.
+   */
   resolve(input: string): Promise<PayRequest>;
+  /**
+   * Asks the payRequest callback for an invoice or payment destination.
+   *
+   * @param payRequest - The payRequest from `resolve`.
+   * @param opts - `amountSat` plus optional comment, rail and unit selection.
+   * @returns A BOLT11 invoice or a destination to pay on the selected rail.
+   */
   requestInvoice(payRequest: PayRequest, opts: RequestInvoiceOptions): Promise<InvoiceResult>;
+  /**
+   * Polls a verify URL until the payment settles, the deadline passes, or the
+   * caller aborts.
+   *
+   * @param verifyUrl - The verify URL from the invoice result.
+   * @param opts - Optional interval, timeout, per-poll callback and abort signal.
+   * @returns The settled verify status.
+   */
   pollVerify(verifyUrl: string, opts?: PollVerifyOptions): Promise<VerifyStatus>;
+  /**
+   * Opens a receiver session as POST-SSE; resolves on `session_created`.
+   * Requires `baseUrl`.
+   *
+   * @param opts - Optional token, abort signal and reconnect policy.
+   * @param handlers - Invoice, settlement, error and reconnect callbacks.
+   * @returns The opened session once `session_created` arrives.
+   */
   openSession(opts: OpenSessionOptions, handlers: SessionHandlers): Promise<LnurlSession>;
+  /**
+   * Registers a LUD-16 lightning address. Requires `baseUrl`.
+   *
+   * @param req - Token, optional username/claimCode/domain, and optional API key.
+   * @returns The registered address and how to reach it.
+   */
   registerAddress(req: RegisterAddressRequest): Promise<RegisteredAddress>;
+  /**
+   * Lists the LUD-16 addresses owned by a token. Requires `baseUrl`.
+   *
+   * @param token - Token whose addresses to list.
+   * @returns The addresses owned by the token.
+   */
   listAddresses(token: string): Promise<AddressListEntry[]>;
+  /**
+   * Revokes one address owned by a token. Requires `baseUrl`.
+   *
+   * @param token - Token owning the address.
+   * @param username - Username of the address to revoke.
+   * @param opts - Optional domain scoping the revocation.
+   * @returns A promise settling when the server revokes the address.
+   */
   revokeAddress(token: string, username: string, opts?: { domain?: string }): Promise<void>;
+  /**
+   * Binds an Arkade identity to a registered address. Requires `baseUrl`.
+   *
+   * @param req - Token, username, Arkade address, claim key and optional domain.
+   * @returns A promise settling when the server records the identity.
+   */
   registerArkadeIdentity(req: RegisterArkadeIdentityRequest): Promise<void>;
 }
 
+/**
+ * Creates the client both roles share.
+ *
+ * `baseUrl` is receiver-side state only: the payer surface resolves against
+ * the address domain or the decoded LNURL, so payer-only callers pass nothing
+ * and only the receiver/management methods demand it. The default `fetch`
+ * resolves `globalThis.fetch` per call, not once at construction, so a client
+ * built at module scope still sees a fetch installed later.
+ *
+ * @param opts - Optional `baseUrl` and `fetchImpl`.
+ * @returns A client sharing one resolved `fetch` across both roles.
+ */
 export function createLnurlClient(opts?: LnurlClientOptions): LnurlClient {
   const baseUrl = opts?.baseUrl;
   // Looked up per call, not bound once: a client built at module scope would
@@ -75,6 +164,7 @@ export function createLnurlClient(opts?: LnurlClientOptions): LnurlClient {
   };
 }
 
+/** Lower-level functions, also reachable through `createLnurlClient`; documented at their definition sites. */
 export {
   deriveSessionId,
   deriveSessionToken,

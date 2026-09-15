@@ -3,6 +3,17 @@ import { LnurlError, LnurlTimeoutError } from "./errors.js";
 import { toPayRequestUrl } from "./encoding.js";
 import type { Bolt11Result, InvoiceResult, PayRequest, PaymentQuote, PollVerifyOptions, RequestInvoiceOptions, VerifyStatus } from "./types.js";
 
+/**
+ * Fetches the payRequest for a lightning address or bech32 LNURL.
+ *
+ * The returned payRequest carries its `source` (URL plus `address`/`session`
+ * surface) so `requestInvoice` can key its rail guards off it. Anything whose
+ * `tag` is not `payRequest` is rejected: this client only pays.
+ *
+ * @param input - A lightning address or bech32 LNURL.
+ * @param fetchImpl - The injected `fetch` implementation to call.
+ * @returns The payRequest with its fetch source attached.
+ */
 export async function resolve(input: string, fetchImpl: FetchImpl): Promise<PayRequest> {
   const source = toPayRequestUrl(input);
   const body = await lnurlFetch<PayRequest>(source.url, undefined, fetchImpl);
@@ -10,6 +21,22 @@ export async function resolve(input: string, fetchImpl: FetchImpl): Promise<PayR
   return { ...body, source };
 }
 
+/**
+ * Asks the payRequest callback for an invoice or payment destination.
+ *
+ * `amountSat` is sats and is converted to millisats on the wire; it is
+ * range-checked locally against the payRequest bounds before any network
+ * call. `paymentOption` and `unit` apply only to an address payRequest and
+ * are rejected on a session one, because the session callback reads `amount`
+ * and `comment` only and the server would silently ignore the rail choice.
+ * `verify` on the result is optional: the server omits it when the BOLT11
+ * payment hash will not decode.
+ *
+ * @param payRequest - The payRequest from `resolve`, with its source attached.
+ * @param opts - `amountSat` plus optional comment, rail and unit selection.
+ * @param fetchImpl - The injected `fetch` implementation to call.
+ * @returns A BOLT11 invoice or a destination to pay on the selected rail.
+ */
 export async function requestInvoice(
   payRequest: PayRequest,
   opts: RequestInvoiceOptions,
@@ -82,6 +109,22 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/**
+ * Polls a verify URL until the payment settles, the deadline passes, or the
+ * caller aborts.
+ *
+ * `verify` is optional on a callback response (the server omits it when the
+ * BOLT11 payment hash will not decode), so there is no polling without a URL
+ * and an empty one is rejected. A `{ status: "ERROR" }` body at HTTP 200 is
+ * terminal, not a retry: unknown payment hashes report `Not found` that way.
+ * Every snapshot, settled or not, goes to `onUpdate`; an overrun throws
+ * `LnurlTimeoutError` with the last snapshot attached.
+ *
+ * @param verifyUrl - The verify URL from the invoice result.
+ * @param opts - Optional interval, timeout, per-poll callback and abort signal.
+ * @param fetchImpl - The injected `fetch` implementation to call.
+ * @returns The settled verify status.
+ */
 export async function pollVerify(
   verifyUrl: string,
   opts: PollVerifyOptions | undefined,

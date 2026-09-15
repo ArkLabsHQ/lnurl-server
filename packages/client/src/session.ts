@@ -2,30 +2,92 @@ import { LnurlError, LnurlTransportError } from "./errors.js";
 import { apiFetch, type FetchImpl } from "./http.js";
 import { readSseStream, type SseFrame } from "./sse.js";
 
+/**
+ * Options for opening a receiver session. Without a `token` the session is
+ * ephemeral: its id is random and dies with the socket, so there is nothing
+ * to reconnect to. Pass a token-derived `token` for a resumable session.
+ */
 export interface OpenSessionOptions {
+  /** Reusable token a session id is derived from; enables reconnect. */
   token?: string;
+  /** Abort signal tearing down the stream and any pending reconnect wait. */
   signal?: AbortSignal;
+  /** `false` disables reconnect; otherwise `{ maxAttempts?, baseDelayMs? }` with exponential backoff. */
   reconnect?: false | { maxAttempts?: number; baseDelayMs?: number };
 }
 
+/**
+ * The two answers to a payer's invoice request, each `POST`ing to
+ * `/lnurl/session/:id/invoice` with the session Bearer token: either the
+ * BOLT11 invoice the payer should pay, or a rejection reason.
+ */
 export interface InvoiceResponder {
+  /**
+   * Answers the invoice request with a BOLT11 invoice.
+   *
+   * @param pr - The BOLT11 invoice the payer should pay.
+   * @returns A promise settling when the server accepts the invoice.
+   */
   answerInvoice(pr: string): Promise<void>;
+  /**
+   * Rejects the invoice request with a payer-visible reason.
+   *
+   * @param reason - Why the request is refused.
+   * @returns A promise settling when the server accepts the rejection.
+   */
   rejectInvoice(reason: string): Promise<void>;
 }
 
+/**
+ * Callbacks driving a receiver session. Only `onInvoiceRequest` is required:
+ * without it there is no way to mint the invoice each payer waits for.
+ */
 export interface SessionHandlers {
+  /**
+   * Called per payer invoice request; answer via `respond`.
+   *
+   * @param req - The requested `amountMsat` plus the payer `comment`, when one was sent.
+   * @param respond - Answers or rejects this specific request.
+   * @returns Nothing, or a promise whose rejection routes to `onError`.
+   */
   onInvoiceRequest(req: { amountMsat: number; comment?: string }, respond: InvoiceResponder): void | Promise<void>;
+  /** Called with the parsed body of each `invoice_settled` frame. */
   onSettled?(data: Record<string, unknown>): void;
+  /** Called with transport, parse and request failures; never throws back. */
   onError?(err: Error): void;
+  /** Called with the 1-based count before each reconnect attempt. */
   onReconnect?(attempt: number): void;
 }
 
+/**
+ * A live receiver session: the LNURL to display plus settlement reporting.
+ * Invoice creation stays caller-side: the client never holds keys or funds,
+ * it only ferries the payer's request to the caller's invoice provider.
+ */
 export interface LnurlSession {
+  /** Server-assigned session id, also the ownership key for LUD-16 addresses. */
   readonly sessionId: string;
+  /** The LNURL to encode (QR, bech32) for payers. */
   readonly lnurl: string;
+  /** Token owning this session; sent as the Bearer credential. */
   readonly token: string;
+  /** Whether `close()` has been called. */
   readonly closed: boolean;
+  /**
+   * Reports local settlement of an invoice for this session.
+   *
+   * Only valid while the session is connected: the server authenticates it
+   * against its live in-memory session map, so a dropped session must
+   * reconnect first or this is a 401.
+   *
+   * @param preimage - The payment preimage proving settlement.
+   * @returns A promise settling when the server records it.
+   */
   reportSettled(preimage: string): Promise<void>;
+  /**
+   * Closes the session: stops reconnects and cancels the stream reader so an
+   * idle stream does not hang.
+   */
   close(): void;
 }
 
@@ -43,6 +105,23 @@ function postJson(url: string, token: string, body: unknown, fetchImpl: FetchImp
   }, fetchImpl).then(() => undefined);
 }
 
+/**
+ * Opens a receiver session as POST-SSE over `fetch`, not `EventSource`.
+ *
+ * `EventSource` is GET-only and carries neither a JSON body nor an auth
+ * header, while the endpoint requires a `POST` with an optional `{ token }`
+ * body. The promise resolves on the first `session_created` frame carrying
+ * `{ sessionId, lnurl, token }`, not on the HTTP 200. Reconnect only happens
+ * when a `token` was supplied, because an ephemeral session id is random and
+ * dies with the socket; a 409 (id held by a different token) never retries.
+ * A null response body fails loudly instead of hanging.
+ *
+ * @param baseUrl - Server root, e.g. `https://lnurl.example.com`.
+ * @param opts - Optional token, abort signal and reconnect policy.
+ * @param handlers - Invoice, settlement, error and reconnect callbacks.
+ * @param fetchImpl - The injected `fetch` implementation to call.
+ * @returns The opened session once `session_created` arrives.
+ */
 export async function openSession(
   baseUrl: string,
   opts: OpenSessionOptions,
