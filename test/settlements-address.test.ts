@@ -191,4 +191,51 @@ describe("settlements.address_id", () => {
     expect(store.listPendingDestinations().map((d) => d.paymentHash)).not.toContain("dest");
     db.close();
   });
+  // Watching a destination past the verify TTL is pointless if settling it is
+  // still gated on that TTL: the watcher would find the payment and then fail
+  // to record it, which reads as "no payment" from every angle.
+  it("can still settle a destination the watcher finds late", () => {
+    const db = seedLegacy();
+    runMigrations(db);
+    let clock = 1_000;
+    const store = new DbSettlementStore(db, 86_400_000, () => clock, 604_800_000);
+    store.create({
+      paymentHash: "late",
+      pr: "",
+      sessionId: "s",
+      amountMsat: 1_000,
+      addressId: 7,
+      paymentOption: "arkade",
+      paymentDestination: "ark1qsomewhere",
+    });
+
+    clock += 86_400_001;
+    expect(store.listPendingDestinations().map((d) => d.paymentHash)).toContain("late");
+    expect(store.markObserved("late", "txid-late")).toBe(true);
+    db.close();
+  });
+  // Verify is how a payer checks. Saying "unknown" about a destination the
+  // watcher would still settle sends them away believing it failed.
+  it("keeps a destination verifiable for as long as it is watched", () => {
+    const db = seedLegacy();
+    runMigrations(db);
+    let clock = 1_000;
+    const store = new DbSettlementStore(db, 86_400_000, () => clock, 604_800_000);
+    store.create({
+      paymentHash: "dst",
+      pr: "",
+      sessionId: "s",
+      amountMsat: 1_000,
+      addressId: 7,
+      paymentOption: "arkade",
+      paymentDestination: "ark1qsomewhere",
+    });
+    store.create({ paymentHash: "ln", pr: "lnbc1", sessionId: "s", amountMsat: 1_000, addressId: 7 });
+
+    clock += 86_400_001;
+    // The invoice really is dead; the destination is not.
+    expect(store.get("ln")).toBeUndefined();
+    expect(store.get("dst")?.paymentDestination).toBe("ark1qsomewhere");
+    db.close();
+  });
 });

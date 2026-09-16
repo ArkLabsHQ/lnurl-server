@@ -133,8 +133,10 @@ export class MemorySettlementStore implements SettlementStore {
   get(paymentHash: string): SettlementRecord | undefined {
     const r = this.map.get(paymentHash);
     if (!r) return undefined;
-    if (this.now() - r.createdAt >= this.ttlMs) {
-      // Same rule as the DB store: an address's history outlives verify.
+    const lifetime = r.paymentOption && r.paymentOption !== "lightning" ? this.destinationWatchMs : this.ttlMs;
+    if (this.now() - r.createdAt >= lifetime) {
+      // Same rules as the DB store: a destination outlives the verify TTL, and
+      // an address's history outlives both.
       if (r.addressId === null || r.addressId === undefined) this.map.delete(paymentHash);
       return undefined;
     }
@@ -290,7 +292,13 @@ export class DbSettlementStore implements SettlementStore {
       | SettlementRow
       | undefined;
     if (!row) return undefined;
-    if (this.now() - row.created_at >= this.ttlMs) {
+    // A record stays readable for as long as the server will still honour it.
+    // A bolt11 invoice is dead at the verify TTL; a destination is live until
+    // the watch window closes, and telling a payer "unknown" about a payment
+    // the watcher would still settle is the wrong answer.
+    const lifetime =
+      row.payment_option && row.payment_option !== "lightning" ? this.destinationWatchMs : this.ttlMs;
+    if (this.now() - row.created_at >= lifetime) {
       // Expiry hides a record from verify, but only an unattributed one is
       // reclaimed. A row carrying an address_id is that owner's history and the
       // only copy of it — and a wallet offline past the TTL is precisely the
@@ -358,7 +366,11 @@ export class DbSettlementStore implements SettlementStore {
       .prepare(
         "UPDATE settlements SET settled = 1, payment_reference = ?, settled_at = ? WHERE payment_hash = ? AND settled = 0 AND created_at > ?",
       )
-      .run(reference, this.now(), paymentHash, this.now() - this.ttlMs);
+      // Both callers are destination watchers, so this tracks the watch window
+      // rather than the verify TTL. Gating it on the shorter one meant the
+      // watcher could find a late payment and then fail to record it, which
+      // reads as "no payment" from every angle a caller can see.
+      .run(reference, this.now(), paymentHash, this.now() - this.destinationWatchMs);
     return info.changes > 0;
   }
 
