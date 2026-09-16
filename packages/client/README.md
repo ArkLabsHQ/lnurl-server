@@ -55,6 +55,27 @@ await session.reportSettled("<preimage-hex>");
 session.close();
 ```
 
+### Deriving the token without handing over your key
+
+A library should not need your private key, so there are two ways to derive the token and **they produce the same value** — a wallet can move between them without losing its addresses:
+
+```ts
+import { deriveSessionToken, deriveSessionTokenWithSigner } from '@arkade-os/lnurl-client'
+
+// Preferred: the key never leaves the wallet.
+const token = await deriveSessionTokenWithSigner(
+  (msg, type) => identity.signMessage(msg, type),   // @arkade-os/ts-sdk Identity
+  'example.com',
+)
+
+// Equivalent, for callers that already hold raw key material:
+const same = deriveSessionToken('<private-key-hex>', 'example.com')
+```
+
+They agree because the token is `sha256` of a **deterministic ECDSA signature** over `sha256("lnurl-session:<domain>")` — a pure function of key and message — and `deriveSessionToken` simply performs that signature itself.
+
+**It must be ECDSA, and the function passes the type for you.** BIP-340 schnorr is randomised unless given an explicit aux, which `Identity.signMessage` does not expose — and schnorr is its *default*. A schnorr signature is also 64 bytes, exactly like compact ECDSA, so nothing about the returned bytes reveals the mistake; it would simply mint a new token on every call and silently orphan the address. `deriveSessionTokenWithSigner` therefore signs twice and throws if the results differ, rather than trusting the wiring.
+
 **The token is per-domain, and that is a security property, not bookkeeping.** It is a bearer credential: the server receives it and stores it (encrypted, but a server it is stored on can read it). Were it derived from the private key alone, the same credential would authenticate its holder at *every* lnurl-server the user has ever used — so one malicious or breached server could call `registerArkadeIdentity` on a different server and repoint the victim's receive address, which the covenant would then faithfully pay. Binding the domain into the derivation makes a token minted for `example.com` useless at `other.com`.
 
 Two consequences worth planning for:
