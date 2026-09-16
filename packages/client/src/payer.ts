@@ -46,8 +46,16 @@ export async function requestInvoice(
     throw new LnurlError("paymentOption and unit are only supported on address payRequests, not on a session payRequest");
   }
   const amountMsat = opts.amountSat * 1000;
-  if (!Number.isFinite(amountMsat) || amountMsat < payRequest.minSendable || amountMsat > payRequest.maxSendable) {
-    throw new LnurlError(`Amount must be between ${payRequest.minSendable} and ${payRequest.maxSendable} millisats`);
+  // The top-level pair describes the rail a payer gets by sending no option, so
+  // a selected option that publishes its own bounds overrides it — checking
+  // against the top-level pair would reject amounts that option accepts.
+  const selected = opts.paymentOption
+    ? payRequest.paymentOptions?.find((option) => option.id === opts.paymentOption)
+    : undefined;
+  const min = selected?.minSendable ?? payRequest.minSendable;
+  const max = selected?.maxSendable ?? payRequest.maxSendable;
+  if (!Number.isFinite(amountMsat) || amountMsat < min || amountMsat > max) {
+    throw new LnurlError(`Amount must be between ${min} and ${max} millisats`);
   }
   // Checked locally for the same reason the amount is: the server would reject
   // it anyway, but a round trip later and with a less specific message. LUD-12

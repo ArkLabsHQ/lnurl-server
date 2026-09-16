@@ -31,6 +31,28 @@ describe("requestInvoice", () => {
     await expect(requestInvoice(addressPr, { amountSat: 999999999 }, fetchImpl as never)).rejects.toBeInstanceOf(LnurlError);
   });
 
+  it("range-checks a selected option against its own bounds, not the top-level pair", async () => {
+    const narrowed: PayRequest = {
+      ...addressPr,
+      paymentOptions: [
+        { id: "lightning", type: "lightning" },
+        { id: "arkade", type: "arkade", minSendable: 10_000, maxSendable: 5_000_000 },
+      ],
+    };
+    const reject = async () => { throw new Error("must not be called"); };
+    // Inside the top-level pair but outside the arkade rail's, so caught locally.
+    await expect(requestInvoice(narrowed, { amountSat: 50_000, paymentOption: "arkade" }, reject as never)).rejects.toThrow(
+      "Amount must be between 10000 and 5000000 millisats",
+    );
+    await expect(requestInvoice(narrowed, { amountSat: 5, paymentOption: "arkade" }, reject as never)).rejects.toBeInstanceOf(LnurlError);
+
+    // The same amount on the unnarrowed lightning option still reaches the wire.
+    const fetchImpl = async () => jsonResponse({ pr: "lnbc1...", routes: [] });
+    await expect(
+      requestInvoice(narrowed, { amountSat: 50_000, paymentOption: "lightning" }, fetchImpl as never),
+    ).resolves.toMatchObject({ kind: "bolt11" });
+  });
+
   it("returns a destination result for a non-pr option", async () => {
     const fetchImpl = async () => jsonResponse({ status: "OK", paymentOption: "arkade", paymentDestination: "ark1xyz", verify: "https://x/v/id" });
     const r = await requestInvoice(addressPr, { amountSat: 1000, paymentOption: "arkade" }, fetchImpl as never);

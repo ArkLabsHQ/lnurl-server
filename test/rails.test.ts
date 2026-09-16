@@ -6,9 +6,14 @@ import {
   effectiveRails,
   isRailId,
   normalizeDisabledRails,
+  optionBounds,
   parseDisabledRails,
+  railBounds,
+  type Bounds,
   type ServerRailCaps,
 } from "../src/rails.js";
+
+const BASE: Bounds = { min: 1_000, max: 100_000_000 };
 
 const FULL: ServerRailCaps = {
   offlineSwapCreator: true,
@@ -124,5 +129,68 @@ describe("advertisedRailOptions", () => {
     expect(
       advertisedRailOptions({ ...IDENTITY, disabledRails: ["interactive-lightning", "offline-swap"] }, FULL),
     ).toEqual([{ id: "arkade", type: "arkade" }]);
+  });
+
+  it("emits no per-option bounds when no rail narrows the base", () => {
+    expect(advertisedRailOptions(IDENTITY, FULL, BASE)).toEqual([
+      { id: "lightning", type: "lightning" },
+      { id: "arkade", type: "arkade" },
+    ]);
+  });
+
+  it("emits only the half a rail actually narrows", () => {
+    const caps: ServerRailCaps = { ...FULL, limits: { arkade: { minSendable: 10_000 } } };
+    expect(advertisedRailOptions(IDENTITY, caps, BASE)).toEqual([
+      { id: "lightning", type: "lightning" },
+      { id: "arkade", type: "arkade", minSendable: 10_000 },
+    ]);
+  });
+});
+
+describe("railBounds", () => {
+  it("narrows to the rail's own limits", () => {
+    const caps: ServerRailCaps = { ...FULL, limits: { "offline-swap": { minSendable: 5_000, maxSendable: 1_000_000 } } };
+    expect(railBounds("offline-swap", caps, BASE)).toEqual({ min: 5_000, max: 1_000_000 });
+  });
+
+  it("never widens past the server envelope", () => {
+    const caps: ServerRailCaps = { ...FULL, limits: { arkade: { minSendable: 1, maxSendable: 999_999_999 } } };
+    expect(railBounds("arkade", caps, BASE)).toEqual(BASE);
+  });
+
+  it("leaves a rail with no configured limits alone", () => {
+    expect(railBounds("covenant", FULL, BASE)).toEqual(BASE);
+  });
+});
+
+describe("optionBounds", () => {
+  // Two rails answer "lightning" and which one serves is decided at callback
+  // time, so the advertised range has to be one both can honour.
+  it("intersects every available rail answering the option", () => {
+    const caps: ServerRailCaps = {
+      ...FULL,
+      limits: {
+        "interactive-lightning": { minSendable: 1_000, maxSendable: 90_000_000 },
+        "offline-swap": { minSendable: 5_000, maxSendable: 1_000_000 },
+      },
+    };
+    expect(optionBounds("lightning", IDENTITY, caps, BASE)).toEqual({ min: 5_000, max: 1_000_000 });
+  });
+
+  it("ignores a rail that cannot serve this address", () => {
+    const caps: ServerRailCaps = {
+      ...FULL,
+      offlineSwapCreator: false,
+      limits: {
+        "interactive-lightning": { maxSendable: 90_000_000 },
+        "offline-swap": { maxSendable: 1_000_000 },
+      },
+    };
+    expect(optionBounds("lightning", IDENTITY, caps, BASE)).toEqual({ min: BASE.min, max: 90_000_000 });
+  });
+
+  it("returns undefined when no available rail answers the option", () => {
+    const noIdentity = { arkadeAddress: null, claimPublicKey: null, disabledRails: [] };
+    expect(optionBounds("arkade", noIdentity, FULL, BASE)).toBeUndefined();
   });
 });

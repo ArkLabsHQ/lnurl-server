@@ -19,7 +19,15 @@ import { HealthRegistry } from "./health.js";
 import { createLogger, type Logger } from "./logger.js";
 import { ArkAddress } from "@arkade-os/sdk";
 import { resolvePaymentOption } from "./payment-options.js";
-import { advertisedRailOptions, effectiveRails, type AddressRailState, type ServerRailCaps } from "./rails.js";
+import {
+  advertisedRailOptions,
+  effectiveRails,
+  optionBounds,
+  railBounds,
+  type AddressRailState,
+  type Bounds,
+  type ServerRailCaps,
+} from "./rails.js";
 import { applyQuote, type QuoteProvider, type PaymentQuote } from "./quote-provider.js";
 import type { CovenantDestinationProvider, DerivedDestination } from "./covenant-destination.js";
 import { staticSettings, type RuntimeSettings } from "./settings.js";
@@ -65,6 +73,9 @@ export interface ServerDeps {
   solverDiscovery?: { status(): { ready: boolean; reason?: string } };
   /** Arkade indexer base URL (settlement observation for the arkade rail). */
   arkServerUrl?: string;
+  /** Per-rail amount bounds, narrowing the server/domain pair for the rails that
+   *  cannot carry it. Absent leaves every rail on the server/domain bounds. */
+  railLimits?: ServerRailCaps["limits"];
   health?: HealthRegistry;
   logger?: Logger;
 }
@@ -193,6 +204,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     ...(discoveryStatus?.reason ? { discoveryReason: discoveryStatus.reason } : {}),
     ...(deps?.arkServerUrl ? { arkServerUrl: deps.arkServerUrl } : {}),
     covenantDestinations: Boolean(covenantDestinations),
+    ...(deps?.railLimits ? { limits: deps.railLimits } : {}),
   };
   const railStatesFor = (address: { arkadeAddress: string | null; claimPublicKey: string | null; disabledRails: readonly unknown[] }): Map<string, AddressRailState> =>
     new Map(effectiveRails(address, railCaps).map((s) => [s.id, s]));
@@ -494,13 +506,23 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         return;
       }
       const origin = `${req.protocol}://${domain.domain}`;
-      const options = advertisedRailOptions({ arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, disabledRails: address.disabledRails }, railCaps);
+      const railAddress = { arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, disabledRails: address.disabledRails };
+      const base: Bounds = {
+        min: domain.minSendable ?? settings.minSendable(),
+        max: domain.maxSendable ?? settings.maxSendable(),
+      };
+      const options = advertisedRailOptions(railAddress, railCaps, base);
+      // A payer sending no paymentOption is served the lightning rail, so the
+      // top-level pair must be what that rail can honour rather than the widest
+      // any rail could — otherwise a LUD-06-only payer is quoted an amount the
+      // rail it will actually be served by refuses.
+      const advertised = optionBounds("lightning", railAddress, railCaps, base) ?? base;
       const units = quoteProvider?.units() ?? [];
       const response: LnurlPayMetadata = {
         tag: "payRequest",
         callback: `${origin}/.well-known/lnurlp/${username}/callback`,
-        minSendable: domain.minSendable ?? settings.minSendable(),
-        maxSendable: domain.maxSendable ?? settings.maxSendable(),
+        minSendable: advertised.min,
+        maxSendable: advertised.max,
         metadata: buildMetadata(`${username}@${domain.domain}`),
         commentAllowed: 140,
         ...(options.length ? { paymentOptions: options } : {}),
@@ -529,8 +551,14 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         return;
       }
       let amountMsat = Number(amountStr);
-      const min = domain.minSendable ?? settings.minSendable();
-      const max = domain.maxSendable ?? settings.maxSendable();
+      // The envelope only. Each branch below narrows it to what its own rail can
+      // carry, because the rail that serves decides the real bound.
+      const base: Bounds = {
+        min: domain.minSendable ?? settings.minSendable(),
+        max: domain.maxSendable ?? settings.maxSendable(),
+      };
+      const { min, max } = base;
+      const railAddress = { arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, disabledRails: address.disabledRails };
       const paymentOptionId = strParam(req.query.paymentOption);
       // Non-positive amounts are refused before the quote/provider path.
       if (amountMsat <= 0) {
@@ -578,8 +606,9 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           res.status(429).json({ status: "ERROR", reason: "Too many requests" } satisfies LnurlErrorResponse);
           return;
         }
-        if (amountMsat < min || amountMsat > max) {
-          res.json({ status: "ERROR", reason: `Amount must be between ${min} and ${max} millisats` } satisfies LnurlErrorResponse);
+        const arkadeBounds = optionBounds("arkade", railAddress, railCaps, base) ?? base;
+        if (amountMsat < arkadeBounds.min || amountMsat > arkadeBounds.max) {
+          res.json({ status: "ERROR", reason: `Amount must be between ${arkadeBounds.min} and ${arkadeBounds.max} millisats` } satisfies LnurlErrorResponse);
           return;
         }
         // LUD-XX (lnurl/luds#303): a non-pr option MUST honor the requested amount
@@ -647,8 +676,9 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           res.status(429).json({ status: "ERROR", reason: "Too many requests" } satisfies LnurlErrorResponse);
           return;
         }
-        if (amountMsat < min || amountMsat > max) {
-          res.json({ status: "ERROR", reason: `Amount must be between ${min} and ${max} millisats` } satisfies LnurlErrorResponse);
+        const swapBounds = railBounds("offline-swap", railCaps, base);
+        if (amountMsat < swapBounds.min || amountMsat > swapBounds.max) {
+          res.json({ status: "ERROR", reason: `Amount must be between ${swapBounds.min} and ${swapBounds.max} millisats` } satisfies LnurlErrorResponse);
           return;
         }
         // The corridor deals in whole sats; reject before reserving capacity.
@@ -685,9 +715,10 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         return;
       }
 
+      const interactiveBounds = railBounds("interactive-lightning", railCaps, base);
       await requestInvoiceAndRespond({
         sessions, sessionId: address.sessionId, addressId: address.id, amountMsat, comment,
-        min, max, timeoutMs: settings.invoiceTimeoutMs(),
+        min: interactiveBounds.min, max: interactiveBounds.max, timeoutMs: settings.invoiceTimeoutMs(),
         offlineReason: `${username}@${domain.domain} is currently offline`,
         store, baseUrl: settings.baseUrl(), paymentQuote, echoLightningOption: Boolean(paymentOptionId), res,
       });
