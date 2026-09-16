@@ -98,6 +98,16 @@ describe("address payments route", () => {
     expect(wrongScheme.status).toBe(401);
   });
 
+  // `${ALICE}zz` is the one that matters: Buffer.from(hex) truncates at the
+  // first invalid pair, so without the guard it derived alice's own session id.
+  it("a malformed Bearer token gets 401 rather than authenticating", async () => {
+    await register("alice", ALICE);
+    for (const bearer of ["not-hex", "zzzz", "ab".repeat(8), `${ALICE}zz`]) {
+      const res = await req("GET", `${ctx.baseUrl}/lnurl/address/alice/payments`, { host: "domain.com", bearer });
+      expect(res.status).toBe(401);
+    }
+  });
+
   it("unknown domain gets 404", async () => {
     await register("alice", ALICE);
     const res = await req("GET", `${ctx.baseUrl}/lnurl/address/alice/payments?domain=unknown.test`, { bearer: ALICE });

@@ -11,6 +11,7 @@ import { ProvisioningError } from "./address-service.js";
 import { RateLimiter } from "./rate-limit.js";
 import { paymentHashFromBolt11 } from "./bolt11.js";
 import { deriveSessionId } from "./session-id.js";
+import { isValidToken } from "./usernames.js";
 import { MemorySettlementStore, type SettlementStore } from "./settlement-store.js";
 import type { OfflineSwapCreator } from "./intent-swap.js";
 import type { OfflineSwapStore } from "./offline-swap-store.js";
@@ -769,7 +770,9 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         if (!domain || !domain.enabled) { res.status(404).json({ error: "Unknown or disabled domain" }); return; }
         const auth = req.headers.authorization;
         const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
-        if (!token) { res.status(401).json({ error: "Unauthorized" }); return; }
+        // isValidToken, not just a presence check: Buffer.from(hex) truncates at
+        // the first invalid pair, so `<token>zz` would derive the owner's id.
+        if (!isValidToken(token)) { res.status(401).json({ error: "Unauthorized" }); return; }
         const address = deps.repos.addresses.getByDomainAndUsername(domain.id, req.params.username.toLowerCase());
         if (!address || address.sessionId !== deriveSessionId(token) || address.status !== "active") {
           res.status(404).json({ error: "Address not found or not owned by this token" });
