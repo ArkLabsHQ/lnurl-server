@@ -10,6 +10,7 @@ import type { AddressService } from "./address-service.js";
 import { ProvisioningError } from "./address-service.js";
 import { RateLimiter } from "./rate-limit.js";
 import { paymentHashFromBolt11 } from "./bolt11.js";
+import { deriveSessionId } from "./session-id.js";
 import { MemorySettlementStore, type SettlementStore } from "./settlement-store.js";
 import type { OfflineSwapCreator } from "./intent-swap.js";
 import type { OfflineSwapStore } from "./offline-swap-store.js";
@@ -92,7 +93,7 @@ async function createOfflineSwapAndRespond(args: {
   try {
     // Caller guarantees whole satoshis (rejected at the route otherwise).
     const swap = await creator.create({ amountSat: amountMsat / 1000, receiveAddress, claimPublicKey });
-    const accepted = { paymentHash: swap.preimageHash, pr: swap.invoice, sessionId: `offline:${addressId}`, preimage: swap.preimage, amountMsat };
+    const accepted = { paymentHash: swap.preimageHash, pr: swap.invoice, sessionId: `offline:${addressId}`, preimage: swap.preimage, amountMsat, addressId };
     // With DB_PATH, OfflineSwapStore is the single atomic persistence boundary:
     // it writes both settlement and restart recovery rows in one transaction.
     if (offlineSwaps) offlineSwaps.createAccepted({ ...accepted, recovery: swap.recovery });
@@ -120,6 +121,7 @@ function buildMetadata(identifier?: string): string {
 async function requestInvoiceAndRespond(args: {
   sessions: SessionManager;
   sessionId: string;
+  addressId?: number;
   amountMsat: number;
   comment: string | undefined;
   min: number;
@@ -133,7 +135,7 @@ async function requestInvoiceAndRespond(args: {
   echoLightningOption?: boolean;
   res: express.Response;
 }): Promise<void> {
-  const { sessions, sessionId, amountMsat, comment, min, max, timeoutMs, offlineReason, store, baseUrl, paymentQuote, echoLightningOption, res } = args;
+  const { sessions, sessionId, addressId, amountMsat, comment, min, max, timeoutMs, offlineReason, store, baseUrl, paymentQuote, echoLightningOption, res } = args;
   if (amountMsat < min || amountMsat > max) {
     res.json({ status: "ERROR", reason: `Amount must be between ${min} and ${max} millisats` } satisfies LnurlErrorResponse);
     return;
@@ -149,7 +151,7 @@ async function requestInvoiceAndRespond(args: {
     const paymentHash = paymentHashFromBolt11(pr);
     const echo = echoLightningOption ? { paymentOption: "lightning" } : {};
     if (paymentHash) {
-      store.create({ paymentHash, pr, sessionId, amountMsat });
+      store.create({ paymentHash, pr, sessionId, amountMsat, addressId });
       res.json({ pr, routes: [], verify: `${baseUrl}/lnurl/verify/${paymentHash}`, ...(paymentQuote ? { paymentQuote } : {}), ...echo } satisfies LnurlPayCallbackResponse);
     } else {
       res.json({ pr, routes: [], ...(paymentQuote ? { paymentQuote } : {}), ...echo } satisfies LnurlPayCallbackResponse);
@@ -608,6 +610,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           paymentHash: verifyId,
           pr: "",
           sessionId: address.sessionId ?? `addr:${address.id}`,
+          addressId: address.id,
           paymentOption: resolved.paymentOption,
           paymentDestination: derived?.address ?? resolved.paymentDestination,
           amountMsat,
@@ -682,7 +685,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       }
 
       await requestInvoiceAndRespond({
-        sessions, sessionId: address.sessionId, amountMsat, comment,
+        sessions, sessionId: address.sessionId, addressId: address.id, amountMsat, comment,
         min, max, timeoutMs: settings.invoiceTimeoutMs(),
         offlineReason: `${username}@${domain.domain} is currently offline`,
         store, baseUrl: settings.baseUrl(), paymentQuote, echoLightningOption: Boolean(paymentOptionId), res,
@@ -756,6 +759,33 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         const ok = addressService.setOfflineReceive(domain, req.params.username, token, { arkadeAddress, claimPublicKey });
         if (!ok) { res.status(404).json({ error: "Address not found or not owned by this token" }); return; }
         res.json({ ok: true });
+      });
+
+      // GET /lnurl/address/:username/payments: owner payment activity as a sync
+      // source, oldest first with an inclusive nextSince cursor.
+      app.get("/lnurl/address/:username/payments", (req, res) => {
+        const domainName = domainFromHost(strParam(req.query.domain) ?? req.get("host") ?? undefined);
+        const domain = domainName ? deps.repos.domains.getByDomain(domainName) : undefined;
+        if (!domain || !domain.enabled) { res.status(404).json({ error: "Unknown or disabled domain" }); return; }
+        const auth = req.headers.authorization;
+        const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
+        if (!token) { res.status(401).json({ error: "Unauthorized" }); return; }
+        const address = deps.repos.addresses.getByDomainAndUsername(domain.id, req.params.username.toLowerCase());
+        if (!address || address.sessionId !== deriveSessionId(token) || address.status !== "active") {
+          res.status(404).json({ error: "Address not found or not owned by this token" });
+          return;
+        }
+        const sinceNum = Number(strParam(req.query.since));
+        const since = Number.isFinite(sinceNum) ? sinceNum : undefined;
+        const limitNum = Number(strParam(req.query.limit));
+        const limit = Number.isFinite(limitNum) ? Math.min(200, Math.max(1, Math.floor(limitNum))) : 50;
+        const payments = store.listByAddress(address.id, limit, since === undefined ? undefined : { since });
+        const last = payments[payments.length - 1];
+        res.json({
+          source: { domain: domain.domain, lightningAddress: `${address.username}@${domain.domain}` },
+          payments,
+          nextSince: last ? last.createdAt : (since ?? 0),
+        });
       });
     }
   }

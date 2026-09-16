@@ -21,7 +21,7 @@ describe("runMigrations", () => {
     const db = openDb(":memory:");
     runMigrations(db);
     const row = db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number };
-    expect(row.v).toBe(10);
+    expect(row.v).toBe(11);
     db.close();
   });
 
@@ -30,14 +30,14 @@ describe("runMigrations", () => {
     runMigrations(db);
     expect(() => runMigrations(db)).not.toThrow();
     const row = db.prepare("SELECT COUNT(*) AS c FROM schema_migrations").get() as { c: number };
-    expect(row.c).toBe(10);
+    expect(row.c).toBe(11);
     db.close();
   });
 
   it("blocks migration 9 while legacy offline swaps remain unsettled", () => {
     const db = openDb(":memory:");
     runMigrations(db);
-    db.exec("DROP TABLE offline_swaps; ALTER TABLE addresses DROP COLUMN disabled_rails; DELETE FROM schema_migrations WHERE version IN (9, 10);");
+    db.exec("DROP TABLE offline_swaps; ALTER TABLE addresses DROP COLUMN disabled_rails; DROP INDEX IF EXISTS idx_settlements_address; ALTER TABLE settlements DROP COLUMN address_id; DELETE FROM schema_migrations WHERE version >= 9;");
     db.prepare("INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, created_at) VALUES ('aa', 'lnbc1', 'offline:1', 0, 'bb', 'legacy-rfq', ?)").run(Date.now());
     expect(() => runMigrations(db)).toThrow(/upgrade blocked.*1 unsettled legacy offline swap/i);
     db.close();
@@ -46,7 +46,7 @@ describe("runMigrations", () => {
   it("allows migration 9 after legacy offline swaps expire", () => {
     const db = openDb(":memory:");
     runMigrations(db);
-    db.exec("DROP TABLE offline_swaps; ALTER TABLE addresses DROP COLUMN disabled_rails; DELETE FROM schema_migrations WHERE version IN (9, 10);");
+    db.exec("DROP TABLE offline_swaps; ALTER TABLE addresses DROP COLUMN disabled_rails; DROP INDEX IF EXISTS idx_settlements_address; ALTER TABLE settlements DROP COLUMN address_id; DELETE FROM schema_migrations WHERE version >= 9;");
     db.prepare("INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, created_at) VALUES ('aa', 'lnbc1', 'offline:1', 0, 'bb', 'legacy-rfq', 8000)").run();
 
     expect(() => runMigrations(db, { legacySwapTtlMs: 1000, now: () => 10_000 })).not.toThrow();

@@ -26,6 +26,7 @@ export interface SettlementRecord {
   /** Set on destination records with a per-payment covenant address; null for the
    *  static-address shape and for lightning. @see covenant-destination.ts */
   covenantScript: string | null;
+  addressId: number | null;
   createdAt: number;
   settledAt: number | null;
 }
@@ -60,6 +61,7 @@ export interface NewSettlement {
   paymentDestination?: string;
   amountMsat?: number;
   covenantScript?: string;
+  addressId?: number;
 }
 
 export interface SettlementStore {
@@ -83,6 +85,7 @@ export interface SettlementStore {
   /** Newest-first audit view for the admin API (no TTL filter — history, not polling).
    *  Filters are pushed into the query so a filtered page isn't silently truncated. */
   listRecent(limit: number, opts?: { settled?: boolean; option?: string }): SettlementRecord[];
+  listByAddress(addressId: number, limit: number, opts?: { since?: number }): SettlementRecord[];
 }
 
 /** In-memory store used in library / no-DB mode. Lazy expiry on read plus an
@@ -108,6 +111,7 @@ export class MemorySettlementStore implements SettlementStore {
       paymentReference: null,
       amountMsat: rec.amountMsat ?? null,
       covenantScript: rec.covenantScript ?? null,
+      addressId: rec.addressId ?? null,
       createdAt: this.now(),
       settledAt: null,
     });
@@ -179,6 +183,13 @@ export class MemorySettlementStore implements SettlementStore {
     return false;
   }
 
+  listByAddress(addressId: number, limit: number, opts?: { since?: number }): SettlementRecord[] {
+    return [...this.map.values()]
+      .filter((r) => r.addressId === addressId && (opts?.since === undefined || r.createdAt >= opts.since))
+      .sort((a, b) => a.createdAt - b.createdAt || (a.paymentHash < b.paymentHash ? -1 : 1))
+      .slice(0, limit);
+  }
+
   listRecent(limit: number, opts?: { settled?: boolean; option?: string }): SettlementRecord[] {
     return [...this.map.values()]
       .filter((r) => (opts?.settled === undefined || r.settled === opts.settled) && (opts?.option === undefined || r.paymentOption === opts.option))
@@ -204,6 +215,7 @@ interface SettlementRow {
   payment_reference: string | null;
   amount_msat: number | null;
   covenant_script: string | null;
+  address_id: number | null;
   created_at: number;
   settled_at: number | null;
 }
@@ -217,7 +229,7 @@ export class DbSettlementStore implements SettlementStore {
   create(rec: NewSettlement): void {
     const info = this.db
       .prepare(
-        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, covenant_script, created_at, settled_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, covenant_script, address_id, created_at, settled_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
       )
       .run(
         rec.paymentHash,
@@ -229,6 +241,7 @@ export class DbSettlementStore implements SettlementStore {
         rec.paymentDestination ?? null,
         rec.amountMsat ?? null,
         rec.covenantScript ?? null,
+        rec.addressId ?? null,
         this.now(),
       );
     // A paymentHash collision on the offline path would leave `verify` polling the
@@ -276,6 +289,7 @@ export class DbSettlementStore implements SettlementStore {
       paymentReference: row.payment_reference ?? null,
       amountMsat: row.amount_msat ?? null,
       covenantScript: row.covenant_script ?? null,
+      addressId: row.address_id ?? null,
       createdAt: row.created_at,
       settledAt: row.settled_at ?? null,
     };
@@ -352,6 +366,35 @@ export class DbSettlementStore implements SettlementStore {
       paymentReference: row.payment_reference ?? null,
       amountMsat: row.amount_msat ?? null,
       covenantScript: row.covenant_script ?? null,
+      addressId: row.address_id ?? null,
+      createdAt: row.created_at,
+      settledAt: row.settled_at ?? null,
+    }));
+  }
+
+  listByAddress(addressId: number, limit: number, opts?: { since?: number }): SettlementRecord[] {
+    const where: string[] = ["address_id = ?"];
+    const params: (string | number)[] = [addressId];
+    if (opts?.since !== undefined) {
+      where.push("created_at >= ?");
+      params.push(opts.since);
+    }
+    const rows = this.db
+      .prepare(`SELECT * FROM settlements WHERE ${where.join(" AND ")} ORDER BY created_at ASC, payment_hash ASC LIMIT ?`)
+      .all(...params, limit) as unknown as SettlementRow[];
+    return rows.map((row) => ({
+      paymentHash: row.payment_hash,
+      pr: row.pr,
+      sessionId: row.session_id,
+      settled: !!row.settled,
+      preimage: row.preimage ?? null,
+      swapId: row.swap_id ?? null,
+      paymentOption: row.payment_option ?? "lightning",
+      paymentDestination: row.payment_destination ?? null,
+      paymentReference: row.payment_reference ?? null,
+      amountMsat: row.amount_msat ?? null,
+      covenantScript: row.covenant_script ?? null,
+      addressId: row.address_id ?? null,
       createdAt: row.created_at,
       settledAt: row.settled_at ?? null,
     }));

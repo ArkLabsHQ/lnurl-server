@@ -7,6 +7,10 @@ export interface AcceptedOfflineSwap {
   sessionId: string;
   preimage: string;
   amountMsat: number;
+  /** Address earning this receive. Offline swaps always have one — the payer
+   *  reached a LUD-16 address — so omitting it here is what would leave the
+   *  one rail the receiver cannot witness unattributable. */
+  addressId?: number;
   recovery: OfflineSwapRecoveryV1;
 }
 
@@ -66,8 +70,8 @@ export class OfflineSwapStore {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.prepare(
-        "INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, amount_msat, created_at) VALUES (?, ?, ?, 0, ?, ?, 'lightning', ?, ?)",
-      ).run(record.paymentHash, record.pr, record.sessionId, record.preimage, record.recovery.rfqId, record.amountMsat, createdAt);
+        "INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, amount_msat, address_id, created_at) VALUES (?, ?, ?, 0, ?, ?, 'lightning', ?, ?, ?)",
+      ).run(record.paymentHash, record.pr, record.sessionId, record.preimage, record.recovery.rfqId, record.amountMsat, record.addressId ?? null, createdAt);
       this.db.prepare(
         "INSERT INTO offline_swaps (payment_hash, rfq_id, solver_name, solver_pubkey, relays_json, recovery_version, recovery_json, lockup_address, expected_amount, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       ).run(
