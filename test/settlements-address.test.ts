@@ -130,4 +130,40 @@ describe("settlements.address_id", () => {
     store.create({ paymentHash: "eph", pr: "lnbc9", sessionId: "live-session-id", amountMsat: 500 });
     expect(store.get("eph")!.addressId).toBeNull();
   });
+  // The sync source exists to recover receives the wallet was offline for, and
+  // a wallet offline past the TTL is exactly the case. A verify poll must not
+  // be able to delete that history out from under it.
+  it("keeps an address's history when a verify poll finds it expired", () => {
+    // address_id 7 has to exist: the column is a real FK.
+    const db = seedLegacy();
+    runMigrations(db);
+    let clock = 1_000;
+    const store = new DbSettlementStore(db, 86_400_000, () => clock);
+    store.create({ paymentHash: "owned", pr: "lnbc1", sessionId: "s", amountMsat: 1_000, addressId: 7 });
+
+    clock += 86_400_001;
+    // Verify itself still expires: the payment is old news to a payer.
+    expect(store.get("owned")).toBeUndefined();
+
+    // seedLegacy backfills three more rows onto address 7; the point is that
+    // the expired one is still among them.
+    expect(store.listByAddress(7, 10).map((r) => r.paymentHash)).toContain("owned");
+    db.close();
+  });
+
+  // Nothing owns a session-only record, so the TTL still reclaims it.
+  it("still drops an unattributed record once it expires", () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    let clock = 1_000;
+    const store = new DbSettlementStore(db, 86_400_000, () => clock);
+    store.create({ paymentHash: "eph", pr: "lnbc9", sessionId: "live", amountMsat: 500 });
+
+    clock += 86_400_001;
+    expect(store.get("eph")).toBeUndefined();
+
+    const rows = db.prepare("SELECT payment_hash FROM settlements WHERE payment_hash = ?").all("eph");
+    expect(rows).toHaveLength(0);
+    db.close();
+  });
 });

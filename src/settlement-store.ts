@@ -130,7 +130,8 @@ export class MemorySettlementStore implements SettlementStore {
     const r = this.map.get(paymentHash);
     if (!r) return undefined;
     if (this.now() - r.createdAt >= this.ttlMs) {
-      this.map.delete(paymentHash);
+      // Same rule as the DB store: an address's history outlives verify.
+      if (r.addressId === null || r.addressId === undefined) this.map.delete(paymentHash);
       return undefined;
     }
     return r;
@@ -199,7 +200,9 @@ export class MemorySettlementStore implements SettlementStore {
 
   private sweep(): void {
     const t = this.now();
-    for (const [k, r] of this.map) if (t - r.createdAt >= this.ttlMs) this.map.delete(k);
+    for (const [k, r] of this.map) {
+      if (t - r.createdAt >= this.ttlMs && (r.addressId === null || r.addressId === undefined)) this.map.delete(k);
+    }
   }
 }
 
@@ -274,7 +277,14 @@ export class DbSettlementStore implements SettlementStore {
       | undefined;
     if (!row) return undefined;
     if (this.now() - row.created_at >= this.ttlMs) {
-      this.db.prepare("DELETE FROM settlements WHERE payment_hash = ?").run(paymentHash);
+      // Expiry hides a record from verify, but only an unattributed one is
+      // reclaimed. A row carrying an address_id is that owner's history and the
+      // only copy of it — and a wallet offline past the TTL is precisely the
+      // case the sync source exists for, so deleting here let any payer's
+      // verify poll erase a receive its owner had not seen yet.
+      if (row.address_id === null || row.address_id === undefined) {
+        this.db.prepare("DELETE FROM settlements WHERE payment_hash = ?").run(paymentHash);
+      }
       return undefined;
     }
     return {
