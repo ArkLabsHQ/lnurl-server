@@ -203,3 +203,87 @@ describe("listPayments contract against a DB-backed server", () => {
     }
   });
 });
+
+// The per-rail bounds crossed the server/client boundary wrongly three times
+// before this existed: unit tests on each side agreed with each other and with
+// the bug. This drives the real client against the real server.
+describe("per-rail bounds contract", () => {
+  const KEY = randomBytes(32);
+  const TOKEN = "cd".repeat(32);
+  const ARK = "ark1qexampledestination";
+  const CLAIMPK = "02" + "ab".repeat(32);
+  let db: Db;
+  let repos: Repositories;
+  let ctx: { baseUrl: string; close: () => Promise<void> };
+
+  beforeEach(async () => {
+    db = openDb(":memory:");
+    runMigrations(db);
+    repos = createRepositories(db);
+    // Registered under the loopback host so the client's own Host header
+    // resolves it, which lets resolve() run for real instead of being faked.
+    const domain = repos.domains.create({ domain: "127.0.0.1", allocationModes: ["self"] });
+    const addressService = new AddressService(repos, KEY);
+    const server = http.createServer();
+    ctx = await new Promise<typeof ctx>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        const { port } = server.address() as { port: number };
+        const baseUrl = `http://127.0.0.1:${port}`;
+        server.on(
+          "request",
+          createServer(
+            { ...CONFIG, baseUrl },
+            {
+              repos,
+              addressService,
+              registrationLimiter: new RateLimiter(100, 60_000),
+              settlements: new DbSettlementStore(db, 86_400_000),
+              // Lightning is pinned well above the envelope floor; arkade is not.
+              railLimits: { "interactive-lightning": { minSendable: 50_000_000 } },
+            },
+          ),
+        );
+        resolve({ baseUrl, close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }) });
+      });
+    });
+    const reg = repos.addresses.create({ domainId: domain.id, username: "alice", status: "active", sessionId: deriveSessionId(TOKEN) });
+    // Set directly: registerArkadeIdentity decodes the address with the SDK and
+    // this test is about amounts, not address encoding.
+    repos.addresses.setOfflineReceive(reg.id, ARK, CLAIMPK);
+  });
+
+  afterEach(async () => {
+    await ctx.close();
+    db.close();
+  });
+
+  it("lets the client pay an amount the arkade rail allows but lightning does not", async () => {
+    const payer = createLnurlClient();
+    // An LNURL wrapping a /.well-known/lnurlp/ URL carries the address surface,
+    // which is what paymentOptions live on.
+    const lnurl = bech32.encode(
+      "lnurl",
+      bech32.toWords(new TextEncoder().encode(`${ctx.baseUrl}/.well-known/lnurlp/alice`)),
+      1023,
+    );
+    const payRequest = await payer.resolve(lnurl);
+    expect(payRequest.source.surface).toBe("address");
+
+    // Top level is the lightning rail's, and arkade publishes the wider floor.
+    expect(payRequest.minSendable).toBe(50_000_000);
+    expect(payRequest.paymentOptions).toContainEqual({ id: "arkade", type: "arkade", minSendable: 1_000 });
+
+    // The server builds the callback origin from the registered domain, which
+    // carries no port, so the advertised URL is port 80. Put the test port back
+    // rather than register a domain the Host header could not match.
+    const reachable = { ...payRequest, callback: payRequest.callback.replace("127.0.0.1", new URL(ctx.baseUrl).host) };
+
+    // 1000 sat = 1_000_000 msat: under the lightning floor, over arkade's.
+    const result = await payer.requestInvoice(reachable, { amountSat: 1_000, paymentOption: "arkade" });
+    expect(result).toMatchObject({ kind: "destination", paymentOption: "arkade", paymentDestination: ARK });
+
+    // The same amount without an option resolves to lightning and is refused
+    // locally, before the wire, by the top-level pair.
+    await expect(payer.requestInvoice(reachable, { amountSat: 1_000 })).rejects.toBeInstanceOf(LnurlError);
+  });
+});
