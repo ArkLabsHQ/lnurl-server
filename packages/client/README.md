@@ -57,6 +57,29 @@ session.close();
 
 `deriveSessionToken` is byte-compatible with the wallet's existing derivation on purpose: the token derives the session id, which is the ownership key for registered lightning addresses, so changing it would orphan addresses users already hold.
 
+`deriveSessionId(token)` computes that session id locally — the same value the server derives — which is useful for asserting a reconnect resumed the session you expected rather than trusting the id echoed back to you.
+
+## Validating input
+
+Exported standalone, because a UI validates what a user pasted or scanned before it has a client or a `baseUrl`:
+
+```ts
+import { isValidLnUrl, isLnAddress, isLnUrl, toPayRequestUrl } from '@arkade-os/lnurl-client'
+
+isValidLnUrl('alice@example.com')   // true  — either form
+isValidLnUrl('LNURL1DP68…')         // true
+isValidLnUrl('not an lnurl')        // false
+
+toPayRequestUrl('alice@example.com')
+// → { url: 'https://example.com/.well-known/lnurlp/alice', surface: 'address' }
+```
+
+`isLnAddress` and `isLnUrl` test one form each; `isValidLnUrl` accepts either. All are shape checks only — they never touch the network, so a well-formed but unregistered address passes here and fails at `resolve`.
+
+`toPayRequestUrl` also reports the **surface**, which decides what the payRequest supports: `paymentOptions`, units and the offline rails exist only on the `address` surface, while a `session` LNURL takes an amount and a comment and nothing else. `requestInvoice` rejects rail options on a session payRequest rather than letting the server ignore them silently.
+
+Mixed-case LNURLs are rejected per BIP-173 — bech32 forbids mixed case so that case-mangling in transit cannot slip past the checksum. All-uppercase, which is what QR codes carry, decodes normally.
+
 ## Lightning addresses
 
 A LUD-16 address (`alice@example.com`) is payable whether or not the wallet is online. Registering one is what unlocks the offline rails — without it a payer can only reach a live session.
