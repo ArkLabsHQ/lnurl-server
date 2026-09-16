@@ -99,7 +99,8 @@ All calls in this section need `baseUrl`.
 import { createLnurlClient, deriveSessionToken } from '@arkade-os/lnurl-client'
 
 const client = createLnurlClient({ baseUrl: 'https://lnurl.example.com' })
-const token = deriveSessionToken('<wallet-private-key-hex>')
+// Per-domain: this token authenticates at example.com and nowhere else.
+const token = deriveSessionToken('<wallet-private-key-hex>', 'example.com')
 
 const address = await client.registerAddress({ token, username: 'alice' })
 // → { lightningAddress: 'alice@example.com', lnurl: 'LNURL1…', username, domain, status }
