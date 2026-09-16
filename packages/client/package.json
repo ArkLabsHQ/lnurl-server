@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./arkade": {
+      "types": "./dist/arkade.d.ts",
+      "import": "./dist/arkade.js"
     }
   },
   "files": [
@@ -22,6 +26,14 @@
     "@noble/curves": "2.0.1",
     "@noble/hashes": "2.0.1",
     "@scure/base": "^2.0.0"
+  },
+  "peerDependencies": {
+    "@arkade-os/sdk": ">=0.4.0"
+  },
+  "peerDependenciesMeta": {
+    "@arkade-os/sdk": {
+      "optional": true
+    }
   },
   "engines": {
     "node": ">=22.12.0"

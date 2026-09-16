@@ -37,6 +37,10 @@ export interface StoredPayment {
   /** The rail a destination payment settled on, e.g. `arkade`. Null on the
    * bolt11 rail, where `kind` already says which rail it was. */
   paymentOption: string | null;
+  /** Per-payment covenant script when the server derived one, else null. The
+   * attribution key for concurrent covenant payments, and what a consumer
+   * verifying the payment on-chain has to match against. */
+  covenantScript: string | null;
 }
 
 /**
@@ -104,6 +108,7 @@ const toStored = (
     paymentReference: entry.kind === "destination" ? entry.paymentReference : null,
     preimage: entry.kind === "bolt11" ? entry.preimage : null,
     paymentOption: entry.kind === "destination" ? entry.paymentOption : null,
+    covenantScript: entry.kind === "destination" ? entry.covenantScript : null,
   };
 };
 

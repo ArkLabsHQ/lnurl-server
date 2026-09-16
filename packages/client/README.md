@@ -149,7 +149,31 @@ await client.registerArkadeIdentity({
 })
 ```
 
-**Call it again to update it.** The server overwrites, so re-registering is how you point an address at a new Arkade address or claim key; there is no separate update call. The Arkade address itself is not validated client-side — that would need `@arkade-os/sdk`, which is deliberately not a dependency — so a malformed one is rejected by the server.
+**Call it again to update it.** The server overwrites, so re-registering is how you point an address at a new Arkade address or claim key; there is no separate update call.
+
+### With the Arkade SDK
+
+The main entry point stays free of `@arkade-os/sdk`, because the payer half of this package has nothing to do with Arkade and a checkout page should not pull the SDK and its Expo peers to ask an address for an invoice. A receiver already has the SDK, so the Arkade-aware helpers live behind a subpath with the SDK as an **optional peer dependency**:
+
+```ts
+import { arkadeIdentityRequest, deriveSessionTokenForIdentity } from '@arkade-os/lnurl-client/arkade'
+
+// The key never leaves the wallet, and ECDSA is chosen for you.
+const token = await deriveSessionTokenForIdentity(identity, 'example.com')
+
+// Validates the Arkade address and derives claimPublicKey from the identity.
+await client.registerArkadeIdentity(
+  await arkadeIdentityRequest({ identity, arkadeAddress, token, username: 'alice' }),
+)
+```
+
+Three things this buys over doing it by hand:
+
+- **`isArkadeAddress` decodes locally.** Without the SDK a malformed address is only caught server-side, a round trip later.
+- **`deriveSessionTokenForIdentity` pins ECDSA.** Schnorr is `Identity.signMessage`'s default and is randomised, which would mint a fresh token on every call and orphan the address — and a schnorr signature is 64 bytes exactly like compact ECDSA, so nothing about the bytes reveals the mistake.
+- **`claimPublicKeyOf` derives the compressed key** in the form the server validates, instead of leaving the caller to extract and hex-encode it.
+
+Not yet covered: verifying on-chain that a settled destination payment actually paid the registered address. `StoredPayment` carries `paymentReference` and `covenantScript` for exactly that check, but performing it needs an indexer and is not implemented here — a consumer still trusts the server's word that a payment happened.
 
 ### Payment activity
 

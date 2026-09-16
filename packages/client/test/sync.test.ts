@@ -173,6 +173,7 @@ describe("syncPayments", () => {
       paymentReference: "txid-9",
       swapId: null,
       paymentOption: "arkade",
+      covenantScript: null,
       preimage: null,
       domain: DOMAIN,
       lightningAddress: addressOf(targetA),
