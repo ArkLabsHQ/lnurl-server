@@ -262,7 +262,14 @@ export function effectiveRails(address: RailAddress, caps: ServerRailCaps): Addr
 }
 
 /** Narrow `base` by one rail's configured bounds. Never widens: a rail cannot
- *  offer more than the server or domain already allows. */
+ *  offer more than the server or domain already allows.
+ *
+ *  A rail configured outside the envelope entirely — a min above the server's
+ *  max — yields `min > max` and so refuses every amount. That is deliberate: a
+ *  rail that cannot serve anything should serve nothing, and clamping into
+ *  range would silently accept amounts the operator meant to exclude. Only the
+ *  advertised pair guards against it, because a malformed payRequest is a
+ *  different failure from a rail that declines. */
 export function railBounds(rail: RailId, caps: ServerRailCaps, base: Bounds): Bounds {
   const limits = caps.limits?.[rail];
   if (!limits) return base;
@@ -285,7 +292,13 @@ export function railBounds(rail: RailId, caps: ServerRailCaps, base: Bounds): Bo
  * better failure than quoting a payer an amount that is refused after they
  * committed to it.
  *
- * Returns `undefined` when no available rail answers the option.
+ * Returns `undefined` when no available rail answers the option, and also when
+ * the candidates do not overlap at all — disjoint rails intersect to `min >
+ * max`, which as a payRequest is malformed rather than merely narrow: no amount
+ * satisfies it, so every payer's range check refuses everything. That is an
+ * operator misconfiguration, and falling back to the server/domain pair keeps
+ * the payRequest well-formed while the per-rail check at the callback still
+ * refuses honestly.
  */
 export function optionBounds(
   optionId: string,
@@ -296,10 +309,11 @@ export function optionBounds(
   const available = effectiveRails(address, caps).filter((state) => state.available);
   const serving = available.filter((state) => RAIL_DEFS[state.id].paymentOption === optionId);
   if (serving.length === 0) return undefined;
-  return serving.reduce<Bounds>((acc, state) => {
+  const intersected = serving.reduce<Bounds>((acc, state) => {
     const bounds = railBounds(state.id, caps, base);
     return { min: Math.max(acc.min, bounds.min), max: Math.min(acc.max, bounds.max) };
   }, base);
+  return intersected.min > intersected.max ? undefined : intersected;
 }
 
 /** Options advertised in the LUD-06 payRequest for an address. When `base` is

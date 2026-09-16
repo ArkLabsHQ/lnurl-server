@@ -5,13 +5,22 @@ import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
 import { MemorySettlementStore } from "../src/settlement-store.js";
+import type { OfflineSwapCreator } from "../src/intent-swap.js";
 import type { LnurlServiceConfig } from "../src/types.js";
+
+/** Present only so the offline-swap rail counts as available; never called. */
+const swapCreator = {
+  create: async () => {
+    throw new Error("not used");
+  },
+  isSettled: async () => false,
+} as unknown as OfflineSwapCreator;
 
 const CONFIG: LnurlServiceConfig = { port: 0, baseUrl: "", minSendable: 1000, maxSendable: 100_000_000, invoiceTimeoutMs: 3000 };
 const ARK = "ark1qexampledestination";
 const CLAIMPK = "02" + "ab".repeat(32);
 
-function start(repos: Repositories, railLimits?: ServerDeps["railLimits"]) {
+function start(repos: Repositories, railLimits?: ServerDeps["railLimits"], offlineSwapCreator?: OfflineSwapCreator) {
   const server = http.createServer();
   return new Promise<{ baseUrl: string; close: () => Promise<void> }>((resolve) => {
     server.listen(0, "127.0.0.1", () => {
@@ -20,7 +29,12 @@ function start(repos: Repositories, railLimits?: ServerDeps["railLimits"]) {
         "request",
         createServer(
           { ...CONFIG, baseUrl: `http://127.0.0.1:${port}` },
-          { repos, settlements: new MemorySettlementStore(86_400_000), ...(railLimits ? { railLimits } : {}) },
+          {
+            repos,
+            settlements: new MemorySettlementStore(86_400_000),
+            ...(railLimits ? { railLimits } : {}),
+            ...(offlineSwapCreator ? { offlineSwapCreator } : {}),
+          },
         ),
       );
       resolve({ baseUrl: `http://127.0.0.1:${port}`, close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }) });
@@ -97,6 +111,36 @@ describe("per-rail sendable bounds", () => {
     addr("alice");
     const meta = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com");
     expect(meta.maxSendable).toBe(9_000_000);
+  });
+
+  // A misconfiguration must not produce minSendable > maxSendable: that is not
+  // a narrow payRequest, it is one no payer can satisfy at all.
+  it("keeps the payRequest well-formed when two lightning rails do not overlap", async () => {
+    // Both rails must be available for their ranges to intersect at all, so the
+    // offline-swap creator has to be wired for this case to exist.
+    ctx = await start(
+      repos,
+      { "interactive-lightning": { minSendable: 50_000_000 }, "offline-swap": { maxSendable: 10_000 } },
+      swapCreator,
+    );
+    addr("alice");
+    const meta = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com");
+    expect(Number(meta.minSendable)).toBeLessThanOrEqual(Number(meta.maxSendable));
+    expect(meta.paymentOptions).toEqual([
+      { id: "lightning", type: "lightning" },
+      { id: "arkade", type: "arkade" },
+    ]);
+  });
+
+  it("intersects both lightning rails when they do overlap", async () => {
+    ctx = await start(
+      repos,
+      { "interactive-lightning": { maxSendable: 90_000_000 }, "offline-swap": { maxSendable: 1_000_000 } },
+      swapCreator,
+    );
+    addr("alice");
+    const meta = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com");
+    expect(meta.maxSendable).toBe(1_000_000);
   });
 
   it("does not let a rail widen past the server envelope", async () => {

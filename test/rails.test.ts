@@ -193,4 +193,17 @@ describe("optionBounds", () => {
     const noIdentity = { arkadeAddress: null, claimPublicKey: null, disabledRails: [] };
     expect(optionBounds("arkade", noIdentity, FULL, BASE)).toBeUndefined();
   });
+
+  // Disjoint rails intersect to min > max, which as a payRequest is malformed:
+  // no amount satisfies it and every payer range check refuses everything.
+  it("returns undefined rather than an impossible range when rails do not overlap", () => {
+    const caps: ServerRailCaps = {
+      ...FULL,
+      limits: {
+        "interactive-lightning": { minSendable: 50_000 },
+        "offline-swap": { maxSendable: 10_000 },
+      },
+    };
+    expect(optionBounds("lightning", IDENTITY, caps, BASE)).toBeUndefined();
+  });
 });
