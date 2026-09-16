@@ -9,6 +9,8 @@ import { deriveSessionToken, deriveSessionTokenWithSigner, deriveSessionId } fro
 import { isLnAddress, isLnUrl, isValidLnUrl, toPayRequestUrl } from "./encoding.js";
 import type { LnurlSurface } from "./encoding.js";
 import { listAddresses, listPayments, registerAddress, registerArkadeIdentity, revokeAddress } from "./addresses.js";
+import { syncPayments } from "./sync.js";
+import type { PaymentSyncStore, PaymentSyncTarget, StoredPayment } from "./sync.js";
 import type {
   AddressListEntry,
   RegisterAddressRequest,
@@ -200,6 +202,7 @@ export {
   requestInvoice,
   resolve,
   revokeAddress,
+  syncPayments,
 };
 export type {
   AddressListEntry,
@@ -225,7 +228,10 @@ export type {
   RegisterAddressRequest,
   RegisterArkadeIdentityRequest,
   RegisteredAddress,
+  PaymentSyncStore,
+  PaymentSyncTarget,
   RequestInvoiceOptions,
+  StoredPayment,
   SessionHandlers,
   Unit,
   VerifyStatus,

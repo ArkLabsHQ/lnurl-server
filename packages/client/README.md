@@ -153,31 +153,37 @@ await client.registerArkadeIdentity({
 
 `listPayments` is a sync source, not just a list: it exists so a wallet that was offline can recover receives it never witnessed, which for the offline rails is every one of them.
 
-```ts
-let since = loadWatermark()   // undefined on first run
+`syncPayments` drives it for you across every address you hold — paging, cursors, retry and per-server isolation — writing through a store you supply:
 
-for (;;) {
-  const page = await client.listPayments(token, 'alice', { since, limit: 50 })
-  for (const entry of page.payments) {
-    if (entry.kind === 'bolt11') {
-      // relay or offline swap; entry.swapId is the RFQ id when it was a swap
-      upsert(entry.paymentHash, entry)
-    } else {
-      // arkade / covenant — entry.paymentReference is the Arkade txid
-      upsert(entry.verifyId, entry)
-    }
-  }
-  since = page.nextSince
-  if (page.payments.length < 50) break
-}
-saveWatermark(since)
+```ts
+import { createLnurlClient, syncPayments } from '@arkade-os/lnurl-client'
+
+const { synced, failures } = await syncPayments(
+  [{ baseUrl: 'https://lnurl.example.com', token, username: 'alice', domain: 'example.com' }],
+  { client: (baseUrl) => createLnurlClient({ baseUrl }), store: myStore },
+)
 ```
 
-Three things that matter for correctness:
+**The package ships no storage implementation.** IndexedDB does not exist in Node or React Native, so you supply the store — the same injection the package uses for `fetchImpl`:
+
+```ts
+interface PaymentSyncStore {
+  upsert(records: StoredPayment[]): Promise<void>  // keyed by record.key; overwrite, never append
+  readWatermark(baseUrl: string, lightningAddress: string): Promise<number | undefined>
+  writeWatermark(baseUrl: string, lightningAddress: string, since: number): Promise<void>
+}
+```
+
+`client` is a factory, not a client, because a client is pinned to one `baseUrl`. Sharing one across targets would send every target's bearer token to whichever server that client was built for.
+
+A target that fails lands in `failures` while the others keep syncing, and its watermark stays put — so a transient outage cannot silently skip the payments that arrived during it.
+
+Three things that matter for correctness. `syncPayments` handles all three; you must handle them yourself if you drive `listPayments` directly:
 
 - **`page.source`** carries `{ domain, lightningAddress }`. Store it with each entry: a wallet holding addresses on several servers needs it to attribute them, and the deduplication key is `(baseUrl, identifier)` — identifiers are unique per server, not globally.
 - **`nextSince` is inclusive**, so the boundary row comes back on the next sync. Upsert rather than insert. An exclusive cursor would silently drop payments sharing a millisecond, which is why it works this way.
 - **Switch on `kind`, never on the presence of a payment hash.** On the arkade rail the server's own record has no payment hash — the identifier is an opaque verify id — which is why `DestinationActivity` calls it `verifyId` and has no `paymentHash` property at all.
+- **A full page need not advance the cursor.** `nextSince` is the last row's `createdAt`, so if a whole page shares one millisecond the next request returns that same page. Stop and report rather than loop; `syncPayments` fails that target with a terminal `LnurlError`.
 
 ## Errors
 
