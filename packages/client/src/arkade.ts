@@ -48,6 +48,12 @@ export function isArkadeAddress(address: string): boolean {
  *
  * Produces the same token as `deriveSessionToken(privateKeyHex, domain)`.
  *
+ * **Signs twice**, inherited from {@link deriveSessionTokenWithSigner}, to
+ * prove the signer is deterministic before a token derived from it is used as
+ * an address's identity. Free for a software key; an `Identity` backed by a
+ * device that prompts will prompt twice, once per call. Derive once per domain
+ * and hold the result for the session rather than calling it per request.
+ *
  * @param identity - Anything with `@arkade-os/sdk`'s `signMessage`.
  * @param domain - The LUD-16 domain this token is for.
  * @returns The session token as hex, valid only at that domain.
