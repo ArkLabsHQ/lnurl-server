@@ -57,6 +57,76 @@ session.close();
 
 `deriveSessionToken` is byte-compatible with the wallet's existing derivation on purpose: the token derives the session id, which is the ownership key for registered lightning addresses, so changing it would orphan addresses users already hold.
 
+## Lightning addresses
+
+A LUD-16 address (`alice@example.com`) is payable whether or not the wallet is online. Registering one is what unlocks the offline rails — without it a payer can only reach a live session.
+
+**The token is the credential for everything here.** The server derives the address's owner from it (`sha256` of the token bytes), so the same token that opens a session also owns the addresses registered with it. Losing it loses the address; leaking it hands someone else control of where payments go. Derive it from wallet key material with `deriveSessionToken` rather than generating a fresh random one you then have to store.
+
+All calls in this section need `baseUrl`.
+
+```ts
+import { createLnurlClient, deriveSessionToken } from '@arkade-os/lnurl-client'
+
+const client = createLnurlClient({ baseUrl: 'https://lnurl.example.com' })
+const token = deriveSessionToken('<wallet-private-key-hex>')
+
+const address = await client.registerAddress({ token, username: 'alice' })
+// → { lightningAddress: 'alice@example.com', lnurl: 'LNURL1…', username, domain, status }
+
+const mine = await client.listAddresses(token)
+// → [{ username, domain, status, createdAt, lightningAddress, lnurl }]
+
+await client.revokeAddress(token, 'alice')
+```
+
+`username` is optional — omit it and the server allocates one, subject to the domain's policy. Some domains require an API key to register; pass it as `apiKey` and it is sent as `X-API-Key`. Both `revokeAddress` and `registerArkadeIdentity` take an optional `domain` when the server hosts several.
+
+### Offline receive
+
+Binding an Arkade identity to an address is what lets payments arrive while the wallet is closed — the server takes a solver-mediated swap or a covenant destination on its behalf, and the funds are constrained to pay only the address you register here.
+
+```ts
+await client.registerArkadeIdentity({
+  token,
+  username: 'alice',
+  arkadeAddress: 'ark1…',
+  claimPublicKey: '02…',   // compressed 33-byte key, validated locally
+})
+```
+
+**Call it again to update it.** The server overwrites, so re-registering is how you point an address at a new Arkade address or claim key; there is no separate update call. The Arkade address itself is not validated client-side — that would need `@arkade-os/sdk`, which is deliberately not a dependency — so a malformed one is rejected by the server.
+
+### Payment activity
+
+`listPayments` is a sync source, not just a list: it exists so a wallet that was offline can recover receives it never witnessed, which for the offline rails is every one of them.
+
+```ts
+let since = loadWatermark()   // undefined on first run
+
+for (;;) {
+  const page = await client.listPayments(token, 'alice', { since, limit: 50 })
+  for (const entry of page.payments) {
+    if (entry.kind === 'bolt11') {
+      // relay or offline swap; entry.swapId is the RFQ id when it was a swap
+      upsert(entry.paymentHash, entry)
+    } else {
+      // arkade / covenant — entry.paymentReference is the Arkade txid
+      upsert(entry.verifyId, entry)
+    }
+  }
+  since = page.nextSince
+  if (page.payments.length < 50) break
+}
+saveWatermark(since)
+```
+
+Three things that matter for correctness:
+
+- **`page.source`** carries `{ domain, lightningAddress }`. Store it with each entry: a wallet holding addresses on several servers needs it to attribute them, and the deduplication key is `(baseUrl, identifier)` — identifiers are unique per server, not globally.
+- **`nextSince` is inclusive**, so the boundary row comes back on the next sync. Upsert rather than insert. An exclusive cursor would silently drop payments sharing a millisecond, which is why it works this way.
+- **Switch on `kind`, never on the presence of a payment hash.** On the arkade rail the server's own record has no payment hash — the identifier is an opaque verify id — which is why `DestinationActivity` calls it `verifyId` and has no `paymentHash` property at all.
+
 ## Errors
 
 Two shapes, both surfaced as `LnurlError`:
