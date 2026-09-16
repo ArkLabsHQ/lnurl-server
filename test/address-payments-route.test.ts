@@ -108,6 +108,29 @@ describe("address payments route", () => {
     }
   });
 
+  // The same truncation vector against the two routes that mutate ownership:
+  // /arkade overwrites the Arkade receive identity, so it is the one where a
+  // token that authenticated by truncation would redirect funds.
+  it("a truncation-extended token cannot revoke or repoint an address", async () => {
+    await register("alice", ALICE);
+    const forged = `${ALICE}zz`;
+
+    const revoked = await req("DELETE", `${ctx.baseUrl}/lnurl/address/alice`, { host: "domain.com", bearer: forged });
+    expect(revoked.status).toBe(401);
+
+    const repointed = await req("POST", `${ctx.baseUrl}/lnurl/address/alice/arkade`, {
+      host: "domain.com",
+      bearer: forged,
+      body: { arkadeAddress: "ark1qattacker", claimPublicKey: `02${"cd".repeat(32)}` },
+    });
+    expect(repointed.status).toBe(401);
+
+    // The owner's own token still works, so the guard rejects the forgery
+    // rather than the route being broken for everyone.
+    const stillOwned = await req("GET", `${ctx.baseUrl}/lnurl/address/alice/payments`, { host: "domain.com", bearer: ALICE });
+    expect(stillOwned.status).toBe(200);
+  });
+
   it("unknown domain gets 404", async () => {
     await register("alice", ALICE);
     const res = await req("GET", `${ctx.baseUrl}/lnurl/address/alice/payments?domain=unknown.test`, { bearer: ALICE });

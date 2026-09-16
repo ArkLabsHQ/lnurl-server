@@ -761,7 +761,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         if (!domain) { res.status(404).json({ error: "Unknown domain" }); return; }
         const auth = req.headers.authorization;
         const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
-        if (!token) { res.status(401).json({ error: "Unauthorized" }); return; }
+        if (!isValidToken(token)) { res.status(401).json({ error: "Unauthorized" }); return; }
         const ok = addressService.revokeOwn(domain, req.params.username, token);
         if (!ok) { res.status(404).json({ error: "Address not found or not owned by this token" }); return; }
         res.json({ ok: true });
@@ -775,7 +775,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         if (!domain) { res.status(404).json({ error: "Unknown domain" }); return; }
         const auth = req.headers.authorization;
         const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
-        if (!token) { res.status(401).json({ error: "Unauthorized" }); return; }
+        if (!isValidToken(token)) { res.status(401).json({ error: "Unauthorized" }); return; }
         const { arkadeAddress, claimPublicKey } = (req.body ?? {}) as { arkadeAddress?: string; claimPublicKey?: string };
         // Compressed 33-byte key (02/03 prefix) — the covenant's receiver role.
         if (!arkadeAddress || typeof arkadeAddress !== "string" || !claimPublicKey || !/^0[23][0-9a-f]{64}$/i.test(claimPublicKey)) {
