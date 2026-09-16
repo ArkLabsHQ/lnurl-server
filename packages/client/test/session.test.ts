@@ -14,6 +14,19 @@ const sseResponse = (frames: string[], onCancel?: () => void) =>
     { status: 200, headers: { "content-type": "text/event-stream" } },
   );
 
+/** Like sseResponse but the stream ends, which is what triggers a reconnect. */
+const endingSseResponse = (frames: string[]) =>
+  new Response(
+    new ReadableStream<Uint8Array>({
+      start(c) {
+        const enc = new TextEncoder();
+        for (const f of frames) c.enqueue(enc.encode(f));
+        c.close();
+      },
+    }),
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  );
+
 const created = (id = "sess1") =>
   `event: session_created\ndata: ${JSON.stringify({ sessionId: id, lnurl: "LNURL1ABC", token: "tok" })}\n\n`;
 
@@ -102,6 +115,39 @@ describe("openSession", () => {
     await vi.waitFor(() => expect(errors).toHaveLength(1));
     expect(errors[0].message).toContain("Session closed by admin");
     s.close();
+  });
+
+  // The budget counts CONSECUTIVE failures. A stream that delivered frames proves
+  // the endpoint is healthy and resets it — otherwise a long-lived session that
+  // reconnected maxAttempts times over days would refuse the next transient drop.
+  it("resets the reconnect budget after a stream that delivered frames", async () => {
+    let opens = 0;
+    const fetchImpl = async (url: string) => {
+      if (String(url).endsWith("/lnurl/session")) {
+        opens++;
+        return endingSseResponse([created()]);
+      }
+      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const s = await openSession(
+      "https://x",
+      { token: "aa".repeat(16), reconnect: { maxAttempts: 2, baseDelayMs: 1 } },
+      { onInvoiceRequest: () => {} },
+      fetchImpl as never,
+    );
+    // With a lifetime budget this would stop at 3 opens (initial + 2 retries).
+    await vi.waitFor(() => expect(opens).toBeGreaterThan(4), { timeout: 3000 });
+    s.close();
+  });
+
+  // A cast cannot catch well-formed JSON with the wrong fields. Without a guard
+  // the first symptom is a POST to /session/undefined/settled — a 404 pointing
+  // nowhere near the cause.
+  it("rejects a session_created frame missing required fields", async () => {
+    const fetchImpl = async () =>
+      sseResponse([`event: session_created\ndata: ${JSON.stringify({ sessionId: "s1" })}\n\n`]);
+    await expect(openSession("https://x", {}, { onInvoiceRequest: () => {} }, fetchImpl as never))
+      .rejects.toThrow(/missing sessionId, lnurl or token/);
   });
 
   it("does not reconnect after an explicit close", async () => {

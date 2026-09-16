@@ -1,5 +1,5 @@
 import { lnurlFetch, type FetchImpl } from "./http.js";
-import { LnurlError, LnurlTimeoutError } from "./errors.js";
+import { LnurlError, LnurlTimeoutError, LnurlTransportError } from "./errors.js";
 import { toPayRequestUrl } from "./encoding.js";
 import type { Bolt11Result, InvoiceResult, PayRequest, PaymentQuote, PollVerifyOptions, RequestInvoiceOptions, VerifyStatus } from "./types.js";
 
@@ -49,6 +49,16 @@ export async function requestInvoice(
   if (!Number.isFinite(amountMsat) || amountMsat < payRequest.minSendable || amountMsat > payRequest.maxSendable) {
     throw new LnurlError(`Amount must be between ${payRequest.minSendable} and ${payRequest.maxSendable} millisats`);
   }
+  // Checked locally for the same reason the amount is: the server would reject
+  // it anyway, but a round trip later and with a less specific message. LUD-12
+  // treats an absent or zero commentAllowed as "comments not supported".
+  if (opts.comment !== undefined && opts.comment.length > 0) {
+    const allowed = payRequest.commentAllowed ?? 0;
+    if (allowed === 0) throw new LnurlError("This payRequest does not accept comments");
+    if (opts.comment.length > allowed) {
+      throw new LnurlError(`Comment must be at most ${allowed} characters`);
+    }
+  }
   const params = new URLSearchParams();
   params.set("amount", String(amountMsat));
   if (opts.comment !== undefined) params.set("comment", opts.comment);
@@ -82,10 +92,15 @@ function parseVerifyStatus(body: Record<string, unknown>): VerifyStatus {
       pr: body.pr,
     };
   }
+  // Without this the cast would hand back `undefined` typed as `string` for any
+  // body that is neither a bolt11 nor a well-formed destination.
+  if (typeof body.paymentOption !== "string") {
+    throw new LnurlTransportError("Verify response is neither a bolt11 nor a destination status");
+  }
   return {
     kind: "destination",
     settled: body.settled === true,
-    paymentOption: body.paymentOption as string,
+    paymentOption: body.paymentOption,
     ...(typeof body.paymentDestination === "string" ? { paymentDestination: body.paymentDestination } : {}),
     ...(typeof body.paymentReference === "string" ? { paymentReference: body.paymentReference } : {}),
   };

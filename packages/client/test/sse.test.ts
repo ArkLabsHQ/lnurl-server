@@ -31,6 +31,13 @@ describe("createSseParser", () => {
     const p = createSseParser();
     expect(p.push("event: error\r\ndata: {}\r\n\r\n")).toEqual([{ event: "error", data: "{}" }]);
   });
+
+  // WHATWG SSE §9.2 allows a bare \r too. This server emits \n, but a proxy that
+  // rewrote line endings would otherwise make every frame vanish silently.
+  it("handles bare CR line endings", () => {
+    const p = createSseParser();
+    expect(p.push("event: error\rdata: {}\r\r")).toEqual([{ event: "error", data: "{}" }]);
+  });
 });
 
 describe("readSseStream", () => {

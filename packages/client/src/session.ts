@@ -135,11 +135,14 @@ export async function openSession(
   const baseDelayMs = (typeof reconnect === "object" ? reconnect.baseDelayMs : undefined) ?? 500;
   const resumable = token !== undefined && reconnect !== false;
   const signal = opts.signal;
+  // Capped so the exponent cannot run away if a caller raises maxAttempts.
+  const backoffMs = (attempt: number): number => Math.min(baseDelayMs * 2 ** (attempt - 1), 30_000);
 
   let closed = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let activeBody: ReadableStream<Uint8Array> | null = null;
   let info: SessionCreated | null = null;
+  let streamDeliveredFrame = false;
 
   let resolveOpened!: (s: LnurlSession) => void;
   let rejectOpened!: (err: unknown) => void;
@@ -205,6 +208,7 @@ export async function openSession(
   };
 
   const onFrame = (frame: SseFrame): void => {
+    streamDeliveredFrame = true;
     if (frame.event === "session_created") {
       if (info) return;
       let created: SessionCreated;
@@ -212,6 +216,14 @@ export async function openSession(
         created = JSON.parse(frame.data) as SessionCreated;
       } catch (err) {
         rejectOpened(new LnurlTransportError("Invalid session_created frame", { cause: err }));
+        return;
+      }
+      // A cast cannot catch a well-formed JSON object with the wrong fields, and
+      // the first symptom would otherwise be a POST to /session/undefined/settled
+      // — a 404 that points nowhere near the cause.
+      const isNonEmptyString = (v: unknown): v is string => typeof v === "string" && v.length > 0;
+      if (!isNonEmptyString(created.sessionId) || !isNonEmptyString(created.lnurl) || !isNonEmptyString(created.token)) {
+        rejectOpened(new LnurlTransportError("session_created frame is missing sessionId, lnurl or token"));
         return;
       }
       info = created;
@@ -274,8 +286,15 @@ export async function openSession(
     });
 
   const run = async (): Promise<void> => {
+    // Budget is consecutive failures, not lifetime ones: a stream that actually
+    // delivered frames proves the endpoint is healthy, so it resets the count.
+    // Without this a long-lived session that reconnected maxAttempts times over
+    // days would refuse to retry the next transient drop. `info` cannot stand in
+    // for "this stream was healthy" — it survives reconnects, so a reconnect that
+    // opened and died immediately would also reset, making retries unbounded.
     let attempts = 0;
     for (;;) {
+      streamDeliveredFrame = false;
       let response: Response;
       try {
         response = await postSession();
@@ -295,7 +314,7 @@ export async function openSession(
         }
         attempts += 1;
         handlers.onReconnect?.(attempts);
-        await sleep(baseDelayMs * 2 ** (attempts - 1));
+        await sleep(backoffMs(attempts));
         continue;
       }
       const body = response.body as ReadableStream<Uint8Array>;
@@ -316,10 +335,11 @@ export async function openSession(
         rejectOpened(new LnurlTransportError("Session stream ended before session_created"));
         return;
       }
+      if (streamDeliveredFrame) attempts = 0;
       if (closed || signal?.aborted || !resumable || attempts >= maxAttempts) return;
       attempts += 1;
       handlers.onReconnect?.(attempts);
-      await sleep(baseDelayMs * 2 ** (attempts - 1));
+      await sleep(backoffMs(attempts));
     }
   };
 

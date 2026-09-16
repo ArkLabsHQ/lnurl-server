@@ -55,4 +55,21 @@ describe("requestInvoice", () => {
     await requestInvoice({ ...addressPr, commentAllowed: 140 }, { amountSat: 1000, comment: "hi there" }, fetchImpl as never);
     expect(seen).toContain("comment=hi+there");
   });
+
+  // Checked locally for the same reason the amount is: the server rejects it
+  // anyway, but a round trip later and with a vaguer message.
+  it("refuses a comment longer than commentAllowed before hitting the network", async () => {
+    const fetchImpl = async () => { throw new Error("must not be called"); };
+    await expect(
+      requestInvoice({ ...addressPr, commentAllowed: 10 }, { amountSat: 1000, comment: "x".repeat(11) }, fetchImpl as never),
+    ).rejects.toThrow(/at most 10 characters/);
+  });
+
+  // LUD-12: an absent or zero commentAllowed means comments are not supported.
+  it("refuses a comment when the payRequest advertises none", async () => {
+    const fetchImpl = async () => { throw new Error("must not be called"); };
+    await expect(
+      requestInvoice(addressPr, { amountSat: 1000, comment: "hi" }, fetchImpl as never),
+    ).rejects.toThrow(/does not accept comments/);
+  });
 });

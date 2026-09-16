@@ -46,7 +46,9 @@ export function createSseParser(): { push(chunk: string): SseFrame[] } {
   let buffer = "";
   return {
     push(chunk: string): SseFrame[] {
-      buffer += chunk.replace(/\r\n/g, "\n");
+      // WHATWG SSE §9.2 allows \r, \n and \r\n. This server emits \n, but a proxy
+      // that rewrote line endings to bare \r would otherwise swallow every frame.
+      buffer += chunk.replace(/\r\n|\r/g, "\n");
       const frames: SseFrame[] = [];
       let idx: number;
       while ((idx = buffer.indexOf("\n\n")) !== -1) {
