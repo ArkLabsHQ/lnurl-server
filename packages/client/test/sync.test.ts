@@ -147,7 +147,9 @@ describe("syncPayments", () => {
 
     const result = await syncPayments([targetA], { client: () => ({ listPayments }), store });
 
-    expect(result.synced).toBe(0);
+    // The rows stored before the failure are counted: `synced` must match the
+    // store, so a non-zero count coexists with the failure.
+    expect(result.synced).toBe(50);
     expect(result.failures).toHaveLength(1);
     expect(await store.readWatermark(SERVER_A, addressOf(targetA))).toBe(1050);
     expect(store.all()).toHaveLength(50);
@@ -170,13 +172,15 @@ describe("syncPayments", () => {
       identifier: "verify-1",
       paymentReference: "txid-9",
       swapId: null,
+      paymentOption: "arkade",
+      preimage: null,
       domain: DOMAIN,
       lightningAddress: addressOf(targetA),
     });
   });
 
   it("stores bolt11 entries under paymentHash with the swap id carried", async () => {
-    const entry: Bolt11Activity = { ...makeBolt11("hash-7", 1000), swapId: "swap-1" };
+    const entry: Bolt11Activity = { ...makeBolt11("hash-7", 1000), swapId: "swap-1", preimage: "pre-1" };
     const listPayments = vi.fn<ListPayments["listPayments"]>().mockResolvedValue(makePage(targetA, [entry], 1000));
     const store = createMemoryStore();
 
@@ -188,6 +192,8 @@ describe("syncPayments", () => {
       identifier: "hash-7",
       swapId: "swap-1",
       paymentReference: null,
+      preimage: "pre-1",
+      paymentOption: null,
     });
   });
 

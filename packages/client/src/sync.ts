@@ -31,6 +31,12 @@ export interface StoredPayment {
   swapId: string | null;
   /** Arkade txid once observed on a destination payment, null otherwise. */
   paymentReference: string | null;
+  /** Preimage once a bolt11 payment settled; null while pending and on the
+   * destination rail, which has no invoice to prove. */
+  preimage: string | null;
+  /** The rail a destination payment settled on, e.g. `arkade`. Null on the
+   * bolt11 rail, where `kind` already says which rail it was. */
+  paymentOption: string | null;
 }
 
 /**
@@ -96,6 +102,8 @@ const toStored = (
     settledAt: entry.settledAt,
     swapId: entry.kind === "bolt11" ? entry.swapId : null,
     paymentReference: entry.kind === "destination" ? entry.paymentReference : null,
+    preimage: entry.kind === "bolt11" ? entry.preimage : null,
+    paymentOption: entry.kind === "destination" ? entry.paymentOption : null,
   };
 };
 
@@ -124,21 +132,23 @@ const syncTarget = async (
   client: SyncClient,
   store: PaymentSyncStore,
   limit: number,
-): Promise<number> => {
+  onStored: (count: number) => void,
+): Promise<void> => {
   const lightningAddress = `${target.username}@${target.domain}`;
   let since = await store.readWatermark(target.baseUrl, lightningAddress);
-  let synced = 0;
   for (;;) {
     const page = await listWithBackoff(client, target.token, target.username, target.domain, since, limit);
     const records = page.payments.map((entry) =>
       toStored(target.baseUrl, page.source.domain, page.source.lightningAddress, entry),
     );
     await store.upsert(records);
-    synced += records.length;
+    // Reported per page rather than returned, so a target that fails later
+    // still counts the rows it did store — `synced` must match the store.
+    onStored(records.length);
     const previous = since;
     since = page.nextSince;
     await store.writeWatermark(target.baseUrl, lightningAddress, since);
-    if (page.payments.length < limit) return synced;
+    if (page.payments.length < limit) return;
     // The cursor is the last row's createdAt, so a full page that fails to
     // advance it would re-fetch itself forever. The page is already stored.
     if (previous !== undefined && since <= previous) {
@@ -179,7 +189,10 @@ const syncTarget = async (
  *
  * @param targets - Addresses to sync, each bound to its serving baseUrl.
  * @param opts - Builds the client for one server, the store to write to, and an optional page limit.
- * @returns How many rows were upserted plus one entry per failed target.
+ * @returns `synced` counts every row upserted, including rows a target stored
+ *          on earlier pages before failing on a later one — so it always
+ *          matches what is in the store. Such a target also appears in
+ *          `failures`, meaning a non-zero `synced` and a failure can coexist.
  */
 export function syncPayments(
   targets: PaymentSyncTarget[],
@@ -195,7 +208,9 @@ export function syncPayments(
     const failures: { baseUrl: string; error: unknown }[] = [];
     for (const target of targets) {
       try {
-        synced += await syncTarget(target, opts.client(target.baseUrl), opts.store, limit);
+        await syncTarget(target, opts.client(target.baseUrl), opts.store, limit, (count) => {
+          synced += count;
+        });
       } catch (error) {
         failures.push({ baseUrl: target.baseUrl, error });
       }
