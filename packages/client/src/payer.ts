@@ -69,7 +69,10 @@ export async function requestInvoice(
   }
   const params = new URLSearchParams();
   params.set("amount", String(amountMsat));
-  if (opts.comment !== undefined) params.set("comment", opts.comment);
+  // Non-empty only, matching the guard above: an empty comment is vacuous and
+  // sending `comment=` to a payRequest that accepts none is a needless
+  // protocol violation the guard would otherwise have caught.
+  if (opts.comment) params.set("comment", opts.comment);
   if (opts.paymentOption !== undefined) params.set("paymentOption", opts.paymentOption);
   if (opts.unit !== undefined) params.set("unit", opts.unit);
   const sep = payRequest.callback.includes("?") ? "&" : "?";

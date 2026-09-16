@@ -94,6 +94,16 @@ describe("per-rail sendable bounds", () => {
     expect(String(cb.reason)).toContain("5000000");
   });
 
+  // The lightning branch reaches its bounds check before the session-online
+  // check, so a narrowed interactive rail refuses without a live session.
+  it("refuses an out-of-range amount on the lightning callback branch", async () => {
+    ctx = await start(repos, { "interactive-lightning": { maxSendable: 5_000_000 } });
+    addr("alice");
+    const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000000`, "domain.com");
+    expect(cb.status).toBe("ERROR");
+    expect(String(cb.reason)).toContain("5000000");
+  });
+
   it("still serves an amount inside the narrowed rail", async () => {
     ctx = await start(repos, { arkade: { maxSendable: 5_000_000 } });
     addr("alice");

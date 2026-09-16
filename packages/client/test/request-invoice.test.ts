@@ -31,6 +31,17 @@ describe("requestInvoice", () => {
     await expect(requestInvoice(addressPr, { amountSat: 999999999 }, fetchImpl as never)).rejects.toBeInstanceOf(LnurlError);
   });
 
+  it("omits an empty comment rather than sending one a payRequest forbids", async () => {
+    let seen = "";
+    const fetchImpl = async (url: string) => {
+      seen = String(url);
+      return jsonResponse({ pr: "lnbc1...", routes: [] });
+    };
+    // commentAllowed is absent, so comments are not supported at all.
+    await requestInvoice(addressPr, { amountSat: 1000, comment: "" }, fetchImpl as never);
+    expect(seen).not.toContain("comment");
+  });
+
   it("range-checks a selected option against its own bounds, not the top-level pair", async () => {
     const narrowed: PayRequest = {
       ...addressPr,
