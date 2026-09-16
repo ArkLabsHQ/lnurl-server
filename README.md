@@ -310,7 +310,8 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `MIN_SENDABLE` | `1000` | Minimum sendable amount in millisats |
 | `MAX_SENDABLE` | `100000000000` | Maximum sendable amount in millisats |
 | `INVOICE_TIMEOUT_MS` | `30000` | How long to wait (ms) for the wallet to provide a bolt11 |
-| `VERIFY_TTL_MS` | `86400000` | How long (ms) LUD-21 settlement records are retained for `verify` polling |
+| `VERIFY_TTL_MS` | `86400000` | How long (ms) a **bolt11** record stays readable by `verify`. Past it the invoice is dead, so the record is hidden — and reclaimed only if no address owns it. A record belonging to a registered address is that owner's history and is kept for `listPayments`. |
+| `DESTINATION_WATCH_MS` | `604800000` | How long (ms) a handed-out **destination** stays watched, verifiable and settleable. Separate from `VERIFY_TTL_MS` because an invoice expires and a destination does not: the callback advertises no expiry, so a payer may pay one long after it was issued. Raising it only widens the window in which such a payment is still observed. |
 | `SOLVER_REGISTRY_URLS` | published network index | Optional comma-separated solver-registry index URL override. Leave unset to follow the network default; set it empty to disable registries. Successful bodies are cached for up to seven days. |
 | `SOLVER_CARDS_FILE` | — | Startup JSON file containing an array of manually pinned cards. Cards can also be pasted into the admin UI and persisted in SQLite. |
 | `NOSTR_SECRET_KEY` | — | 32-byte hex Nostr identity for the RFQ transport; ephemeral per boot when unset. **Key material** — treat it like a private key; prefer the ephemeral default unless a stable identity is genuinely required. |
