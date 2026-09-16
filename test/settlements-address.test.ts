@@ -166,4 +166,29 @@ describe("settlements.address_id", () => {
     expect(rows).toHaveLength(0);
     db.close();
   });
+  // A destination stays payable forever and the callback advertises no expiry,
+  // so the watch window cannot be the verify TTL: a payer who pays days later
+  // would otherwise be unobserved, unswept and invisible to their history.
+  it("keeps watching a destination after the verify TTL has passed", () => {
+    const db = seedLegacy();
+    runMigrations(db);
+    let clock = 1_000;
+    const store = new DbSettlementStore(db, 86_400_000, () => clock, 604_800_000);
+    store.create({
+      paymentHash: "dest",
+      pr: "",
+      sessionId: "s",
+      amountMsat: 1_000,
+      addressId: 7,
+      paymentOption: "arkade",
+      paymentDestination: "ark1qsomewhere",
+    });
+
+    clock += 86_400_001; // past the verify TTL, well inside the watch window
+    expect(store.listPendingDestinations().map((d) => d.paymentHash)).toContain("dest");
+
+    clock += 604_800_000; // and past the watch window
+    expect(store.listPendingDestinations().map((d) => d.paymentHash)).not.toContain("dest");
+    db.close();
+  });
 });

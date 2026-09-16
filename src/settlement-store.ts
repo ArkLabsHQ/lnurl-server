@@ -94,7 +94,11 @@ export class MemorySettlementStore implements SettlementStore {
   private map = new Map<string, SettlementRecord>();
   private calls = 0;
 
-  constructor(private ttlMs: number, private now: () => number = () => Date.now()) {}
+  constructor(
+    private ttlMs: number,
+    private now: () => number = () => Date.now(),
+    private destinationWatchMs: number = ttlMs,
+  ) {}
 
   create(rec: NewSettlement): void {
     if (++this.calls % 1000 === 0) this.sweep();
@@ -154,7 +158,12 @@ export class MemorySettlementStore implements SettlementStore {
     const out: PendingDestination[] = [];
     const t = this.now();
     for (const r of this.map.values()) {
-      if (t - r.createdAt >= this.ttlMs) continue;
+      // destinationWatchMs, not ttlMs: a hold invoice really does expire, so
+      // dropping it is safe. A destination stays payable forever and the
+      // callback advertises no expiry, so giving up on it means a payment that
+      // does arrive is never observed, never swept, and never reaches its
+      // owner's history.
+      if (t - r.createdAt >= this.destinationWatchMs) continue;
       // amountMsat missing → an observed payment can never be amount-checked, so
       // skip rather than flip on any payment. Option missing == lightning.
       if (r.paymentOption != null && r.paymentOption !== "lightning" && !r.settled && r.paymentDestination && r.amountMsat != null) {
@@ -227,7 +236,12 @@ interface SettlementRow {
  *  session — a payer may poll `verify` after the wallet disconnects. Expiry is
  *  lazy on read. */
 export class DbSettlementStore implements SettlementStore {
-  constructor(private db: Db, private ttlMs: number, private now: () => number = () => Date.now()) {}
+  constructor(
+    private db: Db,
+    private ttlMs: number,
+    private now: () => number = () => Date.now(),
+    private destinationWatchMs: number = ttlMs,
+  ) {}
 
   create(rec: NewSettlement): void {
     const info = this.db
@@ -320,7 +334,9 @@ export class DbSettlementStore implements SettlementStore {
       .prepare(
         "SELECT payment_hash, payment_destination, amount_msat, created_at, covenant_script FROM settlements WHERE settled = 0 AND payment_option IS NOT NULL AND payment_option != 'lightning' AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
       )
-      .all(this.now() - this.ttlMs) as unknown as {
+      // See the memory store: a destination outlives the verify TTL because it
+      // stays payable and nothing tells the payer otherwise.
+      .all(this.now() - this.destinationWatchMs) as unknown as {
       payment_hash: string;
       payment_destination: string;
       amount_msat: number;
