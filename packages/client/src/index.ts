@@ -8,7 +8,7 @@ import { deriveSessionToken, deriveSessionId } from "./token.js";
 // the wallet's send form and its tests need isValidLnUrl on its own.
 import { isLnAddress, isLnUrl, isValidLnUrl, toPayRequestUrl } from "./encoding.js";
 import type { LnurlSurface } from "./encoding.js";
-import { listAddresses, registerAddress, registerArkadeIdentity, revokeAddress } from "./addresses.js";
+import { listAddresses, listPayments, registerAddress, registerArkadeIdentity, revokeAddress } from "./addresses.js";
 import type {
   AddressListEntry,
   RegisterAddressRequest,
@@ -17,13 +17,17 @@ import type {
 } from "./addresses.js";
 import type {
   AmountObject,
+  Bolt11Activity,
   Bolt11Result,
   Bolt11VerifyStatus,
+  DestinationActivity,
   DestinationResult,
   DestinationVerifyStatus,
   InvoiceResult,
   PayRequest,
+  PaymentActivity,
   PaymentOption,
+  PaymentPage,
   PaymentQuote,
   PollVerifyOptions,
   RequestInvoiceOptions,
@@ -122,6 +126,15 @@ export interface LnurlClient {
    * @returns A promise settling when the server records the identity.
    */
   registerArkadeIdentity(req: RegisterArkadeIdentityRequest): Promise<void>;
+  /**
+   * Lists the payments made to one address owned by a token. Requires `baseUrl`.
+   *
+   * @param token - Token owning the address.
+   * @param username - Username of the address whose payments to list.
+   * @param opts - Optional domain, inclusive since cursor and page limit.
+   * @returns The payment page with rail-discriminated activity entries.
+   */
+  listPayments(token: string, username: string, opts?: { domain?: string; since?: number; limit?: number }): Promise<PaymentPage>;
 }
 
 /**
@@ -161,6 +174,8 @@ export function createLnurlClient(opts?: LnurlClientOptions): LnurlClient {
       revokeAddress(needBase("revokeAddress"), token, username, revokeOpts, fetchImpl),
     registerArkadeIdentity: async (req) =>
       registerArkadeIdentity(needBase("registerArkadeIdentity"), req, fetchImpl),
+    listPayments: async (token, username, listOpts) =>
+      listPayments(needBase("listPayments"), token, username, listOpts, fetchImpl),
   };
 }
 
@@ -173,6 +188,7 @@ export {
   isValidLnUrl,
   toPayRequestUrl,
   listAddresses,
+  listPayments,
   LnurlError,
   LnurlTimeoutError,
   LnurlTransportError,
@@ -187,8 +203,10 @@ export {
 export type {
   AddressListEntry,
   AmountObject,
+  Bolt11Activity,
   Bolt11Result,
   Bolt11VerifyStatus,
+  DestinationActivity,
   DestinationResult,
   DestinationVerifyStatus,
   FetchImpl,
@@ -198,7 +216,9 @@ export type {
   LnurlSurface,
   OpenSessionOptions,
   PayRequest,
+  PaymentActivity,
   PaymentOption,
+  PaymentPage,
   PaymentQuote,
   PollVerifyOptions,
   RegisterAddressRequest,

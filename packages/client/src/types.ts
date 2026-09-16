@@ -180,3 +180,74 @@ export interface PollVerifyOptions {
   /** Abort signal for caller-driven cancellation. */
   signal?: AbortSignal;
 }
+
+/**
+ * One page of address payment activity: what was paid to one address, who it
+ * belongs to, and where to resume. nextSince is inclusive, so a client
+ * re-fetching from it dedupes on paymentHash/verifyId.
+ */
+export interface PaymentPage {
+  /** Where the payments were earned: serving domain and full address. */
+  source: { domain: string; lightningAddress: string };
+  /** Activity entries, oldest first. */
+  payments: PaymentActivity[];
+  /** created_at of the last row, or the request's since when empty. */
+  nextSince: number;
+}
+/**
+ * One payment to an address. The rail decides the shape: only the lightning
+ * rail carries a real payment hash, so the arkade rail is keyed by its
+ * verify id instead of overloading the hash field.
+ */
+export type PaymentActivity = Bolt11Activity | DestinationActivity;
+/**
+ * A lightning-rail payment to the address. paymentHash is a real BOLT11
+ * payment hash here.
+ */
+export interface Bolt11Activity {
+  /** Discriminant for the BOLT11 shape. */
+  kind: "bolt11";
+  /** Real BOLT11 payment hash. */
+  paymentHash: string;
+  /** The BOLT11 invoice handed to the payer. */
+  pr: string;
+  /** Payment preimage once settled, null while pending. */
+  preimage: string | null;
+  /** RFQ id when this was an offline swap, null for relay invoices. */
+  swapId: string | null;
+  /** Whether the payment has settled. */
+  settled: boolean;
+  /** Agreed amount in millisats, when recorded. */
+  amountMsat: number | null;
+  /** Creation timestamp in milliseconds. */
+  createdAt: number;
+  /** Settlement timestamp in milliseconds, null while pending. */
+  settledAt: number | null;
+}
+/**
+ * A destination-rail (e.g. arkade/covenant) payment to the address. The
+ * server's paymentHash field holds a random verify id on this rail, so it
+ * is exposed as verifyId and there is no paymentHash here at all.
+ */
+export interface DestinationActivity {
+  /** Discriminant for the destination shape. */
+  kind: "destination";
+  /** Opaque verify id minted by the server; NOT a payment hash. */
+  verifyId: string;
+  /** The rail both sides settled on. */
+  paymentOption: string;
+  /** Where the payment landed, when the server reports it. */
+  paymentDestination: string | null;
+  /** Attribution key for per-payment covenant addresses. */
+  covenantScript: string | null;
+  /** Arkade txid once observed, null until then. */
+  paymentReference: string | null;
+  /** Whether the payment has settled. */
+  settled: boolean;
+  /** Agreed amount in millisats, when recorded. */
+  amountMsat: number | null;
+  /** Creation timestamp in milliseconds. */
+  createdAt: number;
+  /** Settlement timestamp in milliseconds, null while pending. */
+  settledAt: number | null;
+}

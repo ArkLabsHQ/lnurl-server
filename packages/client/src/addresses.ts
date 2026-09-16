@@ -1,4 +1,5 @@
 import { apiFetch, type FetchImpl } from "./http.js";
+import type { Bolt11Activity, DestinationActivity, PaymentActivity, PaymentPage } from "./types.js";
 import { LnurlError } from "./errors.js";
 
 /**
@@ -114,6 +115,86 @@ export function listAddresses(
   return apiFetch<AddressListEntry[]>(`${rootOf(baseUrl)}/lnurl/address`, {
     headers: { Authorization: `Bearer ${token}` },
   }, fetchImpl);
+}
+
+/** One settlement row as the payments route serves it. */
+interface AddressPaymentRow {
+  paymentHash: string;
+  pr: string;
+  preimage: string | null;
+  swapId: string | null;
+  paymentOption: string;
+  paymentDestination: string | null;
+  covenantScript: string | null;
+  paymentReference: string | null;
+  settled: boolean;
+  amountMsat: number | null;
+  createdAt: number;
+  settledAt: number | null;
+}
+
+function toActivity(row: AddressPaymentRow): PaymentActivity {
+  // The rail tag decides, like parseVerifyStatus in payer.ts: "lightning" is
+  // a real BOLT11 hash, anything else is an opaque destination verify id.
+  if (row.paymentOption === "lightning") {
+    const activity: Bolt11Activity = {
+      kind: "bolt11",
+      paymentHash: row.paymentHash,
+      pr: row.pr,
+      preimage: row.preimage,
+      swapId: row.swapId,
+      settled: row.settled,
+      amountMsat: row.amountMsat,
+      createdAt: row.createdAt,
+      settledAt: row.settledAt,
+    };
+    return activity;
+  }
+  const activity: DestinationActivity = {
+    kind: "destination",
+    verifyId: row.paymentHash,
+    paymentOption: row.paymentOption,
+    paymentDestination: row.paymentDestination,
+    covenantScript: row.covenantScript,
+    paymentReference: row.paymentReference,
+    settled: row.settled,
+    amountMsat: row.amountMsat,
+    createdAt: row.createdAt,
+    settledAt: row.settledAt,
+  };
+  return activity;
+}
+
+/**
+ * Lists the payments made to one address owned by a token, oldest first.
+ *
+ * @param baseUrl - Server root, e.g. `https://lnurl.example.com`.
+ * @param token - Token owning the address; sent as the Bearer credential.
+ * @param username - Username of the address whose payments to list.
+ * @param opts - Optional domain, inclusive since cursor and page limit.
+ * @param fetchImpl - The injected `fetch` implementation to call.
+ * @returns The payment page with rail-discriminated activity entries.
+ */
+export async function listPayments(
+  baseUrl: string,
+  token: string,
+  username: string,
+  opts: { domain?: string; since?: number; limit?: number } | undefined,
+  fetchImpl: FetchImpl,
+): Promise<PaymentPage> {
+  const params = new URLSearchParams();
+  if (opts?.domain !== undefined) params.set("domain", opts.domain);
+  if (opts?.since !== undefined) params.set("since", String(opts.since));
+  if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+  const query = params.size > 0 ? `?${params.toString()}` : "";
+  const page = await apiFetch<{ source: PaymentPage["source"]; payments: AddressPaymentRow[]; nextSince: number }>(
+    `${rootOf(baseUrl)}/lnurl/address/${encodeURIComponent(username)}/payments${query}`,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+    },
+    fetchImpl,
+  );
+  return { source: page.source, payments: page.payments.map(toActivity), nextSince: page.nextSince };
 }
 
 /**
