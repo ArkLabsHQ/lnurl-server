@@ -14,10 +14,11 @@ import {
   createLnurlClient,
   deriveSessionId,
   deriveSessionToken,
+  syncPayments,
   LnurlError,
   LnurlTimeoutError,
 } from "../packages/client/src/index.js";
-import type { LnurlSession } from "../packages/client/src/index.js";
+import type { LnurlSession, PaymentSyncStore, StoredPayment } from "../packages/client/src/index.js";
 
 const CONFIG: LnurlServiceConfig = { port: 0, baseUrl: "", minSendable: 1_000, maxSendable: 100_000_000, invoiceTimeoutMs: 3_000 };
 
@@ -140,13 +141,16 @@ describe("listPayments contract against a DB-backed server", () => {
   let db: Db;
   let repos: Repositories;
   let ctx: { baseUrl: string; close: () => Promise<void> };
+  let settlements: DbSettlementStore;
+  let clock = 0;
 
   beforeEach(async () => {
     db = openDb(":memory:");
     runMigrations(db);
     repos = createRepositories(db);
     repos.domains.create({ domain: "domain.com", allocationModes: ["self", "random"] });
-    const settlements = new DbSettlementStore(db, 86_400_000);
+    clock = 1_000;
+    settlements = new DbSettlementStore(db, 86_400_000, () => clock);
     const addressService = new AddressService(repos, KEY);
     const server = http.createServer();
     ctx = await new Promise<typeof ctx>((resolve) => {
@@ -201,6 +205,71 @@ describe("listPayments contract against a DB-backed server", () => {
     } finally {
       session.close();
     }
+  });
+
+  // syncPayments' correctness rests on the server's cursor semantics, and its
+  // own tests stub listPayments entirely. This pages the real endpoint.
+  it("syncPayments walks the real cursor and re-running adds nothing", async () => {
+    const owner = createLnurlClient({ baseUrl: ctx.baseUrl });
+    await owner.registerAddress({ token: TOKEN, username: "alice", domain: "domain.com" });
+    const addressId = repos.addresses.getByDomainAndUsername(repos.domains.getByDomain("domain.com")!.id, "alice")!.id;
+    for (const [at, hash] of [[1_000, "s1"], [2_000, "s2"], [3_000, "s3"], [4_000, "s4"]] as const) {
+      clock = at;
+      settlements.create({ paymentHash: hash, pr: "lnbc1", sessionId: "sess", amountMsat: 1_000, addressId });
+    }
+
+    const records = new Map<string, StoredPayment>();
+    const watermarks = new Map<string, number>();
+    const store: PaymentSyncStore = {
+      upsert: async (next) => {
+        for (const r of next) records.set(r.key, r);
+      },
+      readWatermark: async (b, a) => watermarks.get(`${b}|${a}`),
+      writeWatermark: async (b, a, since) => {
+        watermarks.set(`${b}|${a}`, since);
+      },
+    };
+    const target = { baseUrl: ctx.baseUrl, token: TOKEN, username: "alice", domain: "domain.com" };
+    const client = () => owner;
+
+    // limit 2 forces a second page, so the cursor is genuinely walked.
+    const first = await syncPayments([target], { client, store, limit: 2 });
+    expect(first.failures).toEqual([]);
+    expect([...records.keys()].map((k) => k.split("|").pop()).sort()).toEqual(["s1", "s2", "s3", "s4"]);
+    expect(watermarks.get(`${ctx.baseUrl}|alice@domain.com`)).toBe(4_000);
+
+    // Resuming re-reads the boundary row; the key overwrite absorbs it.
+    const again = await syncPayments([target], { client, store, limit: 2 });
+    expect(again.failures).toEqual([]);
+    expect(records.size).toBe(4);
+  });
+
+  // The stall guard was written from reading the server's cursor. This proves
+  // the condition is reachable against the real one rather than imagined: the
+  // page is full, nextSince is the last row's created_at, and it cannot move.
+  it("stalls rather than loops when a full page shares one millisecond", async () => {
+    const owner = createLnurlClient({ baseUrl: ctx.baseUrl });
+    await owner.registerAddress({ token: TOKEN, username: "alice", domain: "domain.com" });
+    const addressId = repos.addresses.getByDomainAndUsername(repos.domains.getByDomain("domain.com")!.id, "alice")!.id;
+    clock = 7_000;
+    for (const hash of ["t1", "t2", "t3"]) {
+      settlements.create({ paymentHash: hash, pr: "lnbc1", sessionId: "sess", amountMsat: 1_000, addressId });
+    }
+
+    const store: PaymentSyncStore = {
+      upsert: async () => {},
+      readWatermark: async () => undefined,
+      writeWatermark: async () => {},
+    };
+    const result = await syncPayments([{ baseUrl: ctx.baseUrl, token: TOKEN, username: "alice", domain: "domain.com" }], {
+      client: () => owner,
+      store,
+      limit: 2,
+    });
+
+    expect(result.failures).toHaveLength(1);
+    expect(String((result.failures[0]?.error as LnurlError).message)).toContain("stalled");
+    expect((result.failures[0]?.error as LnurlError).retryable).toBe(false);
   });
 });
 
