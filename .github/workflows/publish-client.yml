@@ -1,0 +1,89 @@
+name: Publish client package
+
+# Mirrors how the image is released: the version field in the package manifest
+# drives it. On a push to main, publish packages/client only when that version
+# is not already on npm, so re-running or merging unrelated commits is a no-op
+# rather than a failure.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/client/**"
+      - ".github/workflows/publish-client.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-client
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # Required for npm provenance, which ties the published tarball to this
+      # workflow run and commit.
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Read the package version
+        id: version
+        run: |
+          version=$(node -p "require('./packages/client/package.json').version")
+          name=$(node -p "require('./packages/client/package.json').name")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether that version is already published
+        id: check
+        run: |
+          if pnpm view "${{ steps.version.outputs.name }}@${{ steps.version.outputs.version }}" version >/dev/null 2>&1; then
+            echo "is_new=false" >> "$GITHUB_OUTPUT"
+            echo "${{ steps.version.outputs.name }}@${{ steps.version.outputs.version }} is already published; nothing to do."
+          else
+            echo "is_new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The gate runs before publishing, not after: an unpublish is not a real
+      # rollback, since npm keeps the version number burned either way.
+      - name: Test
+        if: steps.check.outputs.is_new == 'true'
+        run: pnpm test
+
+      - name: Type check
+        if: steps.check.outputs.is_new == 'true'
+        run: pnpm type-check
+
+      - name: Build
+        if: steps.check.outputs.is_new == 'true'
+        run: pnpm build
+
+      - name: Verify the build emitted what the manifest promises
+        if: steps.check.outputs.is_new == 'true'
+        run: |
+          test -f packages/client/dist/index.js || { echo "missing dist/index.js"; exit 1; }
+          test -f packages/client/dist/index.d.ts || { echo "missing dist/index.d.ts"; exit 1; }
+
+      - name: Publish
+        if: steps.check.outputs.is_new == 'true'
+        run: pnpm publish --access public --provenance --no-git-checks
+        working-directory: packages/client
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

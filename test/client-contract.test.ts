@@ -127,7 +127,7 @@ describe("client contract against the real server", () => {
   });
 
   it("a token-derived session id agrees with the server derivation", async () => {
-    const token = deriveSessionToken("ab".repeat(32));
+    const token = deriveSessionToken("ab".repeat(32), "example.com");
     const client = createLnurlClient({ baseUrl: ctx.baseUrl });
     const session = await client.openSession({ token }, { onInvoiceRequest: noop });
     sessions.push(session);
