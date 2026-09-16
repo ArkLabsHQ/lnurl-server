@@ -20,6 +20,7 @@ import { createLogger, type Logger } from "./logger.js";
 import { ArkAddress } from "@arkade-os/sdk";
 import { resolvePaymentOption } from "./payment-options.js";
 import {
+  advertisedBounds,
   advertisedRailOptions,
   effectiveRails,
   optionBounds,
@@ -512,11 +513,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         max: domain.maxSendable ?? settings.maxSendable(),
       };
       const options = advertisedRailOptions(railAddress, railCaps, base);
-      // A payer sending no paymentOption is served the lightning rail, so the
-      // top-level pair must be what that rail can honour rather than the widest
-      // any rail could — otherwise a LUD-06-only payer is quoted an amount the
-      // rail it will actually be served by refuses.
-      const advertised = optionBounds("lightning", railAddress, railCaps, base) ?? base;
+      const advertised = advertisedBounds(railAddress, railCaps, base);
       const units = quoteProvider?.units() ?? [];
       const response: LnurlPayMetadata = {
         tag: "payRequest",

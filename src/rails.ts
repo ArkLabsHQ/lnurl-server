@@ -316,6 +316,16 @@ export function optionBounds(
   return intersected.min > intersected.max ? undefined : intersected;
 }
 
+/**
+ * The top-level payRequest pair, which is the lightning rail's bounds rather
+ * than the envelope: a payer sending no `paymentOption` resolves to that rail,
+ * so quoting them anything wider would be quoting a rail that will not serve
+ * them.
+ */
+export function advertisedBounds(address: RailAddress, caps: ServerRailCaps, base: Bounds): Bounds {
+  return optionBounds("lightning", address, caps, base) ?? base;
+}
+
 /** Options advertised in the LUD-06 payRequest for an address. When `base` is
  *  supplied each option carries the bounds it can actually be honoured at. */
 export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCaps, base?: Bounds): PaymentOption[] {
@@ -338,15 +348,20 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
   }
   options.push({ id: "arkade", type: "arkade" });
   if (!base) return options;
-  // Only emitted where a rail actually narrows the pair, so an operator who
-  // configured no rail limits sees the payRequest they saw before.
+  // Emitted relative to the pair the payRequest actually advertises, not to the
+  // envelope. A client falls back to the top-level pair for an option that
+  // publishes nothing, and the top level is the lightning rail's — so an option
+  // that is WIDER than lightning has to say so, or the client refuses amounts
+  // the server would accept. Equal to the top level means nothing to emit, so
+  // an operator who configured no rail limits sees the payRequest as before.
+  const advertised = advertisedBounds(address, caps, base);
   return options.map((option) => {
     const bounds = optionBounds(option.id, address, caps, base);
     if (!bounds) return option;
     return {
       ...option,
-      ...(bounds.min !== base.min ? { minSendable: bounds.min } : {}),
-      ...(bounds.max !== base.max ? { maxSendable: bounds.max } : {}),
+      ...(bounds.min !== advertised.min ? { minSendable: bounds.min } : {}),
+      ...(bounds.max !== advertised.max ? { maxSendable: bounds.max } : {}),
     };
   });
 }

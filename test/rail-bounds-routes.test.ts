@@ -143,6 +143,21 @@ describe("per-rail sendable bounds", () => {
     expect(meta.maxSendable).toBe(1_000_000);
   });
 
+  // The top-level pair is the lightning rail's, and a client selecting an
+  // option falls back to it when that option publishes nothing. So an option
+  // that is WIDER than lightning must say so, or the client refuses amounts the
+  // server would accept — the original bug, inverted.
+  it("publishes an option's bounds when they are wider than the top-level pair", async () => {
+    ctx = await start(repos, { "interactive-lightning": { minSendable: 50_000_000 } });
+    addr("alice");
+    const meta = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com");
+    expect(meta.minSendable).toBe(50_000_000);
+    expect(meta.paymentOptions).toEqual([
+      { id: "lightning", type: "lightning" },
+      { id: "arkade", type: "arkade", minSendable: 1000 },
+    ]);
+  });
+
   it("does not let a rail widen past the server envelope", async () => {
     ctx = await start(repos, { "interactive-lightning": { maxSendable: 999_999_999 } });
     addr("alice");
