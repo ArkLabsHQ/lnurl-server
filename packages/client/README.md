@@ -35,13 +35,13 @@ if (invoice.kind === "bolt11" && invoice.verify) {
 
 ## Receiver
 
-Receiver and management calls need `baseUrl`. `deriveSessionToken` turns a wallet private key (hex) into a stable session token; opening a session with the same token reconnects the same session id.
+Receiver and management calls need `baseUrl`. `deriveSessionToken` turns a wallet private key and a domain into a stable session token; opening a session with the same token reconnects the same session id.
 
 ```ts
 import { createLnurlClient, deriveSessionToken } from "@arkade-os/lnurl-client";
 
 const receiver = createLnurlClient({ baseUrl: "https://lnurl.example.com" });
-const token = deriveSessionToken("<wallet-private-key-hex>");
+const token = deriveSessionToken("<wallet-private-key-hex>", "example.com");
 
 const session = await receiver.openSession({ token }, {
   onInvoiceRequest: async ({ amountMsat }, respond) => {
@@ -55,7 +55,14 @@ await session.reportSettled("<preimage-hex>");
 session.close();
 ```
 
-`deriveSessionToken` is byte-compatible with the wallet's existing derivation on purpose: the token derives the session id, which is the ownership key for registered lightning addresses, so changing it would orphan addresses users already hold.
+**The token is per-domain, and that is a security property, not bookkeeping.** It is a bearer credential: the server receives it and stores it (encrypted, but a server it is stored on can read it). Were it derived from the private key alone, the same credential would authenticate its holder at *every* lnurl-server the user has ever used — so one malicious or breached server could call `registerArkadeIdentity` on a different server and repoint the victim's receive address, which the covenant would then faithfully pay. Binding the domain into the derivation makes a token minted for `example.com` useless at `other.com`.
+
+Two consequences worth planning for:
+
+- A wallet using several servers holds **several tokens**, one per domain. Derive per domain rather than caching one.
+- The server cannot enforce this — it sees an opaque token and cannot tell which domain produced it — so the protection holds only for clients that derive this way.
+
+Derive the token from wallet key material rather than generating a random one you then have to persist: losing it loses the address, since the server identifies the owner by `sha256` of the token bytes and has no other record of who you are.
 
 ## Errors
 

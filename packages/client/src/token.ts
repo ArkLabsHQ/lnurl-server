@@ -2,21 +2,40 @@ import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { hex } from "@scure/base";
 
-// Byte-compatible with the wallet deriveLnurlCredentials: the session id owns registered addresses.
 /**
- * Derives the reusable session token from a private key: hex of
- * `HMAC-SHA256(key = private-key bytes, message = utf8("lnurl-session"))`.
+ * Derives the reusable session token for ONE domain: hex of
+ * `HMAC-SHA256(key = private-key bytes, message = utf8("lnurl-session:<domain>"))`.
  *
- * The formula is byte-compatible with the wallet's `deriveLnurlCredentials`
- * so the two never diverge; it is pinned by a fixed known-answer vector in
- * the tests. Pure and key-agnostic otherwise: the caller holds the key and
- * only hands the derived token to the client.
+ * The domain is part of the message on purpose, and omitting it is a
+ * vulnerability rather than a simplification. The token is a bearer
+ * credential that servers both receive and persist
+ * (`address-service.ts:41,48,55,75` store it encrypted at rest), so a token
+ * derived from a constant authenticates its holder at *every* lnurl-server
+ * the user has ever touched. A malicious or breached server could then call
+ * `POST /lnurl/address/:username/arkade` on a different server and repoint
+ * the victim's Arkade receive identity — which the covenant then faithfully
+ * pays, because `enforcePayTo` constrains the claim to whatever address is
+ * currently registered. Binding to the domain makes a token minted for
+ * `example.com` useless at `other.com`.
+ *
+ * This cannot be enforced server-side: the server sees an opaque token and
+ * cannot tell which domain it was derived for, so the protection only holds
+ * for clients that derive this way. The structural fix is proof-of-possession
+ * rather than a bearer credential; this is the cheap mitigation that removes
+ * the cross-server class today.
  *
  * @param privateKeyHex - Private key as a hex string.
- * @returns The session token as a hex string.
+ * @param domain - The LUD-16 domain this token is for, e.g. `example.com`.
+ *   Compared case-insensitively; the domain rather than the base URL because
+ *   it is canonical and user-visible, where base URLs vary by scheme, port
+ *   and trailing slash.
+ * @returns The session token as a hex string, valid only at that domain.
  */
-export function deriveSessionToken(privateKeyHex: string): string {
-  return hex.encode(hmac(sha256, hex.decode(privateKeyHex), new TextEncoder().encode("lnurl-session")));
+export function deriveSessionToken(privateKeyHex: string, domain: string): string {
+  const normalised = domain.trim().toLowerCase();
+  if (!normalised) throw new Error("deriveSessionToken requires the domain the token is for");
+  const message = new TextEncoder().encode(`lnurl-session:${normalised}`);
+  return hex.encode(hmac(sha256, hex.decode(privateKeyHex), message));
 }
 
 /**
