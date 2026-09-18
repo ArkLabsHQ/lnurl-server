@@ -227,8 +227,13 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
 
   app.use(
     cors({
+      // An explicit list replaces cors's default of reflecting the requested
+      // headers, so anything a route reads must appear here or the browser
+      // drops the request at the preflight with an opaque CORS error rather
+      // than the status the route would have returned.
       origin: true,
-      allowedHeaders: ["Content-Type", "Authorization"],
+      allowedHeaders: ["Content-Type", "Authorization", "X-API-Key"],
+      exposedHeaders: ["X-Request-Id"],
     }),
   );
   app.use(express.json({ limit: "64kb" }));
