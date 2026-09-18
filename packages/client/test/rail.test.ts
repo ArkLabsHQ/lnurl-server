@@ -56,6 +56,14 @@ describe("lnurl rails", () => {
     expect(calls).toBe(0);
   });
 
+  it("classifies on shape alone, leaving a bad checksum to the resolve", () => {
+    // Deliberately looser than isValidLnUrl: the SDK's contract is that match()
+    // is format-only and the rail re-validates before spending. A strict match
+    // would answer "no rail for this target" to what is really a bad LNURL.
+    const { by } = railsFor(async () => json(payRequest()));
+    expect(by(LNURL_ARKADE_RAIL).match({ raw: "LNURL1BOGUSCHECKSUM" }, ctx)).toBe(true);
+  });
+
   it("resolves the payRequest once across both rails", async () => {
     let calls = 0;
     const { rails } = railsFor(async () => { calls++; return json(payRequest()); });

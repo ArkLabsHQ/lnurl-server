@@ -13,8 +13,8 @@
  * `lnurl-arkade` against `lnurl-lightning` the same way it ranks anything else
  * — through `priority` and `tieBreak`, rather than a hand-rolled preference.
  */
+import { isLnurl } from "@arkade-os/sdk";
 import type { PaymentRail, PaymentRequest, RouteQuote, RouterContext } from "@arkade-os/sdk";
-import { isValidLnUrl } from "./encoding.js";
 import { LnurlError } from "./errors.js";
 import type { LnurlClient } from "./index.js";
 import type { PayRequest } from "./types.js";
@@ -71,9 +71,11 @@ function makeRail(
 ): PaymentRail {
   return {
     id,
-    // Format only, and synchronous: the router classifies before it is allowed
-    // to spend a round trip, so the resolve belongs in available().
-    match: (req: PaymentRequest) => isValidLnUrl(req.raw.trim()),
+    // The SDK's own predicate, which is deliberately looser than this package's
+    // isValidLnUrl: classification is format-only and synchronous, so the rail
+    // claims the shape here and lets resolve() in available() reject a bad
+    // checksum. Using it is also what finally gives `isLnurl` a consumer.
+    match: (req: PaymentRequest) => isLnurl(req.raw.trim()),
 
     async available(req: PaymentRequest) {
       let pr: PayRequest;
