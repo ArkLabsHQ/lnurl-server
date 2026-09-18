@@ -356,3 +356,85 @@ describe("per-rail bounds contract", () => {
     await expect(payer.requestInvoice(reachable, { amountSat: 1_000 })).rejects.toBeInstanceOf(LnurlError);
   });
 });
+
+// Both halves: the client registers the boarding address, the server advertises.
+describe("onchain rail contract", () => {
+  const KEY = randomBytes(32);
+  const TOKEN = "ef".repeat(32);
+  const ARK = "tark1qpf3lesxsy69q0f8yvfnyf7gv7kglfkg83fhaxjyc0zmm0wtrl3n024rshrsa8fnnv73w38094qfl9jp5g7pzdc8j2m58metfpd8rcd37nqs45";
+  const CLAIMPK = "02" + "ab".repeat(32);
+  const BOARDING = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
+  let db: Db;
+  let ctx: { baseUrl: string; close: () => Promise<void> };
+
+  beforeEach(async () => {
+    db = openDb(":memory:");
+    runMigrations(db);
+    const repos = createRepositories(db);
+    repos.domains.create({ domain: "127.0.0.1", allocationModes: ["self"] });
+    const server = http.createServer();
+    ctx = await new Promise<typeof ctx>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        const { port } = server.address() as { port: number };
+        const baseUrl = `http://127.0.0.1:${port}`;
+        server.on(
+          "request",
+          createServer(
+            { ...CONFIG, baseUrl },
+            {
+              repos,
+              addressService: new AddressService(repos, KEY),
+              registrationLimiter: new RateLimiter(100, 60_000),
+              settlements: new DbSettlementStore(db, 86_400_000),
+            },
+          ),
+        );
+        resolve({ baseUrl, close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }) });
+      });
+    });
+  });
+
+  afterEach(async () => {
+    await ctx.close();
+    db.close();
+  });
+
+  it("advertises onchain for a boarding address the client registered, and pays it without a verify URL", async () => {
+    const owner = createLnurlClient({ baseUrl: ctx.baseUrl });
+    await owner.registerAddress({ token: TOKEN, username: "alice" });
+    await owner.registerArkadeIdentity({
+      token: TOKEN, username: "alice", arkadeAddress: ARK, claimPublicKey: CLAIMPK, boardingAddress: BOARDING,
+    });
+
+    const payer = createLnurlClient();
+    const lnurl = bech32.encode(
+      "lnurl",
+      bech32.toWords(new TextEncoder().encode(`${ctx.baseUrl}/.well-known/lnurlp/alice`)),
+      1023,
+    );
+    const payRequest = await payer.resolve(lnurl);
+    expect(payRequest.paymentOptions).toContainEqual({ id: "onchain", type: "onchain" });
+
+    const reachable = { ...payRequest, callback: payRequest.callback.replace("127.0.0.1", new URL(ctx.baseUrl).host) };
+    const result = await payer.requestInvoice(reachable, { amountSat: 1_000, paymentOption: "onchain" });
+    expect(result).toEqual({ kind: "destination", paymentOption: "onchain", paymentDestination: BOARDING });
+    expect("verify" in result).toBe(false);
+  });
+
+  it("leaves a registered boarding address alone when a later call omits it", async () => {
+    const owner = createLnurlClient({ baseUrl: ctx.baseUrl });
+    await owner.registerAddress({ token: TOKEN, username: "bob" });
+    const identity = { token: TOKEN, username: "bob", arkadeAddress: ARK, claimPublicKey: CLAIMPK };
+    await owner.registerArkadeIdentity({ ...identity, boardingAddress: BOARDING });
+    await owner.registerArkadeIdentity(identity);
+
+    const payer = createLnurlClient();
+    const lnurl = bech32.encode(
+      "lnurl",
+      bech32.toWords(new TextEncoder().encode(`${ctx.baseUrl}/.well-known/lnurlp/bob`)),
+      1023,
+    );
+    const payRequest = await payer.resolve(lnurl);
+    expect(payRequest.paymentOptions).toContainEqual({ id: "onchain", type: "onchain" });
+  });
+});

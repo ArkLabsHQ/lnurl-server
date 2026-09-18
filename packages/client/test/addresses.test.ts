@@ -69,6 +69,26 @@ describe("registerArkadeIdentity", () => {
       token: "tok", username: "alice", arkadeAddress: "ark1qqq", claimPublicKey: "04" + "ab".repeat(32),
     }, fetchImpl as never)).rejects.toBeInstanceOf(LnurlError);
   });
+
+  it("sends boardingAddress when one is given", async () => {
+    let body: Record<string, unknown> = {};
+    const fetchImpl = async (_u: string, init?: RequestInit) => { body = JSON.parse(String(init?.body)); return json({ ok: true }); };
+    await registerArkadeIdentity("https://x", {
+      token: "tok", username: "alice", arkadeAddress: "ark1qqq", claimPublicKey: "02" + "ab".repeat(32),
+      boardingAddress: "bcrt1qboarding",
+    }, fetchImpl as never);
+    expect(body.boardingAddress).toBe("bcrt1qboarding");
+  });
+
+  // Absent leaves a registered rail alone server-side; an empty value does not.
+  it("omits boardingAddress entirely when none is given", async () => {
+    let body: Record<string, unknown> = {};
+    const fetchImpl = async (_u: string, init?: RequestInit) => { body = JSON.parse(String(init?.body)); return json({ ok: true }); };
+    await registerArkadeIdentity("https://x", {
+      token: "tok", username: "alice", arkadeAddress: "ark1qqq", claimPublicKey: "02" + "ab".repeat(32),
+    }, fetchImpl as never);
+    expect("boardingAddress" in body).toBe(false);
+  });
 });
 describe("listPayments", () => {
   const bolt11Row = {

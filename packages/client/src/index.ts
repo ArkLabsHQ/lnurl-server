@@ -124,7 +124,7 @@ export interface LnurlClient {
   /**
    * Binds an Arkade identity to a registered address. Requires `baseUrl`.
    *
-   * @param req - Token, username, Arkade address, claim key and optional domain.
+   * @param req - Token, username, Arkade address, claim key, optional boarding address and domain.
    * @returns A promise settling when the server records the identity.
    */
   registerArkadeIdentity(req: RegisterArkadeIdentityRequest): Promise<void>;

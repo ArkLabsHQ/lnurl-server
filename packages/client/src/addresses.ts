@@ -65,6 +65,8 @@ export interface RegisterArkadeIdentityRequest {
   arkadeAddress: string;
   /** Compressed 33-byte public key: `02`/`03` prefix plus 64 hex chars. */
   claimPublicKey: string;
+  /** Boarding address the onchain rail pays; omit it to leave a registered one alone. */
+  boardingAddress?: string;
   /** Receiving domain; the server default when omitted. */
   domain?: string;
 }
@@ -231,8 +233,12 @@ const COMPRESSED_KEY = /^0[23][0-9a-f]{64}$/i;
  * client-side because that would need the SDK, which is deliberately not a
  * dependency, so a malformed one fails server-side instead.
  *
+ * `boardingAddress` is unvalidated for a stronger reason — it is a Bitcoin
+ * address on the operator's network, which this package cannot know — and
+ * omitting it sends no field, read server-side as "leave the onchain rail".
+ *
  * @param baseUrl - Server root, e.g. `https://lnurl.example.com`.
- * @param req - Token, username, Arkade address, claim key and optional domain.
+ * @param req - Token, username, Arkade address, claim key, optional boarding address and domain.
  * @param fetchImpl - The injected `fetch` implementation to call.
  * @returns A promise settling when the server records the identity.
  */
@@ -247,6 +253,7 @@ export async function registerArkadeIdentity(
     throw new LnurlError("claimPublicKey must be a compressed 33-byte public key (02/03 prefix plus 64 hex chars)");
   }
   const body: Record<string, string> = { arkadeAddress: req.arkadeAddress, claimPublicKey: req.claimPublicKey };
+  if (req.boardingAddress !== undefined) body["boardingAddress"] = req.boardingAddress;
   if (req.domain !== undefined) body["domain"] = req.domain;
   await apiFetch<unknown>(`${rootOf(baseUrl)}/lnurl/address/${encodeURIComponent(req.username)}/arkade`, {
     method: "POST",

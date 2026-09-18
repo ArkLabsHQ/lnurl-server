@@ -145,11 +145,14 @@ await client.registerArkadeIdentity({
   token,
   username: 'alice',
   arkadeAddress: 'ark1…',
-  claimPublicKey: '02…',   // compressed 33-byte key, validated locally
+  claimPublicKey: '02…',      // compressed 33-byte key, validated locally
+  boardingAddress: 'bc1…',    // optional: adds the onchain rail
 })
 ```
 
 **Call it again to update it.** The server overwrites, so re-registering is how you point an address at a new Arkade address or claim key; there is no separate update call.
+
+`boardingAddress` is the one exception to that overwrite: register it and the address advertises an `onchain` payment option paying it, omit it and an already-registered one is left alone — so a later identity update does not silently withdraw the rail. It is sent unvalidated, unlike `claimPublicKey`, because it is an ordinary Bitcoin address on whatever network the operator runs and this package cannot know which. Payers get no `verify` URL on that rail: nothing server-side observes Bitcoin, so those payments never settle there and a URL could only ever answer "not yet".
 
 ### With the Arkade SDK
 
@@ -162,6 +165,7 @@ import { arkadeIdentityRequest, deriveSessionTokenForIdentity } from '@arkade-os
 const token = await deriveSessionTokenForIdentity(identity, 'example.com')
 
 // Validates the Arkade address and derives claimPublicKey from the identity.
+// boardingAddress is optional here too, and passed through unchecked.
 await client.registerArkadeIdentity(
   await arkadeIdentityRequest({ identity, arkadeAddress, token, username: 'alice' }),
 )

@@ -7,6 +7,8 @@ import { LnurlError } from "../src/errors.js";
 
 const PRIVATE_KEY = "11".repeat(32);
 const DOMAIN = "example.com";
+const ARKADE_ADDRESS =
+  "tark1qpf3lesxsy69q0f8yvfnyf7gv7kglfkg83fhaxjyc0zmm0wtrl3n024rshrsa8fnnv73w38094qfl9jp5g7pzdc8j2m58metfpd8rcd37nqs45";
 
 /** Stands in for an `@arkade-os/sdk` Identity: RFC6979 ECDSA over the digest. */
 const identity = {
@@ -71,5 +73,13 @@ describe("arkadeIdentityRequest", () => {
     await expect(
       arkadeIdentityRequest({ identity, arkadeAddress: "nope", token: "tok", username: "alice" }),
     ).rejects.toThrow(/not a valid Arkade address/);
+  });
+
+  it("passes a boarding address through, and omits the key without one", async () => {
+    const base = { identity, arkadeAddress: ARKADE_ADDRESS, token: "tok", username: "alice" };
+    await expect(arkadeIdentityRequest({ ...base, boardingAddress: "bcrt1qboarding" })).resolves.toMatchObject({
+      boardingAddress: "bcrt1qboarding",
+    });
+    expect("boardingAddress" in (await arkadeIdentityRequest(base))).toBe(false);
   });
 });

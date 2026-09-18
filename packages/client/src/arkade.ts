@@ -84,6 +84,9 @@ export async function claimPublicKeyOf(identity: ArkadeSigner): Promise<string> 
  * Builds the `registerArkadeIdentity` request from an `Identity`, validating the
  * Arkade address before it reaches the wire.
  *
+ * An optional `boardingAddress` registers the onchain rail in the same call,
+ * unchecked: it is a Bitcoin address on a network this helper cannot know.
+ *
  * @param params - The identity, its Arkade address, the owning token and username.
  * @returns The request body to hand to `registerArkadeIdentity`.
  */
@@ -92,8 +95,16 @@ export async function arkadeIdentityRequest(params: {
   arkadeAddress: string;
   token: string;
   username: string;
+  boardingAddress?: string;
   domain?: string;
-}): Promise<{ token: string; username: string; arkadeAddress: string; claimPublicKey: string; domain?: string }> {
+}): Promise<{
+  token: string;
+  username: string;
+  arkadeAddress: string;
+  claimPublicKey: string;
+  boardingAddress?: string;
+  domain?: string;
+}> {
   if (!isArkadeAddress(params.arkadeAddress)) {
     throw new LnurlError(`not a valid Arkade address: ${params.arkadeAddress}`);
   }
@@ -102,6 +113,7 @@ export async function arkadeIdentityRequest(params: {
     username: params.username,
     arkadeAddress: params.arkadeAddress,
     claimPublicKey: await claimPublicKeyOf(params.identity),
+    ...(params.boardingAddress !== undefined ? { boardingAddress: params.boardingAddress } : {}),
     ...(params.domain !== undefined ? { domain: params.domain } : {}),
   };
 }
