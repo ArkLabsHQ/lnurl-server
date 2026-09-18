@@ -49,24 +49,60 @@ export async function settleOfflineSwaps(
   return settled;
 }
 
-/** Run {@link settleOfflineSwaps} on an interval. Returns a stop function. */
+export interface OfflineSettlementPoller {
+  /** Run a pass now — for a lockup the watcher saw funded. */
+  trigger(): void;
+  stop(): void;
+}
+
+/**
+ * Run {@link settleOfflineSwaps} on an interval, and on demand.
+ *
+ * The interval is the safety net behind src/lockup-watcher.ts, not the fast path. The
+ * first pass runs at once, so a lockup funded while the process was down is claimed at
+ * boot rather than an interval later.
+ */
 export function startOfflineSettlementPoller(
   store: SettlementStore,
   creator: OfflineSwapCreator,
   intervalMs: number,
   recovered?: OfflineSwapStore,
   logger: Logger = createLogger(),
-): () => void {
+): OfflineSettlementPoller {
   let inFlight = false;
-  const timer = setInterval(() => {
-    // A slow solver must not stack overlapping passes.
-    if (inFlight) return;
+  let queued = false;
+  let stopped = false;
+  const pass = (): void => {
     inFlight = true;
     void settleOfflineSwaps(store, creator, recovered, logger).finally(() => {
       inFlight = false;
+      if (queued && !stopped) {
+        queued = false;
+        pass();
+      }
     });
+  };
+  const trigger = (): void => {
+    if (stopped) return;
+    // Queued rather than dropped: the running pass may already have looked at this
+    // swap and found it unfunded, and the next tick is a whole interval away.
+    if (inFlight) queued = true;
+    else pass();
+  };
+  const timer = setInterval(() => {
+    // A slow solver must not stack overlapping passes.
+    if (inFlight) return;
+    pass();
   }, intervalMs);
   // Don't keep the process alive just for polling.
   timer.unref?.();
-  return () => clearInterval(timer);
+  trigger();
+  return {
+    trigger,
+    stop: () => {
+      stopped = true;
+      queued = false;
+      clearInterval(timer);
+    },
+  };
 }

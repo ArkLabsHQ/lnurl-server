@@ -433,4 +433,30 @@ describe("createOfflineSwapCoordinator", () => {
     await noRequote.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
     expect(attempts).toEqual(["primary"]);
   });
+
+  it("registers the lockup so the contract manager watches it", async () => {
+    const createContract = vi.fn(async () => ({}) as never);
+    const watched = await createOfflineSwapCoordinator(swapSettings({ contracts: { createContract } }));
+
+    const swap = await watched.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
+
+    expect(createContract).toHaveBeenCalledWith(expect.objectContaining({
+      type: "vhtlc-v2",
+      address: swap.lockupAddress,
+      script: hex.encode(ArkAddress.decode(swap.lockupAddress).pkScript),
+    }));
+  });
+
+  it("still hands over the invoice when the contract store refuses the lockup", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const degraded = await createOfflineSwapCoordinator(swapSettings({
+      contracts: { createContract: async () => { throw new Error("disk full"); } },
+    }));
+
+    const swap = await degraded.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
+
+    expect(swap.invoice).toMatch(/^lnbc/);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_lockup_register_failed"'));
+    warn.mockRestore();
+  });
 });

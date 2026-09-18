@@ -42,6 +42,12 @@ describe("loadConfig", () => {
     expect(loadConfig({ ...base, VERIFY_TTL_MS: "1000" }).verifyTtlMs).toBe(1000);
   });
 
+  it("reads OFFLINE_POLL_INTERVAL_MS with the 15s default", () => {
+    expect(loadConfig({ ...base }).offlineReceive.pollIntervalMs).toBe(15_000);
+    expect(loadConfig({ ...base, OFFLINE_POLL_INTERVAL_MS: "3000" }).offlineReceive.pollIntervalMs).toBe(3000);
+    expect(() => loadConfig({ ...base, OFFLINE_POLL_INTERVAL_MS: "0" })).toThrow(/OFFLINE_POLL_INTERVAL_MS/);
+  });
+
   it("reads card-only offline-receive config", () => {
     const off = loadConfig({ ...base });
     expect(off.offlineReceive.enabled).toBe(false);
@@ -59,6 +65,7 @@ describe("loadConfig", () => {
       selfClaim: false,
       covenantDestinations: false,
       covenantRecoveryDelaySeconds: 86_528,
+      pollIntervalMs: 15_000,
       registryUrls: ["https://one.example/mutinynet.json", "https://two.example/mutinynet.json"],
       cardsFile: "/run/config/solvers.json",
       covclaimdUrl: "https://covclaimd.example:7071",

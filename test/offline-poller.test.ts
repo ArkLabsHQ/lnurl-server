@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { DbSettlementStore, MemorySettlementStore } from "../src/settlement-store.js";
-import { settleOfflineSwaps } from "../src/offline-poller.js";
+import { settleOfflineSwaps, startOfflineSettlementPoller } from "../src/offline-poller.js";
 import type { OfflineSwapCreator } from "../src/intent-swap.js";
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
 import { openDb } from "../src/db/connection.js";
@@ -122,5 +122,95 @@ describe("settleOfflineSwaps", () => {
     expect(seen[0]).toMatchObject({ solverPubkey: "11".repeat(32), relays: ["wss://relay.example"] });
     expect(settlements.get("aa".repeat(32))?.settled).toBe(true);
     db.close();
+  });
+});
+
+describe("startOfflineSettlementPoller", () => {
+  const pendingStore = () => {
+    const store = new MemorySettlementStore(60_000);
+    store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
+    return store;
+  };
+
+  /** A creator whose status check only resolves when the test says so. */
+  const gatedCreator = () => {
+    const gates: Array<() => void> = [];
+    const creator: OfflineSwapCreator = {
+      create: async () => { throw new Error("not used"); },
+      isSettled: async () => {
+        await new Promise<void>((resolve) => gates.push(resolve));
+        return false;
+      },
+    };
+    return { creator, gates, release: () => gates.splice(0).forEach((g) => g()) };
+  };
+
+  it("runs a pass immediately, so a lockup funded while the process was down is not held for an interval", async () => {
+    const store = pendingStore();
+    const creator = creatorReporting(["swap-1"]);
+
+    const poller = startOfflineSettlementPoller(store, creator, 15_000);
+    await vi.waitFor(() => expect(store.get("aa")!.settled).toBe(true));
+
+    poller.stop();
+  });
+
+  it("settles on a funding trigger without waiting for the interval", async () => {
+    const store = pendingStore();
+    const settledIds: string[] = [];
+    const creator = creatorReporting(settledIds);
+
+    const poller = startOfflineSettlementPoller(store, creator, 15_000);
+    await vi.waitFor(() => expect(store.get("aa")!.settled).toBe(false));
+
+    settledIds.push("swap-1");
+    poller.trigger();
+    await vi.waitFor(() => expect(store.get("aa")!.settled).toBe(true));
+
+    poller.stop();
+  });
+
+  // Two concurrent passes would each see an unspent lockup and push the same claim.
+  it("never runs two passes at once", async () => {
+    const store = pendingStore();
+    const { creator, gates, release } = gatedCreator();
+
+    const poller = startOfflineSettlementPoller(store, creator, 15_000);
+    await vi.waitFor(() => expect(gates).toHaveLength(1));
+    poller.trigger();
+    poller.trigger();
+    expect(gates).toHaveLength(1);
+
+    release();
+    poller.stop();
+  });
+
+  it("queues a trigger that lands mid-pass instead of dropping it", async () => {
+    const store = pendingStore();
+    const { creator, gates, release } = gatedCreator();
+    const isSettled = vi.spyOn(creator, "isSettled");
+
+    const poller = startOfflineSettlementPoller(store, creator, 15_000);
+    await vi.waitFor(() => expect(gates).toHaveLength(1));
+    poller.trigger();
+    gates.splice(0)[0]!();
+
+    await vi.waitFor(() => expect(isSettled).toHaveBeenCalledTimes(2));
+    release();
+    poller.stop();
+  });
+
+  it("stops passing once stopped", async () => {
+    const store = pendingStore();
+    const creator = creatorReporting([]);
+    const isSettled = vi.spyOn(creator, "isSettled");
+
+    const poller = startOfflineSettlementPoller(store, creator, 15_000);
+    await vi.waitFor(() => expect(isSettled).toHaveBeenCalledTimes(1));
+
+    poller.stop();
+    poller.trigger();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(isSettled).toHaveBeenCalledTimes(1);
   });
 });

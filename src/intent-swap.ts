@@ -26,14 +26,17 @@ import {
   lightningReceiveRequest,
   newRfqId,
   paymentHashOf,
+  registerLockupContract,
   sealClaimPacket,
   unilateralClaimDelay,
   verifyReceiveInvoice,
+  type LockupContractWriter,
   type RfqTransport,
 } from "@arkade-os/swap";
 import { nostrRfqTransport } from "@arkade-os/swap/nostr";
 import { invoiceFactsFromBolt11 } from "./bolt11.js";
 import { RailRefusedError } from "./rails.js";
+import { createLogger, type Logger } from "./logger.js";
 import type { DiscoveryService, SolverCandidate } from "./solver-discovery.js";
 import type { SelfClaimer, SelfClaimOutcome } from "./self-claim.js";
 import { deserializeSelfClaim } from "./self-claim-codec.js";
@@ -104,7 +107,11 @@ export interface IntentSwapSettings {
   stampClaimPacket?: boolean;
   /** Set under OFFLINE_SELF_CLAIM: pushes each lockup's covenant claim leaf. */
   selfClaimer?: SelfClaimer;
+  /** Contract store each lockup is registered in, so src/lockup-watcher.ts hears its
+   *  funding as an event instead of the poller finding it a tick later. */
+  contracts?: LockupContractWriter;
   transportFactory?: (candidate: Pick<SolverCandidate, "name" | "discoveryPubkey" | "relays">) => RfqTransport;
+  logger?: Logger;
 }
 
 /** Operator + claim facts a swap derivation needs. Refetched on a TTL so an
@@ -189,6 +196,7 @@ async function fetchEmulatorKey(emulatorUrl: string): Promise<Uint8Array> {
  */
 export async function createOfflineSwapCoordinator(settings: IntentSwapSettings): Promise<OfflineSwapCreator> {
   const arkProvider = new RestArkProvider(settings.arkServerUrl);
+  const logger = settings.logger ?? createLogger();
   const pinned = new Map<string, RfqTransport>();
   const transportFor: (candidate: Pick<SolverCandidate, "name" | "discoveryPubkey" | "relays">) => RfqTransport = settings.transportFactory ?? ((candidate) =>
     nostrTransport(candidate.discoveryPubkey, candidate.relays, settings.nostrSecretKey));
@@ -296,6 +304,16 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
           });
           const { payDeadline } = verifyReceiveInvoice({ invoice: derived.invoice, decode: invoiceFactsFromBolt11, paymentHash, quote });
           assertReceivable({ quote, payDeadline, now: Math.floor(Date.now() / 1000) });
+          if (settings.contracts) {
+            // Before the invoice leaves, so nothing funds a lockup with no row — but
+            // not fatal as it is in a wallet: the poller claims off the indexer by
+            // script, so a failed write costs speed, not the money.
+            try {
+              await registerLockupContract(settings.contracts, derived.script, derived.address);
+            } catch (error) {
+              logger.warn("offline_lockup_register_failed", { swapId: rfqId, error });
+            }
+          }
           settings.selfClaimer?.register({ swapId: rfqId, script: derived.script, expectedAmount: toAmount });
           pinned.set(rfqId, transport);
           return {

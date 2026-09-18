@@ -62,14 +62,43 @@ async function main(): Promise<void> {
       registrationRateLimitPerMin: config.registrationRateLimitPerMin,
     });
     const settlements = new DbSettlementStore(db, config.verifyTtlMs, undefined, config.destinationWatchMs);
+    const off = config.offlineReceive;
+    // One manager for both rails: the covenant rail spends through it, the swap rail
+    // registers each lockup in it so funding arrives as an event.
+    let contracts: import("@arkade-os/sdk").IContractManager | undefined;
+    if (off.covenantDestinations || off.enabled) {
+      const { ContractManager, RestIndexerProvider, contractHandlers } = await import("@arkade-os/sdk");
+      const { sqliteContractStores } = await import("./contract-store.js");
+      if (off.covenantDestinations) {
+        const { covenantDestinationHandler } = await import("./covenant-contract.js");
+        // The SDK tracks, watches and spends these; registering the handler is what
+        // lets it build the script and pick a leaf without us restating either. Must
+        // precede create(), which re-adds every stored contract.
+        contractHandlers.register(covenantDestinationHandler);
+      }
+      // Always SQLite: both rails need their contracts to survive a restart. In memory
+      // the catch-up pass finds nothing, and a payment made while down never settles.
+      const stores = await sqliteContractStores(db);
+      try {
+        contracts = await ContractManager.create({
+          indexerProvider: new RestIndexerProvider(off.arkServerUrl!),
+          ...stores,
+        });
+        runtime.addTransport({ close: () => contracts!.dispose() });
+      } catch (error) {
+        // Fatal for covenant destinations, which hand the payer an address only this
+        // watches. The swap rail just loses its head start, so there it degrades.
+        if (off.covenantDestinations) throw error;
+        logger.warn("offline_lockup_watch_unavailable", { error });
+      }
+    }
     let offlineSwaps: import("./offline-swap-store.js").OfflineSwapStore | undefined;
     let offlineSwapCreator: import("./intent-swap.js").OfflineSwapCreator | undefined;
-    if (config.offlineReceive.enabled) {
+    if (off.enabled) {
       const { createOfflineSwapCoordinator } = await import("./intent-swap.js");
       const { OfflineSwapStore } = await import("./offline-swap-store.js");
       const { DiscoveryService } = await import("./solver-discovery.js");
       const { isNetwork } = await import("@arkade-os/solver-discovery");
-      const off = config.offlineReceive;
       const infoResponse = await fetch(`${off.arkServerUrl}/v1/info`);
       if (!infoResponse.ok) throw new Error(`Arkade info endpoint: HTTP ${infoResponse.status}`);
       const network = (await infoResponse.json() as { network?: unknown }).network;
@@ -113,26 +142,13 @@ async function main(): Promise<void> {
         arkServerUrl: off.arkServerUrl!,
         stampClaimPacket: off.stampClaimPacket,
         ...(selfClaimer ? { selfClaimer } : {}),
+        ...(contracts ? { contracts } : {}),
+        logger,
       });
       if (offlineSwapCreator.close) runtime.addTransport({ close: offlineSwapCreator.close });
     }
-    const off = config.offlineReceive;
     let covenantDestinations: import("./covenant-destination.js").CovenantDestinationProvider | undefined;
-    if (off.covenantDestinations) {
-      const { ContractManager, RestIndexerProvider, contractHandlers } = await import("@arkade-os/sdk");
-      const { covenantDestinationHandler } = await import("./covenant-contract.js");
-      const { sqliteContractStores } = await import("./contract-store.js");
-      // The SDK tracks, watches and spends these; registering the handler is what
-      // lets it build the script and pick a leaf without us restating either.
-      contractHandlers.register(covenantDestinationHandler);
-      // Always SQLite: this block is inside `if (db)`, and the rail needs the
-      // contracts to survive a restart. In memory they would not, the catch-up pass
-      // would find nothing, and a payment made while down could never settle.
-      const stores = await sqliteContractStores(db);
-      const contracts = await ContractManager.create({
-        indexerProvider: new RestIndexerProvider(off.arkServerUrl!),
-        ...stores,
-      });
+    if (off.covenantDestinations && contracts) {
       const { createCovenantDestinationProvider } = await import("./covenant-destination.js");
       covenantDestinations = createCovenantDestinationProvider({
         arkServerUrl: off.arkServerUrl!,
@@ -150,7 +166,6 @@ async function main(): Promise<void> {
         createCovenantSweeper({ contracts, arkServerUrl: off.arkServerUrl!, emulatorUrl: off.emulatorUrl! }),
         15_000,
       ));
-      runtime.addTransport({ close: () => contracts.dispose() });
       console.log(`covenant destinations: enabled (emulator=${off.emulatorUrl}, recovery=${off.covenantRecoveryDelaySeconds}s)`);
     }
     deps = {
@@ -170,9 +185,12 @@ async function main(): Promise<void> {
     // begin accepting traffic.
     if (offlineSwapCreator) {
       const { startOfflineSettlementPoller } = await import("./offline-poller.js");
-      runtime.addStop(startOfflineSettlementPoller(settlements, offlineSwapCreator, 15_000, offlineSwaps, logger));
+      const { startLockupWatcher } = await import("./lockup-watcher.js");
+      const poller = startOfflineSettlementPoller(settlements, offlineSwapCreator, off.pollIntervalMs, offlineSwaps, logger);
+      runtime.addStop(poller.stop);
+      if (contracts && offlineSwaps) runtime.addStop(startLockupWatcher(contracts, offlineSwaps, poller.trigger, logger));
       const via = `cards:${config.offlineReceive.registryUrls?.[0] ?? config.offlineReceive.cardsFile ?? "network-default"}`;
-      console.log(`offline receive: enabled (solver=${via})`);
+      console.log(`offline receive: enabled (solver=${via}, claim=${contracts ? "event-driven" : "polled"})`);
     }
     // The destination rail (paymentOptions: arkade) settles by observation, not by
     // preimage: watch the indexer for payments to registered Arkade addresses.
