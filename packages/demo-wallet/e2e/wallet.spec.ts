@@ -10,6 +10,11 @@ import { IS_MAINNET, LNURL_BASE, LNURL_DOMAIN as DOMAIN, MNEMONIC_KEY, USERNAME_
 // passed while the wallet could not create an identity at all.
 const LNURL_DOMAIN = DOMAIN;
 
+// "./" and not "/": a baseURL carrying a path (a Pages project site lives at
+// /<repo>/) is discarded by an absolute path, so goto("/") lands on the org
+// root and 404s. Relative keeps the prefix, and still resolves to the root on a
+// bare host.
+
 /** A username nobody else is using, short enough for the server's policy. */
 const username = () => `e2e${Date.now().toString(36)}`;
 
@@ -44,7 +49,7 @@ test("loads and offers onboarding", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
 
-  await page.goto("/");
+  await page.goto("./");
 
   await expect(page.getByRole("heading", { name: "Arkade demo wallet" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Create your wallet" })).toBeVisible();
@@ -53,7 +58,7 @@ test("loads and offers onboarding", async ({ page }) => {
 });
 
 test("keeps Create disabled until the username is long enough", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("./");
   const create = page.getByRole("button", { name: "Create wallet" });
 
   await expect(create).toBeDisabled();
@@ -65,7 +70,7 @@ test("keeps Create disabled until the username is long enough", async ({ page })
 
 test("onboards against mutinynet and shows an address at the pinned domain", async ({ page }) => {
   const name = username();
-  await page.goto("/");
+  await page.goto("./");
 
   await page.getByPlaceholder("username").fill(name);
   await page.getByRole("button", { name: "Create wallet" }).click();
@@ -81,7 +86,7 @@ test("onboards against mutinynet and shows an address at the pinned domain", asy
 });
 
 test("shows the Arkade address, a QR and a boarding address to fund", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("./");
   await page.getByPlaceholder("username").fill(username());
   await page.getByRole("button", { name: "Create wallet" }).click();
   await expect(page.getByRole("heading", { name: "Your Lightning address" })).toBeVisible();
@@ -92,7 +97,7 @@ test("shows the Arkade address, a QR and a boarding address to fund", async ({ p
 });
 
 test("routes the send box through the payment router", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("./");
   await page.getByPlaceholder("username").fill(username());
   await page.getByRole("button", { name: "Create wallet" }).click();
   await expect(page.getByRole("heading", { name: "Your Lightning address" })).toBeVisible();
@@ -107,7 +112,7 @@ test("routes the send box through the payment router", async ({ page }) => {
 });
 
 test("lists payment activity for the freshly claimed address", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("./");
   await page.getByPlaceholder("username").fill(username());
   await page.getByRole("button", { name: "Create wallet" }).click();
   await expect(page.getByRole("heading", { name: "Your Lightning address" })).toBeVisible();
