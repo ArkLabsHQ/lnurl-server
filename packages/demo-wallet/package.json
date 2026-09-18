@@ -1,0 +1,27 @@
+{
+  "name": "@arkade-os/lnurl-demo-wallet",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Demo Arkade wallet driving a receive page through lnurl-server",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@arkade-os/lnurl-client": "workspace:*",
+    "@arkade-os/sdk": "0.4.72",
+    "@scure/bip39": "^2.4.0",
+    "qrcode": "^1.5.4",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@types/qrcode": "^1.5.5",
+    "@types/react": "^19.2.16",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    "vite": "^8.0.16"
+  }
+}
