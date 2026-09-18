@@ -96,6 +96,19 @@ test("shows the Arkade address, a QR and a boarding address to fund", async ({ p
   await expect(page.getByRole("heading", { name: "Fund this wallet" })).toBeVisible();
 });
 
+test("toggles the receive QR between the lightning address and a unified URI", async ({ page }) => {
+  await page.goto("./");
+  await page.getByPlaceholder("username").fill(username());
+  await page.getByRole("button", { name: "Create wallet" }).click();
+  await expect(page.getByRole("heading", { name: "Your Lightning address" })).toBeVisible();
+
+  await expect(page.getByText("Lightning only")).toBeVisible();
+
+  await page.getByRole("button", { name: "Unified (BIP321)" }).click();
+  await expect(page.getByText("on-chain · Arkade · Lightning")).toBeVisible();
+  await expect(page.getByAltText("QR code")).toBeVisible();
+});
+
 test("routes the send box through the payment router", async ({ page }) => {
   await page.goto("./");
   await page.getByPlaceholder("username").fill(username());

@@ -1,14 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PaymentOption, WalletBalance } from "@arkade-os/sdk";
-import type { PaymentActivity } from "@arkade-os/lnurl-client";
+import type { StoredPayment } from "@arkade-os/lnurl-client";
 import { EXPLORER, LNURL_DOMAIN, USERNAME_KEY } from "./config.js";
-import { createMnemonic, forgetWallet, loadMnemonic, openWallet, type DemoWallet } from "./wallet.js";
+import { createMnemonic, loadMnemonic, openWallet, wipeWallet, type DemoWallet } from "./wallet.js";
 import { lnurl } from "./lnurl.js";
 import { createRouter, RAIL_PRIORITY } from "./router.js";
-import { Qr } from "./Qr.js";
+import { localPaymentStore, storedPayments } from "./payment-store.js";
+import { autoSettleBoarding, type BoardingState } from "./boarding.js";
+import { Backup } from "./Backup.js";
+import { Settings } from "./Settings.js";
+import { forgetPayments } from "./payment-store.js";
+import { ReceiveQr } from "./Qr.js";
 
-type Tab = "Receive" | "Send" | "Activity";
-const TABS: Tab[] = ["Receive", "Send", "Activity"];
+type Tab = "Receive" | "Send" | "Activity" | "Settings";
+const TABS: Tab[] = ["Receive", "Send", "Activity", "Settings"];
 
 const page = { fontFamily: "system-ui, sans-serif", maxWidth: 760, margin: "0 auto", padding: 16 } as const;
 const card = { border: "1px solid #ddd", borderRadius: 8, padding: 16, marginBottom: 16 } as const;
@@ -42,15 +47,44 @@ export function App() {
   const [booting, setBooting] = useState(true);
   const opened = useRef(false);
 
+  const adopt = useCallback(async (mnemonic: string) => {
+    setBooting(true);
+    setErr(null);
+    try {
+      const w = await openWallet(mnemonic);
+      setWallet(w);
+      setToken(await lnurl.deriveToken(w.identity));
+
+      // The username is not in the phrase, so on a fresh browser ask the server
+      // which one this token owns. Re-registering it would fail: the server
+      // refuses any existing username, owner or not.
+      const token = await lnurl.deriveToken(w.identity);
+      const owned = localStorage.getItem(USERNAME_KEY) ?? (await lnurl.ownedUsername(token).catch(() => undefined));
+      if (owned) localStorage.setItem(USERNAME_KEY, owned);
+      setUsername(owned ?? null);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBooting(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (opened.current) return;
     opened.current = true;
     const mnemonic = loadMnemonic();
     if (!mnemonic) { setBooting(false); return; }
-    openWallet(mnemonic)
-      .then(async (w) => { setWallet(w); setToken(await lnurl.deriveToken(w.identity)); })
-      .catch((e: Error) => setErr(e.message))
-      .finally(() => setBooting(false));
+    // Same path as a restore: a phrase without a username is a phrase that has
+    // to ask the server which one it owns, whether it arrived by restore or by
+    // a browser that kept the key and lost the rest.
+    void adopt(mnemonic);
+  }, [adopt]);
+
+
+  const forget = useCallback(() => {
+    setWallet(null);
+    setUsername(null);
+    setToken(null);
   }, []);
 
   if (booting) return <div style={page}>Opening wallet…</div>;
@@ -62,7 +96,7 @@ export function App() {
       {err && <p style={{ color: "crimson" }}>{err}</p>}
       {!wallet || !username || !token
         ? <Onboarding wallet={wallet} username={username} onReady={(w, u, t) => { setWallet(w); setUsername(u); setToken(t); }} onError={setErr} />
-        : <Wallet wallet={wallet} username={username} token={token} />}
+        : <Wallet wallet={wallet} username={username} token={token} onRestored={adopt} onReset={forget} />}
     </div>
   );
 }
@@ -86,7 +120,7 @@ function Onboarding({ wallet, username, onReady, onError }: {
       // wallet that silently cannot receive.
       const result = username
         ? { token: await lnurl.deriveToken(w.identity), username }
-        : await lnurl.onboard(w.identity, w.arkadeAddress, name.trim());
+        : await lnurl.onboard(w.identity, w.arkadeAddress, name.trim(), w.boardingAddress);
       localStorage.setItem(USERNAME_KEY, result.username);
       onReady(w, result.username, result.token);
     } catch (e) {
@@ -116,12 +150,17 @@ function Onboarding({ wallet, username, onReady, onError }: {
   );
 }
 
-function Wallet({ wallet, username, token }: { wallet: DemoWallet; username: string; token: string }) {
+function Wallet({ wallet, username, token, onRestored, onReset }: {
+  wallet: DemoWallet; username: string; token: string;
+  onRestored: (mnemonic: string) => void; onReset: () => void;
+}) {
   const [tab, setTab] = useState<Tab>("Receive");
   const [balance, setBalance] = useState<WalletBalance | null>(null);
   // From the pinned domain, never location.hostname: this is served from GitHub
   // Pages, where the page's own host has nothing to do with the LNURL server.
   const lightningAddress = `${username}@${LNURL_DOMAIN}`;
+
+  const [boarding, setBoarding] = useState<BoardingState>({ status: "idle" });
 
   const refresh = useCallback(() => {
     wallet.wallet.getBalance().then(setBalance).catch(() => undefined);
@@ -133,6 +172,14 @@ function Wallet({ wallet, username, token }: { wallet: DemoWallet; username: str
     return () => clearInterval(id);
   }, [refresh]);
 
+  // Onchain arrivals are otherwise inert: they sit as boarding funds until
+  // somebody settles them, and nothing in a receive demo should need a manual
+  // step to turn received money into spendable money.
+  useEffect(() => autoSettleBoarding(wallet.wallet, (state) => {
+    setBoarding(state);
+    if (state.status === "boarded") refresh();
+  }), [wallet, refresh]);
+
   return (
     <>
       <div style={{ ...card, display: "flex", alignItems: "baseline", gap: 16 }}>
@@ -142,8 +189,15 @@ function Wallet({ wallet, username, token }: { wallet: DemoWallet; username: str
             available · {balance?.settled ?? 0} settled · {balance?.preconfirmed ?? 0} preconfirmed
           </div>
         </div>
+        {boarding.status !== "idle" && (
+          <span style={{ ...mono, fontSize: 12, color: boarding.status === "failed" ? "crimson" : "#946200" }}>
+            {boarding.status === "boarding" && `boarding ${boarding.sats} sats…`}
+            {boarding.status === "boarded" && `boarded ${boarding.sats} sats`}
+            {boarding.status === "failed" && `boarding failed: ${boarding.reason}`}
+          </span>
+        )}
         <button style={{ ...btn, marginLeft: "auto" }} onClick={refresh}>Refresh</button>
-        <button style={btn} onClick={() => { forgetWallet(); location.reload(); }}>Reset</button>
+        <button style={btn} onClick={() => { wipeWallet(); forgetPayments(); onReset(); }}>Reset</button>
       </div>
 
       <nav style={{ display: "flex", gap: 12, borderBottom: "1px solid #ccc", marginBottom: 16 }}>
@@ -158,7 +212,13 @@ function Wallet({ wallet, username, token }: { wallet: DemoWallet; username: str
 
       {tab === "Receive" && <Receive lightningAddress={lightningAddress} wallet={wallet} />}
       {tab === "Send" && <Send wallet={wallet} onSent={refresh} />}
-      {tab === "Activity" && <Activity token={token} username={username} />}
+      {tab === "Activity" && <Activity token={token} username={username} lightningAddress={lightningAddress} />}
+      {tab === "Settings" && (
+        <>
+          <Backup onRestored={onRestored} onReset={() => { forgetPayments(); onReset(); }} />
+          <Settings onChanged={() => undefined} />
+        </>
+      )}
     </>
   );
 }
@@ -169,7 +229,11 @@ function Receive({ lightningAddress, wallet }: { lightningAddress: string; walle
       <div style={card}>
         <h2 style={{ fontSize: 16, marginTop: 0 }}>Your Lightning address</h2>
         <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "flex-start" }}>
-          <Qr text={`lightning:${lightningAddress}`} />
+          <ReceiveQr
+            lightningAddress={lightningAddress}
+            arkadeAddress={wallet.arkadeAddress}
+            boardingAddress={wallet.boardingAddress}
+          />
           <div style={{ flex: 1, minWidth: 260 }}>
             <Field label="Lightning address" value={lightningAddress} />
             <Field label="Arkade address" value={wallet.arkadeAddress} />
@@ -225,6 +289,19 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
         if (u.status === "settled") onSent();
       });
       onSent();
+
+      // The rail carries the receiver's LUD-21 verify URL when it has one.
+      // Sending says the payment left; only this says the receiver got it —
+      // and a rail whose destination cannot identify the payment supplies none,
+      // so absence is "no answer available" rather than a failure.
+      const verifyUrl = (quote.meta?.lnurl as { verify?: string } | undefined)?.verify;
+      if (verifyUrl) {
+        void lnurl.pollVerify(verifyUrl, { timeoutMs: 180_000, intervalMs: 2_000 })
+          .then((v) => setStatus(v.settled
+            ? `receiver confirmed settled via ${quote.railId}`
+            : `receiver has not confirmed settlement via ${quote.railId}`))
+          .catch((e: Error) => setStatus(`sent via ${quote.railId}, but verify failed: ${e.message}`));
+      }
     } catch (e) { setStatus(`payment failed: ${(e as Error).message}`); }
     finally { setBusy(false); }
   };
@@ -261,19 +338,24 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
   );
 }
 
-function Activity({ token, username }: { token: string; username: string }) {
-  const [rows, setRows] = useState<PaymentActivity[] | null>(null);
+function Activity({ token, username, lightningAddress }: { token: string; username: string; lightningAddress: string }) {
+  const store = useMemo(() => localPaymentStore(), []);
+  const [rows, setRows] = useState<StoredPayment[] | null>(null);
   const [err, setErr] = useState("");
 
   useEffect(() => {
     let live = true;
-    const load = () => lnurl.payments(token, username)
-      .then((p) => { if (live) setRows(p); })
+    // Read the local store first so a closed-and-reopened wallet shows its
+    // history immediately, then sync from the cursor rather than re-fetching.
+    const show = () => { if (live) setRows(storedPayments(lightningAddress)); };
+    show();
+    const load = () => lnurl.syncActivity(token, username, store)
+      .then(() => show())
       .catch((e: Error) => { if (live) setErr(e.message); });
-    load();
-    const id = setInterval(load, 8000);
+    void load();
+    const id = setInterval(() => void load(), 8000);
     return () => { live = false; clearInterval(id); };
-  }, [token, username]);
+  }, [token, username, lightningAddress, store]);
 
   if (err) return <div style={card}><p style={{ color: "crimson" }}>{err}</p></div>;
   if (!rows) return <div style={card}>Loading…</div>;
@@ -283,9 +365,9 @@ function Activity({ token, username }: { token: string; username: string }) {
     <div style={card}>
       <h2 style={{ fontSize: 16, marginTop: 0 }}>Payments to {username}</h2>
       {rows.map((r) => (
-        <div key={r.kind === "bolt11" ? r.paymentHash : r.verifyId}
+        <div key={r.key}
           style={{ display: "flex", gap: 12, padding: "8px 0", borderTop: "1px solid #eee", fontSize: 13 }}>
-          <span style={{ width: 70, color: "#666" }}>{r.kind === "bolt11" ? "lightning" : r.paymentOption}</span>
+          <span style={{ width: 70, color: "#666" }}>{r.kind === "bolt11" ? "lightning" : r.paymentOption ?? "destination"}</span>
           <span style={{ width: 90 }}>{r.amountMsat ? `${r.amountMsat / 1000} sats` : "—"}</span>
           <span style={{ color: r.settled ? "#16834b" : "#946200" }}>{r.settled ? "settled" : "pending"}</span>
           <span style={{ marginLeft: "auto", color: "#666" }}>{new Date(r.createdAt).toLocaleString()}</span>
