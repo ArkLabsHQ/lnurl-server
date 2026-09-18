@@ -4,13 +4,23 @@ A minimal browser wallet that drives a receive page through `lnurl-server`. It e
 exercise the protocol end to end — onboarding, offline receive and wallet-to-wallet
 payment — against the mutinynet instance, not to be a wallet anyone keeps money in.
 
+Published on every merge to `main` at
+**https://arklabshq.github.io/lnurl-server/**, pinned to the mutinynet instance.
+It is a static bundle with no backend of its own.
+
 ```sh
 pnpm install
 pnpm --filter @arkade-os/lnurl build:client   # the wallet consumes the client's dist
 pnpm --filter @arkade-os/lnurl-demo-wallet dev
 ```
 
-Then open http://localhost:5173. Endpoints live in `src/config.ts`.
+Then open http://localhost:5173. Endpoints live in `src/config.ts`; the wallet is
+mutinynet-only and reads its LNURL domain from there rather than from
+`location.hostname`, which on Pages is the GitHub host and has nothing to do with
+the LNURL server.
+
+`DEMO_WALLET_BASE` sets the asset prefix: a Pages project site is served from
+`/<repo>/`, and the workflow passes it. Unset, it builds for a root-served host.
 
 ## What onboarding does
 

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PaymentOption, WalletBalance } from "@arkade-os/sdk";
 import type { PaymentActivity } from "@arkade-os/lnurl-client";
-import { EXPLORER, USERNAME_KEY } from "./config.js";
+import { EXPLORER, LNURL_DOMAIN, USERNAME_KEY } from "./config.js";
 import { createMnemonic, forgetWallet, loadMnemonic, openWallet, type DemoWallet } from "./wallet.js";
 import { lnurl } from "./lnurl.js";
 import { createRouter, RAIL_PRIORITY } from "./router.js";
@@ -119,7 +119,9 @@ function Onboarding({ wallet, username, onReady, onError }: {
 function Wallet({ wallet, username, token }: { wallet: DemoWallet; username: string; token: string }) {
   const [tab, setTab] = useState<Tab>("Receive");
   const [balance, setBalance] = useState<WalletBalance | null>(null);
-  const lightningAddress = `${username}@${location.hostname === "localhost" ? "lnurl.mutinynet.arkade.sh" : location.hostname}`;
+  // From the pinned domain, never location.hostname: this is served from GitHub
+  // Pages, where the page's own host has nothing to do with the LNURL server.
+  const lightningAddress = `${username}@${LNURL_DOMAIN}`;
 
   const refresh = useCallback(() => {
     wallet.wallet.getBalance().then(setBalance).catch(() => undefined);
