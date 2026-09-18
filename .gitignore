@@ -7,3 +7,7 @@ dist/
 package-lock.json
 
 .e2e-cache/
+test-results/
+playwright-report/
+blob-report/
+.playwright-mcp/

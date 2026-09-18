@@ -1,7 +1,7 @@
 import { MnemonicIdentity, RestArkProvider, Wallet, type WalletBalance } from "@arkade-os/sdk";
 import { generateMnemonic, validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
-import { ARK_SERVER, MNEMONIC_KEY } from "./config.js";
+import { ARK_SERVER, IS_MAINNET, MNEMONIC_KEY } from "./config.js";
 
 export interface DemoWallet {
   identity: MnemonicIdentity;
@@ -32,7 +32,7 @@ export function forgetWallet(): void {
  * is why this demo is a browser app rather than a script.
  */
 export async function openWallet(mnemonic: string): Promise<DemoWallet> {
-  const identity = MnemonicIdentity.fromMnemonic(mnemonic);
+  const identity = MnemonicIdentity.fromMnemonic(mnemonic, { isMainnet: IS_MAINNET });
   const wallet = await Wallet.create({ identity, arkProvider: new RestArkProvider(ARK_SERVER) });
   const [offchain, boarding] = await wallet.getNewAddresses({ types: ["default", "boarding"] });
   return { identity, wallet, arkadeAddress: offchain.address, boardingAddress: boarding.address };

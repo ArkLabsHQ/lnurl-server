@@ -21,7 +21,8 @@
     "test": "cross-env NODE_OPTIONS=--experimental-sqlite vitest run",
     "test:e2e": "cross-env NODE_OPTIONS=--experimental-sqlite vitest run --config vitest.e2e.config.ts",
     "test:watch": "cross-env NODE_OPTIONS=--experimental-sqlite vitest",
-    "type-check": "tsc --noEmit && tsc -p tsconfig.test.json && tsc -p tsconfig.ui.json && tsc -p packages/client/tsconfig.json && tsc -p packages/demo-wallet/tsconfig.json"
+    "type-check": "tsc --noEmit && tsc -p tsconfig.test.json && tsc -p tsconfig.ui.json && tsc -p packages/client/tsconfig.json && tsc -p packages/demo-wallet/tsconfig.json",
+    "test:browser": "pnpm --filter @arkade-os/lnurl-demo-wallet test:e2e"
   },
   "dependencies": {
     "@arkade-os/sdk": "0.4.73",
@@ -37,6 +38,7 @@
     "nostr-tools": "^2.25.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@scure/bip39": "^2.4.0",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
