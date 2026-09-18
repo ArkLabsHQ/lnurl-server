@@ -1,4 +1,4 @@
-import type { PaymentRail } from "@arkade-os/sdk";
+import { getNetwork, resolveEmulatorPubkey, type PaymentRail } from "@arkade-os/sdk";
 import {
   discoverMarkets,
   relayTransport,
@@ -29,6 +29,10 @@ const SWAP_KEY = "arkade-demo-wallet.lightning-swaps";
 export function createLightningRail(identity: RailIdentity): PaymentRail {
   return solverLightningRail({
     arkServerUrl: ARK_SERVER,
+    // Without this the rail is silently unavailable: no mutinynet market
+    // advertises an emulator key of its own, so the rendezvous has nothing to
+    // pin the covenant against and selects no market at all.
+    emulatorPubkey: resolveEmulatorPubkey(getNetwork(NETWORK)),
     decodeInvoice: invoiceFactsFromBolt11,
     discover: () => discoverMarkets({ network: NETWORK, registryUrl: defaultRegistryUrls(NETWORK)[0] }),
     connect: async (rendezvous, fn) => {

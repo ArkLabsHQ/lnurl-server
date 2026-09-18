@@ -41,6 +41,32 @@ beforeEach(() => {
   app.use("/admin/api", createAdminApi({ repos, addressService: svc, sessions, settings, config, settlements, discovery }));
 });
 
+describe("admin settlements address linkage", () => {
+  it("names the address that created each record and filters to it", async () => {
+    const domainId = repos.domains.create({ domain: "linked.com", allocationModes: ["self"] }).id;
+    const a = repos.addresses.create({ domainId, username: "alice", status: "active", sessionId: "sess-a" });
+    const b = repos.addresses.create({ domainId, username: "bob", status: "active", sessionId: "sess-b" });
+    settlements.create({ paymentHash: "aa".repeat(16), pr: "", sessionId: "sess-a", addressId: a.id, paymentOption: "arkade", paymentDestination: "tark1a", amountMsat: 1000 });
+    settlements.create({ paymentHash: "bb".repeat(16), pr: "", sessionId: "sess-b", addressId: b.id, paymentOption: "arkade", paymentDestination: "tark1b", amountMsat: 2000 });
+
+    const all = await request(app).get("/admin/api/settlements");
+    expect(all.status).toBe(200);
+    expect(all.body.map((r: { address: { lightningAddress: string } | null }) => r.address?.lightningAddress).sort())
+      .toEqual(["alice@linked.com", "bob@linked.com"]);
+
+    // What the Addresses view links to: one address's payments, not a page to scan.
+    const mine = await request(app).get(`/admin/api/settlements?addressId=${a.id}`);
+    expect(mine.body).toHaveLength(1);
+    expect(mine.body[0].address).toMatchObject({ id: a.id, lightningAddress: "alice@linked.com" });
+  });
+
+  it("reports no address for a record that never had one", async () => {
+    settlements.create({ paymentHash: "cc".repeat(16), pr: "", sessionId: "orphan", paymentOption: "lightning", amountMsat: 500 });
+    const res = await request(app).get("/admin/api/settlements");
+    expect(res.body.find((r: { paymentHash: string }) => r.paymentHash === "cc".repeat(16)).address).toBeNull();
+  });
+});
+
 describe("admin API", () => {
   it("rejects an invalid solver card without persisting or refreshing", async () => {
     const res = await request(app).post("/admin/api/solver-cards").send({ label: "bad", card: {} });

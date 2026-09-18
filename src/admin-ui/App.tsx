@@ -48,6 +48,8 @@ function ago(ts: number): string {
 
 export function App() {
   const [tab, setTab] = useState<Tab>("Domains");
+  // Lifted so the Addresses view can hand one to Settlements when jumping across.
+  const [settlementsAddressId, setSettlementsAddressId] = useState<number | undefined>();
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", maxWidth: 960, margin: "0 auto", padding: 16 }}>
       <h1 style={{ fontSize: 20 }}>lnurl-admin</h1>
@@ -68,9 +70,9 @@ export function App() {
       {tab === "Rails" && <Rails />}
       {tab === "Solvers" && <Solvers />}
       {tab === "Sessions" && <Sessions />}
-      {tab === "Settlements" && <Settlements />}
+      {tab === "Settlements" && <Settlements addressId={settlementsAddressId} onAddressFilter={setSettlementsAddressId} />}
       {tab === "Domains" && <Domains />}
-      {tab === "Addresses" && <Addresses />}
+      {tab === "Addresses" && <Addresses onShowSettlements={(id) => { setSettlementsAddressId(id); setTab("Settlements"); }} />}
       {tab === "API Keys" && <ApiKeys />}
       {tab === "Blacklist" && <Blacklist />}
       {tab === "Settings" && <Settings />}
@@ -276,24 +278,25 @@ interface SettlementRow {
   paymentOption: string;
   paymentDestination: string | null;
   paymentReference: string | null;
+  address: { id: number; lightningAddress: string } | null;
   amountMsat: number | null;
   hasPreimage: boolean;
   createdAt: number;
   settledAt: number | null;
 }
 
-function Settlements() {
+function Settlements({ addressId, onAddressFilter }: { addressId?: number; onAddressFilter?: (id: number | undefined) => void } = {}) {
   const [items, setItems] = useState<SettlementRow[]>([]);
   const [err, setErr] = useState<string>();
   const [state, setState] = useState("");
   const [option, setOption] = useState("");
-  const reload = () => api.get<SettlementRow[]>(`/settlements${qs({ settled: state, option })}`).then((r) => { setItems(r); setErr(undefined); }).catch((e: Error) => setErr(e.message));
+  const reload = () => api.get<SettlementRow[]>(`/settlements${qs({ settled: state, option, addressId: addressId ? String(addressId) : "" })}`).then((r) => { setItems(r); setErr(undefined); }).catch((e: Error) => setErr(e.message));
   useEffect(() => {
     reload();
     const t = setInterval(reload, 5000); // flips land on payment events — poll like Sessions
     return () => clearInterval(t);
     /* eslint-disable-next-line react-hooks/exhaustive-deps */
-  }, [state, option]);
+  }, [state, option, addressId]);
 
   return (
     <div>
@@ -314,11 +317,20 @@ function Settlements() {
           <option value="arkade">arkade</option>
         </select>
       </div>
+      {addressId !== undefined && (
+        <p style={{ fontSize: 13 }}>
+          Filtered to {items[0]?.address?.lightningAddress ?? `address #${addressId}`}{" "}
+          <button onClick={() => onAddressFilter?.(undefined)}>show all</button>
+        </p>
+      )}
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
-        <thead><tr><Th>Created</Th><Th>Option</Th><Th>Amount</Th><Th>State</Th><Th>Destination</Th><Th>Reference</Th></tr></thead>
+        <thead><tr><Th>Created</Th><Th>Address</Th><Th>Option</Th><Th>Amount</Th><Th>State</Th><Th>Destination</Th><Th>Reference</Th></tr></thead>
         <tbody>{items.map((s) => (
           <tr key={s.paymentHash}>
             <Td><span title={new Date(s.createdAt).toLocaleString()}>{ago(s.createdAt)}</span></Td>
+            <Td>{s.address
+              ? <a href="#" onClick={(e) => { e.preventDefault(); onAddressFilter?.(s.address!.id); }}>{s.address.lightningAddress}</a>
+              : <span style={{ color: "#999" }}>—</span>}</Td>
             <Td>{s.paymentOption}{s.swapId ? " (offline swap)" : ""}</Td>
             <Td>{s.amountMsat != null ? `${s.amountMsat.toLocaleString()} msat` : "—"}</Td>
             <Td>{s.settled ? `settled${s.settledAt ? ` (${ago(s.settledAt)})` : ""}` : "pending"}{s.hasPreimage ? " · preimage held" : ""}</Td>
@@ -444,7 +456,7 @@ function DomainEditor({ domain, onClose, onSaved }: { domain: Domain; onClose: (
   );
 }
 
-function Addresses() {
+function Addresses({ onShowSettlements }: { onShowSettlements?: (id: number) => void } = {}) {
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("");
   const { items, reload, err } = useList<Address>(`/addresses${qs({ q, status })}`, [q, status]);
@@ -495,6 +507,7 @@ function Addresses() {
               <Td>{a.username}@{a.domain}</Td><Td>{a.status}</Td><Td>{a.online ? "online" : "offline"}</Td>
               <Td>
                 <button onClick={() => setRailsFor(railsFor === a.id ? undefined : a.id)}>{railsFor === a.id ? "Close" : "Rails"}</button>{" "}
+                <button onClick={() => onShowSettlements?.(a.id)}>Payments</button>{" "}
                 {a.status === "revoked"
                   ? <button onClick={() => setStatusOf(a.id, "active")}>Reactivate</button>
                   : <button onClick={() => setStatusOf(a.id, "revoked")}>Revoke</button>}{" "}
