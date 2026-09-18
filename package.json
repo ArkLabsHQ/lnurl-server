@@ -24,9 +24,9 @@
     "type-check": "tsc --noEmit && tsc -p tsconfig.test.json && tsc -p tsconfig.ui.json && tsc -p packages/client/tsconfig.json && tsc -p packages/demo-wallet/tsconfig.json"
   },
   "dependencies": {
-    "@arkade-os/sdk": "0.4.72",
-    "@arkade-os/solver-discovery": "0.2.5",
-    "@arkade-os/swap": "0.0.18",
+    "@arkade-os/sdk": "0.4.73",
+    "@arkade-os/solver-discovery": "0.2.7",
+    "@arkade-os/swap": "0.0.19",
     "@noble/ciphers": "2.1.1",
     "@noble/curves": "2.0.1",
     "@noble/hashes": "2.0.1",
@@ -57,7 +57,8 @@
   "pnpm": {
     "overrides": {
       "esbuild": "^0.28.1",
-      "form-data": "^4.0.6"
+      "form-data": "^4.0.6",
+      "@arkade-os/sdk": "0.4.73"
     }
   },
   "engines": {

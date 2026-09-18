@@ -48,7 +48,7 @@ interface FakeSolver {
   baseUrl: string;
   requests: Record<string, any>[];
   statuses: Map<string, string>;
-  mode: { wrongHash?: boolean; fromAmountDelta?: number; bogusLockup?: boolean };
+  mode: { wrongHash?: boolean; fromAmountDelta?: number; bogusLockup?: boolean; amountsAsStrings?: boolean };
   close: () => Promise<void>;
 }
 
@@ -84,8 +84,10 @@ async function startFakeSolver(): Promise<FakeSolver> {
           type: "rfq_quote",
           rfq_id: r.rfq_id,
           pair: r.pair,
-          from_amount: r.amount + (mode.fromAmountDelta ?? 0),
-          to_amount: r.amount - 1,
+          from_amount: mode.amountsAsStrings
+            ? String(r.amount + (mode.fromAmountDelta ?? 0))
+            : r.amount + (mode.fromAmountDelta ?? 0),
+          to_amount: mode.amountsAsStrings ? String(r.amount - 1) : r.amount - 1,
           solver_pubkey: solverPub,
           valid_until: now + 600,
           refund_locktime: refundLocktime,
@@ -377,6 +379,21 @@ describe("createOfflineSwapCoordinator", () => {
       await expect(creator.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY })).rejects.toThrow(/from_amount/);
     } finally {
       solver.mode.fromAmountDelta = undefined;
+    }
+  });
+
+  it("refuses a quote that prices this corridor in the asset-leg string form", async () => {
+    // `from_amount`/`to_amount` are sats-as-number on HTLC corridors and a
+    // decimal string only on arkade<->arkade asset legs, whose bigint range a
+    // JS number cannot hold. Coercing would lose precision silently, and
+    // comparing without coercing is worse: "50" !== 50 rejects a correct quote,
+    // and "9" > "10" is true.
+    solver.mode.amountsAsStrings = true;
+    try {
+      await expect(creator.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY }))
+        .rejects.toThrow(/sats/i);
+    } finally {
+      solver.mode.amountsAsStrings = undefined;
     }
   });
 

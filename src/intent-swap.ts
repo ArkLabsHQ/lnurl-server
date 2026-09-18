@@ -134,6 +134,21 @@ function nostrTransport(solverPubkey: string, relays: string[], nostrSecretKey?:
   });
 }
 
+/** A quote amount as sats.
+ *
+ *  `from_amount`/`to_amount` are a number of sats on HTLC-class corridors — which
+ *  this one is — and a canonical decimal string only on arkade<->arkade asset
+ *  legs, whose bigint range a JS number cannot hold. So a string here is a
+ *  corridor the caller did not ask for, and rejecting beats coercing: `Number()`
+ *  would silently round an asset amount, while leaving it alone is worse still,
+ *  since `"50" !== 50` rejects a correct quote and `"9" > "10"` is true. */
+function quoteSats(field: string, value: number | string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+    throw new Error(`solver quoted ${field} as ${JSON.stringify(value)}, which is not a whole number of sats`);
+  }
+  return value;
+}
+
 function compressedKey(v: unknown, name: string): Uint8Array {
   if (typeof v !== "string" || !/^0[23][0-9a-f]{64}$/i.test(v)) {
     throw new Error(`${name}: expected a 33-byte compressed pubkey (hex)`);
@@ -262,10 +277,12 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
             amount: params.amountSat,
             amountSide: "from",
           }));
-          if (quote.from_amount !== params.amountSat) {
-            throw new Error(`solver quoted from_amount ${quote.from_amount}, not the requested ${params.amountSat}`);
+          const fromAmount = quoteSats("from_amount", quote.from_amount);
+          const toAmount = quoteSats("to_amount", quote.to_amount);
+          if (fromAmount !== params.amountSat) {
+            throw new Error(`solver quoted from_amount ${fromAmount}, not the requested ${params.amountSat}`);
           }
-          if (quote.to_amount > quote.from_amount) throw new Error("solver quote pays out more than it takes in");
+          if (toAmount > fromAmount) throw new Error("solver quote pays out more than it takes in");
           const derived = deriveLightningReceive({
             quote,
             paymentHash,
@@ -278,7 +295,7 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
           });
           const { payDeadline } = verifyReceiveInvoice({ invoice: derived.invoice, decode: invoiceFactsFromBolt11, paymentHash, quote });
           assertReceivable({ quote, payDeadline, now: Math.floor(Date.now() / 1000) });
-          settings.selfClaimer?.register({ swapId: rfqId, script: derived.script, expectedAmount: quote.to_amount });
+          settings.selfClaimer?.register({ swapId: rfqId, script: derived.script, expectedAmount: toAmount });
           pinned.set(rfqId, transport);
           return {
             swapId: rfqId,
@@ -293,7 +310,7 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
               relays: [...candidate.relays],
               rfqId,
               lockupAddress: derived.address,
-              expectedAmount: quote.to_amount,
+              expectedAmount: toAmount,
               script: VHTLCV2ContractHandler.serializeParams(derived.script.options),
             },
           };
