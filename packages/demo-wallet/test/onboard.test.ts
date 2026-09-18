@@ -10,7 +10,7 @@ import { runMigrations } from "../../../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../../../src/db/repositories/index.js";
 import { AddressService } from "../../../src/address-service.js";
 import { createLnurlClient } from "@arkade-os/lnurl-client";
-import { chooseRail, createLnurlApi } from "../src/lnurl.js";
+import { createLnurlApi } from "../src/lnurl.js";
 
 // The host the client will send, since it connects by IP: the server resolves
 // the domain from the Host header when the body names none.
@@ -82,21 +82,5 @@ describe("onboarding", () => {
 
     const payRequest = await payRequestFor(registered.username);
     expect(payRequest.paymentOptions ?? []).toEqual([]);
-  });
-});
-
-describe("chooseRail", () => {
-  it("prefers arkade when the address advertises it", () => {
-    expect(chooseRail([{ id: "lightning", type: "lightning" }, { id: "arkade", type: "arkade" }])).toBe("arkade");
-  });
-
-  it("sends no rail for a pure LUD-06 address", () => {
-    expect(chooseRail(undefined)).toBeUndefined();
-    expect(chooseRail([])).toBeUndefined();
-  });
-
-  it("skips a rail the server marked unavailable", () => {
-    expect(chooseRail([{ id: "arkade", type: "arkade", available: false }, { id: "lightning", type: "lightning" }]))
-      .toBe("lightning");
   });
 });

@@ -12,6 +12,9 @@ import { hex } from "@scure/base";
 import { LnurlError } from "./errors.js";
 import { deriveSessionTokenWithSigner } from "./token.js";
 
+export { LNURL_ARKADE_RAIL, LNURL_LIGHTNING_RAIL, lnurlRails } from "./rail.js";
+export type { LnurlRailDeps } from "./rail.js";
+
 /** The slice of `@arkade-os/sdk`'s `Identity` these helpers need. */
 export interface ArkadeSigner {
   signMessage(message: Uint8Array, signatureType: "schnorr" | "ecdsa"): Promise<Uint8Array>;

@@ -41,7 +41,3 @@ export async function openWallet(mnemonic: string): Promise<DemoWallet> {
 export function getBalance(wallet: Wallet): Promise<WalletBalance> {
   return wallet.getBalance();
 }
-
-export function sendToArkadeAddress(wallet: Wallet, address: string, amountSats: number): Promise<string> {
-  return wallet.send({ recipients: [{ address, amount: amountSats }] });
-}

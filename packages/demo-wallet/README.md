@@ -43,10 +43,23 @@ solver mints the invoice instead.
 `EventSource`. Both are browser natives; in Node the same code needs repositories and an
 event-source factory injected.
 
-## Scope
+## Send routes through the SDK's PaymentRouter
 
-Send pays the `arkade` rail: it resolves the target, asks the callback for that rail, and
-pays the returned Arkade destination with `wallet.send`. It cannot pay a BOLT11 invoice —
-that needs a swap this demo does not implement — and says so rather than pretending.
+Send does not choose a rail itself. It builds a `PaymentRouter`
+(`src/router.ts`), registers the LNURL rails from
+`@arkade-os/lnurl-client/arkade`, and asks `options()` what can pay the target.
+So the same box accepts a Lightning address, an LNURL, an Arkade address or an
+on-chain address, and the policy is one array — `RAIL_PRIORITY` — rather than a
+branch in the send path.
+
+An LNURL rail is a decorator: it resolves the target, asks the callback for its
+`paymentOption`, and delegates the resulting destination to the rail that
+already pays that kind of target. `lnurl-arkade` delegates to `arkRail`.
+`lnurl-lightning` is registered only when a rail capable of paying BOLT11 is
+supplied, so it is currently absent rather than present-and-unable.
+
+Options are quoted **on click, not on listing**: a quote asks the callback for
+an invoice, so pricing every option up front would mint one per rail and
+abandon all but one.
 
 Funding is manual: the Receive tab shows a boarding address to send mutinynet BTC to.

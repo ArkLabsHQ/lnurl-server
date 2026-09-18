@@ -4,7 +4,6 @@ import {
   type LnurlClient,
   type PayRequest,
   type PaymentActivity,
-  type PaymentOption,
 } from "@arkade-os/lnurl-client";
 import { arkadeIdentityRequest, deriveSessionTokenForIdentity, type ArkadeSigner } from "@arkade-os/lnurl-client/arkade";
 import { LNURL_BASE, LNURL_DOMAIN } from "./config.js";
@@ -83,19 +82,3 @@ export function createLnurlApi(baseUrl: string, domain: string, client: LnurlCli
 
 /** The instance the app uses. */
 export const lnurl = createLnurlApi(LNURL_BASE, LNURL_DOMAIN);
-
-/**
- * Picks which advertised rail to pay a resolved address on.
- *
- * TODO(contribution): decide the policy. The trade-off is real — `arkade` is
- * instant, near-free and settles wallet-to-wallet, but the rail can be
- * unavailable at callback time; `lightning` is universal but routes through a
- * swap. `options` is empty for a pure LUD-06 address, where the only choice is
- * to send no `paymentOption` at all.
- *
- * Returning `undefined` means "send none", which resolves to the lightning rail.
- */
-export function chooseRail(options: PaymentOption[] | undefined): string | undefined {
-  const available = (options ?? []).filter((o) => o.available !== false);
-  return available.find((o) => o.type === "arkade")?.id ?? available[0]?.id;
-}

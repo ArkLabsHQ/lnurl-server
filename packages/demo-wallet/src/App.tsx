@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { WalletBalance } from "@arkade-os/sdk";
-import type { PaymentActivity, PayRequest } from "@arkade-os/lnurl-client";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { PaymentOption, WalletBalance } from "@arkade-os/sdk";
+import type { PaymentActivity } from "@arkade-os/lnurl-client";
 import { EXPLORER, USERNAME_KEY } from "./config.js";
-import { createMnemonic, forgetWallet, loadMnemonic, openWallet, sendToArkadeAddress, type DemoWallet } from "./wallet.js";
-import { chooseRail, lnurl } from "./lnurl.js";
+import { createMnemonic, forgetWallet, loadMnemonic, openWallet, type DemoWallet } from "./wallet.js";
+import { lnurl } from "./lnurl.js";
+import { createRouter, RAIL_PRIORITY } from "./router.js";
 import { Qr } from "./Qr.js";
 
 type Tab = "Receive" | "Send" | "Activity";
@@ -190,36 +191,38 @@ function Receive({ lightningAddress, wallet }: { lightningAddress: string; walle
 }
 
 function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
+  const router = useMemo(() => createRouter(wallet.wallet), [wallet]);
   const [target, setTarget] = useState("");
   const [amount, setAmount] = useState(1000);
-  const [pr, setPr] = useState<PayRequest | null>(null);
-  const [status, setStatus] = useState<string>("");
+  const [options, setOptions] = useState<PaymentOption[] | null>(null);
+  const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const doResolve = async () => {
-    setBusy(true); setStatus(""); setPr(null);
+  const findRoutes = async () => {
+    setBusy(true); setStatus(""); setOptions(null);
     try {
-      setPr(await lnurl.resolveTarget(target));
-    } catch (e) { setStatus(`resolve failed: ${(e as Error).message}`); }
+      const found = await router.options({ raw: target.trim(), amount }, { priority: RAIL_PRIORITY });
+      setOptions(found);
+      if (!found.length) setStatus("no rail can pay that target at this amount");
+    } catch (e) { setStatus(`routing failed: ${(e as Error).message}`); }
     finally { setBusy(false); }
   };
 
-  const doPay = async () => {
-    if (!pr) return;
+  // Quoted only on click: a quote asks the callback for an invoice, so pricing
+  // every option up front would mint one per rail and abandon all but one.
+  const pay = async (option: PaymentOption) => {
     setBusy(true); setStatus("");
     try {
-      const rail = chooseRail(pr.paymentOptions);
-      const result = await lnurl.requestPayment(pr, amount, rail);
-      if (result.kind === "destination" && result.paymentDestination) {
-        const txid = await sendToArkadeAddress(wallet.wallet, result.paymentDestination, amount);
-        setStatus(`paid over the ${result.paymentOption} rail · ${txid}`);
-        onSent();
-      } else if (result.kind === "bolt11") {
-        // No Lightning node here, so a BOLT11 is as far as this wallet can take it.
-        setStatus(`server returned a BOLT11 invoice; this wallet cannot pay it: ${result.pr.slice(0, 40)}…`);
-      } else {
-        setStatus("callback returned no payable destination");
-      }
+      const quote = await option.quote();
+      const handle = await quote.send();
+      setStatus(`sent ${quote.amount} sats via ${quote.railId} · fee ${quote.fee} · ${handle.status}`);
+      // Not awaiting settled(): a fire-and-forget rail is allowed never to
+      // resolve it, which would hang the button forever.
+      handle.subscribe((u) => {
+        setStatus(`${quote.railId} · ${u.status}${u.error ? ` · ${String(u.error)}` : ""}`);
+        if (u.status === "settled") onSent();
+      });
+      onSent();
     } catch (e) { setStatus(`payment failed: ${(e as Error).message}`); }
     finally { setBusy(false); }
   };
@@ -227,28 +230,30 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
   return (
     <div style={card}>
       <h2 style={{ fontSize: 16, marginTop: 0 }}>Send</h2>
-      <input value={target} onChange={(e) => setTarget(e.target.value)} placeholder="name@domain or LNURL1…"
+      <p style={{ color: "#555", fontSize: 13, marginTop: 0 }}>
+        A Lightning address, an LNURL, an Arkade address or an on-chain address — the
+        router decides which rails can serve it.
+      </p>
+      <input value={target} onChange={(e) => setTarget(e.target.value)} placeholder="name@domain, LNURL1…, tark1…, tb1…"
         style={{ padding: 8, borderRadius: 6, border: "1px solid #bbb", width: "100%", marginBottom: 8 }} />
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
         <input type="number" value={amount} min={1} onChange={(e) => setAmount(Number(e.target.value))}
           style={{ padding: 8, borderRadius: 6, border: "1px solid #bbb", width: 140 }} />
         <span style={{ color: "#666", fontSize: 13 }}>sats</span>
-        <button style={btn} disabled={busy || !target.trim()} onClick={() => void doResolve()}>Resolve</button>
+        <button style={btn} disabled={busy || !target.trim()} onClick={() => void findRoutes()}>
+          {busy ? "Working…" : "Find routes"}
+        </button>
       </div>
 
-      {pr && (
-        <div style={{ borderLeft: "4px solid #16834b", paddingLeft: 12, marginBottom: 12 }}>
-          <div style={{ fontSize: 13, color: "#555" }}>
-            accepts {pr.minSendable / 1000}–{pr.maxSendable / 1000} sats
-          </div>
-          <div style={{ fontSize: 13, marginBottom: 8 }}>
-            rails: {pr.paymentOptions?.length ? pr.paymentOptions.map((o) => o.id).join(", ") : "lightning only (no Arkade identity bound)"}
-          </div>
-          <button style={btn} disabled={busy} onClick={() => void doPay()}>
-            {busy ? "Paying…" : `Pay ${amount} sats via ${chooseRail(pr.paymentOptions) ?? "lightning"}`}
+      {options?.map((option) => (
+        <div key={option.railId} style={{ borderLeft: "4px solid #16834b", paddingLeft: 12, marginBottom: 8,
+          display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ ...mono }}>{option.railId}</span>
+          <button style={{ ...btn, marginLeft: "auto" }} disabled={busy} onClick={() => void pay(option)}>
+            Pay {amount} sats
           </button>
         </div>
-      )}
+      ))}
       {status && <p style={{ ...mono, color: status.includes("failed") ? "crimson" : "#16834b" }}>{status}</p>}
     </div>
   );
