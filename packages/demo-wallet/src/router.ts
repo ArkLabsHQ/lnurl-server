@@ -1,6 +1,8 @@
-import { arkRail, createDefaultPaymentRouter, type PaymentRouter, type Wallet } from "@arkade-os/sdk";
+import { arkRail, createDefaultPaymentRouter, type PaymentRouter } from "@arkade-os/sdk";
 import { createLnurlClient } from "@arkade-os/lnurl-client";
 import { lnurlRails } from "@arkade-os/lnurl-client/arkade";
+import { createLightningRail } from "./lightning.js";
+import type { DemoWallet } from "./wallet.js";
 
 /**
  * Rail order. `lnurl-arkade` outranks `lnurl-lightning` for the reason the
@@ -18,9 +20,13 @@ export const RAIL_PRIORITY = ["lnurl-arkade", "ark", "ark-asset", "lnurl-lightni
  * not carry. The payer client needs no `baseUrl` — an address resolves against
  * its own domain, so this routes to any server, not only ours.
  */
-export function createRouter(wallet: Wallet): PaymentRouter {
-  const router = createDefaultPaymentRouter(wallet);
-  for (const rail of lnurlRails({ client: createLnurlClient(), arkade: arkRail() })) {
+export function createRouter(demo: DemoWallet): PaymentRouter {
+  const router = createDefaultPaymentRouter(demo.wallet);
+  const lightning = createLightningRail(demo.identity);
+  // Registered alongside the LNURL rails, not only inside them: a bare BOLT11
+  // pasted into the send box is the same corridor without the LNURL hop.
+  router.use(lightning);
+  for (const rail of lnurlRails({ client: createLnurlClient(), arkade: arkRail(), lightning })) {
     router.use(rail);
   }
   return router;

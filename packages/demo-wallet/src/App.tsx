@@ -191,7 +191,7 @@ function Receive({ lightningAddress, wallet }: { lightningAddress: string; walle
 }
 
 function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
-  const router = useMemo(() => createRouter(wallet.wallet), [wallet]);
+  const router = useMemo(() => createRouter(wallet), [wallet]);
   const [target, setTarget] = useState("");
   const [amount, setAmount] = useState(1000);
   const [options, setOptions] = useState<PaymentOption[] | null>(null);
