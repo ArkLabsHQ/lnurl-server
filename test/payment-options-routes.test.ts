@@ -165,6 +165,28 @@ describe("LUD-XX paymentOptions", () => {
     expect(cb.verify).toBeUndefined();
   });
 
+  it("does not hand the onchain rail a covenant address when covenant is wired", async () => {
+    // The covenant provider serves the arkade rail. Without gating on the
+    // selected option it overrode every destination rail, so onchain answered
+    // with an Arkade covenant address and a verify URL -- paying the wrong
+    // chain entirely. Only a live instance had the provider wired, so no test
+    // here saw it.
+    const settlements = new MemorySettlementStore(60_000);
+    const provider: CovenantDestinationProvider = {
+      derive: async () => ({ address: "tark1covenant", script: "51201" }),
+    };
+    await ctx.close();
+    ctx = await start(repos, settlements, undefined, provider);
+    addr("alice", true);
+    const a = repos.addresses.getByDomainAndUsername(repos.domains.getByDomain("domain.com")!.id, "alice")!;
+    repos.addresses.setBoardingAddress(a.id, "tb1qboarding");
+
+    const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000&paymentOption=onchain`, "domain.com");
+
+    expect(cb).toMatchObject({ status: "OK", paymentOption: "onchain", paymentDestination: "tb1qboarding" });
+    expect(cb.verify).toBeUndefined();
+  });
+
   it("keeps onchain off an address that registered no boarding address", async () => {
     addr("alice", true);
 

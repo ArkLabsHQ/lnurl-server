@@ -628,7 +628,14 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         // The script identifies the payment outright. On failure fall back to the
         // static address: ambiguous, but being paid beats refusing.
         let derived: DerivedDestination | undefined;
-        if (covenantDestinations && railStates.get("covenant")?.available && address.arkadeAddress && address.claimPublicKey) {
+        // Only the arkade rail: a covenant address is an Arkade destination, so
+        // deriving one for any other destination rail replaces that rail's own
+        // address with one on the wrong chain. The onchain rail pays a boarding
+        // address and must keep it.
+        if (
+          resolved.paymentOption === "arkade" &&
+          covenantDestinations && railStates.get("covenant")?.available && address.arkadeAddress && address.claimPublicKey
+        ) {
           try {
             derived = await covenantDestinations.derive({
               arkadeAddress: address.arkadeAddress,
