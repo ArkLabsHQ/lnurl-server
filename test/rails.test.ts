@@ -30,13 +30,13 @@ const IDENTITY = { arkadeAddress: "ark1xyz", claimPublicKey: "02" + "ab".repeat(
 
 describe("rail registry", () => {
   it("names every rail exactly once", () => {
-    expect(RAIL_IDS).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant"]);
+    expect(RAIL_IDS).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain"]);
     expect(new Set(RAIL_IDS).size).toBe(RAIL_IDS.length);
   });
 
-  it("rejects the reserved onchain id until it is implemented", () => {
-    expect(isRailId("onchain")).toBe(false);
-    expect(() => normalizeDisabledRails(["onchain"])).toThrow(/unknown rail id/);
+  it("accepts onchain, which is no longer reserved", () => {
+    expect(isRailId("onchain")).toBe(true);
+    expect(normalizeDisabledRails(["onchain"])).toEqual(["onchain"]);
   });
 
   it("normalizes policy lists (dedupes, rejects unknowns and non-arrays)", () => {
@@ -48,7 +48,8 @@ describe("rail registry", () => {
   it("parses the DB column leniently (never fatal on corrupt rows)", () => {
     expect(parseDisabledRails('["arkade","covenant"]')).toEqual(["arkade", "covenant"]);
     expect(parseDisabledRails("not json")).toEqual([]);
-    expect(parseDisabledRails('["arkade","onchain"]')).toEqual(["arkade"]);
+    expect(parseDisabledRails('["arkade","onchain"]')).toEqual(["arkade", "onchain"]);
+    expect(parseDisabledRails('["arkade","nope"]')).toEqual(["arkade"]);
     expect(parseDisabledRails(null)).toEqual([]);
   });
 });
@@ -74,7 +75,10 @@ describe("describeServerRails", () => {
 
 describe("effectiveRails", () => {
   it("serves everything when wired with an identity and empty policy", () => {
-    const states = effectiveRails(IDENTITY, FULL);
+    // onchain keys off the boarding address rather than the Arkade identity, so
+    // "fully wired" needs both. Added here and not to IDENTITY, which the
+    // advertise tests share and would otherwise always offer the rail.
+    const states = effectiveRails({ ...IDENTITY, boardingAddress: "tb1qboarding" }, FULL);
     expect(states.filter((s) => s.available).map((s) => s.id)).toEqual([...RAIL_IDS]);
   });
 

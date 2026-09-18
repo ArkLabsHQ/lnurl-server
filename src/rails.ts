@@ -21,7 +21,7 @@
 import type { PaymentOption } from "./payment-options.js";
 
 /** Every receive rail the server knows. The order is the advertise order. */
-export const RAIL_IDS = ["interactive-lightning", "offline-swap", "arkade", "covenant"] as const;
+export const RAIL_IDS = ["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain"] as const;
 
 /** A backend that can satisfy a receive on an LN address. */
 export type RailId = (typeof RAIL_IDS)[number];
@@ -61,6 +61,15 @@ export const RAIL_DEFS: Record<RailId, RailDef> = {
     label: "Arkade destination",
     description: "The payer pays arkade BTC directly to the registered Arkade identity; settlement is observed on the indexer.",
     paymentOption: "arkade",
+    direction: null,
+  },
+  onchain: {
+    id: "onchain",
+    label: "Onchain boarding",
+    description:
+      "The payer sends onchain BTC to the owner's Arkade boarding address, which the owner boards into VTXOs themselves. " +
+      "Static and unwatched: nothing here observes Bitcoin, so these payments never settle server-side and carry no verify.",
+    paymentOption: "onchain",
     direction: null,
   },
   covenant: {
@@ -151,6 +160,16 @@ export function describeServerRails(caps: ServerRailCaps): ServerRailState[] {
       configured: caps.covenantDestinations,
       ready: caps.covenantDestinations,
     },
+    {
+      id: "onchain",
+      label: RAIL_DEFS.onchain.label,
+      description: RAIL_DEFS.onchain.description,
+      // Nothing server-side to configure: the destination is the owner's own
+      // boarding address, so the capability is always present and whether any
+      // given address offers it is decided per address.
+      configured: true,
+      ready: true,
+    },
   ];
   if (!caps.offlineSwapCreator) {
     states[1].reason = "offline receive is not configured (needs ARK_SERVER_URL plus COVCLAIMD_URL or OFFLINE_SELF_CLAIM)";
@@ -170,6 +189,8 @@ export function describeServerRails(caps: ServerRailCaps): ServerRailState[] {
 export interface RailAddress {
   arkadeAddress: string | null;
   claimPublicKey: string | null;
+  /** Arkade boarding address; the onchain rail is advertised only when set. */
+  boardingAddress?: string | null;
   /** Rail ids the operator disabled for this address (per-LNURL policy). */
   disabledRails: readonly unknown[];
 }
@@ -258,7 +279,17 @@ export function effectiveRails(address: RailAddress, caps: ServerRailCaps): Addr
   if (!covenant.enabled) covenant.reason = "disabled for this address";
   else if (!hasIdentity) covenant.reason = noIdentityReason;
   else if (!caps.covenantDestinations) covenant.reason = "covenant destinations are not configured";
-  return [interactive, offline, arkade, covenant];
+  // Independent of the Arkade identity on purpose: a boarding address is the
+  // owner's own onchain key, so the rail stands or falls on that alone.
+  const onchain: AddressRailState = {
+    id: "onchain",
+    label: RAIL_DEFS.onchain.label,
+    enabled: !disabled.has("onchain"),
+    available: !disabled.has("onchain") && Boolean(address.boardingAddress),
+  };
+  if (!onchain.enabled) onchain.reason = "disabled for this address";
+  else if (!address.boardingAddress) onchain.reason = "address has no registered boarding address";
+  return [interactive, offline, arkade, covenant, onchain];
 }
 
 /** Narrow `base` by one rail's configured bounds. Never widens: a rail cannot
@@ -341,12 +372,17 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
   // paymentOptions is emitted only when there is a non-lightning option to offer;
   // otherwise the address stays pure LUD-06 even though lightning may serve.
   const states = new Map(effectiveRails(address, caps).map((s) => [s.id, s]));
-  if (!states.get("arkade")?.available) return [];
+  const arkadeReady = states.get("arkade")?.available === true;
+  const onchainReady = states.get("onchain")?.available === true;
+  // paymentOptions exists to name a non-lightning rail; with none to offer the
+  // address stays pure LUD-06 even though lightning may still serve it.
+  if (!arkadeReady && !onchainReady) return [];
   const options: PaymentOption[] = [];
   if (states.get("interactive-lightning")?.available || states.get("offline-swap")?.available) {
     options.push({ id: "lightning", type: "lightning" });
   }
-  options.push({ id: "arkade", type: "arkade" });
+  if (arkadeReady) options.push({ id: "arkade", type: "arkade" });
+  if (onchainReady) options.push({ id: "onchain", type: "onchain" });
   if (!base) return options;
   // Emitted relative to the pair the payRequest actually advertises, not to the
   // envelope. A client falls back to the top-level pair for an option that

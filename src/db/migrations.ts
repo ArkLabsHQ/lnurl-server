@@ -211,6 +211,16 @@ const MIGRATIONS: Migration[] = [
                       WHERE addresses.id = CAST(substr(settlements.session_id, 6) AS INTEGER));
     `,
   },
+  {
+    version: 12,
+    // The onchain rail pays the user's Arkade boarding address. Nullable and
+    // separate from arkade_address because the two are independent: a wallet may
+    // register an Arkade identity without ever wanting to be paid on-chain, and
+    // the rail is advertised only when this is set.
+    up: `
+      ALTER TABLE addresses ADD COLUMN boarding_address TEXT;
+    `,
+  },
 ];
 
 /** Apply all pending forward-only migrations inside a transaction each. */

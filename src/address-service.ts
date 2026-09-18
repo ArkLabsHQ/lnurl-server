@@ -106,12 +106,17 @@ export class AddressService {
     domain: DomainRow,
     username: string,
     token: string,
-    cfg: { arkadeAddress: string; claimPublicKey: string },
+    cfg: { arkadeAddress: string; claimPublicKey: string; boardingAddress?: string },
   ): boolean {
     if (!isValidToken(token)) return false;
     const a = this.repos.addresses.getByDomainAndUsername(domain.id, username.toLowerCase());
     if (!a || a.sessionId !== deriveSessionId(token) || a.status !== "active") return false;
     this.repos.addresses.setOfflineReceive(a.id, cfg.arkadeAddress, cfg.claimPublicKey);
+    // Only when named: a caller re-registering its identity without one should
+    // not silently withdraw an onchain rail it registered earlier.
+    if (cfg.boardingAddress !== undefined) {
+      this.repos.addresses.setBoardingAddress(a.id, cfg.boardingAddress);
+    }
     return true;
   }
 

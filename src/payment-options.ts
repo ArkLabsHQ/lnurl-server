@@ -16,6 +16,8 @@ export interface PaymentOption {
 export interface OptionAddress {
   arkadeAddress: string | null;
   claimPublicKey: string | null;
+  /** Arkade boarding address; the onchain rail resolves to it. */
+  boardingAddress?: string | null;
 }
 
 /** Options advertised in the LUD-06 payRequest. Emitted only when there is a
@@ -45,6 +47,11 @@ export function resolvePaymentOption(optionId: string | undefined, address: Opti
   if (id === "arkade") {
     return address.arkadeAddress
       ? { kind: "destination", paymentOption: "arkade", paymentDestination: address.arkadeAddress }
+      : { kind: "error", reason: "Unsupported paymentOption" };
+  }
+  if (id === "onchain") {
+    return address.boardingAddress
+      ? { kind: "destination", paymentOption: "onchain", paymentDestination: address.boardingAddress }
       : { kind: "error", reason: "Unsupported paymentOption" };
   }
   return { kind: "error", reason: "Unsupported paymentOption" };

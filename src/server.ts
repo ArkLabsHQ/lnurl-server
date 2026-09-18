@@ -512,7 +512,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         return;
       }
       const origin = `${req.protocol}://${domain.domain}`;
-      const railAddress = { arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, disabledRails: address.disabledRails };
+      const railAddress = { arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, boardingAddress: address.boardingAddress, disabledRails: address.disabledRails };
       const base: Bounds = {
         min: domain.minSendable ?? settings.minSendable(),
         max: domain.maxSendable ?? settings.maxSendable(),
@@ -560,7 +560,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         max: domain.maxSendable ?? settings.maxSendable(),
       };
       const { min, max } = base;
-      const railAddress = { arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, disabledRails: address.disabledRails };
+      const railAddress = { arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, boardingAddress: address.boardingAddress, disabledRails: address.disabledRails };
       const paymentOptionId = strParam(req.query.paymentOption);
       // Non-positive amounts are refused before the quote/provider path.
       if (amountMsat <= 0) {
@@ -785,7 +785,8 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         const auth = req.headers.authorization;
         const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
         if (!isValidToken(token)) { res.status(401).json({ error: "Unauthorized" }); return; }
-        const { arkadeAddress, claimPublicKey } = (req.body ?? {}) as { arkadeAddress?: string; claimPublicKey?: string };
+        const { arkadeAddress, claimPublicKey, boardingAddress } = (req.body ?? {}) as
+          { arkadeAddress?: string; claimPublicKey?: string; boardingAddress?: string };
         // Compressed 33-byte key (02/03 prefix) — the covenant's receiver role.
         if (!arkadeAddress || typeof arkadeAddress !== "string" || !claimPublicKey || !/^0[23][0-9a-f]{64}$/i.test(claimPublicKey)) {
           res.status(400).json({ error: "arkadeAddress and a compressed-hex claimPublicKey (02/03 + 64 hex) are required" });
@@ -797,7 +798,18 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           res.status(400).json({ error: "arkadeAddress is not a valid Arkade address" });
           return;
         }
-        const ok = addressService.setOfflineReceive(domain, req.params.username, token, { arkadeAddress, claimPublicKey });
+        // Optional: the onchain rail is advertised only for an address that has
+        // one, and it is the owner's own onchain key, so it is validated for
+        // shape here and never derived from anything the server holds.
+        if (boardingAddress !== undefined && (typeof boardingAddress !== "string" || boardingAddress.length === 0)) {
+          res.status(400).json({ error: "boardingAddress must be a non-empty string when provided" });
+          return;
+        }
+        const ok = addressService.setOfflineReceive(domain, req.params.username, token, {
+          arkadeAddress,
+          claimPublicKey,
+          ...(boardingAddress !== undefined ? { boardingAddress } : {}),
+        });
         if (!ok) { res.status(404).json({ error: "Address not found or not owned by this token" }); return; }
         res.json({ ok: true });
       });

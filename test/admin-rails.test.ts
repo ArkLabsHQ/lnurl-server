@@ -49,11 +49,13 @@ describe("admin rails", () => {
     const res = await request(app).get("/admin/api/rails");
     expect(res.status).toBe(200);
     const byId = new Map(res.body.rails.map((r: { id: string }) => [r.id, r]));
-    expect([...byId.keys()]).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant"]);
+    expect([...byId.keys()]).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain"]);
     expect(byId.get("interactive-lightning")).toMatchObject({ configured: true, ready: true });
     expect(byId.get("offline-swap")).toMatchObject({ configured: true, ready: true });
     expect(byId.get("arkade")).toMatchObject({ configured: true, ready: true });
     expect(byId.get("covenant")).toMatchObject({ configured: false, ready: false });
+    // Needs no server config; a per-address boarding address decides it.
+    expect(byId.get("onchain")).toMatchObject({ configured: true, ready: true });
   });
 
   it("shows effective per-address rails on the addresses list", async () => {
@@ -80,7 +82,8 @@ describe("admin rails", () => {
 
   it("rejects unknown rail ids and unknown addresses", async () => {
     const a = repos.addresses.create({ domainId, username: "carol", status: "active", sessionId: "sess-carol" });
-    const bad = await request(app).patch(`/admin/api/addresses/${a.id}/rails`).send({ disabledRails: ["onchain"] });
+    // "onchain" used to stand in for an unknown id; it is a real rail now.
+    const bad = await request(app).patch(`/admin/api/addresses/${a.id}/rails`).send({ disabledRails: ["teleport"] });
     expect(bad.status).toBe(400);
     expect(bad.body.code).toBe("invalid_rails");
     const missing = await request(app).patch("/admin/api/addresses/9999/rails").send({ disabledRails: [] });

@@ -16,6 +16,7 @@ interface AddressRecord {
   metadata: string | null;
   arkade_address: string | null;
   claim_public_key: string | null;
+  boarding_address: string | null;
   disabled_rails: string | null;
   created_at: number;
   updated_at: number;
@@ -41,6 +42,7 @@ function rowToAddress(r: AddressRecord): AddressRow {
     metadata: r.metadata,
     arkadeAddress: r.arkade_address,
     claimPublicKey: r.claim_public_key,
+    boardingAddress: r.boarding_address,
     disabledRails: parseDisabledRails(r.disabled_rails),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -108,6 +110,15 @@ export class AddressesRepo {
     this.db
       .prepare("UPDATE addresses SET arkade_address = ?, claim_public_key = ?, updated_at = ? WHERE id = ?")
       .run(arkadeAddress, claimPublicKey, Date.now(), id);
+  }
+
+  /** The onchain rail's destination. Separate from setOfflineReceive because the
+   *  two are independent: registering an Arkade identity says nothing about
+   *  wanting to be paid on-chain, and passing null withdraws the rail. */
+  setBoardingAddress(id: number, boardingAddress: string | null): void {
+    this.db
+      .prepare("UPDATE addresses SET boarding_address = ?, updated_at = ? WHERE id = ?")
+      .run(boardingAddress, Date.now(), id);
   }
 
   /** Replace the per-address rail policy (operator-controlled, per LNURL). */

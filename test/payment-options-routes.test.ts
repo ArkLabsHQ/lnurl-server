@@ -150,6 +150,31 @@ describe("LUD-XX paymentOptions", () => {
     expect(settlements.get(fallbackId)?.covenantScript).toBeNull();
   });
 
+  it("advertises onchain and pays the boarding address, without a verify URL", async () => {
+    addr("alice", true);
+    const a = repos.addresses.getByDomainAndUsername(repos.domains.getByDomain("domain.com")!.id, "alice")!;
+    repos.addresses.setBoardingAddress(a.id, "tb1qboarding");
+
+    const meta = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com");
+    expect((meta.paymentOptions as { id: string }[]).map((o) => o.id)).toEqual(["lightning", "arkade", "onchain"]);
+
+    const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000&paymentOption=onchain`, "domain.com");
+    expect(cb).toMatchObject({ status: "OK", paymentOption: "onchain", paymentDestination: "tb1qboarding" });
+    // Nothing here watches Bitcoin, so this payment never settles server-side.
+    // A verify URL would be answerable only with a permanent "not settled".
+    expect(cb.verify).toBeUndefined();
+  });
+
+  it("keeps onchain off an address that registered no boarding address", async () => {
+    addr("alice", true);
+
+    const meta = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com");
+    expect((meta.paymentOptions as { id: string }[]).map((o) => o.id)).not.toContain("onchain");
+
+    const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000&paymentOption=onchain`, "domain.com");
+    expect(cb.status).toBe("ERROR");
+  });
+
   it("errors on an unknown paymentOption", async () => {
     addr("alice", true);
     const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000&paymentOption=onchain`, "domain.com");

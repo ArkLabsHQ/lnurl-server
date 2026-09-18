@@ -46,6 +46,8 @@ export interface AddressRow {
   arkadeAddress: string | null;
   /** Compressed claim public key (hex) for offline reverse swaps; null if unset. */
   claimPublicKey: string | null;
+  /** Arkade boarding address, when the owner registered one for the onchain rail. */
+  boardingAddress: string | null;
   /** Rail ids the operator disabled for this address (per-LNURL policy). */
   disabledRails: RailId[];
   createdAt: number;
