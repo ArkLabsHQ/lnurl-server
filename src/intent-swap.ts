@@ -33,6 +33,7 @@ import {
 } from "@arkade-os/swap";
 import { nostrRfqTransport } from "@arkade-os/swap/nostr";
 import { invoiceFactsFromBolt11 } from "./bolt11.js";
+import { RailRefusedError } from "./rails.js";
 import type { DiscoveryService, SolverCandidate } from "./solver-discovery.js";
 import type { SelfClaimer, SelfClaimOutcome } from "./self-claim.js";
 import { deserializeSelfClaim } from "./self-claim-codec.js";
@@ -248,7 +249,7 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
         throw new Error(`receiveAddress prefix ${payout.hrp} does not match operator network (${ctx.hrp})`);
       }
       const candidates = settings.discovery.selectLightningReceive(params.amountSat, ctx.emulatorPubkey);
-      if (!candidates.length) throw new Error(`no solver card supports a ${params.amountSat} sat lightning receive`);
+      if (!candidates.length) throw new RailRefusedError(`no solver card supports a ${params.amountSat} sat lightning receive`);
       const failures: string[] = [];
 
       for (const candidate of candidates) {

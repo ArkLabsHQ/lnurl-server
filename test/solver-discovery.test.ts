@@ -74,6 +74,67 @@ describe("DiscoveryService", () => {
     service.stop();
   });
 
+  // The payer pays the quote leg, so `max_quote_amount` binds: the live mutinynet
+  // card advertises base 1000..50000 yet refuses anything over 25000.
+  it("reports the payer-side range of the registry's corridor card", async () => {
+    const service = new DiscoveryService({
+      network: "bitcoin",
+      registryUrls: [registryUrl],
+      cardStore: new CardStore(),
+      cacheStore: new CacheStore(),
+      fetchImpl: async () => response(registryIndex(legacyBtcSolverCard("registry", 30), 1_000)),
+      now: () => 1_000_000,
+      refreshIntervalMs: 0,
+    });
+
+    await service.start();
+    expect(service.status().receiveBounds).toEqual({ minSat: 1000, maxSat: 25_000 });
+    service.stop();
+  });
+
+  it("spans the widest range any card can serve", async () => {
+    const cards = new CardStore();
+    cards.rows.push({
+      id: 1,
+      label: "db",
+      network: "bitcoin",
+      cardJson: JSON.stringify(solverCard("cheap", 10, "bitcoin", { min: "5000", max: "200000" })),
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const service = new DiscoveryService({
+      network: "bitcoin",
+      registryUrls: [registryUrl],
+      cardStore: cards,
+      cacheStore: new CacheStore(),
+      fetchImpl: async () => response(registryIndex(legacyBtcSolverCard("registry", 30), 1_000)),
+      now: () => 1_000_000,
+      refreshIntervalMs: 0,
+    });
+
+    await service.start();
+    expect(service.status().receiveBounds).toEqual({ minSat: 1000, maxSat: 200_000 });
+    service.stop();
+  });
+
+  it("reports no range at all when nothing usable was discovered", async () => {
+    const service = new DiscoveryService({
+      network: "bitcoin",
+      registryUrls: [registryUrl],
+      cardStore: new CardStore(),
+      cacheStore: new CacheStore(),
+      fetchImpl: async () => response(registryIndex(legacyAssetSolverCard("registry", 30), 1_000)),
+      now: () => 1_000_000,
+      refreshIntervalMs: 0,
+    });
+
+    // Corridors match but the legs are an asset, which the rail refuses anyway.
+    await service.start();
+    expect(service.status().receiveBounds).toBeUndefined();
+    service.stop();
+  });
+
   it("follows the published network registry when registry URLs are omitted", async () => {
     const requested: string[] = [];
     const service = new DiscoveryService({

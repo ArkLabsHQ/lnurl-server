@@ -81,6 +81,10 @@ export const RAIL_DEFS: Record<RailId, RailDef> = {
   },
 };
 
+/** A refusal safe to quote to the payer verbatim. Anything else a rail throws
+ *  stays generic, because it may name a solver, a key, or this server's wiring. */
+export class RailRefusedError extends Error {}
+
 /** Amount bounds one rail can serve, in millisats. Either half may be absent,
  *  meaning that end is not narrowed beyond the server/domain bound. */
 export interface RailLimits {

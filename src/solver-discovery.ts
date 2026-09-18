@@ -17,6 +17,11 @@ import type { SolverRegistryCacheRepo } from "./db/repositories/solver-registry-
 const DEFAULT_REFRESH_MS = 10 * 60_000;
 const MAX_CACHE_AGE_MS = DEFAULT_MAX_AGE_SECONDS * 1000;
 
+// A stand-in pin, because only a live request holds the covenant's emulator key:
+// every other clause of the SDK rule still decides, and a card pinning some other
+// key contributes no range rather than one we could not honour.
+const ANY_EMULATOR = new Uint8Array(32).fill(1);
+
 type CardStore = Pick<SolverCardsRepo, "listEnabled">;
 type CacheStore = Pick<SolverRegistryCacheRepo, "get" | "put">;
 
@@ -33,6 +38,12 @@ export interface DiscoverySourceStatus extends SourceReport {
   cache?: "fresh" | "expired";
 }
 
+/** Sat bounds on the payer's lightning leg, before the server/domain envelope. */
+export interface ReceiveBounds {
+  minSat: number;
+  maxSat: number;
+}
+
 export interface DiscoveryStatus {
   network: Network;
   ready: boolean;
@@ -40,6 +51,7 @@ export interface DiscoveryStatus {
   refreshedAt: number | null;
   nextRefreshAt: number | null;
   candidateCount: number;
+  receiveBounds?: ReceiveBounds;
   sources: DiscoverySourceStatus[];
   warnings: string[];
   reason?: string;
@@ -155,6 +167,7 @@ export class DiscoveryService {
 
   status(): DiscoveryStatus {
     const snapshot = this.snapshot && this.snapshot.expiresAt > this.now() ? this.snapshot : null;
+    const receiveBounds = this.receiveRange(snapshot?.candidates ?? []);
     return {
       network: this.options.network,
       ready: Boolean(snapshot?.candidates.length),
@@ -162,10 +175,34 @@ export class DiscoveryService {
       refreshedAt: snapshot?.refreshedAt ?? null,
       nextRefreshAt: this.nextRefreshAt,
       candidateCount: snapshot?.candidates.length ?? 0,
+      ...(receiveBounds ? { receiveBounds } : {}),
       sources: this.latestSources,
       warnings: this.latestWarnings,
       ...(!snapshot?.candidates.length ? { reason: "no usable lightning-receive solver cards" } : {}),
     };
+  }
+
+  /**
+   * The union of the cards' payer-side ranges, not their intersection: `create`
+   * walks every candidate the selector returns, so an amount one card refuses is
+   * still served by the next, and two disjoint cards would intersect to nothing.
+   * A gap between disjoint cards is all a single LNURL pair cannot express, and
+   * an amount landing in one is refused at the callback with a reason.
+   */
+  private receiveRange(candidates: readonly SolverCandidate[]): ReceiveBounds | undefined {
+    let bounds: ReceiveBounds | undefined;
+    for (const candidate of candidates) {
+      const payer = sideLimits(candidate.market, "quote");
+      if (!payer || sideLimits(candidate.market, "base") === null) continue;
+      const minSat = Number(payer.min);
+      const maxSat = Number(payer.max);
+      if (!Number.isSafeInteger(minSat) || !Number.isSafeInteger(maxSat)) continue;
+      if (solverLightningRendezvous([candidate.market], minSat, ANY_EMULATOR) === undefined) continue;
+      bounds = bounds
+        ? { minSat: Math.min(bounds.minSat, minSat), maxSat: Math.max(bounds.maxSat, maxSat) }
+        : { minSat, maxSat };
+    }
+    return bounds;
   }
 
   private async loadFileCards(): Promise<unknown[]> {

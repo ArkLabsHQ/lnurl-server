@@ -20,7 +20,12 @@ const CONFIG: LnurlServiceConfig = { port: 0, baseUrl: "", minSendable: 1000, ma
 const ARK = "ark1qexampledestination";
 const CLAIMPK = "02" + "ab".repeat(32);
 
-function start(repos: Repositories, railLimits?: ServerDeps["railLimits"], offlineSwapCreator?: OfflineSwapCreator) {
+function start(
+  repos: Repositories,
+  railLimits?: ServerDeps["railLimits"],
+  offlineSwapCreator?: OfflineSwapCreator,
+  solverDiscovery?: ServerDeps["solverDiscovery"],
+) {
   const server = http.createServer();
   return new Promise<{ baseUrl: string; close: () => Promise<void> }>((resolve) => {
     server.listen(0, "127.0.0.1", () => {
@@ -34,6 +39,7 @@ function start(repos: Repositories, railLimits?: ServerDeps["railLimits"], offli
             settlements: new MemorySettlementStore(86_400_000),
             ...(railLimits ? { railLimits } : {}),
             ...(offlineSwapCreator ? { offlineSwapCreator } : {}),
+            ...(solverDiscovery ? { solverDiscovery } : {}),
           },
         ),
       );
@@ -173,5 +179,80 @@ describe("per-rail sendable bounds", () => {
     addr("alice");
     const meta = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com");
     expect(meta.maxSendable).toBe(100_000_000);
+  });
+});
+
+const discovery = (status: { ready: boolean; reason?: string; receiveBounds?: { minSat: number; maxSat: number } }): ServerDeps["solverDiscovery"] =>
+  ({ status: () => status });
+
+describe("solver-derived offline-swap bounds", () => {
+  // The production bug: the card caps the payer's leg at 25000 sats while the
+  // payRequest quoted the 100000-sat envelope, refusing a legal amount after the fact.
+  it("narrows the top-level pair to what the discovered solver serves", async () => {
+    ctx = await start(repos, undefined, swapCreator, discovery({ ready: true, receiveBounds: { minSat: 1000, maxSat: 25_000 } }));
+    addr("alice");
+    const meta = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com");
+    expect(meta.minSendable).toBe(1_000_000);
+    expect(meta.maxSendable).toBe(25_000_000);
+  });
+
+  it("refuses an amount above the solver's range, quoting the narrowed pair", async () => {
+    ctx = await start(repos, undefined, swapCreator, discovery({ ready: true, receiveBounds: { minSat: 1000, maxSat: 25_000 } }));
+    addr("alice");
+    const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000000`, "domain.com");
+    expect(cb.status).toBe("ERROR");
+    expect(String(cb.reason)).toBe("Amount must be between 1000000 and 25000000 millisats");
+  });
+
+  it("still reaches the creator for an amount inside the solver's range", async () => {
+    const created: number[] = [];
+    const creator = {
+      create: async ({ amountSat }: { amountSat: number }) => { created.push(amountSat); throw new Error("quoted"); },
+      isSettled: async () => false,
+    } as unknown as OfflineSwapCreator;
+    ctx = await start(repos, undefined, creator, discovery({ ready: true, receiveBounds: { minSat: 1000, maxSat: 25_000 } }));
+    addr("alice");
+    await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=25000000`, "domain.com");
+    expect(created).toEqual([25_000]);
+  });
+
+  it("does not let a solver range widen the server envelope", async () => {
+    ctx = await start(repos, undefined, swapCreator, discovery({ ready: true, receiveBounds: { minSat: 1, maxSat: 500_000 } }));
+    addr("alice");
+    const meta = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com");
+    expect(meta.minSendable).toBe(1000);
+    expect(meta.maxSendable).toBe(100_000_000);
+  });
+
+  it("takes the tighter of the operator's limit and the solver's range", async () => {
+    ctx = await start(
+      repos,
+      { "offline-swap": { maxSendable: 10_000_000 } },
+      swapCreator,
+      discovery({ ready: true, receiveBounds: { minSat: 1000, maxSat: 25_000 } }),
+    );
+    addr("alice");
+    const meta = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com");
+    expect(meta.maxSendable).toBe(10_000_000);
+  });
+
+  // Nothing usable discovered: the rail is unavailable, so the pair is the interactive rail's.
+  it("leaves the envelope to the interactive rail when discovery is empty", async () => {
+    ctx = await start(repos, undefined, swapCreator, discovery({ ready: false, reason: "no usable lightning-receive solver cards" }));
+    addr("alice");
+    const meta = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com");
+    expect(meta.minSendable).toBe(1000);
+    expect(meta.maxSendable).toBe(100_000_000);
+    const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000000`, "domain.com");
+    expect(String(cb.reason)).toBe("offline receive unavailable: no usable lightning-receive solver cards");
+  });
+
+  it("follows a refresh that republishes a narrower range", async () => {
+    let bounds = { minSat: 1000, maxSat: 50_000 };
+    ctx = await start(repos, undefined, swapCreator, { status: () => ({ ready: true, receiveBounds: bounds }) });
+    addr("alice");
+    expect((await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com")).maxSendable).toBe(50_000_000);
+    bounds = { minSat: 1000, maxSat: 25_000 };
+    expect((await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com")).maxSendable).toBe(25_000_000);
   });
 });

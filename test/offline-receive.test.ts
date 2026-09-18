@@ -13,6 +13,7 @@ import { OfflineSwapStore } from "../src/offline-swap-store.js";
 import { encryptToken } from "../src/crypto.js";
 import { deriveSessionId } from "../src/session-id.js";
 import type { OfflineSwapCreator, OfflineSwapParams, OfflineSwapResult } from "../src/intent-swap.js";
+import { RailRefusedError } from "../src/rails.js";
 import type { LnurlServiceConfig } from "../src/types.js";
 
 const KEY = randomBytes(32);
@@ -170,9 +171,10 @@ describe("offline receive", () => {
     expect(creator.created).toHaveLength(1);
   });
 
+  // An arbitrary failure may name a solver or this server's wiring, so it stays generic.
   it("returns an LNURL error when swap creation fails", async () => {
     const creator: OfflineSwapCreator = {
-      create: async () => { throw new Error("solver refused: amount_out_of_range"); },
+      create: async () => { throw new Error("all solver candidates failed: acme: nostr relay refused"); },
       isSettled: async () => false,
     };
     repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
@@ -180,7 +182,22 @@ describe("offline receive", () => {
     const res = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=50000`, "GET", "domain.com");
     expect(res.body.status).toBe("ERROR");
     expect(String(res.body.reason)).toBe("Unable to create offline invoice");
+    expect(String(res.body.reason)).not.toContain("acme");
     // nothing recorded: no verify URL exists for a swap that was never created
+  });
+
+  // Actionable and safe: names the amount, not a solver. LUD-06 shape, HTTP 200.
+  it("tells the payer why a refused amount was refused", async () => {
+    const creator: OfflineSwapCreator = {
+      create: async () => { throw new RailRefusedError("no solver card supports a 50 sat lightning receive"); },
+      isSettled: async () => false,
+    };
+    repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
+    ctx = await start(repos, creator, new MemorySettlementStore(60_000));
+    const res = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=50000`, "GET", "domain.com");
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("ERROR");
+    expect(String(res.body.reason)).toBe("no solver card supports a 50 sat lightning receive");
   });
 
   it("rate-limits the offline-swap callback per IP", async () => {

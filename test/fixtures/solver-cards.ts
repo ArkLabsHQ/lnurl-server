@@ -6,7 +6,12 @@ const pubkeys = {
   registry: "33".repeat(32),
 };
 
-export function solverCard(name: keyof typeof pubkeys, feeBps: number, network: Network = "bitcoin"): Card {
+export function solverCard(
+  name: keyof typeof pubkeys,
+  feeBps: number,
+  network: Network = "bitcoin",
+  quote: { min: string; max: string } = { min: "1000", max: "100000" },
+): Card {
   const slip = network === "bitcoin" ? "0" : "1";
   return {
     version: 0,
@@ -20,8 +25,8 @@ export function solverCard(name: keyof typeof pubkeys, feeBps: number, network: 
       fee_bps: feeBps,
       min_base_amount: "1",
       max_base_amount: "1000000",
-      min_quote_amount: "1000",
-      max_quote_amount: "100000",
+      min_quote_amount: quote.min,
+      max_quote_amount: quote.max,
     }],
   };
 }

@@ -25,6 +25,7 @@ import {
   effectiveRails,
   optionBounds,
   railBounds,
+  RailRefusedError,
   type AddressRailState,
   type Bounds,
   type ServerRailCaps,
@@ -71,7 +72,7 @@ export interface ServerDeps {
   /** When set, enables LUD-XX unit-denominated quotes (advertises `units`, quotes callbacks). */
   quoteProvider?: QuoteProvider;
   /** Solver discovery snapshot (when wired): the offline-swap rail reads readiness per request instead of blocking startup. */
-  solverDiscovery?: { status(): { ready: boolean; reason?: string } };
+  solverDiscovery?: { status(): { ready: boolean; reason?: string; receiveBounds?: { minSat: number; maxSat: number } } };
   /** Arkade indexer base URL (settlement observation for the arkade rail). */
   arkServerUrl?: string;
   /** Per-rail amount bounds, narrowing the server/domain pair for the rails that
@@ -120,8 +121,26 @@ async function createOfflineSwapAndRespond(args: {
     } satisfies LnurlPayCallbackResponse);
   } catch (err) {
     logger.warn("offline_quote_failed", { requestId, error: err });
-    res.json({ status: "ERROR", reason: "Unable to create offline invoice" } satisfies LnurlErrorResponse);
+    const reason = err instanceof RailRefusedError ? err.message : "Unable to create offline invoice";
+    res.json({ status: "ERROR", reason } satisfies LnurlErrorResponse);
   }
+}
+
+/** Fold what the discovered solvers will quote into the offline-swap rail's
+ *  limits. Both are real caps, so the tighter of the two wins on each end. */
+function withSolverRange(
+  configured: ServerRailCaps["limits"],
+  range?: { minSat: number; maxSat: number },
+): ServerRailCaps["limits"] {
+  if (!range) return configured;
+  const own = configured?.["offline-swap"];
+  return {
+    ...configured,
+    "offline-swap": {
+      minSendable: Math.max(range.minSat * 1000, own?.minSendable ?? 0),
+      maxSendable: Math.min(range.maxSat * 1000, own?.maxSendable ?? Infinity),
+    },
+  };
 }
 
 function buildMetadata(identifier?: string): string {
@@ -198,17 +217,22 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
   // Unknown discovery state (no service injected, e.g. unit scope) assumes ready so a
   // wired creator keeps its historical behavior; the coordinator still fails loudly
   // per request when a quote cannot be served.
-  const discoveryStatus = deps?.solverDiscovery?.status();
-  const railCaps: ServerRailCaps = {
-    offlineSwapCreator: Boolean(creator),
-    discoveryReady: discoveryStatus?.ready ?? true,
-    ...(discoveryStatus?.reason ? { discoveryReason: discoveryStatus.reason } : {}),
-    ...(deps?.arkServerUrl ? { arkServerUrl: deps.arkServerUrl } : {}),
-    covenantDestinations: Boolean(covenantDestinations),
-    ...(deps?.railLimits ? { limits: deps.railLimits } : {}),
+  // Derived per request, not frozen at boot: discovery refreshes on a timer, so a
+  // rail going dark or republishing a narrower range must move the next payRequest.
+  const currentRailCaps = (): ServerRailCaps => {
+    const discoveryStatus = deps?.solverDiscovery?.status();
+    const limits = withSolverRange(deps?.railLimits, discoveryStatus?.receiveBounds);
+    return {
+      offlineSwapCreator: Boolean(creator),
+      discoveryReady: discoveryStatus?.ready ?? true,
+      ...(discoveryStatus?.reason ? { discoveryReason: discoveryStatus.reason } : {}),
+      ...(deps?.arkServerUrl ? { arkServerUrl: deps.arkServerUrl } : {}),
+      covenantDestinations: Boolean(covenantDestinations),
+      ...(limits ? { limits } : {}),
+    };
   };
-  const railStatesFor = (address: { arkadeAddress: string | null; claimPublicKey: string | null; disabledRails: readonly unknown[] }): Map<string, AddressRailState> =>
-    new Map(effectiveRails(address, railCaps).map((s) => [s.id, s]));
+  const railStatesFor = (address: { arkadeAddress: string | null; claimPublicKey: string | null; disabledRails: readonly unknown[] }, caps: ServerRailCaps): Map<string, AddressRailState> =>
+    new Map(effectiveRails(address, caps).map((s) => [s.id, s]));
   // Soft settings are read per-request so DB-backed overrides take effect without a restart.
   // No DB (library/in-memory mode) → fall back to the static config values.
   const settings: RuntimeSettings = deps?.settings ?? staticSettings({
@@ -517,6 +541,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         min: domain.minSendable ?? settings.minSendable(),
         max: domain.maxSendable ?? settings.maxSendable(),
       };
+      const railCaps = currentRailCaps();
       const options = advertisedRailOptions(railAddress, railCaps, base);
       const advertised = advertisedBounds(railAddress, railCaps, base);
       const units = quoteProvider?.units() ?? [];
@@ -577,7 +602,8 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         return;
       }
       // Per-address rail policy: a disabled rail fails loudly instead of serving.
-      const railStates = railStatesFor(address);
+      const railCaps = currentRailCaps();
+      const railStates = railStatesFor(address, railCaps);
       if (resolved.kind === "destination" && railStates.get("arkade")?.enabled === false) {
         res.json({ status: "ERROR", reason: "paymentOption arkade is disabled for this address" } satisfies LnurlErrorResponse);
         return;
