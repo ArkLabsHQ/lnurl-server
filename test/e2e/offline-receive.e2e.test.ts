@@ -142,7 +142,7 @@ describe.each([
     });
     baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     defaults.baseUrl = baseUrl;
-    stopPoller = startOfflineSettlementPoller(settlements, creator, 1000, offlineSwaps);
+    stopPoller = startOfflineSettlementPoller(settlements, creator, 1000, offlineSwaps).stop;
   }
 
   async function stopLocal(): Promise<void> {
