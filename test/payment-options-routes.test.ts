@@ -77,12 +77,18 @@ describe("LUD-XX paymentOptions", () => {
   });
 
   it("serves the arkade destination + a non-pr verify record", async () => {
+    const settlements = new MemorySettlementStore(60_000);
+    await ctx.close();
+    ctx = await start(repos, settlements);
     addr("alice", true);
     const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000&paymentOption=arkade`, "domain.com");
     expect(cb).toMatchObject({ status: "OK", paymentOption: "arkade", paymentDestination: ARK });
-    expect(typeof cb.verify).toBe("string");
+    // The record exists and is queryable; what the static destination does not
+    // get is a URL handed to the payer, since it cannot tell two same-amount
+    // payments apart. Only a covenant destination earns that.
+    expect(cb.verify).toBeUndefined();
 
-    const verifyId = String(cb.verify).split("/").pop()!;
+    const verifyId = settlements.listRecent(10, { option: "arkade" })[0]!.paymentHash;
     const v = await getJson(`${ctx.baseUrl}/lnurl/verify/${verifyId}`, "domain.com");
     expect(v).toMatchObject({
       status: "OK",
@@ -138,7 +144,10 @@ describe("LUD-XX paymentOptions", () => {
     const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000&paymentOption=arkade`, "domain.com");
 
     expect(cb).toMatchObject({ status: "OK", paymentDestination: ARK });
-    expect(settlements.get(String(cb.verify).split("/").pop()!)?.covenantScript).toBeNull();
+    // Fell back to the static address, so no verify is advertised either.
+    expect(cb.verify).toBeUndefined();
+    const fallbackId = settlements.listRecent(10, { option: "arkade" })[0]!.paymentHash;
+    expect(settlements.get(fallbackId)?.covenantScript).toBeNull();
   });
 
   it("errors on an unknown paymentOption", async () => {
@@ -160,7 +169,8 @@ describe("LUD-XX paymentOptions", () => {
     ctx = await start(repos, settlements);
     addr("alice", true);
     const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000&paymentOption=arkade`, "domain.com");
-    const verifyId = String(cb.verify).split("/").pop()!;
+    expect(cb.verify).toBeUndefined();
+    const verifyId = settlements.listRecent(10, { option: "arkade" })[0]!.paymentHash;
     expect(settlements.get(verifyId)).toMatchObject({ amountMsat: 50000, paymentOption: "arkade", paymentDestination: ARK });
   });
 

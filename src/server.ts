@@ -654,7 +654,14 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           status: "OK",
           paymentOption: resolved.paymentOption,
           paymentDestination: derived?.address ?? resolved.paymentDestination,
-          verify: `${settings.baseUrl()}/lnurl/verify/${verifyId}`,
+          // Only when the destination identifies the payment. A covenant script
+          // does; the static fallback is one address reused for every payment and
+          // settled by amount/window correlation, so two concurrent payments of
+          // the same size cannot be told apart and a payer polling verify could
+          // be told someone else's arrived. The record is still written — the
+          // watcher settles it and the activity list shows it — but the payer is
+          // not handed a URL whose answer the server cannot stand behind.
+          ...(derived ? { verify: `${settings.baseUrl()}/lnurl/verify/${verifyId}` } : {}),
         } satisfies LnurlPayDestinationResponse);
         return;
       }

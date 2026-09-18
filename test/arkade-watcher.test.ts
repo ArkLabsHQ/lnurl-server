@@ -185,7 +185,12 @@ describe("arkade watcher end-to-end", () => {
       }).on("error", reject);
     });
     expect(cb).toMatchObject({ status: "OK", paymentOption: "arkade", paymentDestination: DEST });
-    const verifyId = String(cb.verify).split("/").pop()!;
+    // A static destination is not handed a verify URL -- it cannot tell two
+    // same-amount payments apart -- but the record still exists and the watcher
+    // still settles it, which is what this test is about. The endpoint itself is
+    // unchanged, so take the id from the store rather than from the response.
+    expect(cb.verify).toBeUndefined();
+    const verifyId = settlements.listRecent(10, { option: "arkade" })[0]!.paymentHash;
 
     indexerVtxos.push(wireVtxo({ txid: randomBytes(32).toString("hex"), valueSat: 50, createdAtSec: Math.floor(Date.now() / 1000) }));
     expect(await settleDestinationPayments(settlements, new RestIndexerProvider(indexerCtx.baseUrl))).toBe(1);

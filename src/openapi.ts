@@ -681,7 +681,14 @@ export const openApiSpec = {
                         status: { type: "string", enum: ["OK"] },
                         paymentOption: { type: "string" },
                         paymentDestination: { type: "string", description: "Rail destination, e.g. an Arkade address" },
-                        verify: { type: "string", description: "LUD-21/LUD-XX verify URL" },
+                        verify: {
+                          type: "string",
+                          description:
+                            "LUD-21/LUD-XX verify URL. Present only when the destination identifies the payment — " +
+                            "a per-payment covenant address does, a static Arkade address does not, since it is reused " +
+                            "for every payment and settles by amount/window correlation. Absent means settlement is not " +
+                            "individually attributable, not that it will not settle.",
+                        },
                       },
                     },
                     {
