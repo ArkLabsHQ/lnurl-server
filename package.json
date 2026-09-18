@@ -13,13 +13,15 @@
     }
   },
   "scripts": {
-    "build": "tsup && vite build && node scripts/smoke-dist.mjs",
+    "build": "pnpm build:server && pnpm build:client",
+    "build:server": "tsup && vite build && node scripts/smoke-dist.mjs",
+    "build:client": "tsup --config packages/client/tsup.config.ts",
     "dev": "cross-env NODE_OPTIONS=--experimental-sqlite tsx watch src/cli.ts",
     "start": "node --experimental-sqlite dist/cli.js",
     "test": "cross-env NODE_OPTIONS=--experimental-sqlite vitest run",
     "test:e2e": "cross-env NODE_OPTIONS=--experimental-sqlite vitest run --config vitest.e2e.config.ts",
     "test:watch": "cross-env NODE_OPTIONS=--experimental-sqlite vitest",
-    "type-check": "tsc --noEmit && tsc -p tsconfig.test.json && tsc -p tsconfig.ui.json"
+    "type-check": "tsc --noEmit && tsc -p tsconfig.test.json && tsc -p tsconfig.ui.json && tsc -p packages/client/tsconfig.json"
   },
   "dependencies": {
     "@arkade-os/sdk": "0.4.72",

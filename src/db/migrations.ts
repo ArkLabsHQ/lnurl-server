@@ -182,10 +182,42 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE addresses ADD COLUMN disabled_rails TEXT NOT NULL DEFAULT '[]';
     `,
   },
+  {
+    version: 11,
+    // Settlements carry only session_id, and the three rails write three different
+    // conventions into it, so payments cannot be attributed to an address. Each
+    // backfill is guarded on address_id IS NULL, making a retried migration converge
+    // rather than double-apply, and on the address still existing — an id parsed out
+    // of an orphaned `offline:`/`addr:` row would otherwise violate the foreign key
+    // and abort the whole migration. session_id is deliberately left untouched: it
+    // is still the ownership key for POST /lnurl/session/:id/settled.
+    up: `
+      ALTER TABLE settlements ADD COLUMN address_id INTEGER REFERENCES addresses(id);
+      CREATE INDEX idx_settlements_address ON settlements(address_id) WHERE address_id IS NOT NULL;
+
+      UPDATE settlements SET address_id =
+        (SELECT id FROM addresses WHERE addresses.session_id = settlements.session_id)
+        WHERE address_id IS NULL
+          AND EXISTS (SELECT 1 FROM addresses WHERE addresses.session_id = settlements.session_id);
+
+      UPDATE settlements SET address_id = CAST(substr(session_id, 9) AS INTEGER)
+        WHERE address_id IS NULL AND session_id LIKE 'offline:%'
+          AND EXISTS (SELECT 1 FROM addresses
+                      WHERE addresses.id = CAST(substr(settlements.session_id, 9) AS INTEGER));
+
+      UPDATE settlements SET address_id = CAST(substr(session_id, 6) AS INTEGER)
+        WHERE address_id IS NULL AND session_id LIKE 'addr:%'
+          AND EXISTS (SELECT 1 FROM addresses
+                      WHERE addresses.id = CAST(substr(settlements.session_id, 6) AS INTEGER));
+    `,
+  },
 ];
 
 /** Apply all pending forward-only migrations inside a transaction each. */
-export function runMigrations(db: Db, options: { legacySwapTtlMs?: number; now?: () => number } = {}): void {
+export function runMigrations(
+  db: Db,
+  options: { legacySwapTtlMs?: number; now?: () => number; upToVersion?: number } = {},
+): void {
   const now = options.now ?? Date.now;
   const legacySwapTtlMs = options.legacySwapTtlMs ?? 86_400_000;
   db.exec(
@@ -208,6 +240,7 @@ export function runMigrations(db: Db, options: { legacySwapTtlMs?: number; now?:
 
   for (const m of MIGRATIONS) {
     if (m.version <= current) continue;
+    if (options.upToVersion !== undefined && m.version > options.upToVersion) continue;
     db.exec("BEGIN");
     try {
       db.exec(m.up);

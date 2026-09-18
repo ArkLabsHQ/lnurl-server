@@ -39,6 +39,9 @@ export interface AppConfig {
   maxSendable: number;
   invoiceTimeoutMs: number;
   verifyTtlMs: number;
+  /** How long a handed-out destination stays watched. Separate from verifyTtlMs
+   *  because a hold invoice expires and a destination does not. */
+  destinationWatchMs: number;
   dbPath?: string;
   adminPort: number;
   adminBind: string;
@@ -135,6 +138,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
     maxSendable,
     invoiceTimeoutMs: integer(env, "INVOICE_TIMEOUT_MS", 30_000, { min: 1 }),
     verifyTtlMs: integer(env, "VERIFY_TTL_MS", 86_400_000, { min: 1 }),
+    destinationWatchMs: integer(env, "DESTINATION_WATCH_MS", 604_800_000, { min: 1 }),
     dbPath,
     adminPort,
     adminBind: env.ADMIN_BIND || "127.0.0.1",

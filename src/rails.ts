@@ -72,8 +72,31 @@ export const RAIL_DEFS: Record<RailId, RailDef> = {
   },
 };
 
+/** Amount bounds one rail can serve, in millisats. Either half may be absent,
+ *  meaning that end is not narrowed beyond the server/domain bound. */
+export interface RailLimits {
+  minSendable?: number;
+  maxSendable?: number;
+}
+
+/** Bounds actually offered, after narrowing. */
+export interface Bounds {
+  min: number;
+  max: number;
+}
+
 /** Server-level capability inputs. Identity-agnostic: no address needed. */
 export interface ServerRailCaps {
+  /**
+   * Per-rail amount bounds, where the operator configured them or a backend
+   * reported them. A rail absent here inherits the server/domain pair.
+   *
+   * Rails differ in what they can carry — a covenant destination is bounded by
+   * dust and VTXO shape, a solver-mediated swap by whatever the solver quotes —
+   * so one global pair has to be either dishonest or the narrowest common
+   * denominator. This lets each rail state its own.
+   */
+  limits?: Partial<Record<RailId, RailLimits>>;
   /** An offline-swap creator is wired (solver transport + claim path configured). */
   offlineSwapCreator: boolean;
   /** Solver discovery currently holds a usable lightning-receive candidate. */
@@ -238,8 +261,74 @@ export function effectiveRails(address: RailAddress, caps: ServerRailCaps): Addr
   return [interactive, offline, arkade, covenant];
 }
 
-/** Options advertised in the LUD-06 payRequest for an address. */
-export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCaps): PaymentOption[] {
+/** Narrow `base` by one rail's configured bounds. Never widens: a rail cannot
+ *  offer more than the server or domain already allows.
+ *
+ *  A rail configured outside the envelope entirely — a min above the server's
+ *  max — yields `min > max` and so refuses every amount. That is deliberate: a
+ *  rail that cannot serve anything should serve nothing, and clamping into
+ *  range would silently accept amounts the operator meant to exclude. Only the
+ *  advertised pair guards against it, because a malformed payRequest is a
+ *  different failure from a rail that declines. */
+export function railBounds(rail: RailId, caps: ServerRailCaps, base: Bounds): Bounds {
+  const limits = caps.limits?.[rail];
+  if (!limits) return base;
+  return {
+    min: Math.max(base.min, limits.minSendable ?? base.min),
+    max: Math.min(base.max, limits.maxSendable ?? base.max),
+  };
+}
+
+/**
+ * The bounds a `paymentOption` can be honoured at, across every available rail
+ * answering it.
+ *
+ * Two rails share each option — `lightning` is served by a live interactive
+ * session or, failing that, the offline swap; `arkade` by the direct
+ * destination or a per-payment covenant one. Which one serves is decided at
+ * callback time, and a session can drop in between, so the advertised range is
+ * the intersection: the widest range every candidate rail can honour. Being
+ * conservative under-advertises a rail that would have taken more, which is the
+ * better failure than quoting a payer an amount that is refused after they
+ * committed to it.
+ *
+ * Returns `undefined` when no available rail answers the option, and also when
+ * the candidates do not overlap at all — disjoint rails intersect to `min >
+ * max`, which as a payRequest is malformed rather than merely narrow: no amount
+ * satisfies it, so every payer's range check refuses everything. That is an
+ * operator misconfiguration, and falling back to the server/domain pair keeps
+ * the payRequest well-formed while the per-rail check at the callback still
+ * refuses honestly.
+ */
+export function optionBounds(
+  optionId: string,
+  address: RailAddress,
+  caps: ServerRailCaps,
+  base: Bounds,
+): Bounds | undefined {
+  const available = effectiveRails(address, caps).filter((state) => state.available);
+  const serving = available.filter((state) => RAIL_DEFS[state.id].paymentOption === optionId);
+  if (serving.length === 0) return undefined;
+  const intersected = serving.reduce<Bounds>((acc, state) => {
+    const bounds = railBounds(state.id, caps, base);
+    return { min: Math.max(acc.min, bounds.min), max: Math.min(acc.max, bounds.max) };
+  }, base);
+  return intersected.min > intersected.max ? undefined : intersected;
+}
+
+/**
+ * The top-level payRequest pair, which is the lightning rail's bounds rather
+ * than the envelope: a payer sending no `paymentOption` resolves to that rail,
+ * so quoting them anything wider would be quoting a rail that will not serve
+ * them.
+ */
+export function advertisedBounds(address: RailAddress, caps: ServerRailCaps, base: Bounds): Bounds {
+  return optionBounds("lightning", address, caps, base) ?? base;
+}
+
+/** Options advertised in the LUD-06 payRequest for an address. When `base` is
+ *  supplied each option carries the bounds it can actually be honoured at. */
+export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCaps, base?: Bounds): PaymentOption[] {
   // Without server caps (unit scope) keep the historical rule: an Arkade
   // identity offers both options, otherwise the address stays pure LUD-06.
   if (!caps) {
@@ -258,5 +347,21 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
     options.push({ id: "lightning", type: "lightning" });
   }
   options.push({ id: "arkade", type: "arkade" });
-  return options;
+  if (!base) return options;
+  // Emitted relative to the pair the payRequest actually advertises, not to the
+  // envelope. A client falls back to the top-level pair for an option that
+  // publishes nothing, and the top level is the lightning rail's — so an option
+  // that is WIDER than lightning has to say so, or the client refuses amounts
+  // the server would accept. Equal to the top level means nothing to emit, so
+  // an operator who configured no rail limits sees the payRequest as before.
+  const advertised = advertisedBounds(address, caps, base);
+  return options.map((option) => {
+    const bounds = optionBounds(option.id, address, caps, base);
+    if (!bounds) return option;
+    return {
+      ...option,
+      ...(bounds.min !== advertised.min ? { minSendable: bounds.min } : {}),
+      ...(bounds.max !== advertised.max ? { maxSendable: bounds.max } : {}),
+    };
+  });
 }

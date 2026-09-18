@@ -5,7 +5,8 @@ WORKDIR /app
 
 # Install dependencies
 FROM base AS deps
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY packages/client/package.json ./packages/client/
 RUN pnpm install --frozen-lockfile --prod=false
 
 # Build
@@ -13,11 +14,12 @@ FROM deps AS build
 COPY tsconfig.json tsconfig.ui.json vite.config.ts tsup.config.ts ./
 COPY src/ ./src/
 COPY scripts/ ./scripts/
-RUN pnpm build
+RUN pnpm build:server
 
 # Production
 FROM base AS prod
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY packages/client/package.json ./packages/client/
 RUN pnpm install --frozen-lockfile --prod
 COPY --from=build --chown=node:node /app/dist ./dist
 RUN mkdir -p /data && chown node:node /data

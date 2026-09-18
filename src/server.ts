@@ -10,6 +10,8 @@ import type { AddressService } from "./address-service.js";
 import { ProvisioningError } from "./address-service.js";
 import { RateLimiter } from "./rate-limit.js";
 import { paymentHashFromBolt11 } from "./bolt11.js";
+import { deriveSessionId } from "./session-id.js";
+import { isValidToken } from "./usernames.js";
 import { MemorySettlementStore, type SettlementStore } from "./settlement-store.js";
 import type { OfflineSwapCreator } from "./intent-swap.js";
 import type { OfflineSwapStore } from "./offline-swap-store.js";
@@ -17,7 +19,16 @@ import { HealthRegistry } from "./health.js";
 import { createLogger, type Logger } from "./logger.js";
 import { ArkAddress } from "@arkade-os/sdk";
 import { resolvePaymentOption } from "./payment-options.js";
-import { advertisedRailOptions, effectiveRails, type AddressRailState, type ServerRailCaps } from "./rails.js";
+import {
+  advertisedBounds,
+  advertisedRailOptions,
+  effectiveRails,
+  optionBounds,
+  railBounds,
+  type AddressRailState,
+  type Bounds,
+  type ServerRailCaps,
+} from "./rails.js";
 import { applyQuote, type QuoteProvider, type PaymentQuote } from "./quote-provider.js";
 import type { CovenantDestinationProvider, DerivedDestination } from "./covenant-destination.js";
 import { staticSettings, type RuntimeSettings } from "./settings.js";
@@ -63,6 +74,9 @@ export interface ServerDeps {
   solverDiscovery?: { status(): { ready: boolean; reason?: string } };
   /** Arkade indexer base URL (settlement observation for the arkade rail). */
   arkServerUrl?: string;
+  /** Per-rail amount bounds, narrowing the server/domain pair for the rails that
+   *  cannot carry it. Absent leaves every rail on the server/domain bounds. */
+  railLimits?: ServerRailCaps["limits"];
   health?: HealthRegistry;
   logger?: Logger;
 }
@@ -92,7 +106,7 @@ async function createOfflineSwapAndRespond(args: {
   try {
     // Caller guarantees whole satoshis (rejected at the route otherwise).
     const swap = await creator.create({ amountSat: amountMsat / 1000, receiveAddress, claimPublicKey });
-    const accepted = { paymentHash: swap.preimageHash, pr: swap.invoice, sessionId: `offline:${addressId}`, preimage: swap.preimage, amountMsat };
+    const accepted = { paymentHash: swap.preimageHash, pr: swap.invoice, sessionId: `offline:${addressId}`, preimage: swap.preimage, amountMsat, addressId };
     // With DB_PATH, OfflineSwapStore is the single atomic persistence boundary:
     // it writes both settlement and restart recovery rows in one transaction.
     if (offlineSwaps) offlineSwaps.createAccepted({ ...accepted, recovery: swap.recovery });
@@ -120,6 +134,7 @@ function buildMetadata(identifier?: string): string {
 async function requestInvoiceAndRespond(args: {
   sessions: SessionManager;
   sessionId: string;
+  addressId?: number;
   amountMsat: number;
   comment: string | undefined;
   min: number;
@@ -133,7 +148,7 @@ async function requestInvoiceAndRespond(args: {
   echoLightningOption?: boolean;
   res: express.Response;
 }): Promise<void> {
-  const { sessions, sessionId, amountMsat, comment, min, max, timeoutMs, offlineReason, store, baseUrl, paymentQuote, echoLightningOption, res } = args;
+  const { sessions, sessionId, addressId, amountMsat, comment, min, max, timeoutMs, offlineReason, store, baseUrl, paymentQuote, echoLightningOption, res } = args;
   if (amountMsat < min || amountMsat > max) {
     res.json({ status: "ERROR", reason: `Amount must be between ${min} and ${max} millisats` } satisfies LnurlErrorResponse);
     return;
@@ -149,7 +164,7 @@ async function requestInvoiceAndRespond(args: {
     const paymentHash = paymentHashFromBolt11(pr);
     const echo = echoLightningOption ? { paymentOption: "lightning" } : {};
     if (paymentHash) {
-      store.create({ paymentHash, pr, sessionId, amountMsat });
+      store.create({ paymentHash, pr, sessionId, amountMsat, addressId });
       res.json({ pr, routes: [], verify: `${baseUrl}/lnurl/verify/${paymentHash}`, ...(paymentQuote ? { paymentQuote } : {}), ...echo } satisfies LnurlPayCallbackResponse);
     } else {
       res.json({ pr, routes: [], ...(paymentQuote ? { paymentQuote } : {}), ...echo } satisfies LnurlPayCallbackResponse);
@@ -190,6 +205,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     ...(discoveryStatus?.reason ? { discoveryReason: discoveryStatus.reason } : {}),
     ...(deps?.arkServerUrl ? { arkServerUrl: deps.arkServerUrl } : {}),
     covenantDestinations: Boolean(covenantDestinations),
+    ...(deps?.railLimits ? { limits: deps.railLimits } : {}),
   };
   const railStatesFor = (address: { arkadeAddress: string | null; claimPublicKey: string | null; disabledRails: readonly unknown[] }): Map<string, AddressRailState> =>
     new Map(effectiveRails(address, railCaps).map((s) => [s.id, s]));
@@ -491,13 +507,19 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         return;
       }
       const origin = `${req.protocol}://${domain.domain}`;
-      const options = advertisedRailOptions({ arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, disabledRails: address.disabledRails }, railCaps);
+      const railAddress = { arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, disabledRails: address.disabledRails };
+      const base: Bounds = {
+        min: domain.minSendable ?? settings.minSendable(),
+        max: domain.maxSendable ?? settings.maxSendable(),
+      };
+      const options = advertisedRailOptions(railAddress, railCaps, base);
+      const advertised = advertisedBounds(railAddress, railCaps, base);
       const units = quoteProvider?.units() ?? [];
       const response: LnurlPayMetadata = {
         tag: "payRequest",
         callback: `${origin}/.well-known/lnurlp/${username}/callback`,
-        minSendable: domain.minSendable ?? settings.minSendable(),
-        maxSendable: domain.maxSendable ?? settings.maxSendable(),
+        minSendable: advertised.min,
+        maxSendable: advertised.max,
         metadata: buildMetadata(`${username}@${domain.domain}`),
         commentAllowed: 140,
         ...(options.length ? { paymentOptions: options } : {}),
@@ -526,8 +548,14 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         return;
       }
       let amountMsat = Number(amountStr);
-      const min = domain.minSendable ?? settings.minSendable();
-      const max = domain.maxSendable ?? settings.maxSendable();
+      // The envelope only. Each branch below narrows it to what its own rail can
+      // carry, because the rail that serves decides the real bound.
+      const base: Bounds = {
+        min: domain.minSendable ?? settings.minSendable(),
+        max: domain.maxSendable ?? settings.maxSendable(),
+      };
+      const { min, max } = base;
+      const railAddress = { arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, disabledRails: address.disabledRails };
       const paymentOptionId = strParam(req.query.paymentOption);
       // Non-positive amounts are refused before the quote/provider path.
       if (amountMsat <= 0) {
@@ -575,8 +603,9 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           res.status(429).json({ status: "ERROR", reason: "Too many requests" } satisfies LnurlErrorResponse);
           return;
         }
-        if (amountMsat < min || amountMsat > max) {
-          res.json({ status: "ERROR", reason: `Amount must be between ${min} and ${max} millisats` } satisfies LnurlErrorResponse);
+        const arkadeBounds = optionBounds("arkade", railAddress, railCaps, base) ?? base;
+        if (amountMsat < arkadeBounds.min || amountMsat > arkadeBounds.max) {
+          res.json({ status: "ERROR", reason: `Amount must be between ${arkadeBounds.min} and ${arkadeBounds.max} millisats` } satisfies LnurlErrorResponse);
           return;
         }
         // LUD-XX (lnurl/luds#303): a non-pr option MUST honor the requested amount
@@ -608,6 +637,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           paymentHash: verifyId,
           pr: "",
           sessionId: address.sessionId ?? `addr:${address.id}`,
+          addressId: address.id,
           paymentOption: resolved.paymentOption,
           paymentDestination: derived?.address ?? resolved.paymentDestination,
           amountMsat,
@@ -643,8 +673,9 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           res.status(429).json({ status: "ERROR", reason: "Too many requests" } satisfies LnurlErrorResponse);
           return;
         }
-        if (amountMsat < min || amountMsat > max) {
-          res.json({ status: "ERROR", reason: `Amount must be between ${min} and ${max} millisats` } satisfies LnurlErrorResponse);
+        const swapBounds = railBounds("offline-swap", railCaps, base);
+        if (amountMsat < swapBounds.min || amountMsat > swapBounds.max) {
+          res.json({ status: "ERROR", reason: `Amount must be between ${swapBounds.min} and ${swapBounds.max} millisats` } satisfies LnurlErrorResponse);
           return;
         }
         // The corridor deals in whole sats; reject before reserving capacity.
@@ -681,9 +712,10 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         return;
       }
 
+      const interactiveBounds = railBounds("interactive-lightning", railCaps, base);
       await requestInvoiceAndRespond({
-        sessions, sessionId: address.sessionId, amountMsat, comment,
-        min, max, timeoutMs: settings.invoiceTimeoutMs(),
+        sessions, sessionId: address.sessionId, addressId: address.id, amountMsat, comment,
+        min: interactiveBounds.min, max: interactiveBounds.max, timeoutMs: settings.invoiceTimeoutMs(),
         offlineReason: `${username}@${domain.domain} is currently offline`,
         store, baseUrl: settings.baseUrl(), paymentQuote, echoLightningOption: Boolean(paymentOptionId), res,
       });
@@ -726,7 +758,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         if (!domain) { res.status(404).json({ error: "Unknown domain" }); return; }
         const auth = req.headers.authorization;
         const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
-        if (!token) { res.status(401).json({ error: "Unauthorized" }); return; }
+        if (!isValidToken(token)) { res.status(401).json({ error: "Unauthorized" }); return; }
         const ok = addressService.revokeOwn(domain, req.params.username, token);
         if (!ok) { res.status(404).json({ error: "Address not found or not owned by this token" }); return; }
         res.json({ ok: true });
@@ -740,7 +772,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         if (!domain) { res.status(404).json({ error: "Unknown domain" }); return; }
         const auth = req.headers.authorization;
         const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
-        if (!token) { res.status(401).json({ error: "Unauthorized" }); return; }
+        if (!isValidToken(token)) { res.status(401).json({ error: "Unauthorized" }); return; }
         const { arkadeAddress, claimPublicKey } = (req.body ?? {}) as { arkadeAddress?: string; claimPublicKey?: string };
         // Compressed 33-byte key (02/03 prefix) — the covenant's receiver role.
         if (!arkadeAddress || typeof arkadeAddress !== "string" || !claimPublicKey || !/^0[23][0-9a-f]{64}$/i.test(claimPublicKey)) {
@@ -756,6 +788,35 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         const ok = addressService.setOfflineReceive(domain, req.params.username, token, { arkadeAddress, claimPublicKey });
         if (!ok) { res.status(404).json({ error: "Address not found or not owned by this token" }); return; }
         res.json({ ok: true });
+      });
+
+      // GET /lnurl/address/:username/payments: owner payment activity as a sync
+      // source, oldest first with an inclusive nextSince cursor.
+      app.get("/lnurl/address/:username/payments", (req, res) => {
+        const domainName = domainFromHost(strParam(req.query.domain) ?? req.get("host") ?? undefined);
+        const domain = domainName ? deps.repos.domains.getByDomain(domainName) : undefined;
+        if (!domain || !domain.enabled) { res.status(404).json({ error: "Unknown or disabled domain" }); return; }
+        const auth = req.headers.authorization;
+        const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
+        // isValidToken, not just a presence check: Buffer.from(hex) truncates at
+        // the first invalid pair, so `<token>zz` would derive the owner's id.
+        if (!isValidToken(token)) { res.status(401).json({ error: "Unauthorized" }); return; }
+        const address = deps.repos.addresses.getByDomainAndUsername(domain.id, req.params.username.toLowerCase());
+        if (!address || address.sessionId !== deriveSessionId(token) || address.status !== "active") {
+          res.status(404).json({ error: "Address not found or not owned by this token" });
+          return;
+        }
+        const sinceNum = Number(strParam(req.query.since));
+        const since = Number.isFinite(sinceNum) ? sinceNum : undefined;
+        const limitNum = Number(strParam(req.query.limit));
+        const limit = Number.isFinite(limitNum) ? Math.min(200, Math.max(1, Math.floor(limitNum))) : 50;
+        const payments = store.listByAddress(address.id, limit, since === undefined ? undefined : { since });
+        const last = payments[payments.length - 1];
+        res.json({
+          source: { domain: domain.domain, lightningAddress: `${address.username}@${domain.domain}` },
+          payments,
+          nextSince: last ? last.createdAt : (since ?? 0),
+        });
       });
     }
   }

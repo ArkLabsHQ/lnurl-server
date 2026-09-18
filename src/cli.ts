@@ -61,7 +61,7 @@ async function main(): Promise<void> {
       baseUrl: config.baseUrl,
       registrationRateLimitPerMin: config.registrationRateLimitPerMin,
     });
-    const settlements = new DbSettlementStore(db, config.verifyTtlMs);
+    const settlements = new DbSettlementStore(db, config.verifyTtlMs, undefined, config.destinationWatchMs);
     let offlineSwaps: import("./offline-swap-store.js").OfflineSwapStore | undefined;
     let offlineSwapCreator: import("./intent-swap.js").OfflineSwapCreator | undefined;
     if (config.offlineReceive.enabled) {

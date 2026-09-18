@@ -513,6 +513,48 @@ export const openApiSpec = {
         },
       },
     },
+    "/lnurl/address/{username}/payments": {
+      get: {
+        summary: "List payments received by one of your LN addresses",
+        description:
+          "Sync source for the owner payment activity, oldest first. " +
+          "Pass the returned nextSince back as since to page forward; the cursor is " +
+          "inclusive, so the boundary row is re-fetched and deduped on paymentHash.",
+        tags: ["LN Address"],
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: "username", in: "path", required: true, schema: { type: "string" }, description: "LN address local part" },
+          { name: "domain", in: "query", required: false, schema: { type: "string" }, description: "Target domain (defaults to the Host header)" },
+          { name: "since", in: "query", required: false, schema: { type: "integer" }, description: "Only rows with created_at >= since (ms); absent or non-numeric starts from the beginning" },
+          { name: "limit", in: "query", required: false, schema: { type: "integer" }, description: "Max rows returned; default 50, clamped to 1..200" },
+        ],
+        responses: {
+          "200": {
+            description: "Payment page, oldest first",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    source: {
+                      type: "object",
+                      properties: {
+                        domain: { type: "string" },
+                        lightningAddress: { type: "string" },
+                      },
+                    },
+                    payments: { type: "array", items: { type: "object" } },
+                    nextSince: { type: "number" },
+                  },
+                },
+              },
+            },
+          },
+          "401": { description: "Missing auth token" },
+          "404": { description: "Unknown or disabled domain, or address not found / not owned by this token" },
+        },
+      },
+    },
     "/.well-known/lnurlp/{username}": {
       get: {
         summary: "LN Address pay metadata (LUD-16)",

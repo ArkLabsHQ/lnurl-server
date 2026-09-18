@@ -26,6 +26,7 @@ export interface SettlementRecord {
   /** Set on destination records with a per-payment covenant address; null for the
    *  static-address shape and for lightning. @see covenant-destination.ts */
   covenantScript: string | null;
+  addressId: number | null;
   createdAt: number;
   settledAt: number | null;
 }
@@ -60,6 +61,7 @@ export interface NewSettlement {
   paymentDestination?: string;
   amountMsat?: number;
   covenantScript?: string;
+  addressId?: number;
 }
 
 export interface SettlementStore {
@@ -83,6 +85,7 @@ export interface SettlementStore {
   /** Newest-first audit view for the admin API (no TTL filter — history, not polling).
    *  Filters are pushed into the query so a filtered page isn't silently truncated. */
   listRecent(limit: number, opts?: { settled?: boolean; option?: string }): SettlementRecord[];
+  listByAddress(addressId: number, limit: number, opts?: { since?: number }): SettlementRecord[];
 }
 
 /** In-memory store used in library / no-DB mode. Lazy expiry on read plus an
@@ -91,7 +94,11 @@ export class MemorySettlementStore implements SettlementStore {
   private map = new Map<string, SettlementRecord>();
   private calls = 0;
 
-  constructor(private ttlMs: number, private now: () => number = () => Date.now()) {}
+  constructor(
+    private ttlMs: number,
+    private now: () => number = () => Date.now(),
+    private destinationWatchMs: number = ttlMs,
+  ) {}
 
   create(rec: NewSettlement): void {
     if (++this.calls % 1000 === 0) this.sweep();
@@ -108,6 +115,7 @@ export class MemorySettlementStore implements SettlementStore {
       paymentReference: null,
       amountMsat: rec.amountMsat ?? null,
       covenantScript: rec.covenantScript ?? null,
+      addressId: rec.addressId ?? null,
       createdAt: this.now(),
       settledAt: null,
     });
@@ -125,8 +133,11 @@ export class MemorySettlementStore implements SettlementStore {
   get(paymentHash: string): SettlementRecord | undefined {
     const r = this.map.get(paymentHash);
     if (!r) return undefined;
-    if (this.now() - r.createdAt >= this.ttlMs) {
-      this.map.delete(paymentHash);
+    const lifetime = r.paymentOption && r.paymentOption !== "lightning" ? this.destinationWatchMs : this.ttlMs;
+    if (this.now() - r.createdAt >= lifetime) {
+      // Same rules as the DB store: a destination outlives the verify TTL, and
+      // an address's history outlives both.
+      if (r.addressId === null || r.addressId === undefined) this.map.delete(paymentHash);
       return undefined;
     }
     return r;
@@ -149,7 +160,12 @@ export class MemorySettlementStore implements SettlementStore {
     const out: PendingDestination[] = [];
     const t = this.now();
     for (const r of this.map.values()) {
-      if (t - r.createdAt >= this.ttlMs) continue;
+      // destinationWatchMs, not ttlMs: a hold invoice really does expire, so
+      // dropping it is safe. A destination stays payable forever and the
+      // callback advertises no expiry, so giving up on it means a payment that
+      // does arrive is never observed, never swept, and never reaches its
+      // owner's history.
+      if (t - r.createdAt >= this.destinationWatchMs) continue;
       // amountMsat missing → an observed payment can never be amount-checked, so
       // skip rather than flip on any payment. Option missing == lightning.
       if (r.paymentOption != null && r.paymentOption !== "lightning" && !r.settled && r.paymentDestination && r.amountMsat != null) {
@@ -179,6 +195,13 @@ export class MemorySettlementStore implements SettlementStore {
     return false;
   }
 
+  listByAddress(addressId: number, limit: number, opts?: { since?: number }): SettlementRecord[] {
+    return [...this.map.values()]
+      .filter((r) => r.addressId === addressId && (opts?.since === undefined || r.createdAt >= opts.since))
+      .sort((a, b) => a.createdAt - b.createdAt || (a.paymentHash < b.paymentHash ? -1 : 1))
+      .slice(0, limit);
+  }
+
   listRecent(limit: number, opts?: { settled?: boolean; option?: string }): SettlementRecord[] {
     return [...this.map.values()]
       .filter((r) => (opts?.settled === undefined || r.settled === opts.settled) && (opts?.option === undefined || r.paymentOption === opts.option))
@@ -188,7 +211,9 @@ export class MemorySettlementStore implements SettlementStore {
 
   private sweep(): void {
     const t = this.now();
-    for (const [k, r] of this.map) if (t - r.createdAt >= this.ttlMs) this.map.delete(k);
+    for (const [k, r] of this.map) {
+      if (t - r.createdAt >= this.ttlMs && (r.addressId === null || r.addressId === undefined)) this.map.delete(k);
+    }
   }
 }
 
@@ -204,6 +229,7 @@ interface SettlementRow {
   payment_reference: string | null;
   amount_msat: number | null;
   covenant_script: string | null;
+  address_id: number | null;
   created_at: number;
   settled_at: number | null;
 }
@@ -212,12 +238,17 @@ interface SettlementRow {
  *  session — a payer may poll `verify` after the wallet disconnects. Expiry is
  *  lazy on read. */
 export class DbSettlementStore implements SettlementStore {
-  constructor(private db: Db, private ttlMs: number, private now: () => number = () => Date.now()) {}
+  constructor(
+    private db: Db,
+    private ttlMs: number,
+    private now: () => number = () => Date.now(),
+    private destinationWatchMs: number = ttlMs,
+  ) {}
 
   create(rec: NewSettlement): void {
     const info = this.db
       .prepare(
-        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, covenant_script, created_at, settled_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, covenant_script, address_id, created_at, settled_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
       )
       .run(
         rec.paymentHash,
@@ -229,6 +260,7 @@ export class DbSettlementStore implements SettlementStore {
         rec.paymentDestination ?? null,
         rec.amountMsat ?? null,
         rec.covenantScript ?? null,
+        rec.addressId ?? null,
         this.now(),
       );
     // A paymentHash collision on the offline path would leave `verify` polling the
@@ -260,8 +292,21 @@ export class DbSettlementStore implements SettlementStore {
       | SettlementRow
       | undefined;
     if (!row) return undefined;
-    if (this.now() - row.created_at >= this.ttlMs) {
-      this.db.prepare("DELETE FROM settlements WHERE payment_hash = ?").run(paymentHash);
+    // A record stays readable for as long as the server will still honour it.
+    // A bolt11 invoice is dead at the verify TTL; a destination is live until
+    // the watch window closes, and telling a payer "unknown" about a payment
+    // the watcher would still settle is the wrong answer.
+    const lifetime =
+      row.payment_option && row.payment_option !== "lightning" ? this.destinationWatchMs : this.ttlMs;
+    if (this.now() - row.created_at >= lifetime) {
+      // Expiry hides a record from verify, but only an unattributed one is
+      // reclaimed. A row carrying an address_id is that owner's history and the
+      // only copy of it — and a wallet offline past the TTL is precisely the
+      // case the sync source exists for, so deleting here let any payer's
+      // verify poll erase a receive its owner had not seen yet.
+      if (row.address_id === null || row.address_id === undefined) {
+        this.db.prepare("DELETE FROM settlements WHERE payment_hash = ?").run(paymentHash);
+      }
       return undefined;
     }
     return {
@@ -276,6 +321,7 @@ export class DbSettlementStore implements SettlementStore {
       paymentReference: row.payment_reference ?? null,
       amountMsat: row.amount_msat ?? null,
       covenantScript: row.covenant_script ?? null,
+      addressId: row.address_id ?? null,
       createdAt: row.created_at,
       settledAt: row.settled_at ?? null,
     };
@@ -296,7 +342,9 @@ export class DbSettlementStore implements SettlementStore {
       .prepare(
         "SELECT payment_hash, payment_destination, amount_msat, created_at, covenant_script FROM settlements WHERE settled = 0 AND payment_option IS NOT NULL AND payment_option != 'lightning' AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
       )
-      .all(this.now() - this.ttlMs) as unknown as {
+      // See the memory store: a destination outlives the verify TTL because it
+      // stays payable and nothing tells the payer otherwise.
+      .all(this.now() - this.destinationWatchMs) as unknown as {
       payment_hash: string;
       payment_destination: string;
       amount_msat: number;
@@ -318,7 +366,11 @@ export class DbSettlementStore implements SettlementStore {
       .prepare(
         "UPDATE settlements SET settled = 1, payment_reference = ?, settled_at = ? WHERE payment_hash = ? AND settled = 0 AND created_at > ?",
       )
-      .run(reference, this.now(), paymentHash, this.now() - this.ttlMs);
+      // Both callers are destination watchers, so this tracks the watch window
+      // rather than the verify TTL. Gating it on the shorter one meant the
+      // watcher could find a late payment and then fail to record it, which
+      // reads as "no payment" from every angle a caller can see.
+      .run(reference, this.now(), paymentHash, this.now() - this.destinationWatchMs);
     return info.changes > 0;
   }
 
@@ -352,6 +404,35 @@ export class DbSettlementStore implements SettlementStore {
       paymentReference: row.payment_reference ?? null,
       amountMsat: row.amount_msat ?? null,
       covenantScript: row.covenant_script ?? null,
+      addressId: row.address_id ?? null,
+      createdAt: row.created_at,
+      settledAt: row.settled_at ?? null,
+    }));
+  }
+
+  listByAddress(addressId: number, limit: number, opts?: { since?: number }): SettlementRecord[] {
+    const where: string[] = ["address_id = ?"];
+    const params: (string | number)[] = [addressId];
+    if (opts?.since !== undefined) {
+      where.push("created_at >= ?");
+      params.push(opts.since);
+    }
+    const rows = this.db
+      .prepare(`SELECT * FROM settlements WHERE ${where.join(" AND ")} ORDER BY created_at ASC, payment_hash ASC LIMIT ?`)
+      .all(...params, limit) as unknown as SettlementRow[];
+    return rows.map((row) => ({
+      paymentHash: row.payment_hash,
+      pr: row.pr,
+      sessionId: row.session_id,
+      settled: !!row.settled,
+      preimage: row.preimage ?? null,
+      swapId: row.swap_id ?? null,
+      paymentOption: row.payment_option ?? "lightning",
+      paymentDestination: row.payment_destination ?? null,
+      paymentReference: row.payment_reference ?? null,
+      amountMsat: row.amount_msat ?? null,
+      covenantScript: row.covenant_script ?? null,
+      addressId: row.address_id ?? null,
       createdAt: row.created_at,
       settledAt: row.settled_at ?? null,
     }));
