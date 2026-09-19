@@ -79,6 +79,11 @@ export interface SettlementStore {
   listPendingSwaps(): PendingSwap[];
   /** Unsettled destination-rail records (non-lightning) with an amount, for the watcher. */
   listPendingDestinations(): PendingDestination[];
+  /** One pending record by its covenant script — the covenant rail's attribution
+   *  key, uniquely indexed. The covenant watcher has a script in hand for every
+   *  contract and every event, so scanning the whole pending set to find its
+   *  record made a catch-up pass cost contracts x open payments. */
+  pendingByCovenantScript(script: string): PendingDestination | undefined;
   /** True when a reference (e.g. an Arkade txid) already settled some record —
    *  one observed payment must not settle two records across watcher passes. */
   isReferenceUsed(reference: string): boolean;
@@ -166,19 +171,37 @@ export class MemorySettlementStore implements SettlementStore {
       // does arrive is never observed, never swept, and never reaches its
       // owner's history.
       if (t - r.createdAt >= this.destinationWatchMs) continue;
-      // amountMsat missing → an observed payment can never be amount-checked, so
-      // skip rather than flip on any payment. Option missing == lightning.
-      if (r.paymentOption != null && r.paymentOption !== "lightning" && !r.settled && r.paymentDestination && r.amountMsat != null) {
-        out.push({
-          paymentHash: r.paymentHash,
-          paymentDestination: r.paymentDestination,
-          amountMsat: r.amountMsat,
-          createdAt: r.createdAt,
-          covenantScript: r.covenantScript,
-        });
-      }
+      const pending = this.asPendingDestination(r);
+      if (pending) out.push(pending);
     }
     return out;
+  }
+
+  /** The watcher's view of a record, or undefined when it is not one it can act
+   *  on. amountMsat missing → an observed payment can never be amount-checked,
+   *  so skip rather than flip on any payment. Option missing == lightning. */
+  private asPendingDestination(r: SettlementRecord): PendingDestination | undefined {
+    if (this.now() - r.createdAt >= this.destinationWatchMs) return undefined;
+    if (r.paymentOption == null || r.paymentOption === "lightning") return undefined;
+    if (r.settled || !r.paymentDestination || r.amountMsat == null) return undefined;
+    return {
+      paymentHash: r.paymentHash,
+      paymentDestination: r.paymentDestination,
+      amountMsat: r.amountMsat,
+      createdAt: r.createdAt,
+      covenantScript: r.covenantScript,
+    };
+  }
+
+  pendingByCovenantScript(script: string): PendingDestination | undefined {
+    // Walks the map rather than building the whole pending list first: the
+    // watcher asks once per contract, and materialising every open payment each
+    // time is the cost this method exists to remove.
+    for (const r of this.map.values()) {
+      if (r.covenantScript !== script) continue;
+      return this.asPendingDestination(r);
+    }
+    return undefined;
   }
 
   markObserved(paymentHash: string, reference: string): boolean {
@@ -358,6 +381,26 @@ export class DbSettlementStore implements SettlementStore {
       createdAt: r.created_at,
       covenantScript: r.covenant_script,
     }));
+  }
+
+  pendingByCovenantScript(script: string): PendingDestination | undefined {
+    // Served by uq_settlements_covenant_script; the remaining predicates filter
+    // the single row it can return rather than driving the scan.
+    const row = this.db
+      .prepare(
+        "SELECT payment_hash, payment_destination, amount_msat, created_at, covenant_script FROM settlements WHERE covenant_script = ? AND settled = 0 AND payment_option IS NOT NULL AND payment_option != 'lightning' AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
+      )
+      .get(script, this.now() - this.destinationWatchMs) as unknown as
+      | { payment_hash: string; payment_destination: string; amount_msat: number; created_at: number; covenant_script: string | null }
+      | undefined;
+    if (!row) return undefined;
+    return {
+      paymentHash: row.payment_hash,
+      paymentDestination: row.payment_destination,
+      amountMsat: row.amount_msat,
+      createdAt: row.created_at,
+      covenantScript: row.covenant_script,
+    };
   }
 
   markObserved(paymentHash: string, reference: string): boolean {

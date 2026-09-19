@@ -234,3 +234,39 @@ describe("catchUp", () => {
     expect(store.get("v1")!.paymentReference).toBe("tx-original");
   });
 });
+
+describe("catch-up cost", () => {
+  // A pass used to call listPendingDestinations once per contract and scan it,
+  // so cost was contracts x open payments. The attribution key is uniquely
+  // indexed, so one lookup per contract is all it ever needed.
+  it("looks each contract up by script instead of scanning the pending set", async () => {
+    const records = Array.from({ length: 50 }, (_, i) => ({
+      hash: `h${i}`,
+      script: `5120${String(i).padStart(4, "0")}`,
+      amountMsat: 1_000_000,
+    }));
+    const store = storeWith(records);
+    let scans = 0;
+    const original = store.listPendingDestinations.bind(store);
+    store.listPendingDestinations = () => {
+      scans++;
+      return original();
+    };
+
+    const funded = records.map((r) => ({ script: r.script, vtxos: [{ txid: `tx-${r.hash}`, value: 1_000 }] }));
+    const { manager } = fakeManager(funded);
+    expect(await catchUp(store, manager)).toBe(50);
+    expect(scans).toBe(0);
+  });
+
+  it("still settles only the record the script attributes the payment to", async () => {
+    const store = storeWith([
+      { hash: "a", script: "5120aa", amountMsat: 1_000_000 },
+      { hash: "b", script: "5120bb", amountMsat: 1_000_000 },
+    ]);
+    const { manager } = fakeManager([{ script: "5120bb", vtxos: [{ txid: "tx-b", value: 1_000 }] }]);
+    expect(await catchUp(store, manager)).toBe(1);
+    expect(store.get("b")?.settled).toBe(true);
+    expect(store.get("a")?.settled).toBe(false);
+  });
+});

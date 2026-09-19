@@ -15,7 +15,7 @@ function settleFrom(
   script: string,
   vtxos: readonly { txid: string; value: number }[],
 ): number {
-  const record = store.listPendingDestinations().find((p) => p.covenantScript === script);
+  const record = store.pendingByCovenantScript(script);
   if (!record) return 0;
   for (const v of vtxos) {
     // An under-payment must never flip `settled`, exactly as on the static rail.
