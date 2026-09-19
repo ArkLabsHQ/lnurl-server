@@ -92,6 +92,9 @@ export interface CovenantDestinationProvider {
 }
 
 const CONTEXT_TTL_MS = 5 * 60_000;
+/** Matches the pairing probe in src/self-claim.ts: long enough for a healthy
+ *  round trip, short enough that a dead dependency fails rather than parks. */
+const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
 
 /**
  * Reads the operator and emulator keys the covenant commits to, refetched on a TTL
@@ -110,6 +113,9 @@ export function createCovenantDestinationProvider(opts: {
   contracts?: IContractManager;
   /** Where the sweep leaf's secret comes from. Defaults to `randomBytes`. */
   entropy?: EntropyProvider;
+  /** Ceiling on each key fetch. Unbounded, a hung arkd or emulator holds every
+   *  concurrent derivation with it, and those share the offline-quote slots. */
+  requestTimeoutMs?: number;
   now?: () => number;
 }): CovenantDestinationProvider {
   // Here rather than only at derivation: BIP68's throw arrives per payment, where
@@ -119,7 +125,7 @@ export function createCovenantDestinationProvider(opts: {
     throw new Error(`recoveryDelaySeconds must be a positive multiple of 512 (got ${opts.recoveryDelaySeconds})`);
   }
   const now = opts.now ?? (() => Date.now());
-  let cached: { at: number; serverPubkey: Uint8Array; emulatorPubkey: Uint8Array } | undefined;
+  let cached: { at: number; ctx: Promise<{ serverPubkey: Uint8Array; emulatorPubkey: Uint8Array }> } | undefined;
   if (!opts.covclaimdUrl && !opts.emulatorUrl) {
     throw new Error("covenant destinations require covclaimdUrl or emulatorUrl (the covenant commits to the emulator key)");
   }
@@ -127,24 +133,31 @@ export function createCovenantDestinationProvider(opts: {
   // A 4xx body parses into an envelope with the field missing, so the decode error
   // hides the status that caused it.
   const getJson = async <T>(url: string): Promise<T> => {
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`${url} -> HTTP ${res.status}`);
     return (await res.json()) as T;
   };
 
-  const context = async () => {
-    if (cached && now() - cached.at < CONTEXT_TTL_MS) return cached;
-    const infoP = getJson<{ signerPubkey: string }>(`${opts.arkServerUrl}/v1/info`);
-    const emulatorP = opts.covclaimdUrl
-      ? getJson<{ emulator_pub_key: string }>(`${opts.covclaimdUrl}/v1/preimage/covclaimd-pubkey`).then((keys) => keys.emulator_pub_key)
-      : getJson<{ signerPubkey: string }>(`${opts.emulatorUrl}/v1/info`).then((info) => info.signerPubkey);
-    const [info, emulatorKey] = await Promise.all([infoP, emulatorP]);
-    cached = {
-      at: now(),
-      serverPubkey: toXOnly(hex.decode(info.signerPubkey)),
-      emulatorPubkey: hex.decode(String(emulatorKey)),
-    };
-    return cached;
+  // The promise is cached, not the value it settles to: derivations arrive
+  // concurrently, and caching only the result let every one of them past an
+  // expired TTL start its own pair of fetches.
+  const context = (): Promise<{ serverPubkey: Uint8Array; emulatorPubkey: Uint8Array }> => {
+    if (cached && now() - cached.at < CONTEXT_TTL_MS) return cached.ctx;
+    const ctx = (async () => {
+      const infoP = getJson<{ signerPubkey: string }>(`${opts.arkServerUrl}/v1/info`);
+      const emulatorP = opts.covclaimdUrl
+        ? getJson<{ emulator_pub_key: string }>(`${opts.covclaimdUrl}/v1/preimage/covclaimd-pubkey`).then((keys) => keys.emulator_pub_key)
+        : getJson<{ signerPubkey: string }>(`${opts.emulatorUrl}/v1/info`).then((info) => info.signerPubkey);
+      const [info, emulatorKey] = await Promise.all([infoP, emulatorP]);
+      return {
+        serverPubkey: toXOnly(hex.decode(info.signerPubkey)),
+        emulatorPubkey: hex.decode(String(emulatorKey)),
+      };
+    })();
+    // A failed load is retried on the next derivation, not pinned for the TTL.
+    ctx.catch(() => { if (cached?.ctx === ctx) cached = undefined; });
+    cached = { at: now(), ctx };
+    return ctx;
   };
 
   return {

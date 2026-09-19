@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import http from "node:http";
 import { hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { MultisigTapscript, VtxoScript } from "@arkade-os/sdk";
@@ -194,5 +195,56 @@ describe("createCovenantDestinationProvider", () => {
         recoveryDelaySeconds: 86_528,
       } as never),
     ).toThrow(/covclaimdUrl or emulatorUrl/);
+  });
+});
+
+describe("covenant destination key fetches", () => {
+  const listen = (handler: http.RequestListener) =>
+    new Promise<{ url: string; close: () => Promise<void> }>((resolve) => {
+      const s = http.createServer(handler);
+      s.listen(0, "127.0.0.1", () =>
+        resolve({
+          url: `http://127.0.0.1:${(s.address() as { port: number }).port}`,
+          close: () => new Promise<void>((r) => { s.closeAllConnections(); s.close(() => r()); }),
+        }),
+      );
+    });
+
+  const address = { arkadeAddress: staticAddress, claimPublicKey: hex.encode(secp256k1.getPublicKey(new Uint8Array(32).fill(7), true)) };
+
+  it("fetches the operator and emulator keys once for concurrent derivations", async () => {
+    let infoHits = 0;
+    const ark = await listen((_req, res) => {
+      infoHits++;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ signerPubkey: hex.encode(serverPubkey) }));
+    });
+    const emulator = await listen((_req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ signerPubkey: hex.encode(emulatorPubkey) }));
+    });
+    try {
+      const provider = createCovenantDestinationProvider({
+        arkServerUrl: ark.url, emulatorUrl: emulator.url, recoveryDelaySeconds: 4096,
+      });
+      await Promise.all(Array.from({ length: 10 }, () => provider.derive(address)));
+      // The cache stored a resolved value, so ten callers raced ten fetch pairs.
+      expect(infoHits).toBe(1);
+    } finally {
+      await ark.close();
+      await emulator.close();
+    }
+  });
+
+  it("gives up on a hung endpoint instead of holding the caller forever", async () => {
+    const hung = await listen(() => { /* accepts, never answers */ });
+    try {
+      const provider = createCovenantDestinationProvider({
+        arkServerUrl: hung.url, emulatorUrl: hung.url, recoveryDelaySeconds: 4096, requestTimeoutMs: 80,
+      });
+      await expect(provider.derive(address)).rejects.toThrow();
+    } finally {
+      await hung.close();
+    }
   });
 });

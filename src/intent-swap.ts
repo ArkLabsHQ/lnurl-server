@@ -166,8 +166,13 @@ function compressedKey(v: unknown, name: string): Uint8Array {
   return hex.decode(v.toLowerCase());
 }
 
+/** Same ceiling as src/self-claim.ts's pairing probe. Unbounded, a hung covclaimd
+ *  parks every quote waiting on the corridor context, and those hold the
+ *  MAX_CONCURRENT_OFFLINE_QUOTES slots with them. */
+const KEY_FETCH_TIMEOUT_MS = 5_000;
+
 async function fetchCovclaimdKeys(covclaimdUrl: string): Promise<{ covclaimdPubkey: Uint8Array; emulatorPubkey: Uint8Array }> {
-  const res = await fetch(`${covclaimdUrl}/v1/preimage/covclaimd-pubkey`);
+  const res = await fetch(`${covclaimdUrl}/v1/preimage/covclaimd-pubkey`, { signal: AbortSignal.timeout(KEY_FETCH_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`covclaimd pubkey endpoint: HTTP ${res.status}`);
   const body = (await res.json()) as { covclaimd_pub_key?: unknown; emulator_pub_key?: unknown };
   return {
@@ -180,7 +185,7 @@ async function fetchCovclaimdKeys(covclaimdUrl: string): Promise<{ covclaimdPubk
  *  by `GET /v1/info`. Used only when no covclaimd is configured — otherwise the
  *  covclaimd-reported key stays authoritative so the covenant matches the solver. */
 async function fetchEmulatorKey(emulatorUrl: string): Promise<Uint8Array> {
-  const res = await fetch(`${emulatorUrl}/v1/info`);
+  const res = await fetch(`${emulatorUrl}/v1/info`, { signal: AbortSignal.timeout(KEY_FETCH_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`emulator info endpoint: HTTP ${res.status}`);
   const body = (await res.json()) as { signerPubkey?: unknown };
   const v = body.signerPubkey;

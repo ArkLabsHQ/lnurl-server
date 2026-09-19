@@ -5,6 +5,11 @@ import { SessionManager } from "./session-manager.js";
 import type { Db } from "./db/connection.js";
 import { pathToFileURL } from "node:url";
 
+/** Ceiling on the dependency probes boot makes. Generous next to the in-request
+ *  timeouts: a cold arkd is slower than a warm one, and failing here refuses to
+ *  start rather than serving a degraded rail. */
+const BOOT_PROBE_TIMEOUT_MS = 15_000;
+
 /** Open + migrate + bootstrap the DB when configured; null in in-memory mode. */
 export async function initPersistence(opts: {
   dbPath?: string;
@@ -100,7 +105,9 @@ async function main(): Promise<void> {
       const { OfflineSwapStore } = await import("./offline-swap-store.js");
       const { DiscoveryService } = await import("./solver-discovery.js");
       const { isNetwork } = await import("@arkade-os/solver-discovery");
-      const infoResponse = await fetch(`${off.arkServerUrl}/v1/info`);
+      // Bounded: an unreachable arkd that accepts the connection and never answers
+      // would otherwise hang boot forever, with no listener and nothing in the log.
+      const infoResponse = await fetch(`${off.arkServerUrl}/v1/info`, { signal: AbortSignal.timeout(BOOT_PROBE_TIMEOUT_MS) });
       if (!infoResponse.ok) throw new Error(`Arkade info endpoint: HTTP ${infoResponse.status}`);
       const arkInfo = await infoResponse.json() as { network?: unknown; dust?: unknown };
       const network = arkInfo.network;
@@ -128,7 +135,7 @@ async function main(): Promise<void> {
       }), { required: false });
       if (!discovery.status().ready) logger.warn("offline_receive_unavailable", { reason: discovery.status().reason });
       const covclaimdProbe = off.covclaimdUrl
-        ? await fetch(`${off.covclaimdUrl}/v1/preimage/covclaimd-pubkey`)
+        ? await fetch(`${off.covclaimdUrl}/v1/preimage/covclaimd-pubkey`, { signal: AbortSignal.timeout(BOOT_PROBE_TIMEOUT_MS) })
         : null;
       if (covclaimdProbe && !covclaimdProbe.ok) throw new Error(`covclaimd pubkey endpoint: HTTP ${covclaimdProbe.status}`);
       offlineSwaps = new OfflineSwapStore(db, config.verifyTtlMs);
