@@ -598,6 +598,16 @@ export const openApiSpec = {
                             properties: {
                               id: { type: "string" },
                               type: { type: "string", description: "e.g. lightning, arkade" },
+                              minSendable: {
+                                type: "number",
+                                description:
+                                  "Millisats, present only when this rail's floor differs from the top-level pair — e.g. an Arkade rail bounded by the operator's dust. Absent means the top-level minSendable applies.",
+                              },
+                              maxSendable: {
+                                type: "number",
+                                description:
+                                  "Millisats, present only when this rail's ceiling differs from the top-level pair. Absent means the top-level maxSendable applies.",
+                              },
                             },
                           },
                         },

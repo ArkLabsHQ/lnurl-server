@@ -7,6 +7,7 @@ import { createRepositories, type Repositories } from "../src/db/repositories/in
 import { MemorySettlementStore } from "../src/settlement-store.js";
 import type { OfflineSwapCreator } from "../src/intent-swap.js";
 import type { LnurlServiceConfig } from "../src/types.js";
+import { openApiSpec } from "../src/openapi.js";
 
 /** Present only so the offline-swap rail counts as available; never called. */
 const swapCreator = {
@@ -296,5 +297,27 @@ describe("solver-derived offline-swap bounds", () => {
     expect((await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com")).maxSendable).toBe(50_000_000);
     bounds = { minSat: 1000, maxSat: 25_000 };
     expect((await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com")).maxSendable).toBe(25_000_000);
+  });
+});
+
+describe("payRequest bounds vs the published schema", () => {
+  // The generated client is built from this spec, so a field the route emits and
+  // the spec omits is invisible to every consumer of it — which is how a payer's
+  // client ends up quoting a rail's bounds it cannot see. Same class of drift as
+  // the boardingAddress omission.
+  it("documents every key the arkade option actually carries", async () => {
+    ctx = await start(repos, undefined, undefined, undefined, 330);
+    addr("alice");
+    const meta = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com");
+    const option = (meta.paymentOptions as Array<Record<string, unknown>>).find((o) => o.id === "arkade")!;
+    expect(Object.keys(option).length).toBeGreaterThan(2);
+
+    // The response is a oneOf of the payRequest and an LNURL error, so the
+    // branch is found by what it carries rather than by position.
+    const branches = (openApiSpec as Record<string, any>).paths["/.well-known/lnurlp/{username}"].get.responses["200"]
+      .content["application/json"].schema.oneOf as Array<{ properties?: Record<string, any> }>;
+    const payRequest = branches.find((b) => b.properties?.paymentOptions);
+    const documented = Object.keys(payRequest!.properties!.paymentOptions.items.properties as Record<string, unknown>);
+    expect(documented).toEqual(expect.arrayContaining(Object.keys(option)));
   });
 });
