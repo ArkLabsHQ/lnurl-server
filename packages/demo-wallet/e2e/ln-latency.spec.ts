@@ -79,7 +79,14 @@ test("pays an offline-receive invoice over Lightning and times the claim", async
   await expect(payerPage.getByText("solver-lightning")).toBeVisible({ timeout: 60_000 });
 
   const paidAt = Date.now();
+  payerPage.on("console", (m) => console.log(`[c.${m.type()}] ${m.text().slice(0, 240)}`));
+  payerPage.on("pageerror", (e) => console.log(`[pageerror] ${e.message.slice(0, 240)}`));
   await payerPage.getByRole("button", { name: /^Pay / }).first().click();
+
+  // Whatever the send box ends up saying is the first thing worth knowing.
+  await payerPage.waitForTimeout(45_000);
+  const status = await payerPage.locator("div").filter({ hasText: /^(sent|paid|payment failed|routing failed|solver-lightning)/ }).allInnerTexts();
+  console.log("PAYER STATUS: " + JSON.stringify(status).slice(0, 400));
 
   let settledMs: number | undefined;
   for (let i = 0; i < 300; i++) {

@@ -1,4 +1,4 @@
-import { bech32 } from "@scure/base";
+import { bech32, hex } from "@scure/base";
 import type { InvoiceFacts } from "@arkade-os/swap";
 
 /** Extract the payment hash (lowercase hex) from a bolt11 invoice, or null if it
@@ -22,7 +22,7 @@ export function paymentHashFromBolt11(pr: string): string | null {
       if (dataEnd > end) break;
       if (type === 1) {
         const bytes = bech32.fromWordsUnsafe(words.slice(dataStart, dataStart + 52));
-        return bytes ? Buffer.from(bytes.slice(0, 32)).toString("hex") : null;
+        return bytes ? hex.encode(bytes.slice(0, 32)) : null;
       }
       i = dataEnd;
     }
@@ -84,7 +84,7 @@ export function invoiceFactsFromBolt11(pr: string): InvoiceFacts {
     if (dataEnd > end) break;
     if (type === 1) {
       const bytes = bech32.fromWordsUnsafe(words.slice(dataStart, dataStart + 52));
-      if (bytes) paymentHash = Buffer.from(bytes.slice(0, 32)).toString("hex");
+      if (bytes) paymentHash = hex.encode(bytes.slice(0, 32));
     } else if (type === 6) {
       expiry = wordsToInt(words.slice(dataStart, dataEnd));
     }

@@ -263,6 +263,7 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
   const [options, setOptions] = useState<PaymentOption[] | null>(null);
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
+  const [paying, setPaying] = useState<string>();
 
   const findRoutes = async () => {
     setBusy(true); setStatus(""); setOptions(null);
@@ -277,6 +278,10 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
   // Quoted only on click: a quote asks the callback for an invoice, so pricing
   // every option up front would mint one per rail and abandon all but one.
   const pay = async (option: PaymentOption) => {
+    // Quoting a swap rail is a live round trip to a solver and can take a
+    // while or stall; without this the button only greys out and the wallet
+    // looks like it ignored the click.
+    setPaying(option.railId);
     setBusy(true); setStatus("");
     try {
       const quote = await option.quote();
@@ -303,7 +308,7 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
           .catch((e: Error) => setStatus(`sent via ${quote.railId}, but verify failed: ${e.message}`));
       }
     } catch (e) { setStatus(`payment failed: ${(e as Error).message}`); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setPaying(undefined); }
   };
 
   return (
@@ -329,7 +334,7 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
           display: "flex", alignItems: "center", gap: 12 }}>
           <span style={{ ...mono }}>{option.railId}</span>
           <button style={{ ...btn, marginLeft: "auto" }} disabled={busy} onClick={() => void pay(option)}>
-            Pay {amount} sats
+            {paying === option.railId ? "Quoting…" : `Pay ${amount} sats`}
           </button>
         </div>
       ))}

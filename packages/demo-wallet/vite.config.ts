@@ -6,8 +6,15 @@ import react from "@vitejs/plugin-react";
 // than hardcoded, so running `vite` here still works without it.
 const base = process.env.DEMO_WALLET_BASE ?? "/";
 
+// Opt-in so the debugging page never reaches Pages: the Pages workflow does not
+// set it, so the published bundle has one entry as before.
+const scratch = process.env.DEMO_WALLET_SCRATCH === "1";
+
 export default defineConfig({
   base,
   plugins: [react()],
   server: { port: 5173 },
+  ...(scratch
+    ? { build: { rollupOptions: { input: { main: "index.html", scratch: "scratch.html" } } } }
+    : {}),
 });
