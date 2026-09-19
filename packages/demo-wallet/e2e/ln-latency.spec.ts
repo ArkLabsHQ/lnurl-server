@@ -38,15 +38,16 @@ async function newRecipient(page: Page): Promise<string> {
 test("pays an offline-receive invoice over Lightning and times the claim", async ({ browser }) => {
   test.setTimeout(600_000);
 
-  // Mutinynet's solver serves the lightning RECEIVE corridor only: the
-  // BTC/lightning:BTC market is discovered, but solverLightningRendezvous finds
-  // no send counterparty at any amount, so nothing can pay a bolt11 from Arkade
-  // funds there. Skipped rather than deleted -- this becomes the latency
-  // measurement the moment a solver offers the send direction.
+  // Guarded rather than assumed: the send corridor needs the network's x-only
+  // emulator key to select a market, and without it the helper reports no solver
+  // at all rather than a key problem.
   const { discoverMarkets, solverLightningRendezvous } = await import("@arkade-os/swap");
   const { defaultRegistryUrls } = await import("@arkade-os/solver-discovery");
+  const { getNetwork, resolveEmulatorPubkey, toXOnly } = await import("@arkade-os/sdk");
+  const { hex } = await import("@scure/base");
   const markets = await discoverMarkets({ network: NETWORK, registryUrl: defaultRegistryUrls(NETWORK)[0] });
-  test.skip(!solverLightningRendezvous(markets, SATS), "no solver offers an arkade->lightning send on this network");
+  const emulator = toXOnly(hex.decode(resolveEmulatorPubkey(getNetwork(NETWORK))), "emulator");
+  test.skip(!solverLightningRendezvous(markets, SATS, emulator), "no solver offers an arkade->lightning send on this network");
 
   const recipientPage = await (await browser.newContext()).newPage();
   const recipient = await newRecipient(recipientPage);
@@ -70,6 +71,11 @@ test("pays an offline-receive invoice over Lightning and times the claim", async
 
   // A bare BOLT11 is not an LNURL target, so the lnurl rails must not match it;
   // the solver corridor is what can pay it.
+  // KNOWN GAP: solverLightningRail reports match=true and available=true in
+  // Node with these exact deps and this exact amount, and the rendezvous
+  // resolves, but the rail does not surface in the browser build -- with no
+  // console error, no failed request and no stale bundle. Unproven why; the
+  // failure here is the record of it rather than a passing test that hides it.
   await expect(payerPage.getByText("solver-lightning")).toBeVisible({ timeout: 60_000 });
 
   const paidAt = Date.now();

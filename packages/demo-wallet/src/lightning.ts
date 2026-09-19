@@ -1,4 +1,4 @@
-import { getNetwork, resolveEmulatorPubkey, type PaymentRail } from "@arkade-os/sdk";
+import { getNetwork, resolveEmulatorPubkey, toXOnly, type PaymentRail } from "@arkade-os/sdk";
 import {
   discoverMarkets,
   relayTransport,
@@ -16,6 +16,7 @@ interface RailIdentity {
 }
 
 const SWAP_KEY = "arkade-demo-wallet.lightning-swaps";
+const EMULATOR_HEX = resolveEmulatorPubkey(getNetwork(NETWORK));
 
 /**
  * The rail that pays a BOLT11 from Arkade funds, over the solver's
@@ -29,10 +30,13 @@ const SWAP_KEY = "arkade-demo-wallet.lightning-swaps";
 export function createLightningRail(identity: RailIdentity): PaymentRail {
   return solverLightningRail({
     arkServerUrl: ARK_SERVER,
-    // Without this the rail is silently unavailable: no mutinynet market
-    // advertises an emulator key of its own, so the rendezvous has nothing to
-    // pin the covenant against and selects no market at all.
-    emulatorPubkey: resolveEmulatorPubkey(getNetwork(NETWORK)),
+    // Both, and the fallback must be x-only. No mutinynet market advertises an
+    // emulator key of its own, so without the fallback the rendezvous selects no
+    // market and the rail is silently unavailable -- and passing the 33-byte
+    // compressed key fails the same way, which reads as "no solver" rather than
+    // as a key of the wrong shape.
+    emulatorPubkey: EMULATOR_HEX,
+    fallbackEmulatorPubkey: toXOnly(hex.decode(EMULATOR_HEX), "emulator"),
     decodeInvoice: invoiceFactsFromBolt11,
     discover: () => discoverMarkets({ network: NETWORK, registryUrl: defaultRegistryUrls(NETWORK)[0] }),
     connect: async (rendezvous, fn) => {
