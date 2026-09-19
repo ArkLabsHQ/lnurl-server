@@ -28,35 +28,35 @@ function settleFrom(
 /**
  * Subscribe for covenant-destination payments. Returns an unsubscribe function.
  *
- * The catch-up pass is not belt-and-braces: a payment that lands while the process is
- * down produces no event when it comes back, and the record would never settle.
+ * The catch-up pass repeats for two reasons rather than one: a payment landing while
+ * the process is down produces no event when it comes back, and the SDK subscription
+ * drops and reconnects in normal operation, so an arrival inside that window is never
+ * pushed either. Re-armed after each pass finishes, not on a fixed interval, so a
+ * slow pass cannot stack on itself.
  */
-export function startCovenantWatcher(store: SettlementStore, contracts: IContractManager, catchUpRetryMs = 15_000): () => void {
+export function startCovenantWatcher(store: SettlementStore, contracts: IContractManager, catchUpIntervalMs = 15_000): () => void {
   const unsubscribe = contracts.onContractEvent((event) => {
     if (event.type !== "vtxo_received" || !isContractVtxoEvent(event) || event.contract.type !== COVENANT_CONTRACT_TYPE) return;
     settleFrom(store, event.contractScript, event.vtxos);
   });
 
   let stopped = false;
-  let retry: ReturnType<typeof setTimeout> | undefined;
+  let next: ReturnType<typeof setTimeout> | undefined;
   const runCatchUp = async (): Promise<void> => {
     try {
       await catchUp(store, contracts);
     } catch (err) {
-      // The subscription covers new arrivals, but a transient startup failure must
-      // not strand the backlog until the next process restart.
       console.warn("covenant watcher: catch-up pass failed; retrying:", err);
-      if (!stopped) {
-        retry = setTimeout(() => void runCatchUp(), catchUpRetryMs);
-        retry.unref?.();
-      }
     }
+    if (stopped) return;
+    next = setTimeout(() => void runCatchUp(), catchUpIntervalMs);
+    next.unref?.();
   };
   void runCatchUp();
 
   return () => {
     stopped = true;
-    if (retry) clearTimeout(retry);
+    if (next) clearTimeout(next);
     unsubscribe();
   };
 }

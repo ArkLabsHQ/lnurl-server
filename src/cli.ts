@@ -159,10 +159,10 @@ async function main(): Promise<void> {
         recoveryDelaySeconds: off.covenantRecoveryDelaySeconds,
         contracts,
       });
-      // Event-driven, not polled: the manager pushes when an output lands, and its
-      // catch-up pass covers payments made while this process was down.
+      // Event-driven, with the repeating catch-up behind it as the dropped-subscription
+      // backstop OFFLINE_POLL_INTERVAL_MS is already documented to size.
       const { startCovenantWatcher } = await import("./covenant-watcher.js");
-      runtime.addStop(startCovenantWatcher(settlements, contracts));
+      runtime.addStop(startCovenantWatcher(settlements, contracts, off.pollIntervalMs));
       const { createCovenantSweeper, startCovenantSweeper } = await import("./covenant-sweeper.js");
       runtime.addStop(startCovenantSweeper(
         createCovenantSweeper({ contracts, arkServerUrl: off.arkServerUrl!, emulatorUrl: off.emulatorUrl! }),

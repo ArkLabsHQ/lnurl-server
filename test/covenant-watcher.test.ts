@@ -104,6 +104,92 @@ describe("startCovenantWatcher", () => {
     expect(store.get("v1")!.settled).toBe(false);
   });
 
+  it("settles a payment whose event a dropped subscription never delivered", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = storeWith([{ hash: "v1", script: "512011", amountMsat: 50_000 }]);
+      const funded: { script: string; vtxos: { txid: string; value: number }[] }[] = [];
+      const { manager } = fakeManager(funded);
+
+      const stop = startCovenantWatcher(store, manager, 1_000);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.get("v1")!.settled).toBe(false);
+
+      funded.push({ script: "512011", vtxos: [{ txid: "tx-no-event", value: 50 }] });
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(store.get("v1")).toMatchObject({ settled: true, paymentReference: "tx-no-event" });
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops the periodic catch-up when stopped", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = storeWith([{ hash: "v1", script: "512011", amountMsat: 50_000 }]);
+      const funded: { script: string; vtxos: { txid: string; value: number }[] }[] = [];
+      const { manager } = fakeManager(funded);
+      const getContracts = manager.getContractsWithVtxos as unknown as ReturnType<typeof vi.fn>;
+
+      startCovenantWatcher(store, manager, 1_000)();
+      await vi.advanceTimersByTimeAsync(0);
+      const afterStop = getContracts.mock.calls.length;
+
+      funded.push({ script: "512011", vtxos: [{ txid: "tx-after-stop", value: 50 }] });
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      expect(getContracts).toHaveBeenCalledTimes(afterStop);
+      expect(store.get("v1")!.settled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never runs two catch-up passes at once when one is slow", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = storeWith([{ hash: "v1", script: "512011", amountMsat: 50_000 }]);
+      const { manager } = fakeManager();
+      const getContracts = manager.getContractsWithVtxos as unknown as ReturnType<typeof vi.fn>;
+      let release: (() => void) | undefined;
+      getContracts.mockImplementationOnce(
+        () => new Promise((resolve) => (release = () => resolve([]))),
+      );
+
+      const stop = startCovenantWatcher(store, manager, 1_000);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(getContracts).toHaveBeenCalledTimes(1);
+
+      release!();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(getContracts).toHaveBeenCalledTimes(2);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the event's reference when a later catch-up sees the same payment", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = storeWith([{ hash: "v1", script: "512011", amountMsat: 50_000 }]);
+      const { manager, received } = fakeManager([
+        { script: "512011", vtxos: [{ txid: "tx-catchup", value: 50 }] },
+      ]);
+
+      const stop = startCovenantWatcher(store, manager, 1_000);
+      received("512011", [{ txid: "tx-event", value: 50 }]);
+      await vi.advanceTimersByTimeAsync(3_000);
+
+      expect(store.get("v1")).toMatchObject({ settled: true, paymentReference: "tx-event" });
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("retries a failed startup catch-up so downtime payments are not stranded", async () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
