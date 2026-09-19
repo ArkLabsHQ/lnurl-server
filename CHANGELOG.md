@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+- **The Arkade watcher reads every destination in one batch** — a pass did one indexer round trip per open destination record, sequentially, so at a ~117ms round trip it filled its own 15s interval at roughly 128 open payments and settlement latency then grew without bound. Records join that set when the callback hands out a destination and stay for `DESTINATION_WATCH_MS` (seven days), so abandoned quotes accumulate into it. Reads are now grouped by script and chunked at 32, matching the SDK's own limit: forty destinations cost two requests instead of forty. The correlation is unchanged — oldest record first, each VTXO assigned once, under-payments flipping nothing — because a shared address leaves amount and arrival window as the only evidence there is.
+
 ### Added
 - **An `EntropyProvider` seam for the per-payment preimage** — the covenant destination's sweep-leaf secret and the offline swap's HTLC secret were both `randomBytes` inline, leaving a deployment that wants them from elsewhere nowhere to say so. Both now take an optional provider defaulting to the same `randomBytes(32)` call, so behaviour is unchanged unless one is supplied. The value is length-checked at the seam: a covenant commits to `HASH160(preimage)` and a VHTLC to its hash, so a short one is not a type error but an address nobody can spend.
 
