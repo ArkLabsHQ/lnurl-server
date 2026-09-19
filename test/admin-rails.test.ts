@@ -69,6 +69,22 @@ describe("admin rails", () => {
     expect(rails.get("arkade")).toMatchObject({ enabled: true, available: true });
   });
 
+  // Regression: the admin views built their RailAddress without the boarding
+  // address, so an address whose payRequest advertised `onchain` was reported
+  // here as having none.
+  it("reads the onchain rail from the address's own boarding address", async () => {
+    const a = repos.addresses.create({ domainId, username: "dave", status: "active", sessionId: "sess-dave" });
+    repos.addresses.setOfflineReceive(a.id, ARK, CLAIMPK);
+    repos.addresses.setBoardingAddress(a.id, "bcrt1qboardingexample");
+    const listed = await request(app).get("/admin/api/addresses");
+    const listedRails = new Map(listed.body[0].rails.map((r: { id: string }) => [r.id, r]));
+    expect(listedRails.get("onchain")).toMatchObject({ enabled: true, available: true });
+
+    const patched = await request(app).patch(`/admin/api/addresses/${a.id}/rails`).send({ disabledRails: [] });
+    const patchedRails = new Map(patched.body.rails.map((r: { id: string }) => [r.id, r]));
+    expect(patchedRails.get("onchain")).toMatchObject({ enabled: true, available: true });
+  });
+
   it("stores a per-address rail policy and returns the effective states", async () => {
     const a = repos.addresses.create({ domainId, username: "bob", status: "active", sessionId: "sess-bob" });
     repos.addresses.setOfflineReceive(a.id, ARK, CLAIMPK);

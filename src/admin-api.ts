@@ -175,7 +175,7 @@ export function createAdminApi(deps: AdminDeps): Router {
         id: a.id, username: a.username, domain: domain?.domain ?? null, status: a.status,
         sessionId: a.sessionId, online: a.sessionId ? online.has(a.sessionId) : false, createdAt: a.createdAt,
         disabledRails: a.disabledRails,
-        rails: effectiveRails({ arkadeAddress: a.arkadeAddress, claimPublicKey: a.claimPublicKey, disabledRails: a.disabledRails }, serverCaps()),
+        rails: effectiveRails({ arkadeAddress: a.arkadeAddress, claimPublicKey: a.claimPublicKey, boardingAddress: a.boardingAddress, disabledRails: a.disabledRails }, serverCaps()),
       };
     }));
   });
@@ -217,7 +217,7 @@ export function createAdminApi(deps: AdminDeps): Router {
     res.json({
       id: updated.id,
       disabledRails: updated.disabledRails,
-      rails: effectiveRails({ arkadeAddress: updated.arkadeAddress, claimPublicKey: updated.claimPublicKey, disabledRails: updated.disabledRails }, serverCaps()),
+      rails: effectiveRails({ arkadeAddress: updated.arkadeAddress, claimPublicKey: updated.claimPublicKey, boardingAddress: updated.boardingAddress, disabledRails: updated.disabledRails }, serverCaps()),
     });
   });
   r.delete("/addresses/:id", (req, res) => { repos.addresses.delete(Number(req.params.id)); res.json({ ok: true }); });
