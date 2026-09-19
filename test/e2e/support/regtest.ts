@@ -53,8 +53,14 @@ export const ESPLORA_URL = process.env.E2E_ESPLORA_URL ?? `http://localhost:${ES
 /** The solver's throwaway regtest mnemonic — arkade-regtest's fixed, public, never-real-funds value. */
 export const SOLVER_MNEMONIC = "planet travel grab found idle ripple acoustic hero normal mixed rich lamp";
 
+/** Only used when E2E_INTENT_SOLVER_IMAGE names a local build; the published
+ *  image is what the stack runs by default. */
 export const INTENT_SOLVER_COMMIT = "4daa6c9bc3765282d51f67a871d037583f09368d";
-const INTENT_SOLVER_IMAGE = process.env.E2E_INTENT_SOLVER_IMAGE ?? `intent-solver:e2e-${INTENT_SOLVER_COMMIT.slice(0, 12)}`;
+// Published, not built from INTENT_SOLVER_COMMIT: that commit predates the
+// Lightning-send refund timing (arkade-os/intent-solver#142, #143), so its send
+// quotes omit `profile.refund_without_receiver_delay` and every send is refused
+// client-side. Matches the pin in arkade-regtest's .env.defaults.
+const INTENT_SOLVER_IMAGE = process.env.E2E_INTENT_SOLVER_IMAGE ?? "ghcr.io/arkade-os/intent-solver:0.3.2";
 // rc.5 attaches PrevArkTx to claims — the fix for the emulator >= v0.0.7 rejection
 // (arkade-os/covclaimd#10). Emulator follows the stack's own default.
 const COVCLAIMD_IMAGE = process.env.E2E_COVCLAIMD_IMAGE ?? "ghcr.io/arkade-os/covclaimd:v0.0.1-rc.5";
@@ -144,10 +150,15 @@ async function arkTimelocksMatch(): Promise<boolean> {
   }
 }
 
-/** Build the intent-solver image from the checked-in commit if it is not local. */
+/** Make the solver image available: pull a published one, build a local tag. */
 export async function ensureIntentSolverImage(log: (s: string) => void = console.log): Promise<void> {
   const probe = await run("docker", ["image", "inspect", INTENT_SOLVER_IMAGE]).catch(() => null);
   if (probe) return;
+  if (INTENT_SOLVER_IMAGE.includes("/")) {
+    log(`pulling ${INTENT_SOLVER_IMAGE}...`);
+    await run("docker", ["pull", INTENT_SOLVER_IMAGE], { timeout: 900_000 });
+    return;
+  }
   log(`building ${INTENT_SOLVER_IMAGE} from ${INTENT_SOLVER_REPO} (one-time, several minutes)...`);
   const dir = join(BUILD_CACHE, "intent-solver");
   if (!existsSync(join(dir, ".git"))) await run("git", ["clone", "--no-checkout", INTENT_SOLVER_REPO, dir], { timeout: 300_000 });
