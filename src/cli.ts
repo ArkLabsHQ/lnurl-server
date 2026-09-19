@@ -93,6 +93,7 @@ async function main(): Promise<void> {
       }
     }
     let offlineSwaps: import("./offline-swap-store.js").OfflineSwapStore | undefined;
+    let arkDustSat: number | undefined;
     let offlineSwapCreator: import("./intent-swap.js").OfflineSwapCreator | undefined;
     if (off.enabled) {
       const { createOfflineSwapCoordinator } = await import("./intent-swap.js");
@@ -101,8 +102,14 @@ async function main(): Promise<void> {
       const { isNetwork } = await import("@arkade-os/solver-discovery");
       const infoResponse = await fetch(`${off.arkServerUrl}/v1/info`);
       if (!infoResponse.ok) throw new Error(`Arkade info endpoint: HTTP ${infoResponse.status}`);
-      const network = (await infoResponse.json() as { network?: unknown }).network;
+      const arkInfo = await infoResponse.json() as { network?: unknown; dust?: unknown };
+      const network = arkInfo.network;
       if (!isNetwork(network)) throw new Error(`Arkade info endpoint returned unsupported network ${String(network)}`);
+      // Read once at boot, like the network beside it. A dust change is an
+      // operator reconfiguring arkd, not something that moves under a running
+      // process — and a missing value leaves the whole-sat floor in place.
+      const dust = Number(arkInfo.dust);
+      if (Number.isSafeInteger(dust) && dust > 0) arkDustSat = dust;
       const discovery = new DiscoveryService({
         network,
         registryUrls: off.registryUrls,
@@ -181,6 +188,7 @@ async function main(): Promise<void> {
       offlineSwaps,
       ...(solverDiscovery ? { solverDiscovery } : {}),
       ...(config.offlineReceive.arkServerUrl ? { arkServerUrl: config.offlineReceive.arkServerUrl } : {}),
+      ...(arkDustSat ? { arkDustSat } : {}),
       ...(covenantDestinations ? { covenantDestinations } : {}),
     };
     // Every background scheduler registers its stop hook before the listeners

@@ -25,6 +25,7 @@ function start(
   railLimits?: ServerDeps["railLimits"],
   offlineSwapCreator?: OfflineSwapCreator,
   solverDiscovery?: ServerDeps["solverDiscovery"],
+  arkDustSat?: number,
 ) {
   const server = http.createServer();
   return new Promise<{ baseUrl: string; close: () => Promise<void> }>((resolve) => {
@@ -40,6 +41,7 @@ function start(
             ...(railLimits ? { railLimits } : {}),
             ...(offlineSwapCreator ? { offlineSwapCreator } : {}),
             ...(solverDiscovery ? { solverDiscovery } : {}),
+            ...(arkDustSat ? { arkDustSat } : {}),
           },
         ),
       );
@@ -184,6 +186,46 @@ describe("per-rail sendable bounds", () => {
 
 const discovery = (status: { ready: boolean; reason?: string; receiveBounds?: { minSat: number; maxSat: number } }): ServerDeps["solverDiscovery"] =>
   ({ status: () => status });
+
+describe("arkd dust floor on the VTXO-settled rails", () => {
+  const optionsOf = async (username: string) =>
+    ((await getJson(`${ctx.baseUrl}/.well-known/lnurlp/${username}`, "domain.com")).paymentOptions ??
+      []) as Array<Record<string, unknown>>;
+
+  // The reported symptom: the arkade option advertised a 0.4-sat minimum while
+  // arkd refuses any output under 330 sats, so a payer following the payRequest
+  // sends an amount that can never land.
+  it("raises the arkade option to arkd's dust, over the configured minimum", async () => {
+    ctx = await start(repos, undefined, undefined, undefined, 330);
+    addr("alice");
+    expect((await optionsOf("alice")).find((o) => o.id === "arkade")?.minSendable).toBe(330_000);
+  });
+
+  // 400 msat is a legal lightning minimum and an unpayable arkade one; with dust
+  // unknown the whole-sat floor is the only thing standing between the two.
+  it("never advertises a fractional sat when dust is unknown", async () => {
+    repos.domains.update(domainId, { domain: "domain.com", allocationModes: ["self"], minSendable: 400 });
+    ctx = await start(repos);
+    addr("alice");
+    const options = await optionsOf("alice");
+    expect(options.find((o) => o.id === "lightning")?.minSendable).toBeUndefined();
+    expect(options.find((o) => o.id === "arkade")?.minSendable).toBe(1_000);
+  });
+
+  it("leaves the lightning option on the envelope, which carries millisats", async () => {
+    ctx = await start(repos, undefined, undefined, undefined, 330);
+    addr("alice");
+    const lightning = (await optionsOf("alice")).find((o) => o.id === "lightning");
+    expect(lightning).toEqual({ id: "lightning", type: "lightning" });
+  });
+
+  it("refuses an arkade amount below dust at the callback, not after the money moved", async () => {
+    ctx = await start(repos, undefined, undefined, undefined, 330);
+    addr("alice");
+    const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=100000&paymentOption=arkade`, "domain.com");
+    expect(cb.status).toBe("ERROR");
+  });
+});
 
 describe("solver-derived offline-swap bounds", () => {
   // The production bug: the card caps the payer's leg at 25000 sats while the

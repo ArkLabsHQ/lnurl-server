@@ -296,6 +296,41 @@ export function effectiveRails(address: RailAddress, caps: ServerRailCaps): Addr
   return [interactive, offline, arkade, covenant, onchain];
 }
 
+/** Rails whose payment lands as a VTXO or a boarding UTXO, so arkd's own floor
+ *  binds them regardless of what the operator configured. */
+const VTXO_SETTLED: readonly RailId[] = ["arkade", "covenant", "onchain"];
+
+/**
+ * Fold what arkd will actually accept into the rails it settles, the way
+ * `withSolverRange` folds a solver's quoted market into `offline-swap`.
+ *
+ * An operator minimum is not the binding one: arkd refuses an output below
+ * `dust` (330 sats on mainnet and mutinynet alike), so advertising less hands a
+ * payer an amount that cannot land — and on the onchain rail their money is
+ * already spent by the time anyone finds out.
+ *
+ * These rails also settle in whole sats, so a millisat-precision bound is not
+ * merely optimistic but unrepresentable; hence the one-sat floor even where dust
+ * is unknown, and the maximum rounding down rather than up. The lightning rails
+ * are left alone: they carry millisats natively.
+ */
+export function withVtxoFloors(
+  limits: ServerRailCaps["limits"],
+  dustSat?: number,
+): ServerRailCaps["limits"] {
+  const floor = Math.max((dustSat ?? 0) * 1000, 1000);
+  const next: Partial<Record<RailId, RailLimits>> = { ...limits };
+  for (const rail of VTXO_SETTLED) {
+    const own = next[rail];
+    const max = own?.maxSendable;
+    next[rail] = {
+      minSendable: Math.max(floor, Math.ceil((own?.minSendable ?? 0) / 1000) * 1000),
+      ...(max === undefined ? {} : { maxSendable: Math.floor(max / 1000) * 1000 }),
+    };
+  }
+  return next;
+}
+
 /** Narrow `base` by one rail's configured bounds. Never widens: a rail cannot
  *  offer more than the server or domain already allows.
  *

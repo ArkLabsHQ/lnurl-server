@@ -25,6 +25,7 @@ import {
   effectiveRails,
   optionBounds,
   railBounds,
+  withVtxoFloors,
   RailRefusedError,
   type AddressRailState,
   type Bounds,
@@ -78,6 +79,9 @@ export interface ServerDeps {
   /** Per-rail amount bounds, narrowing the server/domain pair for the rails that
    *  cannot carry it. Absent leaves every rail on the server/domain bounds. */
   railLimits?: ServerRailCaps["limits"];
+  /** arkd's `dust`, sats. The floor the VTXO-settled rails actually face, which
+   *  no operator setting can lower. @see withVtxoFloors */
+  arkDustSat?: number;
   health?: HealthRegistry;
   logger?: Logger;
 }
@@ -221,7 +225,9 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
   // rail going dark or republishing a narrower range must move the next payRequest.
   const currentRailCaps = (): ServerRailCaps => {
     const discoveryStatus = deps?.solverDiscovery?.status();
-    const limits = withSolverRange(deps?.railLimits, discoveryStatus?.receiveBounds);
+    // Dust last: it is the protocol's floor, so it must survive whatever the
+    // operator and the solver narrowed to, not be averaged with them.
+    const limits = withVtxoFloors(withSolverRange(deps?.railLimits, discoveryStatus?.receiveBounds), deps?.arkDustSat);
     return {
       offlineSwapCreator: Boolean(creator),
       discoveryReady: discoveryStatus?.ready ?? true,
