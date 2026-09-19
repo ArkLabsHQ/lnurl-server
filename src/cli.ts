@@ -134,9 +134,11 @@ async function main(): Promise<void> {
           void checkEmulatorPairing({ covclaimdUrl: off.covclaimdUrl!, emulatorUrl: off.emulatorUrl! });
         }
       }
+      const { httpTransport } = await import("@arkade-os/swap");
       offlineSwapCreator = await createOfflineSwapCoordinator({
         discovery,
         nostrSecretKey: off.nostrSecretKey,
+        ...(off.rfqHttpUrl ? { transportFactory: () => httpTransport(off.rfqHttpUrl!) } : {}),
         ...(off.covclaimdUrl ? { covclaimdUrl: off.covclaimdUrl } : {}),
         ...(off.emulatorUrl ? { emulatorUrl: off.emulatorUrl } : {}),
         arkServerUrl: off.arkServerUrl!,
@@ -190,7 +192,8 @@ async function main(): Promise<void> {
       runtime.addStop(poller.stop);
       if (contracts && offlineSwaps) runtime.addStop(startLockupWatcher(contracts, offlineSwaps, poller.trigger, logger));
       const via = `cards:${config.offlineReceive.registryUrls?.[0] ?? config.offlineReceive.cardsFile ?? "network-default"}`;
-      console.log(`offline receive: enabled (solver=${via}, claim=${contracts ? "event-driven" : "polled"})`);
+      const rfq = off.rfqHttpUrl ? `http:${off.rfqHttpUrl}` : "nostr";
+      console.log(`offline receive: enabled (solver=${via}, rfq=${rfq}, claim=${contracts ? "event-driven" : "polled"})`);
     }
     // The destination rail (paymentOptions: arkade) settles by observation, not by
     // preimage: watch the indexer for payments to registered Arkade addresses.

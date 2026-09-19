@@ -8,7 +8,7 @@ import {
 import { defaultRegistryUrls } from "@arkade-os/solver-discovery";
 import { hex } from "@scure/base";
 import { invoiceFactsFromBolt11 } from "../../../src/bolt11.js";
-import { ARK_SERVER, NETWORK } from "./config.js";
+import { ARK_SERVER, EMULATOR_PUBKEY, NETWORK, SOLVER_REGISTRY_URL } from "./config.js";
 
 /** What `relayTransport` needs to address the solver: the wallet's x-only key. */
 interface RailIdentity {
@@ -16,7 +16,15 @@ interface RailIdentity {
 }
 
 const SWAP_KEY = "arkade-demo-wallet.lightning-swaps";
-const EMULATOR_HEX = resolveEmulatorPubkey(getNetwork(NETWORK));
+
+/** A network the SDK pins no emulator for throws here, and at module scope that
+ *  would take the whole bundle down rather than drop one rail. */
+const EMULATOR_HEX = ((): string | undefined => {
+  if (EMULATOR_PUBKEY) return EMULATOR_PUBKEY;
+  try { return resolveEmulatorPubkey(getNetwork(NETWORK)); } catch { return undefined; }
+})();
+
+const REGISTRY_URL = SOLVER_REGISTRY_URL ?? defaultRegistryUrls(NETWORK)[0];
 
 /**
  * The rail that pays a BOLT11 from Arkade funds, over the solver's
@@ -35,10 +43,11 @@ export function createLightningRail(identity: RailIdentity): PaymentRail {
     // market and the rail is silently unavailable -- and passing the 33-byte
     // compressed key fails the same way, which reads as "no solver" rather than
     // as a key of the wrong shape.
-    emulatorPubkey: EMULATOR_HEX,
-    fallbackEmulatorPubkey: toXOnly(hex.decode(EMULATOR_HEX), "emulator"),
+    ...(EMULATOR_HEX
+      ? { emulatorPubkey: EMULATOR_HEX, fallbackEmulatorPubkey: toXOnly(hex.decode(EMULATOR_HEX), "emulator") }
+      : {}),
     decodeInvoice: invoiceFactsFromBolt11,
-    discover: () => discoverMarkets({ network: NETWORK, registryUrl: defaultRegistryUrls(NETWORK)[0] }),
+    discover: () => discoverMarkets({ network: NETWORK, registryUrl: REGISTRY_URL }),
     connect: async (rendezvous, fn) => {
       const relay = rendezvous.transports.nostr.relays[0];
       if (!relay) throw new Error("solver advertises no nostr relay");

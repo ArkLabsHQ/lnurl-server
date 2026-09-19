@@ -21,8 +21,9 @@
     "test": "cross-env NODE_OPTIONS=--experimental-sqlite vitest run",
     "test:e2e": "cross-env NODE_OPTIONS=--experimental-sqlite vitest run --config vitest.e2e.config.ts",
     "test:watch": "cross-env NODE_OPTIONS=--experimental-sqlite vitest",
-    "type-check": "tsc --noEmit && tsc -p tsconfig.test.json && tsc -p tsconfig.ui.json && tsc -p packages/client/tsconfig.json && tsc -p packages/demo-wallet/tsconfig.json",
-    "test:browser": "pnpm --filter @arkade-os/lnurl-demo-wallet test:e2e"
+    "type-check": "tsc --noEmit && tsc -p tsconfig.test.json && tsc -p tsconfig.ui.json && tsc -p packages/client/tsconfig.json && tsc -p packages/demo-wallet/tsconfig.json && tsc -p packages/demo-wallet/tsconfig.e2e.json",
+    "test:browser": "pnpm --filter @arkade-os/lnurl-demo-wallet test:e2e",
+    "test:browser:local": "cross-env NODE_OPTIONS=\"--experimental-sqlite --experimental-eventsource\" pnpm --filter @arkade-os/lnurl-demo-wallet test:e2e:local"
   },
   "dependencies": {
     "@arkade-os/sdk": "0.4.73",

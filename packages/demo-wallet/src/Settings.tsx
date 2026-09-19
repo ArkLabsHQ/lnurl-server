@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   ARK_SERVER,
   DEFAULT_ENDPOINTS,
+  DEFAULT_NETWORK,
   EXPLORER,
   LNURL_BASE,
   LNURL_DOMAIN,
@@ -88,7 +89,7 @@ export function Settings({ onChanged }: SettingsProps) {
       <h2 style={{ fontSize: 16, marginTop: 0 }}>Settings</h2>
       <p style={note}>What this page is talking to right now.</p>
 
-      <Row label="Network" value={NETWORK} tag="fixed" />
+      <Row label="Network" value={NETWORK} tag={NETWORK === DEFAULT_NETWORK ? "fixed" : "overridden"} />
       <Row label="Derivation" value="signet · BIP44 coin type 1" tag="fixed" />
       <Row label="LNURL server" value={LNURL_BASE} tag={LNURL_BASE === DEFAULT_ENDPOINTS.lnurlBase ? undefined : "overridden"} />
       <Row label="LNURL domain" value={LNURL_DOMAIN} tag="derived" />
@@ -96,14 +97,16 @@ export function Settings({ onChanged }: SettingsProps) {
       <Row label="Explorer" value={EXPLORER} />
 
       <div style={section}>
-        <h3 style={{ fontSize: 14, margin: "0 0 4px" }}>Why the network is not a setting</h3>
+        <h3 style={{ fontSize: 14, margin: "0 0 4px" }}>Why the network is not a field here</h3>
         <p style={note}>
           <code style={mono}>MnemonicIdentity</code> derives mainnet keys unless told otherwise, and the
-          Arkade Service refuses a wallet whose derivation disagrees with its network — so this build
-          pins signet and nothing here can move it. Deriving the network from the URL instead would give
-          the same phrase a different key and a different address, with no way back to whatever the old
-          one holds. Point this at another network and the wallet fails to open, loudly, which is the
-          intended outcome.
+          Arkade Service refuses a wallet whose derivation disagrees with its network. Deriving the
+          network from the URL would give the same phrase a different key and a different address, with
+          no way back to whatever the old one holds, so nothing on this form moves it. A developer
+          pointing this build at a local stack writes the network into the same stored record by hand —
+          and only signet-derivation networks are reachable that way, so the coin type below holds
+          either way. Point this at a network the keys do not match and the wallet fails to open,
+          loudly, which is the intended outcome.
         </p>
       </div>
 

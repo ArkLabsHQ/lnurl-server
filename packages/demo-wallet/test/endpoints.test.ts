@@ -2,15 +2,21 @@ import { describe, expect, it } from "vitest";
 import {
   ARK_SERVER,
   DEFAULT_ENDPOINTS,
+  DEFAULT_NETWORK,
   ENDPOINTS_KEY,
+  EMULATOR_PUBKEY,
   IS_MAINNET,
   LNURL_BASE,
   LNURL_DOMAIN,
+  NETWORK,
+  SOLVER_REGISTRY_URL,
   arkServerWarning,
   clearOverrides,
   lnurlDomainFor,
   normalizeEndpoint,
+  readNetworkOverrides,
   readOverrides,
+  saveNetworkOverrides,
   saveOverrides,
   type KeyValueStore,
 } from "../src/config.js";
@@ -127,6 +133,55 @@ describe("the token audience follows the LNURL base", () => {
     expect(LNURL_DOMAIN).toBe(lnurlDomainFor(LNURL_BASE));
     expect(LNURL_BASE).toBe(DEFAULT_ENDPOINTS.lnurlBase);
     expect(ARK_SERVER).toBe(DEFAULT_ENDPOINTS.arkServer);
+  });
+});
+
+describe("pointing the build at another stack", () => {
+  const EMULATOR = "02999413c46fa10ada5cbc4bcc79a1d09160c2ba3cfc812705d7a13e5e545fb2a9";
+
+  it("reads a planted local-stack record", () => {
+    const { store } = planted({
+      arkServer: "http://localhost:7070",
+      network: "regtest",
+      emulatorPubkey: EMULATOR.toUpperCase(),
+      solverRegistryUrl: "http://127.0.0.1:4174/regtest.json/",
+    });
+
+    expect(readNetworkOverrides(store)).toEqual({
+      network: "regtest",
+      emulatorPubkey: EMULATOR,
+      solverRegistryUrl: "http://127.0.0.1:4174/regtest.json",
+    });
+    expect(readOverrides(store)).toEqual({ arkServer: "http://localhost:7070" });
+  });
+
+  it("refuses a mainnet network, an unknown one, and the default", () => {
+    for (const network of ["bitcoin", "testnet4", DEFAULT_NETWORK]) {
+      expect(readNetworkOverrides(planted({ network }).store).network, network).toBeUndefined();
+    }
+  });
+
+  it("refuses an emulator key of the wrong shape", () => {
+    for (const emulatorPubkey of ["04" + "11".repeat(32), "abc", EMULATOR.slice(0, 60), ""]) {
+      expect(readNetworkOverrides(planted({ emulatorPubkey }).store).emulatorPubkey).toBeUndefined();
+    }
+  });
+
+  it("keeps the other layer, and replaces its own", () => {
+    const { store } = planted({ network: "regtest" });
+
+    saveOverrides({ arkServer: "http://localhost:7070" }, store);
+    expect(readNetworkOverrides(store)).toEqual({ network: "regtest" });
+
+    saveNetworkOverrides({ emulatorPubkey: EMULATOR }, store);
+    expect(readOverrides(store)).toEqual({ arkServer: "http://localhost:7070" });
+    expect(readNetworkOverrides(store)).toEqual({ emulatorPubkey: EMULATOR });
+  });
+
+  it("ships the mutinynet defaults when nothing is planted", () => {
+    expect(NETWORK).toBe(DEFAULT_NETWORK);
+    expect(EMULATOR_PUBKEY).toBeUndefined();
+    expect(SOLVER_REGISTRY_URL).toBeUndefined();
   });
 });
 

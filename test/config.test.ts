@@ -84,6 +84,21 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...base, SOLVER_CARDS_FILE: "/cards.json" })).toThrow(/ARK_SERVER_URL/);
   });
 
+  it("routes RFQs over HTTP only when told to, and only to a real URL", () => {
+    const offline = {
+      ...base,
+      SOLVER_CARDS_FILE: "/cards.json",
+      COVCLAIMD_URL: "https://covclaimd.example",
+      ARK_SERVER_URL: "https://ark.example",
+    };
+    expect(loadConfig(offline).offlineReceive.rfqHttpUrl).toBeUndefined();
+    expect(loadConfig({ ...offline, SOLVER_RFQ_HTTP_URL: "http://localhost:8787" }).offlineReceive.rfqHttpUrl)
+      .toBe("http://localhost:8787");
+    expect(() => loadConfig({ ...offline, SOLVER_RFQ_HTTP_URL: "localhost:8787" })).toThrow(/SOLVER_RFQ_HTTP_URL/);
+    // On its own it is still an offline-receive setting, so the usual wiring is demanded.
+    expect(() => loadConfig({ ...base, SOLVER_RFQ_HTTP_URL: "http://localhost:8787" })).toThrow(/ARK_SERVER_URL/);
+  });
+
   it("allows persisted admin cards alongside the default registry", () => {
     const config = loadConfig({
       ...base,

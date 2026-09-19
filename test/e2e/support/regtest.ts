@@ -8,18 +8,47 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
+import { connect } from "node:net";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const run = promisify(execFile);
 
+export async function assertDockerRunning(): Promise<void> {
+  try {
+    await run("docker", ["info", "--format", "{{.ServerVersion}}"], { timeout: 30_000 });
+  } catch (error) {
+    throw new Error(
+      `docker is required for the regtest stack but is not reachable: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`,
+    );
+  }
+}
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const REGTEST_DIR = join(HERE, "..", "..", "..", "regtest");
-export const ARKD_URL = process.env.E2E_ARKD_URL ?? "http://localhost:7070";
-export const COVCLAIMD_URL = process.env.E2E_COVCLAIMD_URL ?? "http://localhost:7271";
-export const EMULATOR_URL = process.env.E2E_EMULATOR_URL ?? "http://localhost:7073";
-export const SOLVER_HTTP_TEST_URL = process.env.E2E_SOLVER_HTTP_TEST_URL ?? "http://localhost:8787";
-export const ESPLORA_URL = process.env.E2E_ESPLORA_URL ?? "http://localhost:3000/api";
+
+/** Compose binds each host port from one of these names, so reading the same
+ *  name stops the binding and the URL we poll drifting apart. `E2E_*_URL` wins. */
+const hostPort = (composeVar: string, fallback: number): number => {
+  const raw = process.env[composeVar];
+  const value = raw === undefined || raw.trim() === "" ? fallback : Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > 65_535) {
+    throw new Error(`${composeVar} must be a TCP port (got "${raw}")`);
+  }
+  return value;
+};
+
+export const ARKD_PORT = hostPort("ARKD_PORT", 7070);
+export const COVCLAIMD_PORT = hostPort("COVCLAIMD_HTTP_PORT", 7271);
+export const EMULATOR_PORT = hostPort("EMULATOR_PORT", 7073);
+export const SOLVER_HTTP_TEST_PORT = hostPort("INTENT_SOLVER_PORT", 8787);
+export const ESPLORA_PORT = hostPort("MEMPOOL_WEB_PORT", 3000);
+
+export const ARKD_URL = process.env.E2E_ARKD_URL ?? `http://localhost:${ARKD_PORT}`;
+export const COVCLAIMD_URL = process.env.E2E_COVCLAIMD_URL ?? `http://localhost:${COVCLAIMD_PORT}`;
+export const EMULATOR_URL = process.env.E2E_EMULATOR_URL ?? `http://localhost:${EMULATOR_PORT}`;
+export const SOLVER_HTTP_TEST_URL = process.env.E2E_SOLVER_HTTP_TEST_URL ?? `http://localhost:${SOLVER_HTTP_TEST_PORT}`;
+export const ESPLORA_URL = process.env.E2E_ESPLORA_URL ?? `http://localhost:${ESPLORA_PORT}/api`;
 
 /** The solver's throwaway regtest mnemonic — arkade-regtest's fixed, public, never-real-funds value. */
 export const SOLVER_MNEMONIC = "planet travel grab found idle ripple acoustic hero normal mixed rich lamp";
@@ -131,11 +160,69 @@ export async function ensureIntentSolverImage(log: (s: string) => void = console
   });
 }
 
+const REQUIRED_PORTS: ReadonlyArray<[port: number, ourContainer: string]> = [
+  [ARKD_PORT, "arkd"],
+  [COVCLAIMD_PORT, "covclaimd"],
+  [EMULATOR_PORT, "emulator"],
+  [SOLVER_HTTP_TEST_PORT, "intent-solver"],
+  [ESPLORA_PORT, "mempool_web"],
+];
+
+/** Connect, not bind: docker publishes on `::`, which a 0.0.0.0 bind does not
+ *  collide with on Windows — and answering is the question that matters. */
+const answers = (port: number, host: string) =>
+  new Promise<boolean>((resolve) => {
+    const socket = connect({ port, host });
+    const done = (held: boolean) => { socket.destroy(); resolve(held); };
+    socket.setTimeout(2000);
+    socket.once("connect", () => done(true));
+    socket.once("timeout", () => done(false));
+    socket.once("error", () => done(false));
+  });
+
+async function portHolder(port: number): Promise<string | null> {
+  if (!(await answers(port, "127.0.0.1")) && !(await answers(port, "::1"))) return null;
+  const { stdout } = await run("docker", ["ps", "--filter", `publish=${port}`, "--format", "{{.Names}}"]).catch(() => ({ stdout: "" }));
+  return stdout.trim().split(/\r?\n/).filter(Boolean).join(", ") || "a non-docker process";
+}
+
+/** Names whatever already holds one: the alternative is a 20-minute readiness
+ *  timeout, and a FOREIGN service on one of these can even answer. */
+export async function assertPortsAvailable(): Promise<void> {
+  const conflicts: string[] = [];
+  for (const [port, ours] of REQUIRED_PORTS) {
+    const holder = await portHolder(port);
+    if (holder !== null && holder !== ours) conflicts.push(`port ${port} (for ${ours}) is held by ${holder}`);
+  }
+  if (conflicts.length > 0) {
+    throw new Error(
+      `regtest stack cannot bind its host ports:\n  ${conflicts.join("\n  ")}\n` +
+        "Stop the holder, or remap with ARKD_PORT / COVCLAIMD_HTTP_PORT / EMULATOR_PORT / INTENT_SOLVER_PORT / MEMPOOL_WEB_PORT.",
+    );
+  }
+}
+
+/** arkade-regtest's bootstrap only ever *creates* the node wallet, so a volume
+ *  that already holds one wedges at "Bitcoin Core wallet (created) did not
+ *  become ready". Loading it is what that step meant to do. */
+async function loadBitcoinWallet(): Promise<void> {
+  const cli = (args: string[]) =>
+    run("docker", ["exec", "bitcoin", "bitcoin-cli", "-regtest", "-rpcuser=admin1", "-rpcpassword=123", ...args], { timeout: 30_000 });
+  try {
+    if ((JSON.parse((await cli(["listwallets"])).stdout) as string[]).length > 0) return;
+    const { wallets } = JSON.parse((await cli(["listwalletdir"])).stdout) as { wallets: { name: string }[] };
+    for (const wallet of wallets) await cli(["loadwallet", wallet.name]).catch(() => undefined);
+  } catch {
+    return;
+  }
+}
+
 /** Bring the corridor stack up (idempotent; reuses a healthy stack). Long on first boot. */
 export async function ensureStack(log: (s: string) => void = console.log): Promise<void> {
   if (!existsSync(join(REGTEST_DIR, "regtest.mjs"))) {
     throw new Error("arkade-regtest submodule missing — run: git submodule update --init");
   }
+  await assertDockerRunning();
   await ensureIntentSolverImage(log);
   if (await stackIsUp()) {
     if (await arkTimelocksMatch()) {
@@ -147,6 +234,8 @@ export async function ensureStack(log: (s: string) => void = console.log): Promi
     log("regtest timelocks changed; rebuilding the test-owned stack and volumes...");
     await run("node", ["regtest.mjs", "clean"], { cwd: REGTEST_DIR, env: STACK_ENV, timeout: 300_000 });
   }
+  await assertPortsAvailable();
+  await loadBitcoinWallet();
   log("starting arkade-regtest stack (first boot pulls ~20 images; several minutes)...");
   const child: ChildProcess = spawn("node", ["regtest.mjs", "start"], { cwd: REGTEST_DIR, env: STACK_ENV, stdio: "inherit" });
   await pollUntil(

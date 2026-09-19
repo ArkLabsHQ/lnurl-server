@@ -1,0 +1,13 @@
+{
+  "comment": "The browser suites, which the app tsconfig leaves out: they are Node programs that import the app's DOM-typed source, so they need both libs. Standalone rather than extending it because that one pins `types` to vite/client, and ambient Node typings have to stay reachable.",
+  "compilerOptions": {
+    "target": "ES2022", "module": "ESNext", "moduleResolution": "bundler",
+    "jsx": "react-jsx", "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true, "skipLibCheck": true, "noEmit": true,
+    "paths": {
+      "@arkade-os/lnurl-client": ["../client/src/index.ts"],
+      "@arkade-os/lnurl-client/arkade": ["../client/src/arkade.ts"]
+    }
+  },
+  "include": ["e2e", "e2e-local", "playwright.config.ts", "playwright.local.config.ts"]
+}

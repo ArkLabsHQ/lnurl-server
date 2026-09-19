@@ -6,6 +6,10 @@ export interface OfflineReceiveConfig {
   nostrSecretKey?: string;
   covclaimdUrl?: string;
   arkServerUrl?: string;
+  /** Put RFQs to the solver's HTTP ingress instead of the nostr relay its card
+   *  advertises. A solver listens on one or the other, never both: the regtest
+   *  stack's runs `serve`, so over nostr it looks unreachable, not misaddressed. */
+  rfqHttpUrl?: string;
   /**
    * Send the claim packet for the solver to stamp into the funding tx, rather
    * than the bare ciphertext it reveals to its own covclaimd.
@@ -171,6 +175,7 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   }
   const covclaimdUrl = env.COVCLAIMD_URL ? httpUrl(env.COVCLAIMD_URL, "COVCLAIMD_URL") : undefined;
   const arkServerUrl = env.ARK_SERVER_URL ? httpUrl(env.ARK_SERVER_URL, "ARK_SERVER_URL") : undefined;
+  const rfqHttpUrl = env.SOLVER_RFQ_HTTP_URL ? httpUrl(env.SOLVER_RFQ_HTTP_URL, "SOLVER_RFQ_HTTP_URL") : undefined;
   const hasCards = (registryUrls?.length ?? 0) > 0 || cardsFile !== undefined;
   const selfClaim = env.OFFLINE_SELF_CLAIM === "true";
   const emulatorUrl = env.OFFLINE_EMULATOR_URL ? httpUrl(env.OFFLINE_EMULATOR_URL, "OFFLINE_EMULATOR_URL") : undefined;
@@ -182,7 +187,7 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   if (emulatorUrl && !selfClaim && !covenantDestinations) {
     throw new Error("OFFLINE_EMULATOR_URL requires OFFLINE_SELF_CLAIM=true or OFFLINE_COVENANT_DESTINATIONS=true");
   }
-  const anyOfflineSetting = hasCards || covclaimdUrl || arkServerUrl || nostrSecretKey || selfClaim || emulatorUrl || stampClaimPacket || covenantDestinations;
+  const anyOfflineSetting = hasCards || covclaimdUrl || arkServerUrl || nostrSecretKey || selfClaim || emulatorUrl || stampClaimPacket || covenantDestinations || rfqHttpUrl;
   // The claim packet is optional on the wire (solver funds without covclaimd and
   // waits for the client's own claim): with OFFLINE_SELF_CLAIM the server holds
   // P and pushes the covenant leaf itself, so no covclaimd is needed.
@@ -232,6 +237,7 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
     ...(nostrSecretKey ? { nostrSecretKey } : {}),
     ...(covclaimdUrl ? { covclaimdUrl } : {}),
     ...(arkServerUrl ? { arkServerUrl } : {}),
+    ...(rfqHttpUrl ? { rfqHttpUrl } : {}),
   };
 }
 

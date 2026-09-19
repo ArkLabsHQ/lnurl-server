@@ -3,12 +3,15 @@
 export const DEFAULT_LNURL_BASE = "https://lnurl.mutinynet.arkade.sh";
 export const DEFAULT_LNURL_DOMAIN = "lnurl.mutinynet.arkade.sh";
 export const DEFAULT_ARK_SERVER = "https://mutinynet.arkade.sh";
-export const NETWORK = "mutinynet" as const;
+export const DEFAULT_NETWORK = "mutinynet";
+/** `bitcoin` is absent on purpose: every one of these derives BIP44 coin type
+ *  1, which is what keeps `IS_MAINNET` beyond a stored record's reach. */
+export const SELECTABLE_NETWORKS = ["mutinynet", "signet", "regtest"] as const;
+export type SelectableNetwork = (typeof SELECTABLE_NETWORKS)[number];
 /** Decides the identity's BIP44 coin type. The Arkade Service refuses a wallet
  *  whose derivation disagrees with its own network, so this is not cosmetic:
  *  mainnet derivation (coin type 0) against mutinynet fails wallet creation
- *  outright. Deliberately absent from the overrides below — see
- *  `arkServerWarning`. */
+ *  outright. A constant even under a network override — see `SELECTABLE_NETWORKS`. */
 export const IS_MAINNET = false;
 export const EXPLORER = "https://explorer.mutinynet.arkade.sh";
 
@@ -33,6 +36,38 @@ export const DEFAULT_ENDPOINTS: Required<EndpointOverrides> = {
 };
 
 const ENDPOINT_FIELDS = ["lnurlBase", "arkServer"] as const;
+
+/** The network layer of the same stored record — what a local stack needs and
+ *  the Settings form does not offer. Separate from {@link EndpointOverrides} so
+ *  the panel and `Required<EndpointOverrides>` stay as they are. */
+export interface NetworkOverrides {
+  network?: SelectableNetwork;
+  /** A local stack's emulator key is its own; the SDK pins one per network. */
+  emulatorPubkey?: string;
+  solverRegistryUrl?: string;
+}
+
+const PUBKEY = /^([0-9a-f]{64}|0[23][0-9a-f]{64})$/i;
+
+/** Re-checked on read: the record is hand-editable and every value reaches the SDK. */
+function checkedNetwork(raw: unknown): NetworkOverrides {
+  if (typeof raw !== "object" || raw === null) return {};
+  const record = raw as Record<string, unknown>;
+  const overrides: NetworkOverrides = {};
+
+  const network = typeof record.network === "string" ? record.network.trim() : "";
+  if (network !== DEFAULT_NETWORK && (SELECTABLE_NETWORKS as readonly string[]).includes(network)) {
+    overrides.network = network as SelectableNetwork;
+  }
+  const emulator = typeof record.emulatorPubkey === "string" ? record.emulatorPubkey.trim().toLowerCase() : "";
+  if (PUBKEY.test(emulator)) overrides.emulatorPubkey = emulator;
+
+  if (typeof record.solverRegistryUrl === "string") {
+    const checked = normalizeEndpoint(record.solverRegistryUrl);
+    if (checked.ok) overrides.solverRegistryUrl = checked.value;
+  }
+  return overrides;
+}
 
 function memoryStore(): KeyValueStore {
   const entries = new Map<string, string>();
@@ -101,6 +136,10 @@ export function readOverrides(store: KeyValueStore = browserStore()): EndpointOv
   return overrides;
 }
 
+export function readNetworkOverrides(store: KeyValueStore = browserStore()): NetworkOverrides {
+  try { return checkedNetwork(JSON.parse(store.getItem(ENDPOINTS_KEY) ?? "{}")); } catch { return {}; }
+}
+
 export type SaveResult =
   | { ok: true; overrides: EndpointOverrides }
   | { ok: false; field: keyof EndpointOverrides; error: string };
@@ -114,9 +153,20 @@ export function saveOverrides(next: EndpointOverrides, store: KeyValueStore = br
     if (!checked.ok) return { ok: false, field, error: checked.error };
     if (checked.value !== DEFAULT_ENDPOINTS[field]) overrides[field] = checked.value;
   }
-  if (Object.keys(overrides).length > 0) store.setItem(ENDPOINTS_KEY, JSON.stringify(overrides));
+  // The form has no network inputs, so saving from it must not destroy them.
+  const record = { ...overrides, ...readNetworkOverrides(store) };
+  if (Object.keys(record).length > 0) store.setItem(ENDPOINTS_KEY, JSON.stringify(record));
   else store.removeItem(ENDPOINTS_KEY);
   return { ok: true, overrides };
+}
+
+/** Writes the network layer alone. No shipped UI calls it: it is the test seam. */
+export function saveNetworkOverrides(next: NetworkOverrides, store: KeyValueStore = browserStore()): NetworkOverrides {
+  const overrides = checkedNetwork(next);
+  const record = { ...readOverrides(store), ...overrides };
+  if (Object.keys(record).length > 0) store.setItem(ENDPOINTS_KEY, JSON.stringify(record));
+  else store.removeItem(ENDPOINTS_KEY);
+  return overrides;
 }
 
 export function clearOverrides(store: KeyValueStore = browserStore()): void {
@@ -130,9 +180,13 @@ export function lnurlDomainFor(base: string): string {
 /** Read once: `lnurl.ts` builds its client at module scope, so an override
  *  lands on the next page load and not before. */
 const active = readOverrides();
+const activeNetwork = readNetworkOverrides();
 
 export const LNURL_BASE = active.lnurlBase ?? DEFAULT_LNURL_BASE;
 /** Derived from the base rather than stored beside it: a domain that drifts
  *  from the host serving the address mints tokens that server rejects. */
 export const LNURL_DOMAIN = active.lnurlBase ? lnurlDomainFor(active.lnurlBase) : DEFAULT_LNURL_DOMAIN;
 export const ARK_SERVER = active.arkServer ?? DEFAULT_ARK_SERVER;
+export const NETWORK: SelectableNetwork = activeNetwork.network ?? DEFAULT_NETWORK;
+export const EMULATOR_PUBKEY = activeNetwork.emulatorPubkey;
+export const SOLVER_REGISTRY_URL = activeNetwork.solverRegistryUrl;
