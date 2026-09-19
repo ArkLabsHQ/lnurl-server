@@ -40,6 +40,8 @@ function wireVtxo(opts: { txid: string; valueSat: number; createdAtSec: number; 
 /** Queryable fake: returns the vtxos registered for a `scripts` match. */
 let indexerVtxos: ReturnType<typeof wireVtxo>[];
 let indexerFails: boolean;
+/** Round trips the pass made — the cost this watcher is measured by. */
+let indexerRequests: number;
 let indexerCtx: { baseUrl: string; close: () => Promise<void> };
 
 beforeAll(async () => {
@@ -47,6 +49,7 @@ beforeAll(async () => {
     res.setHeader("content-type", "application/json");
     const url = new URL(req.url ?? "", "http://x");
     if (url.pathname === "/v1/indexer/vtxos" && !indexerFails) {
+      indexerRequests++;
       const scripts = url.searchParams.getAll("scripts");
       const vtxos = indexerVtxos.filter((v) => scripts.includes(v.script));
       res.end(JSON.stringify({ vtxos, page: { current: 1, next: 1, total: 1 } }));
@@ -66,6 +69,7 @@ afterAll(() => indexerCtx.close());
 beforeEach(() => {
   indexerVtxos = [];
   indexerFails = false;
+  indexerRequests = 0;
 });
 
 function storeWith(...recs: { hash: string; amountMsat: number; createdAt?: number }[]): MemorySettlementStore {
@@ -144,6 +148,47 @@ describe("settleDestinationPayments", () => {
     store.create({ paymentHash: "r2", pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination: DEST, amountMsat: 50_000 });
     expect(await settleDestinationPayments(store, new RestIndexerProvider(indexerCtx.baseUrl))).toBe(0);
     expect(store.get("r2")!.settled).toBe(false);
+  });
+
+  // The cost that decides whether this scales: a pass used to spend one round
+  // trip per open payment, so a 15s interval saturated somewhere near a hundred
+  // of them. Asserted on request count, because that is the thing that broke.
+  it("reads many destinations in batches, not one request per destination", async () => {
+    const store = new MemorySettlementStore(3_600_000);
+    const dests: string[] = [];
+    for (let i = 0; i < 40; i++) {
+      const dest = new ArkAddress(
+        secp256k1.utils.randomSecretKey(),
+        secp256k1.utils.randomSecretKey(),
+        "tark",
+      ).encode();
+      dests.push(dest);
+      store.create({
+        paymentHash: `b${i}`,
+        pr: "",
+        sessionId: "sess",
+        paymentOption: "arkade",
+        paymentDestination: dest,
+        amountMsat: 50_000,
+      });
+    }
+    // One payment, at a destination in the SECOND chunk, so the assertion also
+    // proves the batches are regrouped by script rather than merged.
+    const target = dests[35]!;
+    const txid = randomBytes(32).toString("hex");
+    indexerVtxos = [
+      wireVtxo({
+        txid,
+        valueSat: 60,
+        createdAtSec: Math.floor(Date.now() / 1000),
+        script: hex.encode(ArkAddress.decode(target).pkScript),
+      }),
+    ];
+
+    expect(await settleDestinationPayments(store, new RestIndexerProvider(indexerCtx.baseUrl))).toBe(1);
+    expect(indexerRequests).toBe(2); // ceil(40 / 32)
+    expect(store.get("b35")).toMatchObject({ settled: true, paymentReference: txid });
+    expect(store.get("b34")!.settled).toBe(false);
   });
 
   it("leaves everything pending when the indexer errors", async () => {
