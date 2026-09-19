@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- **An `EntropyProvider` seam for the per-payment preimage** — the covenant destination's sweep-leaf secret and the offline swap's HTLC secret were both `randomBytes` inline, leaving a deployment that wants them from elsewhere nowhere to say so. Both now take an optional provider defaulting to the same `randomBytes(32)` call, so behaviour is unchanged unless one is supplied. The value is length-checked at the seam: a covenant commits to `HASH160(preimage)` and a VHTLC to its hash, so a short one is not a type error but an address nobody can spend.
+
 ### Changed
 - **The demo wallet receives through its Lightning address and nothing else** — it published an Arkade address, a boarding address and a unified BIP321 QR built from both, making itself a second and staler source of truth for routing information the address already owns. Receive is now the address, its QR, and a list of what that address accepts; options are loaded on demand and requested one at a time, because a callback mints a destination and files a settlement record, so rendering the list by calling every rail would leave a trail of quotes nobody asked for. Funding stops being a special case — request the `onchain` rail and pay what it hands back.
 - **Activity shows the wallet's own transactions alongside the server's records** — it listed only what had been quoted against the LN address, so a payment this wallet sent, a deposit it boarded, or a transfer it received had no record anywhere in it. The SDK's `getActivityHistory()` and the LNURL rows are now merged: the wallet knows what its keys moved, the server knows what was quoted, and neither subsumes the other.
