@@ -426,6 +426,19 @@ export async function applySolverOverlay(): Promise<void> {
  * mnemonic boards, settles, and exits — two wallets on one mnemonic tear each
  * other down when concurrent, so they never overlap. Topping up is harmless.
  */
+/** Settle races this helper retries. Each was captured from a real release-gate
+ *  failure: arkd not yet seeing the confirmed deposit, the SDK refreshing server
+ *  info and asking for the request to be rebuilt, and a prior attempt still
+ *  holding the input it registered. None of them means the deposit is bad. */
+export function isTransientSettleError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes("no inputs found") ||
+    m.includes("digest mismatch") ||
+    m.includes("already registered by another intent")
+  );
+}
+
 export async function fundSolverFloat(log: (s: string) => void = console.log): Promise<void> {
   const { MnemonicIdentity, Wallet } = await import("@arkade-os/sdk");
   log("funding the solver's Arkade float (solver paused while its wallet is borrowed)...");
@@ -447,21 +460,27 @@ export async function fundSolverFloat(log: (s: string) => void = console.log): P
     await faucet(boarding, "0.002");
     await mine(1);
     log("  settling into a vtxo (arkd round)…");
-    // arkd needs a moment to see the confirmed deposit before it accepts it as a
-    // settle input — retry only that one race.
-    for (let attempt = 1; ; attempt++) {
+    let settled = false;
+    for (let attempt = 1; attempt <= 15 && !settled; attempt++) {
       try {
         await wallet.settle();
-        break;
+        settled = true;
       } catch (err) {
-        if (!String(err instanceof Error ? err.message : err).includes("No inputs found") || attempt >= 15) throw err;
+        const message = String(err instanceof Error ? err.message : err);
+        if (!isTransientSettleError(message) || attempt === 15) throw err;
+        log(`  settle attempt ${attempt} hit a known race; retrying`);
         await new Promise((r) => setTimeout(r, 2000));
       }
     }
     await mine(1);
     const balance = await wallet.getBalance();
     await wallet.dispose();
-    log(`solver float funded: ${balance.available} sats spendable`);
+    // Funding the float is the goal, not settling per se: a settle that never
+    // reported success but left spendable value behind still met it.
+    if (!settled && balance.available <= 0) {
+      throw new Error("solver float settle exhausted its retries and left nothing spendable");
+    }
+    log(`solver float funded: ${balance.available} sats spendable${settled ? "" : " (without a clean settle)"}`);
   } finally {
     await compose(["start", "intent-solver"]);
     await pollUntil("intent-solver", () => httpOk(`${SOLVER_HTTP_TEST_URL}/healthz`), 120_000);
