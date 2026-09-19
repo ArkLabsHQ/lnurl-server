@@ -34,6 +34,14 @@ const sats = (text: string) => Number(text.trim().split(" ")[0]);
 const balance = (page: Page) =>
   page.locator("div").filter({ hasText: /^\d+ sats$/ }).first().innerText().then(sats);
 
+/** The wallet is funded by the time either test reads this, so a 0 is a refresh
+ *  rendering mid-fetch — and taken as the baseline it makes the drop assertion
+ *  unsatisfiable rather than failing on what actually went wrong. */
+async function fundedBalance(page: Page, atLeast: number): Promise<number> {
+  await expect.poll(() => balance(page), { timeout: 120_000, intervals: [1_000] }).toBeGreaterThan(atLeast);
+  return balance(page);
+}
+
 const name = (prefix: string) => `${prefix}${Date.now().toString(36)}${randomBytes(2).toString("hex")}`;
 
 /** Arrival is asserted here, not on the recipient's balance: a fresh browser
@@ -139,7 +147,7 @@ test.afterAll(async () => {
 test("lnurl-arkade: one wallet pays another's LNURL and the receiver confirms it", async () => {
   const url = `${covenant.base}/.well-known/lnurlp/${recipient.username}`;
   const lnurl = bech32.encode("lnurl", bech32.toWords(new TextEncoder().encode(url)), 1023);
-  const payerBefore = await balance(payer);
+  const payerBefore = await fundedBalance(payer, LNURL_SATS);
 
   await payOver(payer, "lnurl-arkade", lnurl, LNURL_SATS);
   await statusReaches(payer, /sent \d+ sats via lnurl-arkade|lnurl-arkade · /, 180_000);
@@ -165,7 +173,7 @@ test("lnurl-arkade: one wallet pays another's LNURL and the receiver confirms it
 });
 
 test("ark: a bare tark1 address pasted into the send box pays it directly", async () => {
-  const payerBefore = await balance(payer);
+  const payerBefore = await fundedBalance(payer, ARK_SATS);
 
   await payOver(payer, "ark", recipient.arkadeAddress, ARK_SATS);
   await statusReaches(payer, /sent \d+ sats via ark|^ark · /, 180_000);
