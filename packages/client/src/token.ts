@@ -4,6 +4,15 @@ import { hex } from "@scure/base";
 
 const MESSAGE_PREFIX = "lnurl-session:";
 
+/** The canonical form of a LUD-16 domain. Exported so the covenant supply salts
+ *  and this token agree by construction rather than by two copies of
+ *  `.trim().toLowerCase()` staying in step. */
+export function normaliseDomain(domain: string): string {
+  const normalised = domain.trim().toLowerCase();
+  if (!normalised) throw new Error("a session token must be bound to a domain");
+  return normalised;
+}
+
 /**
  * The 32-byte digest both derivations sign.
  *
@@ -23,9 +32,7 @@ const MESSAGE_PREFIX = "lnurl-session:";
  * @returns The 32-byte digest to sign.
  */
 export function sessionTokenMessage(domain: string): Uint8Array {
-  const normalised = domain.trim().toLowerCase();
-  if (!normalised) throw new Error("a session token must be bound to a domain");
-  return sha256(new TextEncoder().encode(MESSAGE_PREFIX + normalised));
+  return sha256(new TextEncoder().encode(MESSAGE_PREFIX + normaliseDomain(domain)));
 }
 
 function tokenFromSignature(signature: Uint8Array): string {

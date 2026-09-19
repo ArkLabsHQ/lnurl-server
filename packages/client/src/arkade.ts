@@ -15,11 +15,27 @@ import { deriveSessionTokenWithSigner } from "./token.js";
 export { LNURL_ARKADE_RAIL, LNURL_LIGHTNING_RAIL, lnurlRails } from "./rail.js";
 export type { LnurlRailDeps } from "./rail.js";
 
+export {
+  COVENANT_SUPPLY_MAX,
+  COVENANT_SUPPLY_SCHEME,
+  derivePreimage,
+  mintCovenantSupply,
+  preimageHash160,
+  supplySalt,
+} from "./covenant-entropy.js";
+export type { CovenantSupply, SupplyLeg, SupplySigner } from "./covenant-entropy.js";
+
+import { mintCovenantSupply, type SupplySigner } from "./covenant-entropy.js";
+import type { CovenantProfile, CovenantSupplyRequest } from "./addresses.js";
+
 /** The slice of `@arkade-os/sdk`'s `Identity` these helpers need. */
 export interface ArkadeSigner {
   signMessage(message: Uint8Array, signatureType: "schnorr" | "ecdsa"): Promise<Uint8Array>;
   compressedPublicKey(): Promise<Uint8Array>;
 }
+
+/** An {@link ArkadeSigner} that can also mint a deterministic preimage supply. */
+export type ArkadeSupplySigner = ArkadeSigner & SupplySigner;
 
 /**
  * True when `address` decodes as an Arkade address.
@@ -116,4 +132,23 @@ export async function arkadeIdentityRequest(params: {
     ...(params.boardingAddress !== undefined ? { boardingAddress: params.boardingAddress } : {}),
     ...(params.domain !== undefined ? { domain: params.domain } : {}),
   };
+}
+
+/**
+ * Mints the `covenantSupply` field for `registerArkadeIdentity`. `domain` must
+ * be the LUD-16 domain, not a base URL: it is hashed into every salt, so the
+ * wrong string derives preimages the server's destinations do not commit to.
+ * `profile` is asserted rather than requested — the server refuses an upload
+ * whose terms its covenant does not use.
+ */
+export async function covenantSupplyRequest(
+  identity: SupplySigner,
+  params: { domain: string; startIndex: number; count: number; profile: CovenantProfile },
+): Promise<CovenantSupplyRequest> {
+  const minted = await mintCovenantSupply(identity, {
+    domain: params.domain,
+    startIndex: params.startIndex,
+    count: params.count,
+  });
+  return { ...minted, profile: params.profile };
 }
