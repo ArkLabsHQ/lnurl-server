@@ -71,7 +71,7 @@ if (bolt11) {
   await attempt("local rail available", async () => say("local rail  available:", await local.available?.(req, ctx)));
 
   // 2. The app's own factory, which is what the send box actually registers.
-  const app = createLightningRail({ xOnlyPublicKey: async () => new Uint8Array(32) });
+  const app = createLightningRail();
   say("app rail    match:", app.match(req, ctx));
   await attempt("app rail available", async () => say("app rail    available:", await app.available?.(req, ctx)));
 }

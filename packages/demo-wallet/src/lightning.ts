@@ -1,19 +1,14 @@
 import { getNetwork, resolveEmulatorPubkey, toXOnly, type PaymentRail } from "@arkade-os/sdk";
 import {
   discoverMarkets,
-  relayTransport,
+  httpTransport,
   solverLightningRail,
   type SolverLightningSend,
 } from "@arkade-os/swap";
 import { defaultRegistryUrls } from "@arkade-os/solver-discovery";
 import { hex } from "@scure/base";
 import { invoiceFactsFromBolt11 } from "../../../src/bolt11.js";
-import { ARK_SERVER, EMULATOR_PUBKEY, NETWORK, SOLVER_REGISTRY_URL } from "./config.js";
-
-/** What `relayTransport` needs to address the solver: the wallet's x-only key. */
-interface RailIdentity {
-  xOnlyPublicKey(): Promise<Uint8Array> | Uint8Array;
-}
+import { ARK_SERVER, EMULATOR_PUBKEY, NETWORK, SOLVER_REGISTRY_URL, SOLVER_RFQ_HTTP_URL } from "./config.js";
 
 const SWAP_KEY = "arkade-demo-wallet.lightning-swaps";
 
@@ -35,7 +30,7 @@ const REGISTRY_URL = SOLVER_REGISTRY_URL ?? defaultRegistryUrls(NETWORK)[0];
  * package carries no bolt11 dependency; the server's own decoder is reused,
  * which is browser-safe — it only needs `@scure/base`.
  */
-export function createLightningRail(identity: RailIdentity): PaymentRail {
+export function createLightningRail(): PaymentRail {
   return solverLightningRail({
     arkServerUrl: ARK_SERVER,
     // Both, and the fallback must be x-only. No mutinynet market advertises an
@@ -48,20 +43,21 @@ export function createLightningRail(identity: RailIdentity): PaymentRail {
       : {}),
     decodeInvoice: invoiceFactsFromBolt11,
     discover: () => discoverMarkets({ network: NETWORK, registryUrl: REGISTRY_URL }),
+    // Configured, not advertised: the rendezvous carries nostr relays and nothing else.
     connect: async (rendezvous, fn) => {
-      const relay = rendezvous.transports.nostr.relays[0];
-      if (!relay) throw new Error("solver advertises no nostr relay");
-      return fn(relayTransport(relay, {
-        solverPubkey: rendezvous.solverPubkey,
-        clientPubkey: hex.encode(await identity.xOnlyPublicKey()),
-      }));
+      if (SOLVER_RFQ_HTTP_URL) return fn(httpTransport(SOLVER_RFQ_HTTP_URL));
+      const { relays } = rendezvous.transports.nostr;
+      if (relays.length === 0) throw new Error("solver advertises no nostr relay");
+      const { nostrRfqTransport } = await import("@arkade-os/swap/nostr");
+      return fn(nostrRfqTransport({ relays, solverPubkey: rendezvous.solverPubkey }));
     },
     // A swap outlives the page: persisted so a reload can still find a lockup
-    // that was funded but never claimed.
+    // that was funded but never claimed. Amounts are BigInt, which JSON refuses —
+    // and this runs before funding, so a throw here cancels the send outright.
     persist: async (swap: SolverLightningSend) => {
       const all = JSON.parse(localStorage.getItem(SWAP_KEY) ?? "[]") as unknown[];
-      all.push(JSON.parse(JSON.stringify(swap)));
-      localStorage.setItem(SWAP_KEY, JSON.stringify(all));
+      all.push(swap);
+      localStorage.setItem(SWAP_KEY, JSON.stringify(all, (_key, value) => (typeof value === "bigint" ? value.toString() : value)));
     },
   });
 }

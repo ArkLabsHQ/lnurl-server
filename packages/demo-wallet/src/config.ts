@@ -45,6 +45,9 @@ export interface NetworkOverrides {
   /** A local stack's emulator key is its own; the SDK pins one per network. */
   emulatorPubkey?: string;
   solverRegistryUrl?: string;
+  /** Routes RFQs over HTTP: a regtest solver answers `POST /v1/swap` and never
+   *  subscribes to a relay. Unset, deployed solvers are reached over nostr. */
+  solverRfqHttpUrl?: string;
 }
 
 const PUBKEY = /^([0-9a-f]{64}|0[23][0-9a-f]{64})$/i;
@@ -65,6 +68,10 @@ function checkedNetwork(raw: unknown): NetworkOverrides {
   if (typeof record.solverRegistryUrl === "string") {
     const checked = normalizeEndpoint(record.solverRegistryUrl);
     if (checked.ok) overrides.solverRegistryUrl = checked.value;
+  }
+  if (typeof record.solverRfqHttpUrl === "string") {
+    const checked = normalizeEndpoint(record.solverRfqHttpUrl);
+    if (checked.ok) overrides.solverRfqHttpUrl = checked.value;
   }
   return overrides;
 }
@@ -190,3 +197,4 @@ export const ARK_SERVER = active.arkServer ?? DEFAULT_ARK_SERVER;
 export const NETWORK: SelectableNetwork = activeNetwork.network ?? DEFAULT_NETWORK;
 export const EMULATOR_PUBKEY = activeNetwork.emulatorPubkey;
 export const SOLVER_REGISTRY_URL = activeNetwork.solverRegistryUrl;
+export const SOLVER_RFQ_HTTP_URL = activeNetwork.solverRfqHttpUrl;

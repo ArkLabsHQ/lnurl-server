@@ -22,7 +22,7 @@ export const RAIL_PRIORITY = ["lnurl-arkade", "ark", "ark-asset", "lnurl-lightni
  */
 export function createRouter(demo: DemoWallet): PaymentRouter {
   const router = createDefaultPaymentRouter(demo.wallet);
-  const lightning = createLightningRail(demo.identity);
+  const lightning = createLightningRail();
   // Registered alongside the LNURL rails, not only inside them: a bare BOLT11
   // pasted into the send box is the same corridor without the LNURL hop.
   router.use(lightning);
