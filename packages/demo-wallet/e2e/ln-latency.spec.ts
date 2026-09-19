@@ -35,7 +35,10 @@ async function newRecipient(page: Page): Promise<string> {
   return name;
 }
 
-test("pays an offline-receive invoice over Lightning and times the claim", async ({ browser }) => {
+// @funded: needs the wallet `provision.spec.ts` mints and a human tops up with
+// real mutinynet sats, so CI skips it. The same path runs against regtest in
+// e2e-local/offline-receive.spec.ts, funded from a faucet.
+test("pays an offline-receive invoice over Lightning and times the claim @funded", async ({ browser }) => {
   test.setTimeout(600_000);
 
   // Guarded rather than assumed: the send corridor needs the network's x-only

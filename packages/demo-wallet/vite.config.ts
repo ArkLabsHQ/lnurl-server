@@ -7,10 +7,6 @@ import react from "@vitejs/plugin-react";
 // than hardcoded, so running `vite` here still works without it.
 const base = process.env.DEMO_WALLET_BASE ?? "/";
 
-// Opt-in so the debugging page never reaches Pages: the Pages workflow does not
-// set it, so the published bundle has one entry as before.
-const scratch = process.env.DEMO_WALLET_SCRATCH === "1";
-
 // The local-stack solver sends no CORS headers, so a browser cannot post an RFQ
 // to it directly. Dev/preview only — it proxies nothing in a built bundle, and
 // deployed solvers are reached over nostr, which is not preflighted.
@@ -43,7 +39,4 @@ export default defineConfig({
   plugins: [react(), ...(registryFile ? [localRegistry()] : [])],
   server: { port: 5173, ...(proxy ? { proxy } : {}) },
   ...(proxy ? { preview: { proxy } } : {}),
-  ...(scratch
-    ? { build: { rollupOptions: { input: { main: "index.html", scratch: "scratch.html" } } } }
-    : {}),
 });

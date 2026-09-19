@@ -32,7 +32,9 @@ async function newRecipient(page: Page): Promise<string> {
   return `${name}@lnurl.mutinynet.arkade.sh`;
 }
 
-test("pays another wallet's lightning address over the arkade rail", async ({ browser }) => {
+// @funded: see ln-latency.spec.ts. The regtest twin is
+// e2e-local/send-paths.spec.ts, which pays over the same rail from faucet sats.
+test("pays another wallet's lightning address over the arkade rail @funded", async ({ browser }) => {
   test.setTimeout(300_000);
 
   const recipientPage = await (await browser.newContext()).newPage();
