@@ -10,6 +10,7 @@ import { createRepositories, type Repositories } from "../src/db/repositories/in
 import { AddressService } from "../src/address-service.js";
 import { DbSettlementStore, MemorySettlementStore, type SettlementStore } from "../src/settlement-store.js";
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
+import { CovenantSupplyStore, COVENANT_SUPPLY_SCHEME } from "../src/covenant-supply.js";
 import { encryptToken } from "../src/crypto.js";
 import { deriveSessionId } from "../src/session-id.js";
 import type { OfflineSwapCreator, OfflineSwapParams, OfflineSwapResult } from "../src/intent-swap.js";
@@ -61,9 +62,9 @@ class FakeCreator implements OfflineSwapCreator {
   }
 }
 
-function start(repos: Repositories, creator?: OfflineSwapCreator, settlements?: SettlementStore, offlineSwaps?: OfflineSwapStore) {
+function start(repos: Repositories, creator?: OfflineSwapCreator, settlements?: SettlementStore, offlineSwaps?: OfflineSwapStore, preimageSupply?: CovenantSupplyStore) {
   const server = http.createServer();
-  const addressService = new AddressService(repos, KEY);
+  const addressService = new AddressService(repos, KEY, preimageSupply);
   return new Promise<{ baseUrl: string; close: () => Promise<void> }>((resolve) => {
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address() as { port: number };
@@ -72,7 +73,7 @@ function start(repos: Repositories, creator?: OfflineSwapCreator, settlements?: 
         "request",
         createServer(
           { ...CONFIG, baseUrl },
-          { repos, addressService, settlements, offlineSwapCreator: creator, offlineSwaps },
+          { repos, addressService, settlements, offlineSwapCreator: creator, offlineSwaps, ...(preimageSupply ? { preimageSupply } : {}) },
         ),
       );
       resolve({ baseUrl, close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }) });
@@ -110,6 +111,64 @@ describe("offline receive", () => {
     const res = await req(`${ctx.baseUrl}/lnurl/address/off/arkade`, "POST", "domain.com", { arkadeAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY }, TOKEN);
     expect(res.status).toBe(200);
     expect(repos.addresses.getById(addressId)!.arkadeAddress).toBe(RECEIVE);
+  });
+
+  // The swap leg's own supply: the preimage the solver's VHTLC hashes must be
+  // the one the owner derived, not randomBytes.
+  it("spends the swap supply on the swap, and records which slot it took", async () => {
+    const hash = "9b" + "00".repeat(31);
+    const supply = new CovenantSupplyStore(db, KEY);
+    const creator = new FakeCreator(hash);
+    const settlements = new DbSettlementStore(db, 60_000);
+    const offlineSwaps = new OfflineSwapStore(db, 60_000);
+    repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
+    ctx = await start(repos, creator, settlements, offlineSwaps, supply);
+    const seeded = ["aa".repeat(32), "bb".repeat(32)];
+    await req(`${ctx.baseUrl}/lnurl/address/off/arkade`, "POST", "domain.com", {
+      arkadeAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY,
+      swapSupply: { scheme: COVENANT_SUPPLY_SCHEME, startIndex: 0, preimages: seeded },
+    }, TOKEN);
+
+    await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=50000`, "GET", "domain.com");
+
+    expect(Buffer.from(creator.created[0]!.preimage!).toString("hex")).toBe(seeded[0]);
+    // The SWAP slot: its own column, because index 0 of the covenant supply is
+    // a different secret entirely.
+    expect(settlements.get(hash)!.swapIndex).toBe(0);
+    expect(settlements.get(hash)!.covenantIndex).toBeNull();
+    // Not released on failure, and never reissued.
+    expect(supply.state(addressId, "swap")).toMatchObject({ nextIndex: 2, remaining: 1 });
+    // And strictly apart from the covenant leg, which this never touched.
+    expect(supply.state(addressId, "covenant")).toMatchObject({ nextIndex: 0, remaining: 0 });
+  });
+
+  it("falls back to a server-minted preimage when the swap supply is empty", async () => {
+    const hash = "9c" + "00".repeat(31);
+    const creator = new FakeCreator(hash);
+    repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
+    ctx = await start(repos, creator, new DbSettlementStore(db, 60_000), new OfflineSwapStore(db, 60_000), new CovenantSupplyStore(db, KEY));
+
+    await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=50000`, "GET", "domain.com");
+
+    expect(creator.created[0]!.preimage).toBeUndefined();
+  });
+
+  it("serves the swap recovery blob to the owning token only", async () => {
+    const hash = "9d" + "00".repeat(31);
+    const creator = new FakeCreator(hash);
+    const offlineSwaps = new OfflineSwapStore(db, 60_000);
+    repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
+    ctx = await start(repos, creator, new DbSettlementStore(db, 60_000), offlineSwaps, new CovenantSupplyStore(db, KEY));
+    await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=50000`, "GET", "domain.com");
+
+    const res = await req(`${ctx.baseUrl}/lnurl/address/off/swap-recovery`, "GET", "domain.com", undefined, TOKEN);
+
+    expect(res.status).toBe(200);
+    const swaps = res.body.swaps as Record<string, unknown>[];
+    expect(swaps).toHaveLength(1);
+    expect(swaps[0]).toMatchObject({ paymentHash: hash, preimage: "11".repeat(32), settled: false });
+    expect(swaps[0]!.recovery).toMatchObject({ version: 1, rfqId: "swap-1", lockupAddress: RECEIVE });
+    expect((await req(`${ctx.baseUrl}/lnurl/address/off/swap-recovery`, "GET", "domain.com", undefined, "ab".repeat(32))).status).toBe(404);
   });
 
   it("rejects the arkade registration without the owning token", async () => {

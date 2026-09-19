@@ -31,7 +31,14 @@ import {
   type ServerRailCaps,
 } from "./rails.js";
 import { applyQuote, type QuoteProvider, type PaymentQuote } from "./quote-provider.js";
-import type { CovenantDestinationProvider, DerivedDestination } from "./covenant-destination.js";
+import type { CovenantDestinationProvider, DerivedDestination, PreimageSupply } from "./covenant-destination.js";
+import {
+  COVENANT_SUPPLY_MAX,
+  COVENANT_SUPPLY_SCHEME,
+  profileMatches,
+  type CovenantProfile,
+  type SupplyUpload,
+} from "./covenant-supply.js";
 import { staticSettings, type RuntimeSettings } from "./settings.js";
 import { requestTraceMiddleware } from "./request-trace.js";
 import type {
@@ -49,11 +56,52 @@ const METADATA_DESCRIPTION = "Arkade LNURL Receive";
 const PROVISIONING_STATUS: Record<string, number> = {
   invalid_token: 400, invalid_username: 400, forbidden_mode: 403,
   blacklisted: 409, taken: 409, limit_reached: 429, invalid_claim: 401,
+  invalid_supply: 400,
 };
 
 /** Express types query values as string | string[] | ...; an array (`?a=1&a=2`)
  *  is never meaningful for our params — take them only when they're a string. */
 const strParam = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+
+const HEX32 = /^[0-9a-f]{64}$/i;
+
+/** Wire shape only; the store owns scheme, cap and index continuity. Refuses
+ *  rather than coerces — a supply the owner cannot map back to an index. */
+function parseCovenantSupply(
+  raw: unknown,
+  opts: { requireProfile?: boolean } = {},
+): { upload: SupplyUpload; profile?: CovenantProfile } | { error: string } {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return { error: "covenantSupply must be an object" };
+  }
+  const s = raw as Record<string, unknown>;
+  if (typeof s.scheme !== "string" || s.scheme.length === 0) return { error: "covenantSupply.scheme is required" };
+  if (!Number.isInteger(s.startIndex) || (s.startIndex as number) < 0 || (s.startIndex as number) > 0xffff_ffff) {
+    return { error: "covenantSupply.startIndex must be a u32" };
+  }
+  if (!Array.isArray(s.preimages) || s.preimages.length === 0) {
+    return { error: "covenantSupply.preimages must be a non-empty array" };
+  }
+  if (s.preimages.length > COVENANT_SUPPLY_MAX) {
+    return { error: `covenantSupply.preimages may hold at most ${COVENANT_SUPPLY_MAX} entries` };
+  }
+  if (!s.preimages.every((p) => typeof p === "string" && HEX32.test(p))) {
+    return { error: "every covenantSupply preimage must be 32 bytes of hex" };
+  }
+  const upload: SupplyUpload = { scheme: s.scheme, startIndex: s.startIndex as number, preimages: s.preimages as string[] };
+  if (opts.requireProfile === false) return { upload };
+  const p = s.profile as Record<string, unknown> | undefined;
+  if (typeof p !== "object" || p === null || Array.isArray(p)) {
+    return { error: "covenantSupply.profile is required: a supply must name the terms it was minted under" };
+  }
+  if (!Number.isInteger(p.recoveryDelaySeconds) || (p.recoveryDelaySeconds as number) <= 0) {
+    return { error: "covenantSupply.profile.recoveryDelaySeconds must be a positive integer" };
+  }
+  if (typeof p.emulatorPubkey !== "string" || !/^[0-9a-f]{64,66}$/i.test(p.emulatorPubkey)) {
+    return { error: "covenantSupply.profile.emulatorPubkey must be a hex public key" };
+  }
+  return { upload, profile: { recoveryDelaySeconds: p.recoveryDelaySeconds as number, emulatorPubkey: p.emulatorPubkey } };
+}
 
 export interface ServerDeps {
   repos: Repositories;
@@ -69,6 +117,10 @@ export interface ServerDeps {
   /** When set, the arkade rail hands out a per-payment covenant address instead of the
    *  user's static one, so concurrent payments are told apart by script. */
   covenantDestinations?: CovenantDestinationProvider;
+  /** Rebuild params by covenant script, from the SDK's contract store. */
+  covenantParams?: (scripts: string[]) => Promise<Map<string, Record<string, string>>>;
+  /** Client-minted preimages. Absent leaves both rails on `randomBytes`. */
+  preimageSupply?: PreimageSupply;
   /** When set, enables LUD-XX unit-denominated quotes (advertises `units`, quotes callbacks). */
   quoteProvider?: QuoteProvider;
   /** Solver discovery snapshot (when wired): the offline-swap rail reads readiness per request instead of blocking startup. */
@@ -96,6 +148,7 @@ async function createOfflineSwapAndRespond(args: {
   receiveAddress: string;
   claimPublicKey: string;
   addressId: number;
+  supply?: PreimageSupply;
   paymentQuote?: PaymentQuote;
   /** LUD-XX: echo the explicitly-selected lightning option on the pr response. */
   echoLightningOption?: boolean;
@@ -103,11 +156,26 @@ async function createOfflineSwapAndRespond(args: {
   logger: Logger;
   requestId: string;
 }): Promise<void> {
-  const { creator, store, offlineSwaps, baseUrl, amountMsat, receiveAddress, claimPublicKey, addressId, paymentQuote, echoLightningOption, res, logger, requestId } = args;
+  const { creator, store, offlineSwaps, baseUrl, amountMsat, receiveAddress, claimPublicKey, addressId, supply, paymentQuote, echoLightningOption, res, logger, requestId } = args;
   try {
+    // Never released, as on the covenant rail: a burned slot is a gap in the
+    // owner's scan, a reused one is two swaps sharing a secret.
+    const allocated = supply?.allocate(addressId, "swap");
     // Caller guarantees whole satoshis (rejected at the route otherwise).
-    const swap = await creator.create({ amountSat: amountMsat / 1000, receiveAddress, claimPublicKey });
-    const accepted = { paymentHash: swap.preimageHash, pr: swap.invoice, sessionId: `offline:${addressId}`, preimage: swap.preimage, amountMsat, addressId };
+    const swap = await creator.create({
+      amountSat: amountMsat / 1000,
+      receiveAddress,
+      claimPublicKey,
+      ...(allocated ? { preimage: allocated.preimage } : {}),
+    });
+    const accepted = {
+      paymentHash: swap.preimageHash, pr: swap.invoice, sessionId: `offline:${addressId}`,
+      preimage: swap.preimage, amountMsat, addressId,
+      // The swap supply's slot. Not `covenantIndex`: the same index in the two
+      // supplies is two different secrets, so recording it under the covenant's
+      // name would hand a recovering client the wrong preimage.
+      ...(allocated ? { swapIndex: allocated.index } : {}),
+    };
     // With DB_PATH, OfflineSwapStore is the single atomic persistence boundary:
     // it writes both settlement and restart recovery rows in one transaction.
     if (offlineSwaps) offlineSwaps.createAccepted({ ...accepted, recovery: swap.recovery });
@@ -666,6 +734,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
             derived = await covenantDestinations.derive({
               arkadeAddress: address.arkadeAddress,
               claimPublicKey: address.claimPublicKey,
+              addressId: address.id,
             });
           } catch (err) {
             console.warn(`covenant destination: derivation failed, using the static address:`, err);
@@ -682,6 +751,8 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           // The script alone: it is the attribution key, and the contract registered
           // at derivation owns the preimage, the taptree and the payout script.
           ...(derived ? { covenantScript: derived.script } : {}),
+          // Which supply slot this address came from; absent for a random one.
+          ...(derived?.covenantIndex !== undefined ? { covenantIndex: derived.covenantIndex } : {}),
         });
         res.json({
           status: "OK",
@@ -736,7 +807,8 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         try {
           await createOfflineSwapAndRespond({
             creator, store, offlineSwaps: deps.offlineSwaps, baseUrl: settings.baseUrl(), amountMsat,
-            receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, paymentQuote,
+            receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id,
+            ...(deps.preimageSupply ? { supply: deps.preimageSupply } : {}), paymentQuote,
             echoLightningOption: Boolean(paymentOptionId), res,
             logger, requestId: res.locals.requestId as string,
           });
@@ -811,15 +883,15 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
 
       // ─── POST /lnurl/address/:username/arkade ──────────────────────────
       // Register the Arkade receive identity for offline receive on an owned address.
-      app.post("/lnurl/address/:username/arkade", (req, res) => {
+      app.post("/lnurl/address/:username/arkade", async (req, res) => {
         const domainName = domainFromHost((req.body?.domain as string | undefined) ?? req.get("host") ?? undefined);
         const domain = domainName ? deps.repos.domains.getByDomain(domainName) : undefined;
         if (!domain) { res.status(404).json({ error: "Unknown domain" }); return; }
         const auth = req.headers.authorization;
         const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
         if (!isValidToken(token)) { res.status(401).json({ error: "Unauthorized" }); return; }
-        const { arkadeAddress, claimPublicKey, boardingAddress } = (req.body ?? {}) as
-          { arkadeAddress?: string; claimPublicKey?: string; boardingAddress?: string };
+        const { arkadeAddress, claimPublicKey, boardingAddress, covenantSupply, swapSupply } = (req.body ?? {}) as
+          { arkadeAddress?: string; claimPublicKey?: string; boardingAddress?: string; covenantSupply?: unknown; swapSupply?: unknown };
         // Compressed 33-byte key (02/03 prefix) — the covenant's receiver role.
         if (!arkadeAddress || typeof arkadeAddress !== "string" || !claimPublicKey || !/^0[23][0-9a-f]{64}$/i.test(claimPublicKey)) {
           res.status(400).json({ error: "arkadeAddress and a compressed-hex claimPublicKey (02/03 + 64 hex) are required" });
@@ -838,13 +910,150 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           res.status(400).json({ error: "boardingAddress must be a non-empty string when provided" });
           return;
         }
-        const ok = addressService.setOfflineReceive(domain, req.params.username, token, {
-          arkadeAddress,
-          claimPublicKey,
-          ...(boardingAddress !== undefined ? { boardingAddress } : {}),
+        // Applied only when named, as boardingAddress is: an old client that
+        // sends none keeps today's `randomBytes` destinations.
+        let upload: SupplyUpload | undefined;
+        let profile: CovenantProfile | undefined;
+        if (covenantSupply !== undefined) {
+          const parsed = parseCovenantSupply(covenantSupply);
+          if ("error" in parsed) { res.status(400).json({ error: parsed.error }); return; }
+          // A server without the rail is not a client error, so it must not fail
+          // the registration: covenant destinations are off by default, and
+          // refusing here would leave a supply-sending wallet unable to bind an
+          // Arkade identity at all — no offline receive, over an optional extra.
+          // The absent echo already says "not accepted", which is what the
+          // client checks, so this degrades to today's behaviour instead.
+          if (covenantDestinations) {
+            // The live context each destination commits to, not a copy of config:
+            // a supply under terms the covenant does not use rebuilds the wrong address.
+            try {
+              profile = await covenantDestinations.profile();
+            } catch {
+              res.status(503).json({ error: "covenant profile unavailable; retry" });
+              return;
+            }
+            if (!parsed.profile || !profileMatches(parsed.profile, profile)) {
+              res.status(400).json({
+                error: "covenantSupply.profile does not match this server's covenant profile",
+                profile,
+              });
+              return;
+            }
+            upload = parsed.upload;
+          }
+        }
+        // Its own field and table. No profile to assert: no covenant commits to
+        // a swap preimage — the VHTLC's params come from the solver's quote.
+        let swapUpload: SupplyUpload | undefined;
+        if (swapSupply !== undefined) {
+          const parsed = parseCovenantSupply(swapSupply, { requireProfile: false });
+          if ("error" in parsed) { res.status(400).json({ error: parsed.error.replace("covenantSupply", "swapSupply") }); return; }
+          swapUpload = parsed.upload;
+        }
+        let result;
+        try {
+          result = addressService.setOfflineReceive(domain, req.params.username, token, {
+            arkadeAddress,
+            claimPublicKey,
+            ...(boardingAddress !== undefined ? { boardingAddress } : {}),
+            ...(upload && profile ? { covenantSupply: upload, covenantProfile: profile } : {}),
+            ...(swapUpload ? { swapSupply: swapUpload } : {}),
+          });
+        } catch (err) {
+          if (err instanceof ProvisioningError) { res.status(PROVISIONING_STATUS[err.code] ?? 400).json({ error: err.message, code: err.code }); return; }
+          throw err;
+        }
+        if (!result.ok) { res.status(404).json({ error: "Address not found or not owned by this token" }); return; }
+        res.json({
+          ok: true,
+          // Echoed only when stored: a client that asked for one and sees nothing
+          // is talking to a server that dropped the field.
+          ...(result.supply && profile
+            ? {
+                covenantSupply: {
+                  accepted: true,
+                  nextIndex: result.supply.nextIndex,
+                  remaining: result.supply.remaining,
+                  scheme: result.supply.scheme ?? COVENANT_SUPPLY_SCHEME,
+                  profile,
+                },
+              }
+            : {}),
+          ...(result.swapSupply
+            ? {
+                swapSupply: {
+                  accepted: true,
+                  nextIndex: result.swapSupply.nextIndex,
+                  remaining: result.swapSupply.remaining,
+                  scheme: result.swapSupply.scheme ?? COVENANT_SUPPLY_SCHEME,
+                },
+              }
+            : {}),
         });
-        if (!ok) { res.status(404).json({ error: "Address not found or not owned by this token" }); return; }
-        res.json({ ok: true });
+      });
+
+      // Every covenant destination issued to this address with its rebuild params
+      // — the escape hatch for ones minted before any supply existed, which no
+      // scheme can make derivable. The preimage is not a bearer secret: the
+      // covenant pins the sweep to the owner's static address.
+      app.get("/lnurl/address/:username/covenant-recovery", async (req, res) => {
+        const domainName = domainFromHost(strParam(req.query.domain) ?? req.get("host") ?? undefined);
+        const domain = domainName ? deps.repos.domains.getByDomain(domainName) : undefined;
+        if (!domain || !domain.enabled) { res.status(404).json({ error: "Unknown or disabled domain" }); return; }
+        const auth = req.headers.authorization;
+        const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
+        if (!isValidToken(token)) { res.status(401).json({ error: "Unauthorized" }); return; }
+        const address = deps.repos.addresses.getByDomainAndUsername(domain.id, req.params.username.toLowerCase());
+        if (!address || address.sessionId !== deriveSessionId(token) || address.status !== "active") {
+          res.status(404).json({ error: "Address not found or not owned by this token" });
+          return;
+        }
+        const rows = store.listByAddress(address.id, 500).filter((r) => r.covenantScript);
+        const params = await deps.covenantParams?.(rows.map((r) => r.covenantScript!)) ?? new Map<string, Record<string, string>>();
+        res.json({
+          scheme: address.covenantScheme,
+          profile: address.covenantProfile ? JSON.parse(address.covenantProfile) : null,
+          destinations: rows.map((r) => ({
+            verifyId: r.paymentHash,
+            address: r.paymentDestination,
+            covenantScript: r.covenantScript,
+            covenantIndex: r.covenantIndex,
+            // Absent when the contract row is gone; a supplied index is still
+            // rebuildable from the owner's seed.
+            params: params.get(r.covenantScript!) ?? null,
+            createdAt: r.createdAt,
+          })),
+        });
+      });
+
+      // The OfflineSwapRecoveryV1 blob per swap. A derivable preimage is NOT enough
+      // alone: the VHTLC's params come from the solver's quote, which only this
+      // server stored, so this is what makes a swap claimable.
+      app.get("/lnurl/address/:username/swap-recovery", (req, res) => {
+        const domainName = domainFromHost(strParam(req.query.domain) ?? req.get("host") ?? undefined);
+        const domain = domainName ? deps.repos.domains.getByDomain(domainName) : undefined;
+        if (!domain || !domain.enabled) { res.status(404).json({ error: "Unknown or disabled domain" }); return; }
+        const auth = req.headers.authorization;
+        const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
+        if (!isValidToken(token)) { res.status(401).json({ error: "Unauthorized" }); return; }
+        const address = deps.repos.addresses.getByDomainAndUsername(domain.id, req.params.username.toLowerCase());
+        if (!address || address.sessionId !== deriveSessionId(token) || address.status !== "active") {
+          res.status(404).json({ error: "Address not found or not owned by this token" });
+          return;
+        }
+        const swaps = deps.offlineSwaps?.listByAddress(address.id) ?? [];
+        res.json({
+          swaps: swaps.map((s) => ({
+            paymentHash: s.paymentHash,
+            preimage: s.preimage,
+            // The SWAP supply's slot, never the covenant's: separate tables and
+            // separate columns, so the same index means different bytes in each.
+            swapIndex: s.swapIndex,
+            settled: s.settled,
+            createdAt: s.createdAt,
+            recovery: s.recovery,
+          })),
+        });
       });
 
       // GET /lnurl/address/:username/payments: owner payment activity as a sync

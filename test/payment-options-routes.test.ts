@@ -9,6 +9,8 @@ import type { OfflineSwapCreator } from "../src/intent-swap.js";
 import type { LnurlServiceConfig } from "../src/types.js";
 import type { CovenantDestinationProvider } from "../src/covenant-destination.js";
 
+const STUB_PROFILE = async () => ({ emulatorPubkey: "ab".repeat(32), recoveryDelaySeconds: 86_528 });
+
 const CONFIG: LnurlServiceConfig = { port: 0, baseUrl: "", minSendable: 1000, maxSendable: 100_000_000, invoiceTimeoutMs: 3000 };
 const ARK = "ark1qexampledestination";
 const CLAIMPK = "02" + "ab".repeat(32); // 33-byte compressed pubkey (66 hex chars)
@@ -104,6 +106,7 @@ describe("LUD-XX paymentOptions", () => {
     const settlements = new MemorySettlementStore(60_000);
     let n = 0;
     const provider: CovenantDestinationProvider = {
+      profile: STUB_PROFILE,
       derive: async () => {
         n += 1;
         return {
@@ -133,6 +136,7 @@ describe("LUD-XX paymentOptions", () => {
   it("falls back to the static address when derivation fails, rather than refusing to be paid", async () => {
     const settlements = new MemorySettlementStore(60_000);
     const provider: CovenantDestinationProvider = {
+      profile: STUB_PROFILE,
       derive: async () => {
         throw new Error("arkd unreachable");
       },
@@ -173,6 +177,7 @@ describe("LUD-XX paymentOptions", () => {
     // here saw it.
     const settlements = new MemorySettlementStore(60_000);
     const provider: CovenantDestinationProvider = {
+      profile: STUB_PROFILE,
       derive: async () => ({ address: "tark1covenant", script: "51201" }),
     };
     await ctx.close();

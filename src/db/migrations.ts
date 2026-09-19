@@ -221,6 +221,56 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE addresses ADD COLUMN boarding_address TEXT;
     `,
   },
+  {
+    version: 13,
+    // Client-minted deterministic preimages, so a user can rebuild every covenant
+    // destination they were handed without this server. The preimage is one of six
+    // values the address commits to, so without a supply the script is unrecoverable
+    // once the server is gone. Encrypted at rest with the wallet-token key;
+    // consumed_at is set once and never cleared. The two legs never share a table —
+    // the sweep leaf and the VHTLC would hash to one secret — and covenant_profile
+    // pins the operator config the indices were accepted against. Additive and
+    // forward-only: nothing backfills, and randomBytes destinations keep the params
+    // they were built with.
+    up: `
+      CREATE TABLE covenant_commitments (
+        address_id  INTEGER NOT NULL REFERENCES addresses(id) ON DELETE CASCADE,
+        idx         INTEGER NOT NULL,
+        scheme      TEXT NOT NULL,
+        ciphertext  BLOB NOT NULL,
+        iv          BLOB NOT NULL,
+        tag         BLOB NOT NULL,
+        consumed_at INTEGER,
+        created_at  INTEGER NOT NULL,
+        PRIMARY KEY (address_id, idx)
+      );
+      CREATE INDEX idx_covenant_commitments_unconsumed
+        ON covenant_commitments(address_id, idx) WHERE consumed_at IS NULL;
+
+      CREATE TABLE swap_commitments (
+        address_id  INTEGER NOT NULL REFERENCES addresses(id) ON DELETE CASCADE,
+        idx         INTEGER NOT NULL,
+        scheme      TEXT NOT NULL,
+        ciphertext  BLOB NOT NULL,
+        iv          BLOB NOT NULL,
+        tag         BLOB NOT NULL,
+        consumed_at INTEGER,
+        created_at  INTEGER NOT NULL,
+        PRIMARY KEY (address_id, idx)
+      );
+      CREATE INDEX idx_swap_commitments_unconsumed
+        ON swap_commitments(address_id, idx) WHERE consumed_at IS NULL;
+
+      ALTER TABLE addresses ADD COLUMN covenant_scheme TEXT;
+      ALTER TABLE addresses ADD COLUMN covenant_profile TEXT;
+      -- Two columns, not one keyed off swap_id: index 3 of the covenant supply
+      -- and index 3 of the swap supply are different secrets, so a reader that
+      -- joined on a shared column without checking the leg would rebuild the
+      -- wrong preimage and get no error for it.
+      ALTER TABLE settlements ADD COLUMN covenant_index INTEGER;
+      ALTER TABLE settlements ADD COLUMN swap_index INTEGER;
+    `,
+  },
 ];
 
 /** Apply all pending forward-only migrations inside a transaction each. */

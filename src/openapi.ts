@@ -507,6 +507,50 @@ export const openApiSpec = {
                       "operator's network, which this server does not police. Omitting it leaves any " +
                       "existing one alone.",
                   },
+                  covenantSupply: {
+                    type: "object",
+                    description:
+                      "Optional batch of client-derived preimages the server spends on this address's " +
+                      "per-payment covenant destinations, so the owner can rebuild every one of them from " +
+                      "their seed alone if this server disappears. Applied only when present. `startIndex` " +
+                      "must equal the server's `nextIndex`; re-posting an identical batch is a no-op. " +
+                      "`profile` is asserted, not requested: a mismatch with the server's own covenant " +
+                      "profile is refused, because a supply accepted under terms the covenant does not use " +
+                      "would rebuild the wrong address.",
+                    properties: {
+                      scheme: { type: "string", description: "Derivation scheme; `salted-v1` is the only one accepted" },
+                      startIndex: { type: "integer", description: "First index in this batch; must equal the server's nextIndex" },
+                      preimages: {
+                        type: "array",
+                        maxItems: 256,
+                        items: { type: "string", description: "32 bytes of hex" },
+                      },
+                      profile: {
+                        type: "object",
+                        properties: {
+                          recoveryDelaySeconds: { type: "integer" },
+                          emulatorPubkey: { type: "string" },
+                        },
+                        required: ["recoveryDelaySeconds", "emulatorPubkey"],
+                      },
+                    },
+                    required: ["scheme", "startIndex", "preimages", "profile"],
+                  },
+                  swapSupply: {
+                    type: "object",
+                    description:
+                      "Optional batch for the offline-swap rail. A SEPARATE supply from `covenantSupply` by " +
+                      "construction — separate table, separate domain tag — because one shared secret would " +
+                      "let a reveal on either rail unlock the other. Carries no profile: no covenant commits " +
+                      "to it. Note a derivable swap preimage alone does not make a swap claimable; see " +
+                      "`/swap-recovery` for the blob that does.",
+                    properties: {
+                      scheme: { type: "string" },
+                      startIndex: { type: "integer" },
+                      preimages: { type: "array", maxItems: 256, items: { type: "string" } },
+                    },
+                    required: ["scheme", "startIndex", "preimages"],
+                  },
                   domain: { type: "string", description: "Target domain (defaults to the Host header)" },
                 },
                 required: ["arkadeAddress", "claimPublicKey"],
@@ -515,9 +559,139 @@ export const openApiSpec = {
           },
         },
         responses: {
-          "200": { description: "Identity stored", content: { "application/json": { schema: { type: "object", properties: { ok: { type: "boolean" } } } } } },
-          "400": { description: "Missing arkadeAddress, a non-compressed/invalid claimPublicKey, or a malformed arkadeAddress" },
+          "200": {
+            description:
+              "Identity stored. `covenantSupply` is echoed ONLY when a supply was sent and stored — a client " +
+              "that sent one and sees no echo is talking to a server that dropped the field, and MUST treat " +
+              "its covenant destinations as unrecoverable.",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    ok: { type: "boolean" },
+                    covenantSupply: {
+                      type: "object",
+                      properties: {
+                        accepted: { type: "boolean" },
+                        nextIndex: { type: "integer" },
+                        remaining: { type: "integer" },
+                        scheme: { type: "string" },
+                        profile: { type: "object" },
+                      },
+                    },
+                    swapSupply: {
+                      type: "object",
+                      properties: {
+                        accepted: { type: "boolean" },
+                        nextIndex: { type: "integer" },
+                        remaining: { type: "integer" },
+                        scheme: { type: "string" },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "400": { description: "Missing arkadeAddress, a non-compressed/invalid claimPublicKey, a malformed arkadeAddress, or a covenantSupply that is malformed, out of order, oversize, or whose profile disagrees with this server" },
           "401": { description: "Missing auth token" },
+          "404": { description: "Unknown domain, or address not found / not owned by this token" },
+          "503": { description: "The covenant profile could not be read from the operator; retry" },
+        },
+      },
+    },
+    "/lnurl/address/{username}/covenant-recovery": {
+      get: {
+        summary: "Rebuild params for every covenant destination issued to your LN address",
+        description:
+          "Owner-only view of the per-payment covenant destinations this address was handed, with the " +
+          "params needed to rebuild each script. Also the escape hatch for destinations issued before any " +
+          "preimage supply existed: those were minted with `randomBytes` and are not derivable from a seed, " +
+          "so their preimage is served here. It is not a bearer secret — the covenant pins the sweep to the " +
+          "owner's own static Arkade address.",
+        tags: ["LN Address"],
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: "username", in: "path", required: true, schema: { type: "string" }, description: "LN address local part" },
+          { name: "domain", in: "query", required: false, schema: { type: "string" }, description: "Target domain (defaults to the Host header)" },
+        ],
+        responses: {
+          "200": {
+            description: "Every covenant destination for this address",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    scheme: { type: "string", nullable: true },
+                    profile: { type: "object", nullable: true },
+                    destinations: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        properties: {
+                          verifyId: { type: "string" },
+                          address: { type: "string", nullable: true },
+                          covenantScript: { type: "string" },
+                          covenantIndex: { type: "integer", nullable: true, description: "Supply slot; null when the preimage was random" },
+                          params: { type: "object", nullable: true, description: "Full covenant params, including the preimage" },
+                          createdAt: { type: "number" },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "401": { description: "Missing or invalid auth token" },
+          "404": { description: "Unknown domain, or address not found / not owned by this token" },
+        },
+      },
+    },
+    "/lnurl/address/{username}/swap-recovery": {
+      get: {
+        summary: "Recovery blobs for every offline swap on your LN address",
+        description:
+          "Owner-only. A derivable swap preimage is NOT enough to claim a swap on its own: the VHTLC's " +
+          "script params come from the solver's quote, which only this server stored. This blob is what " +
+          "closes that gap, so pull it before you need it. `swapIndex` is a slot in the SWAP supply, never " +
+          "the covenant's — the same index means different bytes in each.",
+        tags: ["LN Address"],
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: "username", in: "path", required: true, schema: { type: "string" }, description: "LN address local part" },
+          { name: "domain", in: "query", required: false, schema: { type: "string" }, description: "Target domain (defaults to the Host header)" },
+        ],
+        responses: {
+          "200": {
+            description: "Every offline swap for this address",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    swaps: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        properties: {
+                          paymentHash: { type: "string" },
+                          preimage: { type: "string" },
+                          swapIndex: { type: "integer", nullable: true },
+                          settled: { type: "boolean" },
+                          createdAt: { type: "number" },
+                          recovery: { type: "object", description: "OfflineSwapRecoveryV1" },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "401": { description: "Missing or invalid auth token" },
           "404": { description: "Unknown domain, or address not found / not owned by this token" },
         },
       },

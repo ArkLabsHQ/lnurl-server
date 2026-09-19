@@ -5,10 +5,12 @@ import { encryptToken, hashSecret } from "./crypto.js";
 import { deriveSessionId } from "./session-id.js";
 import { validateUsername, randomUsername, isValidToken } from "./usernames.js";
 import { normalizeDisabledRails } from "./rails.js";
+import { SupplyError, type CovenantProfile, type CovenantSupplyStore, type SupplyLeg, type SupplyState, type SupplyUpload } from "./covenant-supply.js";
 
 export type ProvisioningCode =
   | "invalid_token" | "invalid_username" | "forbidden_mode"
-  | "blacklisted" | "taken" | "limit_reached" | "invalid_claim" | "invalid_rails";
+  | "blacklisted" | "taken" | "limit_reached" | "invalid_claim" | "invalid_rails"
+  | "invalid_supply";
 
 export class ProvisioningError extends Error {
   constructor(public code: ProvisioningCode, message: string) {
@@ -20,7 +22,13 @@ export class ProvisioningError extends Error {
 const MAX_RANDOM_ATTEMPTS = 20;
 
 export class AddressService {
-  constructor(private repos: Repositories, private key: Buffer) {}
+  constructor(
+    private repos: Repositories,
+    private key: Buffer,
+    /** Absent leaves every covenant destination on `randomBytes`, which is the
+     *  behaviour of a server with no supply configured. */
+    private supply?: CovenantSupplyStore,
+  ) {}
 
   register(p: { domain: DomainRow; username?: string; token: string; claimCode?: string }): {
     address: AddressRow;
@@ -101,23 +109,58 @@ export class AddressService {
     this.repos.addresses.setDisabledRails(id, normalized);
   }
 
-  /** Set the Arkade receive identity for offline receive on an owned address. */
+  /** Set the Arkade receive identity for offline receive on an owned address.
+   *  Returns the supply state when the call carried one, so the caller can echo
+   *  it — a client that sees no echo must treat its supply as not accepted. */
   setOfflineReceive(
     domain: DomainRow,
     username: string,
     token: string,
-    cfg: { arkadeAddress: string; claimPublicKey: string; boardingAddress?: string },
-  ): boolean {
-    if (!isValidToken(token)) return false;
+    cfg: {
+      arkadeAddress: string;
+      claimPublicKey: string;
+      boardingAddress?: string;
+      covenantSupply?: SupplyUpload;
+      covenantProfile?: CovenantProfile;
+      swapSupply?: SupplyUpload;
+    },
+  ): { ok: boolean; supply?: SupplyState; swapSupply?: SupplyState } {
+    if (!isValidToken(token)) return { ok: false };
     const a = this.repos.addresses.getByDomainAndUsername(domain.id, username.toLowerCase());
-    if (!a || a.sessionId !== deriveSessionId(token) || a.status !== "active") return false;
+    if (!a || a.sessionId !== deriveSessionId(token) || a.status !== "active") return { ok: false };
+    // Before the identity write: a supply the server cannot honour leaves the
+    // whole call untouched rather than half-applied.
+    let supply: SupplyState | undefined;
+    let swapSupply: SupplyState | undefined;
+    if (cfg.covenantSupply) {
+      if (!cfg.covenantProfile) {
+        throw new ProvisioningError("invalid_supply", "covenantSupply requires a profile the server can agree to");
+      }
+      supply = this.store(cfg.covenantSupply, a.id, "covenant");
+      this.repos.addresses.setCovenantSupplyTerms(a.id, cfg.covenantSupply.scheme, JSON.stringify(cfg.covenantProfile));
+    }
+    // Never the covenant's table: one shared secret would let a reveal on either
+    // rail unlock the other.
+    if (cfg.swapSupply) swapSupply = this.store(cfg.swapSupply, a.id, "swap");
     this.repos.addresses.setOfflineReceive(a.id, cfg.arkadeAddress, cfg.claimPublicKey);
     // Only when named: a caller re-registering its identity without one should
     // not silently withdraw an onchain rail it registered earlier.
     if (cfg.boardingAddress !== undefined) {
       this.repos.addresses.setBoardingAddress(a.id, cfg.boardingAddress);
     }
-    return true;
+    return { ok: true, ...(supply ? { supply } : {}), ...(swapSupply ? { swapSupply } : {}) };
+  }
+
+  private store(upload: SupplyUpload, addressId: number, leg: SupplyLeg): SupplyState {
+    if (!this.supply) {
+      throw new ProvisioningError("invalid_supply", "this server does not accept a preimage supply");
+    }
+    try {
+      return this.supply.accept(addressId, upload, leg);
+    } catch (err) {
+      if (err instanceof SupplyError) throw new ProvisioningError("invalid_supply", err.message);
+      throw err;
+    }
   }
 
   private result(domain: DomainRow, username: string) {

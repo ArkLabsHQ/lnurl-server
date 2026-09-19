@@ -48,6 +48,10 @@ export interface AddressRow {
   claimPublicKey: string | null;
   /** Arkade boarding address, when the owner registered one for the onchain rail. */
   boardingAddress: string | null;
+  /** Deterministic-preimage scheme this address's supply was uploaded under; null
+   *  when it has none and its destinations are minted with `randomBytes`. */
+  covenantScheme: string | null;
+  covenantProfile: string | null;
   /** Rail ids the operator disabled for this address (per-LNURL policy). */
   disabledRails: RailId[];
   createdAt: number;

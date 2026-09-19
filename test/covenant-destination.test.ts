@@ -1,8 +1,9 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
 import { hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { MultisigTapscript, VtxoScript } from "@arkade-os/sdk";
-import { deriveCovenantDestination, createCovenantDestinationProvider } from "../src/covenant-destination.js";
+import { deriveCovenantDestination, createCovenantDestinationProvider, SWEEP_LEAF } from "../src/covenant-destination.js";
 import { loadConfig } from "../src/config.js";
 
 const xonly = (fill: number) => secp256k1.getPublicKey(new Uint8Array(32).fill(fill), true).subarray(1);
@@ -121,6 +122,61 @@ describe("deriveCovenantDestination", () => {
   });
 });
 
+const kat = JSON.parse(readFileSync(new URL("./fixtures/covenant-entropy-kat.json", import.meta.url), "utf8")) as {
+  covenant: { entries: { index: number; preimage: string; hash160: string }[] };
+};
+
+/** The HASH160 operand as the sweep leaf actually encodes it: `OP_HASH160
+ *  <20 bytes> OP_EQUAL`. Read off the built script rather than recomputed, so a
+ *  leaf that committed to something else could not agree with itself. */
+function hash160InLeaf(leaf: Uint8Array): string {
+  for (let i = 0; i + 22 <= leaf.length; i++) {
+    if (leaf[i] === 0xa9 && leaf[i + 1] === 0x14 && leaf[i + 22] === 0x87) {
+      return hex.encode(leaf.subarray(i + 2, i + 22));
+    }
+  }
+  throw new Error("no HASH160 <20> EQUAL in the sweep leaf");
+}
+
+describe("the sweep leaf commits to the supplied preimage", () => {
+  const { offlineReceive } = loadConfig({
+    NODE_ENV: "test",
+    DB_PATH: "unused-test.sqlite",
+    ALLOW_INSECURE_TOKEN_STORAGE: "1",
+    COVCLAIMD_URL: "https://cc.example",
+    ARK_SERVER_URL: "https://ark.example",
+    OFFLINE_COVENANT_DESTINATIONS: "true",
+    OFFLINE_EMULATOR_URL: "https://emulator.example",
+  });
+
+  for (const entry of kat.covenant.entries) {
+    it(`matches the fixture hash160 at index ${entry.index}`, () => {
+      const d = deriveCovenantDestination({
+        staticAddress,
+        userPubkey,
+        serverPubkey,
+        emulatorPubkey,
+        preimage: hex.decode(entry.preimage),
+        recoveryDelaySeconds: offlineReceive.covenantRecoveryDelaySeconds,
+      });
+      expect(hash160InLeaf(VtxoScript.decode(d.tapTree).scripts[SWEEP_LEAF]!)).toBe(entry.hash160);
+    });
+  }
+
+  it("moves the address when the preimage moves", () => {
+    const at = (i: number) =>
+      deriveCovenantDestination({
+        staticAddress,
+        userPubkey,
+        serverPubkey,
+        emulatorPubkey,
+        preimage: hex.decode(kat.covenant.entries[i]!.preimage),
+        recoveryDelaySeconds: offlineReceive.covenantRecoveryDelaySeconds,
+      }).address;
+    expect(at(0)).not.toBe(at(1));
+  });
+});
+
 describe("createCovenantDestinationProvider", () => {
   const provider = (recoveryDelaySeconds: number) =>
     createCovenantDestinationProvider({
@@ -151,5 +207,71 @@ describe("createCovenantDestinationProvider", () => {
         recoveryDelaySeconds: 86_528,
       } as never),
     ).toThrow(/covclaimdUrl or emulatorUrl/);
+  });
+});
+
+describe("deriving against a client-minted supply", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const EMULATOR = hex.encode(emulatorPubkey);
+  const stubOperator = () =>
+    vi.stubGlobal("fetch", async (url: string) =>
+      new Response(
+        JSON.stringify(
+          String(url).includes("covclaimd-pubkey")
+            ? { emulator_pub_key: EMULATOR }
+            : { signerPubkey: hex.encode(serverPubkey) },
+        ),
+        { status: 200 },
+      ));
+
+  const build = (supply?: { allocate: (id: number) => { index: number; preimage: Uint8Array } | undefined }) =>
+    createCovenantDestinationProvider({
+      arkServerUrl: "https://ark.example",
+      covclaimdUrl: "https://cc.example",
+      recoveryDelaySeconds: 86_528,
+      ...(supply ? { supply } : {}),
+    });
+
+  const identity = { arkadeAddress: staticAddress, claimPublicKey: hex.encode(userPubkey), addressId: 1 };
+
+  it("reports the operator profile a supply is accepted against", async () => {
+    stubOperator();
+    await expect(build().profile()).resolves.toEqual({ emulatorPubkey: EMULATOR, recoveryDelaySeconds: 86_528 });
+  });
+
+  it("consumes supply in order and commits to exactly those preimages", async () => {
+    stubOperator();
+    const queue = kat.covenant.entries.map((e, index) => ({ index, preimage: hex.decode(e.preimage) }));
+    const p = build({ allocate: () => queue.shift() });
+
+    for (const entry of kat.covenant.entries) {
+      const d = await p.derive(identity);
+      expect(d.covenantIndex).toBe(kat.covenant.entries.indexOf(entry));
+      const expected = deriveCovenantDestination({
+        staticAddress, userPubkey, serverPubkey, emulatorPubkey,
+        preimage: hex.decode(entry.preimage),
+        recoveryDelaySeconds: 86_528,
+      });
+      expect(d.address).toBe(expected.address);
+      expect(d.script).toBe(expected.script);
+    }
+  });
+
+  it("falls back to a random preimage and reports no index when the supply is empty", async () => {
+    stubOperator();
+    const p = build({ allocate: () => undefined });
+    const a = await p.derive(identity);
+    const b = await p.derive(identity);
+
+    expect(a.covenantIndex).toBeUndefined();
+    expect(a.script).not.toBe(b.script);
+  });
+
+  it("does not touch the supply for an address it cannot name", async () => {
+    stubOperator();
+    const allocate = vi.fn();
+    await build({ allocate }).derive({ arkadeAddress: staticAddress, claimPublicKey: hex.encode(userPubkey) });
+    expect(allocate).not.toHaveBeenCalled();
   });
 });

@@ -11,6 +11,8 @@ export interface AcceptedOfflineSwap {
    *  reached a LUD-16 address — so omitting it here is what would leave the
    *  one rail the receiver cannot witness unattributable. */
   addressId?: number;
+  /** Swap-supply slot this preimage came from; absent when it was random. */
+  swapIndex?: number;
   recovery: OfflineSwapRecoveryV1;
 }
 
@@ -70,8 +72,8 @@ export class OfflineSwapStore {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.prepare(
-        "INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, amount_msat, address_id, created_at) VALUES (?, ?, ?, 0, ?, ?, 'lightning', ?, ?, ?)",
-      ).run(record.paymentHash, record.pr, record.sessionId, record.preimage, record.recovery.rfqId, record.amountMsat, record.addressId ?? null, createdAt);
+        "INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, amount_msat, address_id, swap_index, created_at) VALUES (?, ?, ?, 0, ?, ?, 'lightning', ?, ?, ?, ?)",
+      ).run(record.paymentHash, record.pr, record.sessionId, record.preimage, record.recovery.rfqId, record.amountMsat, record.addressId ?? null, record.swapIndex ?? null, createdAt);
       this.db.prepare(
         "INSERT INTO offline_swaps (payment_hash, rfq_id, solver_name, solver_pubkey, relays_json, recovery_version, recovery_json, lockup_address, expected_amount, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       ).run(
@@ -103,6 +105,26 @@ export class OfflineSwapStore {
        WHERE s.settled = 0 AND s.preimage IS NOT NULL AND s.created_at > ?`,
     ).all(this.now() - this.ttlMs) as unknown as PendingRow[];
     return rows.map((row) => ({ paymentHash: row.payment_hash, preimage: row.preimage, recovery: recoveryOf(row) }));
+  }
+
+  /** Every swap this address owns, newest first, with the blob a client needs to
+   *  claim it without this server. No TTL filter: it is the owner's history, and
+   *  a lockup they never claimed is exactly the row that matters. */
+  listByAddress(addressId: number, limit = 500): (PendingOfflineSwap & { swapIndex: number | null; settled: boolean; createdAt: number })[] {
+    const rows = this.db.prepare(
+      `SELECT s.payment_hash, s.preimage, s.settled, s.swap_index, o.created_at, o.rfq_id, o.solver_name,
+              o.solver_pubkey, o.relays_json, o.recovery_version, o.recovery_json, o.lockup_address, o.expected_amount
+         FROM settlements s JOIN offline_swaps o ON o.payment_hash = s.payment_hash
+        WHERE s.address_id = ? ORDER BY o.created_at DESC LIMIT ?`,
+    ).all(addressId, limit) as unknown as (PendingRow & { settled: number; swap_index: number | null; created_at: number })[];
+    return rows.map((row) => ({
+      paymentHash: row.payment_hash,
+      preimage: row.preimage,
+      recovery: recoveryOf(row),
+      swapIndex: row.swap_index,
+      settled: !!row.settled,
+      createdAt: row.created_at,
+    }));
   }
 
   markSettled(paymentHash: string, preimage: string): boolean {

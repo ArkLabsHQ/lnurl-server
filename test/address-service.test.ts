@@ -25,7 +25,7 @@ describe("AddressService.setOfflineReceive", () => {
       arkadeAddress: "tark1qexample",
       claimPublicKey: "02" + "ab".repeat(32),
     });
-    expect(ok).toBe(true);
+    expect(ok).toEqual({ ok: true });
     const a = repos.addresses.getByDomainAndUsername(domainId, "devious")!;
     expect(a.arkadeAddress).toBe("tark1qexample");
     expect(a.claimPublicKey).toBe("02" + "ab".repeat(32));
@@ -37,7 +37,7 @@ describe("AddressService.setOfflineReceive", () => {
       arkadeAddress: "tark1qexample",
       claimPublicKey: "02" + "ab".repeat(32),
     });
-    expect(ok).toBe(false);
+    expect(ok).toEqual({ ok: false });
     expect(repos.addresses.getByDomainAndUsername(domainId, "devious")!.arkadeAddress).toBeNull();
   });
 });
