@@ -22,6 +22,24 @@ the LNURL server.
 `DEMO_WALLET_BASE` sets the asset prefix: a Pages project site is served from
 `/<repo>/`, and the workflow passes it. Unset, it builds for a root-served host.
 
+## Pointing it at a local stack
+
+The shipped defaults are mutinynet, but the endpoint record in `localStorage`
+carries a network layer too — `network`, `emulatorPubkey`, `solverRegistryUrl`
+and `solverRfqHttpUrl`. No UI writes those; `saveNetworkOverrides` is the seam
+the tests use, which is what lets `pnpm test:browser:local` drive this bundle
+against a regtest stack without a separate build.
+
+`IS_MAINNET` is deliberately **not** reachable from any stored value. Every
+selectable network derives BIP44 coin type 1, so a record that could flip it
+would hand the same phrase different keys and no way back to the old ones.
+
+Two things a local stack does not provide, supplied by the Vite dev/preview
+server (`DEMO_WALLET_SOLVER_PROXY`, `DEMO_WALLET_SOLVER_REGISTRY`): the solver
+sends no CORS headers, so `/solver` is proxied same-origin, and its card is in
+no published registry, so one is served built from that card. Neither affects a
+production build, where the registry is public and nostr is not preflighted.
+
 ## What onboarding does
 
 1. Generates a BIP39 mnemonic and an Arkade identity from it.
@@ -64,9 +82,16 @@ branch in the send path.
 
 An LNURL rail is a decorator: it resolves the target, asks the callback for its
 `paymentOption`, and delegates the resulting destination to the rail that
-already pays that kind of target. `lnurl-arkade` delegates to `arkRail`.
-`lnurl-lightning` is registered only when a rail capable of paying BOLT11 is
-supplied, so it is currently absent rather than present-and-unable.
+already pays that kind of target. `lnurl-arkade` delegates to `arkRail`, and
+`lnurl-lightning` delegates to the solver rail in `src/lightning.ts`, which pays
+a BOLT11 from Arkade funds over the solver's `BTC/lightning:BTC` corridor.
+
+That rail picks its RFQ transport rather than hardcoding one, because the wrong
+choice fails as an *empty market* — indistinguishable from "no solver serves
+this". A deployed solver listens on nostr; one running `serve` answers HTTP and
+never subscribes to a relay. So `solverRfqHttpUrl`, when set, routes over HTTP,
+and otherwise the production nostr transport is loaded dynamically — keeping the
+optional `nostr-tools` peer out of the bundle when it is not used.
 
 Options are quoted **on click, not on listing**: a quote asks the callback for
 an invoice, so pricing every option up front would mint one per rail and

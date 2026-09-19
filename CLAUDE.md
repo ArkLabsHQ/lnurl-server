@@ -13,7 +13,20 @@ pnpm type-check   # typecheck without emitting
 
 ## Testing
 
-Tests use vitest with real HTTP servers (no mocks). Each test starts a server on a random port.
+Four layers, each proving something the one below it cannot:
+
+```bash
+pnpm test               # vitest, real HTTP servers, no mocks — each test on a random port
+pnpm test:e2e           # funded offline receive + restart recovery, on a local Arkade stack
+pnpm test:browser:local # the wallet in Chromium, every rail, against that same local stack
+pnpm test:browser       # the wallet in Chromium against live mutinynet (costs real sats)
+```
+
+The two stack suites raise arkade-regtest from the `regtest` submodule and need Docker; they
+pull the solver image pinned in `test/e2e/support/regtest.ts`. `pnpm test:browser:local` is the
+feature-matrix gate — a green `pnpm test` says nothing about a browser, and the wallet has
+shipped fully broken past one. `@funded`/`@provision` specs in the mutinynet suite need a
+hand-funded wallet and are skipped in CI.
 
 ## Releasing
 

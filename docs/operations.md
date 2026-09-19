@@ -20,7 +20,13 @@ Paste a card in the admin UI's Solvers tab. The response distinguishes `persiste
 
 ## Receive rails
 
-`GET /admin/api/rails` shows what the process wired (interactive lightning, offline swap, arkade destination, covenant destinations). Each LN address adds its own policy: the admin UI Addresses tab (Rails) or `PATCH /admin/api/addresses/{id}/rails` with `{ "disabledRails": [...] }` disables rails for one address. The payRequest advertises only the surviving rails; a disabled or unavailable rail answers its callbacks with an explicit LNURL error instead of stalling.
+`GET /admin/api/rails` shows what the process wired (interactive lightning, offline swap, arkade destination, covenant destinations, onchain boarding address). Each LN address adds its own policy: the admin UI Addresses tab (Rails) or `PATCH /admin/api/addresses/{id}/rails` with `{ "disabledRails": [...] }` disables rails for one address. The payRequest advertises only the surviving rails; a disabled or unavailable rail answers its callbacks with an explicit LNURL error instead of stalling.
+
+Server-wide capability is not the whole answer: `onchain` depends on the *address* having registered a boarding address, so two addresses on the same process can legitimately disagree about it. The admin per-address rail view reports that, and it should agree with what the payRequest advertises — if it does not, treat the payRequest as the truth and the disagreement as a bug worth reporting.
+
+### When a payment arrives but the record stays unsettled
+
+Covenant destinations settle from a contract subscription, and that subscription does drop and reconnect in normal operation. An event lost to a reconnect window is recovered by the catch-up pass, which runs on `OFFLINE_POLL_INTERVAL_MS` — so a record can legitimately take up to that long to flip after the money lands. What should *not* happen is a record that stays unsettled indefinitely while the sweep logs and the balance rises: the sweeper reads the contract manager and never the settlement store, so it is unaffected by anything wrong on the settlement side and will keep moving funds regardless. If you see that pair — sweep logged, record unsettled past a few catch-up intervals — check `DESTINATION_WATCH_MS` first, since a record older than that window becomes invisible to the watcher while the sweeper carries on (see [Shutdown and incidents](#shutdown-and-incidents)).
 
 ## Backup and restore
 

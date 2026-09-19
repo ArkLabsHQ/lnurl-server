@@ -218,28 +218,43 @@ A sweeper moves each funded destination on to the static address, so the user's 
 
 ## Payment options (LUD-XX)
 
-Once an address has a registered Arkade identity (see above), its LUD-06 `payRequest` advertises multiple rails:
+Once an address has a registered Arkade identity (see above), its LUD-06 `payRequest` advertises multiple rails — and one that also registered a boarding address advertises `onchain` alongside them:
 
 ```json
-"paymentOptions": [{ "id": "lightning", "type": "lightning" }, { "id": "arkade", "type": "arkade" }]
+"paymentOptions": [
+  { "id": "lightning", "type": "lightning" },
+  { "id": "arkade", "type": "arkade" },
+  { "id": "onchain", "type": "onchain" }
+]
 ```
 
 A payer selects one with `?paymentOption=<id>` on the callback:
 
 - **`lightning`** (or omitted) — the existing BOLT11 flow (live wallet, or an offline reverse swap). Returns `pr` + `verify`.
-- **`arkade`** — returns the user's Arkade address directly, for on-Arkade payment (no swap):
+- **`arkade`** — returns an Arkade address to pay directly, no swap.
+- **`onchain`** — returns the owner's Arkade boarding address, for an ordinary on-chain payment.
+
+Both destination rails answer in the same shape:
+
+```json
+{ "status": "OK", "paymentOption": "arkade", "paymentDestination": "tark1..." }
+```
+
+**`verify` is present only when the destination identifies the payment**, which means only on the `arkade` rail with `OFFLINE_COVENANT_DESTINATIONS` enabled — that mints a fresh covenant address per payment:
 
 ```json
 { "status": "OK", "paymentOption": "arkade", "paymentDestination": "tark1...", "verify": "https://pay.example.com/lnurl/verify/<id>" }
 ```
 
-The `verify` URL then reports the non-`pr` LUD-21 shape: `{ status, settled, paymentOption, paymentDestination, paymentReference }`. Unknown or unavailable options return `{ "status": "ERROR", "reason": "Unsupported paymentOption" }`.
+Without it, one static address is reused for every payment and settlement is correlated by amount and arrival window, so two concurrent payments of the same size cannot be told apart — a payer polling `verify` could be told someone else's had arrived. The record is still written, the watcher still settles it, and it still appears in the owner's history; the payer is simply not handed a URL whose answer the server cannot stand behind. The `onchain` rail omits `verify` for a stronger reason: nothing here watches Bitcoin, so it could only ever answer "not settled".
 
-> The payer pays the Arkade address **directly**, so settlement is observed, not reported: when `ARK_SERVER_URL` is set, a background watcher polls the Arkade indexer and flips `settled` (with `paymentReference` = the Arkade txid) once a payment covering the agreed amount arrives at the destination. Correlation is by address + amount + arrival time — an unrelated same-amount payment in the same window can flip a record; that fuzziness is inherent to reference-less address payments. Addresses without an Arkade identity stay pure LUD-06 (no `paymentOptions`).
+Where it is present, the `verify` URL reports the non-`pr` LUD-21 shape: `{ status, settled, paymentOption, paymentDestination, paymentReference }`. Unknown or unavailable options return `{ "status": "ERROR", "reason": "Unsupported paymentOption" }`.
+
+> The payer pays the destination **directly**, so settlement is observed, not reported. For the static Arkade address, a background watcher polls the Arkade indexer when `ARK_SERVER_URL` is set and flips `settled` (with `paymentReference` = the Arkade txid) once a payment covering the agreed amount arrives; correlation is by address + amount + arrival time, and that fuzziness is inherent to reference-less address payments. A covenant destination needs no correlation — the script belongs to exactly one record — and settles from a contract event instead. Addresses without an Arkade identity stay pure LUD-06 (no `paymentOptions`).
 
 ### Receive rails
 
-Every backend is one entry in the rail registry (`src/rails.ts`): `interactive-lightning` (live wallet session), `offline-swap` (solver-mediated `bolt11->arkade-btc` while offline), `arkade` (direct destination), and `covenant` (per-payment destinations for the arkade rail). New rails — assets, stablecoin swaps, and eventually `onchain` (onchain BTC -> arkade BTC, another offline-receive rail in the same family) — slot in there with no plumbing changes.
+Every backend is one entry in the rail registry (`src/rails.ts`): `interactive-lightning` (live wallet session), `offline-swap` (solver-mediated `bolt11->arkade-btc` while offline), `arkade` (direct destination), `covenant` (per-payment destinations for the arkade rail), and `onchain` (the owner's boarding address — an ordinary on-chain payment, not a swap, which is why nothing here observes it). New rails — assets, stablecoin swaps, an onchain-BTC-to-arkade-BTC offline receive in the same family as `offline-swap` — slot in there with no plumbing changes.
 
 Server-wide capability comes from configuration; per-address policy comes from the operator. `GET /admin/api/rails` lists what this process wired, each address carries its own disabled set (stored in SQLite, edited in the admin UI Addresses tab under Rails, or via `PATCH /admin/api/addresses/{id}/rails`), and the payRequest advertises only the rails that survive both. A disabled or unavailable rail never fails silently: its callbacks answer `{ "status": "ERROR" }` naming the rail, while the process keeps serving the rest.
 
@@ -316,6 +331,7 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `DESTINATION_WATCH_MS` | `604800000` | How long (ms) a handed-out **destination** stays watched, verifiable and settleable. Separate from `VERIFY_TTL_MS` because an invoice expires and a destination does not: the callback advertises no expiry, so a payer may pay one long after it was issued. Raising it only widens the window in which such a payment is still observed. |
 | `SOLVER_REGISTRY_URLS` | published network index | Optional comma-separated solver-registry index URL override. Leave unset to follow the network default; set it empty to disable registries. Successful bodies are cached for up to seven days. |
 | `SOLVER_CARDS_FILE` | — | Startup JSON file containing an array of manually pinned cards. Cards can also be pasted into the admin UI and persisted in SQLite. |
+| `SOLVER_RFQ_HTTP_URL` | — | Routes RFQs to a solver's HTTP ingress (`POST /v1/swap`) instead of over nostr. A solver running `serve` answers HTTP and never subscribes to a relay, so without this there is no way to quote against one — which is how a local stack is driven. Unset, solvers are reached over nostr using the relays on their own card, which is what a deployed one listens on. |
 | `NOSTR_SECRET_KEY` | — | 32-byte hex Nostr identity for the RFQ transport; ephemeral per boot when unset. **Key material** — treat it like a private key; prefer the ephemeral default unless a stable identity is genuinely required. |
 | `COVCLAIMD_URL` | — | covclaimd daemon base URL (non-interactive VHTLC claims). When set, must be the same instance the solver reveals to — see the warning under [Offline receive](#offline-receive-opt-in). May be omitted with `OFFLINE_SELF_CLAIM=true` + `OFFLINE_EMULATOR_URL` (RFQ omits the claim packet). |
 | `ARK_SERVER_URL` | — | Arkade operator URL (e.g. `https://mutinynet.arkade.sh`) — signer key, exit delay and network are read from it. |
@@ -324,7 +340,7 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `OFFLINE_EMULATOR_URL` | — | Emulator base URL backing `OFFLINE_SELF_CLAIM` and `OFFLINE_COVENANT_DESTINATIONS` — it co-signs the covenant leaf after checking the spend pays the user. With `COVCLAIMD_URL` set, must be the emulator whose `emulator_pub_key` it reports; without it, must be the solver's emulator. Missing with either flag on, the server refuses to start. |
 | `OFFLINE_COVENANT_DESTINATIONS` | `false` | `true` gives each arkade-rail payment its own covenant address, so concurrent payments are told apart by script instead of by amount and arrival window. Requires `OFFLINE_EMULATOR_URL` and `ARK_SERVER_URL` (`COVCLAIMD_URL` optional — only needed alongside the lightning offline swap). See [Per-payment destinations](#per-payment-destinations-offline_covenant_destinations-default-off). |
 | `OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS` | `86528` | CSV delay before the user may sweep a covenant destination alone. |
-| `OFFLINE_POLL_INTERVAL_MS` | `15000` | Offline settlement pass interval. Not what claims a lockup — the funding event does — so what is left on it is the backstop for a dropped subscription, and the solver status check the RFQ transport cannot push. Lower it to see settlement sooner, at the cost of solver requests. |
+| `OFFLINE_POLL_INTERVAL_MS` | `15000` | Offline settlement pass interval, and the covenant watcher's catch-up cadence. Neither is what normally settles a payment — a funding event does — so what is left on both is the backstop for a dropped subscription, plus the solver status check the RFQ transport cannot push. The covenant half matters because that subscription does drop in normal operation: an event lost to a reconnect window is only recovered by the next catch-up pass. Lower it to see settlement sooner, at the cost of solver requests. |
 | `DB_PATH` | — | Path to SQLite database file. Omit for in-memory-only mode. |
 | `TOKEN_ENCRYPTION_KEY` | — | 32-byte AES key (hex or base64). Required with `DB_PATH` unless the insecure fallback is explicitly allowed. |
 | `ALLOW_INSECURE_TOKEN_STORAGE` | — | Set to `1` to use the source-known fallback key and accept that database token confidentiality is not provided. |
@@ -343,8 +359,42 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 
 ```bash
 pnpm install
-pnpm test        # run tests (requires Node 22+ for node:sqlite)
 pnpm dev         # start with hot reload
 pnpm build       # build for production
 pnpm type-check  # typecheck without emitting
+```
+
+### Test layers
+
+Four suites, each answering a question the one below it cannot. A green unit run
+says nothing about a browser, and a green browser run against a mock says nothing
+about a solver — so the funded paths are proved against a real stack.
+
+```bash
+pnpm test               # unit + integration, real HTTP servers, no mocks (Node 22+ for node:sqlite)
+pnpm test:e2e           # funded offline receive and restart recovery, against a local Arkade stack
+pnpm test:browser:local # the wallet in Chromium, driving every rail against that same local stack
+pnpm test:browser       # the wallet in Chromium against the live mutinynet deployment
+```
+
+`pnpm test:e2e` and `pnpm test:browser:local` raise the Arkade regtest stack
+themselves from the `regtest` submodule (`git submodule update --init`), pull the
+solver image pinned in `test/e2e/support/regtest.ts`, and need Docker. The first
+boot pulls a lot of images and takes a while; later runs reuse a healthy stack.
+
+`pnpm test:browser:local` is the one that covers the feature matrix end to end —
+every receive rail including a real Lightning payment from the stack's own node,
+the send paths, the admin UI, and the wallet's own surface. Reaching the stack's
+solver from a browser needs two things it does not provide, both supplied by the
+preview server: it sends no CORS headers, so `/solver` is proxied same-origin, and
+its card is in no published registry, so one is served from that card.
+
+`pnpm test:browser` hits the live deployment and so costs real sats. The specs
+tagged `@funded` and `@provision` are skipped in CI for that reason and need a
+wallet provisioned and topped up by hand:
+
+```bash
+pnpm --filter @arkade-os/lnurl-demo-wallet exec playwright test --grep @provision
+# fund the addresses it prints, then:
+pnpm test:browser
 ```
