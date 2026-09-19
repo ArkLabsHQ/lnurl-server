@@ -1,5 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
-import { WALLET_PORT } from "./e2e-local/local-stack.js";
+import { SOLVER_HTTP_TEST_URL } from "../../test/e2e/support/regtest.js";
+import { REGISTRY_FILE, WALLET_PORT } from "./e2e-local/local-stack.js";
 
 /**
  * The browser suite against a LOCAL stack. Run `pnpm test:browser:local` from
@@ -31,5 +32,10 @@ export default defineConfig({
     url: `http://127.0.0.1:${WALLET_PORT}`,
     reuseExistingServer: false,
     timeout: 180_000,
+    env: {
+      ...process.env,
+      DEMO_WALLET_SOLVER_PROXY: SOLVER_HTTP_TEST_URL,
+      DEMO_WALLET_SOLVER_REGISTRY: REGISTRY_FILE,
+    } as Record<string, string>,
   },
 });
