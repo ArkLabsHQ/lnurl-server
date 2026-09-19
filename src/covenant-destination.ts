@@ -8,9 +8,9 @@
 // Only leaf 0 carries H(P): a fresh preimage moves the address, the covenant bytes
 // stay fixed, and the user's two recovery paths need neither P nor this server.
 
-import { randomBytes } from "node:crypto";
 import type { IContractManager } from "@arkade-os/sdk";
 import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler } from "./covenant-contract.js";
+import { checkedPreimage, randomEntropy, type EntropyProvider } from "./entropy.js";
 import { hex } from "@scure/base";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { ripemd160 } from "@noble/hashes/legacy.js";
@@ -108,6 +108,8 @@ export function createCovenantDestinationProvider(opts: {
   /** Absent keeps the provider standalone (unit tests, the probe script); present
    *  makes every derived destination a contract the SDK watches and can spend. */
   contracts?: IContractManager;
+  /** Where the sweep leaf's secret comes from. Defaults to `randomBytes`. */
+  entropy?: EntropyProvider;
   now?: () => number;
 }): CovenantDestinationProvider {
   // Here rather than only at derivation: BIP68's throw arrives per payment, where
@@ -148,7 +150,7 @@ export function createCovenantDestinationProvider(opts: {
   return {
     async derive(address) {
       const { serverPubkey, emulatorPubkey } = await context();
-      const preimage = randomBytes(32);
+      const preimage = checkedPreimage(opts.entropy ?? randomEntropy);
       const params = {
         staticAddress: address.arkadeAddress,
         userPubkey: toXOnly(hex.decode(address.claimPublicKey)),

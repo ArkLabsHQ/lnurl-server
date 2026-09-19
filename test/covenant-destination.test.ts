@@ -2,7 +2,9 @@ import { describe, it, expect } from "vitest";
 import { hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { MultisigTapscript, VtxoScript } from "@arkade-os/sdk";
-import { deriveCovenantDestination, createCovenantDestinationProvider } from "../src/covenant-destination.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { ripemd160 } from "@noble/hashes/legacy.js";
+import { deriveCovenantDestination, createCovenantDestinationProvider, SWEEP_LEAF } from "../src/covenant-destination.js";
 import { loadConfig } from "../src/config.js";
 
 const xonly = (fill: number) => secp256k1.getPublicKey(new Uint8Array(32).fill(fill), true).subarray(1);
@@ -128,6 +130,47 @@ describe("createCovenantDestinationProvider", () => {
       covclaimdUrl: "https://cc.example",
       recoveryDelaySeconds,
     });
+
+  // The seam is only worth having if the bytes reach the script. Read off the
+  // decoded sweep leaf rather than recomputed, so derivation and construction
+  // cannot drift apart while both look right.
+  it("commits the sweep leaf to whatever the entropy provider returned", async () => {
+    const preimage = new Uint8Array(32).fill(0x2b);
+    const stub = async (url: string | URL): Promise<Response> => {
+      const body = String(url).includes("covclaimd-pubkey")
+        ? { emulator_pub_key: hex.encode(emulatorPubkey) }
+        : { signerPubkey: hex.encode(secp256k1.getPublicKey(new Uint8Array(32).fill(3), true)) };
+      return { ok: true, json: async () => body } as Response;
+    };
+    const original = globalThis.fetch;
+    globalThis.fetch = stub as typeof fetch;
+    try {
+      const derived = await createCovenantDestinationProvider({
+        arkServerUrl: "https://ark.example",
+        covclaimdUrl: "https://cc.example",
+        recoveryDelaySeconds: 86_528,
+        entropy: { preimage: () => preimage },
+      }).derive({ arkadeAddress: staticAddress, claimPublicKey: hex.encode(secp256k1.getPublicKey(new Uint8Array(32).fill(4), true)) });
+
+      const expected = hex.encode(ripemd160(sha256(preimage)));
+      const leaf = VtxoScript.decode(deriveCovenantDestination({
+        staticAddress,
+        userPubkey,
+        serverPubkey,
+        emulatorPubkey,
+        preimage,
+        recoveryDelaySeconds: 86_528,
+      }).tapTree).scripts[SWEEP_LEAF]!;
+      let found = "";
+      for (let i = 0; i + 22 <= leaf.length; i++) {
+        if (leaf[i] === 0xa9 && leaf[i + 1] === 0x14 && leaf[i + 22] === 0x87) found = hex.encode(leaf.subarray(i + 2, i + 22));
+      }
+      expect(found).toBe(expected);
+      expect(derived.address).toMatch(/^tark1/);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
 
   it("refuses a delay BIP68 cannot encode instead of degrading per payment", () => {
     expect(() => provider(86_400)).toThrow(/positive multiple of 512/);

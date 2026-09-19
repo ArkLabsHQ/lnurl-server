@@ -16,7 +16,6 @@
 // interface shape. The settlement poller reads solver status, so "settled" means the
 // solver settled the payer's hold invoice, not merely that a lockup exists.
 
-import { randomBytes } from "node:crypto";
 import { base64, hex } from "@scure/base";
 import { encodeClientClaimPacket } from "./claim-packet.js";
 import { ArkAddress, RestArkProvider, VHTLCV2ContractHandler, getNetwork, toXOnly, type NetworkName } from "@arkade-os/sdk";
@@ -36,6 +35,7 @@ import {
 import { nostrRfqTransport } from "@arkade-os/swap/nostr";
 import { invoiceFactsFromBolt11 } from "./bolt11.js";
 import { RailRefusedError } from "./rails.js";
+import { checkedPreimage, randomEntropy, type EntropyProvider } from "./entropy.js";
 import { createLogger, type Logger } from "./logger.js";
 import type { DiscoveryService, SolverCandidate } from "./solver-discovery.js";
 import type { SelfClaimer, SelfClaimOutcome } from "./self-claim.js";
@@ -111,6 +111,8 @@ export interface IntentSwapSettings {
    *  funding as an event instead of the poller finding it a tick later. */
   contracts?: LockupContractWriter;
   transportFactory?: (candidate: Pick<SolverCandidate, "name" | "discoveryPubkey" | "relays">) => RfqTransport;
+  /** Where the swap's HTLC secret comes from. Defaults to `randomBytes`. */
+  entropy?: EntropyProvider;
   logger?: Logger;
 }
 
@@ -263,7 +265,7 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
       for (const candidate of candidates) {
         const transport = transportFor(candidate);
         try {
-          const preimage = randomBytes(32);
+          const preimage = checkedPreimage(settings.entropy ?? randomEntropy);
           const paymentHash = paymentHashOf(preimage);
           const rfqId = newRfqId();
           // Self-claim mode sends no packet: claim_packet is optional on the wire
