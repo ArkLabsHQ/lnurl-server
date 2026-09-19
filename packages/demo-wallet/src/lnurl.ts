@@ -9,6 +9,7 @@ import {
   type VerifyStatus,
 } from "@arkade-os/lnurl-client";
 import { arkadeIdentityRequest, deriveSessionTokenForIdentity, type ArkadeSigner } from "@arkade-os/lnurl-client/arkade";
+import { bech32 } from "@scure/base";
 import { LNURL_BASE, LNURL_DOMAIN } from "./config.js";
 
 export interface Onboarded {
@@ -30,7 +31,7 @@ export interface LnurlApi {
    * The credential for every receiver call, bound to this domain.
    *
    * Always via this helper: it pins ECDSA, while `signMessage` defaults to
-   * randomised schnorr of the same 64-byte length — which would mint a fresh
+   * randomised schnorr of the same 64-byte length â€” which would mint a fresh
    * token per call and silently orphan the registered address.
    */
   deriveToken(identity: ArkadeSigner): Promise<string>;
@@ -76,6 +77,16 @@ export interface LnurlApi {
    */
   pollVerify(verifyUrl: string, opts?: { timeoutMs?: number; intervalMs?: number; signal?: AbortSignal }): Promise<VerifyStatus>;
   resolveTarget(input: string): Promise<PayRequest>;
+  /**
+   * This wallet's own address, resolved against the server it is configured for.
+   *
+   * Not via the LN address: a LUD-16 domain cannot carry a port, so
+   * `user@127.0.0.1` resolves to `https://127.0.0.1/...` and misses a local
+   * stack entirely. The wallet already knows its base, so it addresses the same
+   * endpoint an outside payer reaches — encoded as an LNURL so the client's own
+   * resolve does the parsing rather than a second code path.
+   */
+  ownPayRequest(username: string): Promise<PayRequest>;
   requestPayment(
     payRequest: PayRequest,
     amountSat: number,
@@ -128,6 +139,12 @@ export function createLnurlApi(baseUrl: string, domain: string, client: LnurlCli
       return { synced, failures };
     },
     resolveTarget: (input) => client.resolve(input.trim()),
+    ownPayRequest: (username) =>
+      client.resolve(bech32.encode(
+        "lnurl",
+        bech32.toWords(new TextEncoder().encode(`${baseUrl}/.well-known/lnurlp/${username.toLowerCase()}`)),
+        1023,
+      )),
     pollVerify: (verifyUrl, opts) => client.pollVerify(verifyUrl, opts),
     requestPayment: (payRequest, amountSat, paymentOption, comment) =>
       client.requestInvoice(payRequest, {
