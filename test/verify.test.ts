@@ -3,6 +3,7 @@ import http from "node:http";
 import { bech32 } from "@scure/base";
 import { createHash } from "node:crypto";
 import { createServer, type ServerDeps } from "../src/server.js";
+import { MemorySettlementStore } from "../src/settlement-store.js";
 import type { LnurlServiceConfig } from "../src/types.js";
 
 const CONFIG: LnurlServiceConfig = { port: 0, baseUrl: "", minSendable: 1_000, maxSendable: 100_000_000, invoiceTimeoutMs: 3_000 };
@@ -188,3 +189,66 @@ describe("LUD-21 verify — settled report", () => {
 });
 
 export { buildInvoice, startServer, openSession, nextSseEvent, jsonRequest };
+
+describe("verify conformance", () => {
+  const HASH = "ab".repeat(32);
+  let vctx: Awaited<ReturnType<typeof startServer>>;
+  afterEach(async () => { await vctx?.close(); });
+
+  const withStore = async (store: MemorySettlementStore) => {
+    vctx = await startServer({ settlements: store } as unknown as ServerDeps);
+    return vctx;
+  };
+
+  // A payer copying the hash out of their own invoice may well upper-case it;
+  // the record is keyed lower-case, so the route normalizes rather than 404s.
+  it("resolves a mixed-case payment hash from the verify URL", async () => {
+    const store = new MemorySettlementStore(86_400_000);
+    store.create({ paymentHash: HASH, pr: "lnbc1", sessionId: "s" });
+    const { baseUrl } = await withStore(store);
+    const v = await jsonRequest(`${baseUrl}/lnurl/verify/${HASH.toUpperCase()}`);
+    expect(v.body.status).toBe("OK");
+    expect(v.body.settled).toBe(false);
+    expect(v.body.pr).toBe("lnbc1");
+  });
+
+  it("reports a settled lightning record with its preimage, and only then", async () => {
+    const store = new MemorySettlementStore(86_400_000);
+    store.create({ paymentHash: HASH, pr: "lnbc1", sessionId: "s" });
+    const { baseUrl } = await withStore(store);
+    expect((await jsonRequest(`${baseUrl}/lnurl/verify/${HASH}`)).body.preimage).toBeNull();
+    store.markSettled(HASH, "cd".repeat(32));
+    const after = await jsonRequest(`${baseUrl}/lnurl/verify/${HASH}`);
+    expect(after.body.settled).toBe(true);
+    expect(after.body.preimage).toBe("cd".repeat(32));
+  });
+
+  // Past the verify TTL the record is gone, and LUD-21 has no "expired": an
+  // unknown hash and a lapsed one are the same answer to the payer.
+  it("stops answering for a lightning record past the verify TTL", async () => {
+    let clock = 1_000_000;
+    const store = new MemorySettlementStore(60_000, () => clock);
+    store.create({ paymentHash: HASH, pr: "lnbc1", sessionId: "s" });
+    const { baseUrl } = await withStore(store);
+    expect((await jsonRequest(`${baseUrl}/lnurl/verify/${HASH}`)).body.status).toBe("OK");
+    clock += 60_001;
+    expect((await jsonRequest(`${baseUrl}/lnurl/verify/${HASH}`)).body.status).toBe("ERROR");
+  });
+
+  // The destination rails outlive it: the address stays payable and nothing
+  // tells the payer otherwise, so verify must still answer for them.
+  it("keeps answering for a destination record past the same TTL", async () => {
+    let clock = 1_000_000;
+    const store = new MemorySettlementStore(60_000, () => clock, 86_400_000);
+    store.create({
+      paymentHash: HASH, pr: "", sessionId: "s",
+      paymentOption: "arkade", paymentDestination: "tark1dest", amountMsat: 1_000_000,
+    });
+    const { baseUrl } = await withStore(store);
+    clock += 60_001;
+    const v = await jsonRequest(`${baseUrl}/lnurl/verify/${HASH}`);
+    expect(v.body.status).toBe("OK");
+    expect(v.body.paymentOption).toBe("arkade");
+    expect(v.body.paymentDestination).toBe("tark1dest");
+  });
+});
