@@ -79,6 +79,10 @@ const STACK_ENV = {
   COVCLAIMD_IMAGE,
   INTENT_SOLVER_MNEMONIC: SOLVER_MNEMONIC, // the compose file interpolates it, and .env.defaults is regtest.mjs-only
   AUTOMINE_INTERVAL: "0", // deterministic: mine only explicitly
+  // Nothing here talks to the price feed, but its default 8088 is a popular
+  // port and compose fails the whole `up` when one binding is taken — so the
+  // stack we do use dies over a service we do not. Moved out of the way.
+  PRICEFEED_PORT: process.env.PRICEFEED_PORT ?? "18088",
 };
 
 async function httpOk(url: string): Promise<boolean> {
@@ -263,7 +267,7 @@ export async function ensureStack(log: (s: string) => void = console.log): Promi
   // The stack's intent-solver lacks COVCLAIMD_URL in its env map; the overlay adds it.
   await applySolverOverlay();
   // The LN channel between the payer and the solver's node must be usable before any
-  // HTLC routes; stackIsUp answers before the stack's boltz setup finishes opening it.
+  // HTLC routes; stackIsUp answers before the stack's lightning setup finishes opening it.
   await waitForLnChannel();
 }
 
@@ -276,10 +280,12 @@ export const faucet = (address: string, amountBtc: string) =>
 // -- the counterparty LND (the corridor's real payer) --
 
 // The intent-solver's LN backend is the base `lnd` container (compose: LND_SOCKET=lnd),
-// so solver hold invoices live on `lnd` and the PAYER is the other node, `boltz-lnd`
-// (the boltz profile opened and balanced the channel between them). Paying from
-// `lnd` fails as a self-payment.
-const PAYER_CONTAINER = process.env.E2E_LN_PAYER_CONTAINER ?? "boltz-lnd";
+// so solver hold invoices live on `lnd` and the PAYER is the other node, `lnd-peer`
+// (the `lightning` profile opens and balances the channel between them). Paying from
+// `lnd` fails as a self-payment. It was `boltz-lnd` until arkade-regtest dropped Boltz
+// and kept the node behind it -- same role, and its image still falls back to
+// BOLTZ_LND_IMAGE.
+const PAYER_CONTAINER = process.env.E2E_LN_PAYER_CONTAINER ?? "lnd-peer";
 
 export const lncli = async <T>(container: string, args: readonly string[]): Promise<T> => {
   const { stdout } = await run("docker", ["exec", container, "lncli", "--network=regtest", ...args], { timeout: 30_000 });
@@ -358,7 +364,7 @@ export async function startCovclaimd(): Promise<void> {
 }
 
 /** The payer↔solver LN channel must be announced/usable before any HTLC routes;
- *  stackIsUp answers before the stack's boltz setup finishes opening it, so poll
+ *  stackIsUp answers before the stack's lightning setup finishes opening it, so poll
  *  (mining each pass — a fresh chain's funding tx needs the blocks). */
 async function waitForLnChannel(): Promise<void> {
   const deadline = Date.now() + 600_000;
