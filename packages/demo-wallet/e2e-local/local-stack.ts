@@ -139,6 +139,54 @@ export async function startLnurlServer(opts: LnurlServerOptions): Promise<LnurlS
   };
 }
 
+/**
+ * Send the page's port-less requests to a server that has a port.
+ *
+ * The payRequest advertises a callback on the address's own domain, and a LUD-16
+ * domain cannot name one — so `127.0.0.1/...` here is what `pay.example.com/...`
+ * is in a deployment. This stands in for the port a real one does not need.
+ */
+export async function forwardPortlessCallbacks(page: Page, port = LNURL_PORT): Promise<void> {
+  await page.route(
+    (url) => url.hostname === "127.0.0.1" && url.port === "",
+    async (route) => {
+      const target = new URL(route.request().url());
+      target.port = String(port);
+      target.protocol = "http:";
+      await route.fulfill({ response: await route.fetch({ url: target.toString() }) });
+    },
+  );
+}
+
+/**
+ * Ask an address for one of its rails, the way a payer does.
+ *
+ * The wallet no longer prints an Arkade or boarding address — everything goes
+ * through the LN address — so this is how a test learns where to pay. The
+ * advertised callback carries the address's domain, and a LUD-16 domain cannot
+ * name a port, so it is re-origined onto the server actually serving it.
+ */
+export async function requestOption(
+  base: string,
+  username: string,
+  sats: number,
+  option: string,
+): Promise<{ pr?: string; paymentDestination?: string; verify?: string }> {
+  const payRequest = await (await fetch(`${base}/.well-known/lnurlp/${username}`)).json();
+  if (payRequest.tag !== "payRequest") throw new Error(`address did not resolve: ${payRequest.reason}`);
+  const callback = new URL(new URL(String(payRequest.callback)).pathname, base);
+  const body = await (await fetch(`${callback}?amount=${sats * 1000}&paymentOption=${option}`)).json();
+  if (body.status === "ERROR") throw new Error(`${option} refused: ${body.reason}`);
+  return body;
+}
+
+/** The boarding address the `onchain` rail hands out — this wallet's funding path. */
+export async function boardingAddressOf(base: string, username: string, sats = 1000): Promise<string> {
+  const { paymentDestination } = await requestOption(base, username, sats, "onchain");
+  if (!paymentDestination) throw new Error("onchain rail returned no destination");
+  return paymentDestination;
+}
+
 export function readLocalStack(): LocalStack {
   try {
     return JSON.parse(readFileSync(HANDOFF, "utf8")) as LocalStack;

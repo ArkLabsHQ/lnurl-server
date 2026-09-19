@@ -85,28 +85,32 @@ test("onboards against mutinynet and shows an address at the pinned domain", asy
   await expect(page.getByText(`${name}@${LNURL_DOMAIN}`)).toBeVisible();
 });
 
-test("shows the Arkade address, a QR and a boarding address to fund", async ({ page }) => {
+test("receives through the LN address alone, publishing no raw addresses", async ({ page }) => {
   await page.goto("./");
   await page.getByPlaceholder("username").fill(username());
   await page.getByRole("button", { name: "Create wallet" }).click();
   await expect(page.getByRole("heading", { name: "Your Lightning address" })).toBeVisible();
 
   await expect(page.getByAltText("QR code")).toBeVisible();
-  await expect(page.getByText(/^tark1/).first()).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Fund this wallet" })).toBeVisible();
+  // The point of receiving through an address: a payer needs nothing else, so
+  // the wallet publishes nothing else.
+  await expect(page.getByText(/^tark1/)).toHaveCount(0);
+  await expect(page.getByText(/^tb1/)).toHaveCount(0);
 });
 
-test("toggles the receive QR between the lightning address and a unified URI", async ({ page }) => {
+test("lists the rails its own address advertises", async ({ page }) => {
   await page.goto("./");
   await page.getByPlaceholder("username").fill(username());
   await page.getByRole("button", { name: "Create wallet" }).click();
   await expect(page.getByRole("heading", { name: "Your Lightning address" })).toBeVisible();
 
-  await expect(page.getByText("Lightning only")).toBeVisible();
-
-  await page.getByRole("button", { name: "Unified (BIP321)" }).click();
-  await expect(page.getByText("on-chain · Arkade · Lightning")).toBeVisible();
-  await expect(page.getByAltText("QR code")).toBeVisible();
+  // Listing resolves the payRequest and stops there; a destination is minted
+  // only when a rail is requested, so this asserts the list and not a result.
+  await page.getByRole("button", { name: /Load options/ }).click();
+  const card = page.locator("div")
+    .filter({ has: page.getByRole("heading", { name: "What this address accepts" }) }).last();
+  await expect(card.getByText("lightning", { exact: true })).toBeVisible({ timeout: 60_000 });
+  await expect(card.getByText(/accepts \d+/)).toBeVisible();
 });
 
 test("routes the send box through the payment router", async ({ page }) => {
@@ -132,5 +136,8 @@ test("lists payment activity for the freshly claimed address", async ({ page }) 
 
   await page.getByRole("button", { name: "Activity" }).click();
 
-  await expect(page.getByText("No payments yet.")).toBeVisible();
+  // "Nothing yet" spans both halves now: a fresh wallet has made no
+  // transactions of its own, and nothing has been quoted against its address.
+  await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible();
+  await expect(page.getByText("Nothing yet.")).toBeVisible();
 });

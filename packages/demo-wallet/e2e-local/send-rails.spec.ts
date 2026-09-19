@@ -5,14 +5,15 @@
 // `httpTransport`, same-origin through the proxy, since it sends no CORS headers).
 import { expect, test } from "@playwright/test";
 import { faucet, lncli, mine } from "../../../test/e2e/support/regtest.js";
-import { readLocalStack, useLocalStack } from "./local-stack.js";
+import { boardingAddressOf, readLocalStack, useLocalStack } from "./local-stack.js";
 
 const SATS = 2000;
 const sats = (text: string) => Number(text.trim().split(" ")[0]);
 
 test("a browser wallet routes a BOLT11 over the solver's lightning corridor", async ({ page }) => {
   test.setTimeout(12 * 60_000);
-  await useLocalStack(page, readLocalStack());
+  const stack = readLocalStack();
+  await useLocalStack(page, stack);
 
   const solverCalls: string[] = [];
   const blocked: string[] = [];
@@ -24,11 +25,12 @@ test("a browser wallet routes a BOLT11 over the solver's lightning corridor", as
   page.on("requestfailed", (r) => { if (r.url().includes("/solver")) blocked.push(`${r.url()} :: ${r.failure()?.errorText}`); });
 
   await page.goto("./");
-  await page.getByPlaceholder("username").fill(`snd${Date.now().toString(36)}`);
+  const username = `snd${Date.now().toString(36)}`;
+  await page.getByPlaceholder("username").fill(username);
   await page.getByRole("button", { name: "Create wallet" }).click();
   await expect(page.getByRole("heading", { name: "Your Lightning address" })).toBeVisible({ timeout: 120_000 });
 
-  const boardingAddress = (await page.getByText(/^bcrt1/).first().innerText()).trim();
+  const boardingAddress = await boardingAddressOf(stack.lnurlBase, username);
   await faucet(boardingAddress, "0.001");
   await mine(1);
   await expect

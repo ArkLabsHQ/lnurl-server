@@ -9,6 +9,7 @@ import {
   LNURL_ADMIN_PORT,
   STATE_DIR,
   WALLET_PORT,
+  forwardPortlessCallbacks,
   readLocalStack,
   startLnurlServer,
   useLocalStack,
@@ -95,7 +96,6 @@ test("backup: the revealed phrase is the stored key, and erasing destroys it", a
 test("restore: adopting another phrase takes over the name that key owns", async ({ browser }) => {
   const first = await freshWallet(browser, "r1");
   const phrase = await first.page.evaluate((k) => localStorage.getItem(k), MNEMONIC_KEY);
-  const arkade = (await first.page.getByText(/^tark1/).first().innerText()).trim();
   await first.context.close();
 
   const second = await freshWallet(browser, "r2");
@@ -110,7 +110,6 @@ test("restore: adopting another phrase takes over the name that key owns", async
     // its owner, so the name can only come back from asking what the key owns.
     await second.page.getByRole("button", { name: "Receive" }).click();
     await expect(second.page.getByText(`${first.username}@${stack.lnurlDomain}`)).toBeVisible({ timeout: 120_000 });
-    await expect(second.page.getByText(arkade, { exact: true })).toBeVisible();
     expect(await second.page.evaluate((k) => localStorage.getItem(k), USERNAME_KEY)).toBe(first.username);
   } finally {
     await second.context.close();
@@ -159,6 +158,7 @@ test.describe("a wallet that stays open", () => {
     context = fresh.context;
     page = fresh.page;
     username = fresh.username;
+    await forwardPortlessCallbacks(page);
     // Recorded rather than read back: a headless page is not reliably focused,
     // and the real clipboard rejects when it is not. What the button hands the
     // clipboard API is the URI under test either way.
@@ -177,31 +177,34 @@ test.describe("a wallet that stays open", () => {
     await context?.close();
   });
 
-  test("receive: the QR toggle swaps a LUD-16 URI for a BIP321 one", async () => {
+  test("receive: the QR is the LN address, and each rail is requested from it", async () => {
     await page.getByRole("button", { name: "Receive" }).click();
     const lightningAddress = `${username}@${stack.lnurlDomain}`;
-    const arkadeAddress = (await page.getByText(/^tark1/).first().innerText()).trim();
-    const boardingAddress = (await page.getByText(/^bcrt1/).first().innerText()).trim();
 
     const copied = async () => {
-      await page.getByRole("button", { name: /copy URI/ }).click();
+      await page.getByRole("button", { name: /copy URI/ }).first().click();
       return page.evaluate(() => (window as unknown as { __copied: string[] }).__copied.at(-1) ?? "");
     };
-    const qrSrc = () => page.getByAltText("QR code").getAttribute("src");
 
-    await expect(page.getByText("Lightning only")).toBeVisible();
+    // No Arkade or boarding address anywhere: a payer asks the address instead.
+    await expect(page.getByText(/^tark1/)).toHaveCount(0);
+    await expect(page.getByText(/^bcrt1/)).toHaveCount(0);
     expect(await copied()).toBe(`lightning:${lightningAddress}`);
-    const lightningQr = await qrSrc();
 
-    await page.getByRole("button", { name: "Unified (BIP321)" }).click();
-    await expect(page.getByText("on-chain · Arkade · Lightning")).toBeVisible();
-    await expect.poll(qrSrc).not.toBe(lightningQr);
+    await page.getByRole("button", { name: /Load options/ }).click();
+    await expect(page.getByText(/accepts \d+/)).toBeVisible({ timeout: 60_000 });
+    const card = page.locator("div").filter({ has: page.getByRole("heading", { name: "What this address accepts" }) }).last();
+    for (const rail of ["lightning", "arkade", "onchain"]) {
+      await expect(card.getByText(rail, { exact: true })).toBeVisible({ timeout: 60_000 });
+    }
 
-    const unified = new URL(await copied());
-    expect(unified.protocol).toBe("bitcoin:");
-    expect(unified.pathname).toBe(boardingAddress);
-    expect(unified.searchParams.get("ark")).toBe(arkadeAddress);
-    expect(unified.searchParams.get("lightning")).toBe(lightningAddress);
+    // Requesting one is what mints a destination, which is why listing does not.
+    await card.locator("div").filter({ hasText: /^onchain/ }).first()
+      .getByRole("button", { name: /Request/ }).click();
+    await expect(card.getByText(/onchain — pay this/)).toBeVisible({ timeout: 60_000 });
+    await expect(card.getByText(/^bcrt1/).first()).toBeVisible();
+    // Nothing here watches Bitcoin, so this rail is honest about having no answer.
+    await expect(card.getByText(/no verify on this rail/)).toBeVisible();
   });
 
   test("activity: a record written while the tab was elsewhere syncs in and survives a reload", async () => {
@@ -210,13 +213,13 @@ test.describe("a wallet that stays open", () => {
     expect(quote.status, `arkade quote refused: ${quote.reason}`).toBe("OK");
 
     await page.getByRole("button", { name: "Activity" }).click();
-    const row = page.locator("div").filter({ hasText: /^arkade2500 sats/ }).first();
+    const row = page.locator("div").filter({ hasText: /lnurlarkade2500 sats/ }).first();
     await expect(row).toBeVisible({ timeout: 60_000 });
     await expect(row).toContainText("pending");
 
     await page.reload();
     await page.getByRole("button", { name: "Activity" }).click();
-    await expect(page.getByRole("heading", { name: `Payments to ${username}` })).toBeVisible({ timeout: 120_000 });
-    await expect(page.locator("div").filter({ hasText: /^arkade2500 sats/ }).first()).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible({ timeout: 120_000 });
+    await expect(page.locator("div").filter({ hasText: /lnurlarkade2500 sats/ }).first()).toBeVisible();
   });
 });

@@ -10,24 +10,28 @@
 // rail. Serving that card to the browser is what would unblock it.
 import { expect, test } from "@playwright/test";
 import { faucet, mine } from "../../../test/e2e/support/regtest.js";
-import { readLocalStack, useLocalStack } from "./local-stack.js";
+import { boardingAddressOf, readLocalStack, useLocalStack } from "./local-stack.js";
 
 const sats = (text: string) => Number(text.trim().split(" ")[0]);
 
 test("a browser wallet boards a confirmed onchain deposit into spendable funds", async ({ page }) => {
   test.setTimeout(10 * 60_000);
-  await useLocalStack(page, readLocalStack());
+  const stack = readLocalStack();
+  await useLocalStack(page, stack);
 
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
 
   await page.goto("./");
-  await page.getByPlaceholder("username").fill(`brd${Date.now().toString(36)}`);
+  const username = `brd${Date.now().toString(36)}`;
+  await page.getByPlaceholder("username").fill(username);
   await page.getByRole("button", { name: "Create wallet" }).click();
   await expect(page.getByRole("heading", { name: "Your Lightning address" })).toBeVisible({ timeout: 120_000 });
 
   const balanceBefore = sats(await page.locator("div").filter({ hasText: /^\d+ sats$/ }).first().innerText());
-  const boardingAddress = (await page.getByText(/^bcrt1/).first().innerText()).trim();
+  // Through the address, not the page: the wallet prints no boarding address,
+  // so funding it is an ordinary `onchain` request against its own LN address.
+  const boardingAddress = await boardingAddressOf(stack.lnurlBase, username);
   expect(boardingAddress).toMatch(/^bcrt1/);
 
   await faucet(boardingAddress, "0.001");

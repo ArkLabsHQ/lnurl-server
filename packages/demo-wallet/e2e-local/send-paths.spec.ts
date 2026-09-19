@@ -5,11 +5,14 @@ import { expect, test, type Page } from "@playwright/test";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { bech32, hex } from "@scure/base";
-import { ArkAddress, RestIndexerProvider } from "@arkade-os/sdk";
-import { faucet, mine } from "../../../test/e2e/support/regtest.js";
+import { generateMnemonic } from "@scure/bip39";
+import { wordlist } from "@scure/bip39/wordlists/english.js";
+import { ArkAddress, MnemonicIdentity, RestIndexerProvider, Wallet } from "@arkade-os/sdk";
+import { ESPLORA_URL, faucet, mine, nodeSqliteStorage } from "../../../test/e2e/support/regtest.js";
 import {
   CARDS_FILE,
   STATE_DIR,
+  requestOption,
   WALLET_PORT,
   readLocalStack,
   startLnurlServer,
@@ -27,7 +30,7 @@ const SETTLE_TIMEOUT_MS = 4 * 60_000;
 
 let stack: LocalStack;
 let covenant: LnurlServerHandle;
-let recipient: { page: Page; username: string; arkadeAddress: string };
+let recipient: { page: Page; username: string };
 let payer: Page;
 
 const sats = (text: string) => Number(text.trim().split(" ")[0]);
@@ -101,8 +104,8 @@ async function statusReaches(page: Page, pattern: RegExp, timeoutMs: number): Pr
     .toMatch(pattern);
 }
 
-async function fund(page: Page): Promise<void> {
-  const boardingAddress = (await page.getByText(/^bcrt1/).first().innerText()).trim();
+async function fund(page: Page, base: string, username: string): Promise<void> {
+  const boardingAddress = (await requestOption(base, username, 1000, "onchain")).paymentDestination!;
   await faucet(boardingAddress, "0.001");
   await mine(1);
   await expect
@@ -127,17 +130,13 @@ test.beforeAll(async ({ browser }) => {
   const recipientPage = await (await browser.newContext({ baseURL: WALLET_BASE })).newPage();
   await useLocalStack(recipientPage, { ...stack, lnurlBase: covenant.base });
   const username = await onboard(recipientPage, "rcv");
-  recipient = {
-    page: recipientPage,
-    username,
-    arkadeAddress: (await recipientPage.getByText(/^tark1/).first().innerText()).trim(),
-  };
+  recipient = { page: recipientPage, username };
 
   payer = await (await browser.newContext({ baseURL: WALLET_BASE })).newPage();
   await useLocalStack(payer, stack);
   await forwardPortlessCallbacks(payer, COVENANT_PORT);
-  await onboard(payer, "pay");
-  await fund(payer);
+  const payerName = await onboard(payer, "pay");
+  await fund(payer, stack.lnurlBase, payerName);
 });
 
 test.afterAll(async () => {
@@ -160,30 +159,46 @@ test("lnurl-arkade: one wallet pays another's LNURL and the receiver confirms it
   // Read first: the status line is one slot every rail update overwrites.
   await statusReaches(payer, /receiver confirmed settled via lnurl-arkade/, SETTLE_TIMEOUT_MS);
 
-  // The covenant destination is not the recipient's address; only the sweep puts
-  // the money where they can spend it.
-  await expect.poll(() => spendableAt(recipient.arkadeAddress), { timeout: SETTLE_TIMEOUT_MS, intervals: [3_000] })
-    .toContain(LNURL_SATS);
+  // The payment lands at a covenant destination; only the sweep moves it to the
+  // recipient, so this is the first point their own balance can show it.
+  await expect
+    .poll(async () => {
+      await recipient.page.getByRole("button", { name: "Refresh" }).click();
+      return balance(recipient.page);
+    }, { timeout: SETTLE_TIMEOUT_MS, intervals: [5_000] })
+    .toBeGreaterThan(0);
 
-  // The receiver's own view of it, which is the server's record and not a balance.
+  // And the server's own record of it, which is a different witness to a balance.
   await recipient.page.getByRole("button", { name: "Activity" }).click();
   const activity = recipient.page.locator("div")
-    .filter({ has: recipient.page.getByRole("heading", { name: `Payments to ${recipient.username}` }) })
+    .filter({ has: recipient.page.getByRole("heading", { name: "Activity" }) })
     .last();
   await expect(activity).toContainText(`${LNURL_SATS} sats`, { timeout: 60_000 });
   await expect(activity).toContainText("settled");
 });
 
 test("ark: a bare tark1 address pasted into the send box pays it directly", async () => {
+  // A throwaway wallet, not the recipient: their address is only reachable now
+  // through a covenant destination, and the sweeper empties one of those before
+  // the assertion can read it. The rail under test is indifferent to whose it is.
+  const sink = await Wallet.create({
+    identity: MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist), { isMainnet: false }),
+    arkServerUrl: stack.arkServer,
+    esploraUrl: ESPLORA_URL,
+    storage: await nodeSqliteStorage(":memory:"),
+    settlementConfig: false,
+  });
+  const target = await sink.getAddress();
+  expect(target).toMatch(/^tark1/);
   const payerBefore = await fundedBalance(payer, ARK_SATS);
 
-  await payOver(payer, "ark", recipient.arkadeAddress, ARK_SATS);
+  await payOver(payer, "ark", target, ARK_SATS);
   await statusReaches(payer, /sent \d+ sats via ark|^ark · /, 180_000);
 
   await expect.poll(() => balance(payer), { timeout: 120_000, intervals: [3_000] })
     .toBeLessThanOrEqual(payerBefore - ARK_SATS);
 
   // No server in this path at all, so the indexer is the only witness there is.
-  await expect.poll(() => spendableAt(recipient.arkadeAddress), { timeout: SETTLE_TIMEOUT_MS, intervals: [3_000] })
+  await expect.poll(() => spendableAt(target), { timeout: SETTLE_TIMEOUT_MS, intervals: [3_000] })
     .toContain(ARK_SATS);
 });

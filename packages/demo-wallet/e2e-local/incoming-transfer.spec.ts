@@ -10,7 +10,7 @@ import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { ArkAddress, MnemonicIdentity, RestIndexerProvider, Wallet } from "@arkade-os/sdk";
 import { hex } from "@scure/base";
 import { ESPLORA_URL, faucet, mine, nodeSqliteStorage } from "../../../test/e2e/support/regtest.js";
-import { readLocalStack, useLocalStack } from "./local-stack.js";
+import { readLocalStack, requestOption, useLocalStack } from "./local-stack.js";
 
 const SENT = 5000;
 const stack = () => readLocalStack();
@@ -44,11 +44,16 @@ test("a browser wallet surfaces an incoming Arkade transfer it did not make", as
   await useLocalStack(page, local);
 
   await page.goto("./");
-  await page.getByPlaceholder("username").fill(`inc${Date.now().toString(36)}`);
+  const username = `inc${Date.now().toString(36)}`;
+  await page.getByPlaceholder("username").fill(username);
   await page.getByRole("button", { name: "Create wallet" }).click();
   await expect(page.getByRole("heading", { name: "Your Lightning address" })).toBeVisible({ timeout: 120_000 });
 
-  const address = (await page.getByText(/^tark1/).first().innerText()).trim();
+  // The wallet prints no Arkade address; on a server without covenant
+  // destinations the `arkade` rail answers with the registered static one.
+  const { paymentDestination } = await requestOption(local.lnurlBase, username, SENT, "arkade");
+  const address = paymentDestination!;
+  expect(address).toMatch(/^tark1/);
   const payer = await fundedPayer(local.arkServer);
   const txid = await payer.sendBitcoin({ address, amount: SENT });
 

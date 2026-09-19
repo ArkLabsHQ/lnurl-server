@@ -26,7 +26,7 @@ test("a browser wallet claims a name on the local server and receives a Lightnin
 
   await expect(page.getByRole("heading", { name: "Your Lightning address" })).toBeVisible({ timeout: 120_000 });
   await expect(page.getByText(`${username}@${stack.lnurlDomain}`)).toBeVisible();
-  await expect(page.getByText(/^tark1/).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "What this address accepts" })).toBeVisible();
   expect(errors).toEqual([]);
 
   const balanceBefore = sats(await page.locator("div").filter({ hasText: /^\d+ sats$/ }).first().innerText());
@@ -92,5 +92,5 @@ test("a browser wallet claims a name on the local server and receives a Lightnin
     .toBeGreaterThan(balanceBefore);
 
   await page.getByRole("button", { name: "Activity" }).click();
-  await expect(page.getByRole("heading", { name: `Payments to ${username}` })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible({ timeout: 60_000 });
 });
