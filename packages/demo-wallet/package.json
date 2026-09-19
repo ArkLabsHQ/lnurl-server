@@ -17,17 +17,17 @@
     "@arkade-os/sdk": "0.4.73",
     "@arkade-os/solver-discovery": "0.2.7",
     "@arkade-os/swap": "0.0.19",
-    "@scure/base": "^2.0.0",
+    "@scure/base": "^2.4.0",
     "@scure/bip39": "^2.4.0",
     "qrcode": "^1.5.4",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
   },
   "devDependencies": {
-    "@types/qrcode": "^1.5.5",
-    "@types/react": "^19.2.16",
-    "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^6.0.2",
-    "vite": "^8.0.16"
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "vite": "^8.3.0"
   }
 }
