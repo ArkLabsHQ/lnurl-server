@@ -483,7 +483,8 @@ export const openApiSpec = {
         summary: "Register Arkade receive identity (offline receive)",
         description:
           "Sets the Arkade address + claim public key the server uses to quote a solver-mediated " +
-          "corridor swap for this address when the wallet is offline. Requires the owning session token.",
+          "corridor swap for this address when the wallet is offline. Requires the owning session token. " +
+          "An optional `boardingAddress` registers the `onchain` rail in the same call.",
         tags: ["LN Address"],
         security: [{ bearerAuth: [] }],
         parameters: [
@@ -498,6 +499,14 @@ export const openApiSpec = {
                 properties: {
                   arkadeAddress: { type: "string", description: "Arkade address to receive funds" },
                   claimPublicKey: { type: "string", description: "Compressed claim public key (66 hex chars)" },
+                  boardingAddress: {
+                    type: "string",
+                    description:
+                      "Optional Arkade boarding address. Present, the address advertises the `onchain` " +
+                      "payment option. Deliberately unvalidated: it is an ordinary Bitcoin address on the " +
+                      "operator's network, which this server does not police. Omitting it leaves any " +
+                      "existing one alone.",
+                  },
                   domain: { type: "string", description: "Target domain (defaults to the Host header)" },
                 },
                 required: ["arkadeAddress", "claimPublicKey"],
@@ -632,7 +641,8 @@ export const openApiSpec = {
           "Requests payment for the address. Default (lightning): returns a bolt11 from the " +
           "wallet's SSE session, or a server-created offline reverse swap, or an error when " +
           "offline. LUD-XX: pass `paymentOption` to select an advertised rail — `arkade` " +
-          "returns the address's registered Arkade destination instead of a bolt11. LUD-XX: " +
+          "returns an Arkade destination instead of a bolt11, and `onchain` returns the " +
+          "address's registered boarding address. LUD-XX: " +
           "`unit`/`receiveUnit` denominate the amount (requires a configured quote provider); " +
           "the response then includes `paymentQuote`.",
         tags: ["LN Address"],
@@ -640,7 +650,7 @@ export const openApiSpec = {
           { name: "username", in: "path", required: true, schema: { type: "string" }, description: "LN address local part" },
           { name: "amount", in: "query", required: true, schema: { type: "number" }, description: "Amount — millisatoshis, or the smallest unit of `unit` when set" },
           { name: "comment", in: "query", required: false, schema: { type: "string" }, description: "Optional payer comment" },
-          { name: "paymentOption", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: selected rail id (e.g. `arkade`); defaults to lightning" },
+          { name: "paymentOption", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: selected rail id (`arkade`, `onchain`); defaults to lightning" },
           { name: "unit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: denomination unit (e.g. `USD`); `amount` becomes that unit's smallest integer" },
           { name: "receiveUnit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: desired receiver unit" },
         ],
