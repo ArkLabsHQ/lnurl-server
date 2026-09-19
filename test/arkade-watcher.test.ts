@@ -283,3 +283,38 @@ describe("settleDestinationPayments failure reporting", () => {
     await expect(settleDestinationPayments(store, new RestIndexerProvider("http://127.0.0.1:1"))).resolves.toBe(0);
   });
 });
+
+describe("rails this watcher does not own", () => {
+  // Boarding addresses are bech32m Bitcoin, not Arkade, so decoding one always
+  // throws. They were reported as failures on every tick for the whole seven-day
+  // destination window — and a reported failure also suppresses the clean-pass
+  // reset, so permanent noise here can mask a real indexer outage.
+  it("ignores an onchain record instead of failing to decode it every pass", async () => {
+    const store = new MemorySettlementStore(3_600_000);
+    store.create({
+      paymentHash: "onchain-1", pr: "", sessionId: "sess", paymentOption: "onchain",
+      paymentDestination: "bcrt1p8562tv467hp2zjckrpfk4qyafqf0elnz9n6tjneph6e9klksgfvsp7a4ld",
+      amountMsat: 1_000_000,
+    });
+    const failures: string[] = [];
+    const settled = await settleDestinationPayments(
+      store,
+      new RestIndexerProvider(indexerCtx.baseUrl),
+      (stage) => failures.push(stage),
+    );
+    expect(settled).toBe(0);
+    expect(failures).toEqual([]);
+  });
+
+  it("still reports a genuinely malformed arkade destination", async () => {
+    const store = new MemorySettlementStore(3_600_000);
+    store.create({
+      paymentHash: "bad-arkade", pr: "", sessionId: "sess", paymentOption: "arkade",
+      paymentDestination: "tark1nonsense", amountMsat: 1_000_000,
+    });
+    const failures: string[] = [];
+    await settleDestinationPayments(store, new RestIndexerProvider(indexerCtx.baseUrl), (stage) => failures.push(stage));
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toContain("undecodable destination");
+  });
+});

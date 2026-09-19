@@ -45,6 +45,10 @@ export interface PendingDestination {
   paymentDestination: string;
   amountMsat: number;
   createdAt: number;
+  /** The LUD-XX rail this record was quoted on. Not every non-lightning rail is
+   *  watched the same way — an onchain destination is a Bitcoin address no
+   *  Arkade watcher can decode, let alone settle. */
+  paymentOption: string;
   /** hex pkScript of this record's own destination. Present makes attribution exact:
    *  a VTXO there belongs to this record and to no other. */
   covenantScript: string | null;
@@ -189,6 +193,7 @@ export class MemorySettlementStore implements SettlementStore {
       paymentDestination: r.paymentDestination,
       amountMsat: r.amountMsat,
       createdAt: r.createdAt,
+      paymentOption: r.paymentOption,
       covenantScript: r.covenantScript,
     };
   }
@@ -363,7 +368,7 @@ export class DbSettlementStore implements SettlementStore {
   listPendingDestinations(): PendingDestination[] {
     const rows = this.db
       .prepare(
-        "SELECT payment_hash, payment_destination, amount_msat, created_at, covenant_script FROM settlements WHERE settled = 0 AND payment_option IS NOT NULL AND payment_option != 'lightning' AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
+        "SELECT payment_hash, payment_destination, amount_msat, created_at, payment_option, covenant_script FROM settlements WHERE settled = 0 AND payment_option IS NOT NULL AND payment_option != 'lightning' AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
       )
       // See the memory store: a destination outlives the verify TTL because it
       // stays payable and nothing tells the payer otherwise.
@@ -372,6 +377,7 @@ export class DbSettlementStore implements SettlementStore {
       payment_destination: string;
       amount_msat: number;
       created_at: number;
+      payment_option: string;
       covenant_script: string | null;
     }[];
     return rows.map((r) => ({
@@ -379,6 +385,7 @@ export class DbSettlementStore implements SettlementStore {
       paymentDestination: r.payment_destination,
       amountMsat: r.amount_msat,
       createdAt: r.created_at,
+      paymentOption: r.payment_option,
       covenantScript: r.covenant_script,
     }));
   }
@@ -388,10 +395,10 @@ export class DbSettlementStore implements SettlementStore {
     // the single row it can return rather than driving the scan.
     const row = this.db
       .prepare(
-        "SELECT payment_hash, payment_destination, amount_msat, created_at, covenant_script FROM settlements WHERE covenant_script = ? AND settled = 0 AND payment_option IS NOT NULL AND payment_option != 'lightning' AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
+        "SELECT payment_hash, payment_destination, amount_msat, created_at, payment_option, covenant_script FROM settlements WHERE covenant_script = ? AND settled = 0 AND payment_option IS NOT NULL AND payment_option != 'lightning' AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
       )
       .get(script, this.now() - this.destinationWatchMs) as unknown as
-      | { payment_hash: string; payment_destination: string; amount_msat: number; created_at: number; covenant_script: string | null }
+      | { payment_hash: string; payment_destination: string; amount_msat: number; created_at: number; payment_option: string; covenant_script: string | null }
       | undefined;
     if (!row) return undefined;
     return {
@@ -399,6 +406,7 @@ export class DbSettlementStore implements SettlementStore {
       paymentDestination: row.payment_destination,
       amountMsat: row.amount_msat,
       createdAt: row.created_at,
+      paymentOption: row.payment_option,
       covenantScript: row.covenant_script,
     };
   }

@@ -42,6 +42,12 @@ export async function settleDestinationPayments(
   const byScript = new Map<string, typeof pending>();
   for (const p of pending) {
     if (p.covenantScript !== null) continue;
+    // The pending set is every non-lightning rail, and this watcher owns one of
+    // them. An onchain destination is a Bitcoin address that cannot decode as an
+    // Arkade one, so reporting it as a failure was permanent noise — and a pass
+    // that reports anything also suppresses the clean-pass reset, so it could
+    // bury a real indexer outage for the whole seven-day destination window.
+    if (p.paymentOption !== "arkade") continue;
     let script: string;
     try {
       script = hex.encode(ArkAddress.decode(p.paymentDestination).pkScript);
