@@ -1,186 +1,159 @@
 import { describe, it, expect, vi } from "vitest";
+import { randomBytes } from "node:crypto";
+import { base64, hex } from "@scure/base";
+import { Transaction } from "@scure/btc-signer";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
-import { MultisigTapscript, VtxoScript, type IContractManager } from "@arkade-os/sdk";
+import { CSVMultisigTapscript, MultisigTapscript, VtxoScript, type IContractManager } from "@arkade-os/sdk";
 import { createCovenantSweeper } from "../src/covenant-sweeper.js";
 import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler as handler } from "../src/covenant-contract.js";
-import { COLLABORATIVE_LEAF, RECOVERY_LEAF, SWEEP_LEAF } from "../src/covenant-destination.js";
+import { covenantVtxoScript } from "../src/covenant-destination.js";
 
-/** Real params, so the leaves the sweeper matches against are the real ones. */
+/** Real params, so the script the sweeper rebuilds is the real one. */
 const xonly = (fill: number) => secp256k1.getPublicKey(new Uint8Array(32).fill(fill), true).subarray(1);
-const realParams = handler.serializeParams({
-  staticAddress: new VtxoScript([MultisigTapscript.encode({ pubkeys: [xonly(9), xonly(3)] }).script])
-    .address("tark", xonly(3))
-    .encode(),
-  userPubkey: xonly(4),
-  serverPubkey: xonly(3),
-  emulatorPubkey: secp256k1.getPublicKey(new Uint8Array(32).fill(5), true),
-  preimage: new Uint8Array(32).fill(7),
+const PREIMAGE = new Uint8Array(32).fill(7);
+/** Decodable, because the sweeper now builds the real transaction rather than
+ *  stopping at a faked spending path. */
+const CHECKPOINT_TAPSCRIPT = hex.encode(
+  CSVMultisigTapscript.encode({ timelock: { type: "seconds", value: 1024n }, pubkeys: [xonly(3)] }).script,
+);
+const covenant = covenantVtxoScript({
+      staticAddress: new VtxoScript([MultisigTapscript.encode({ pubkeys: [xonly(9), xonly(3)] }).script])
+        .address("tark", xonly(3))
+        .encode(),
+      userPubkey: xonly(4),
+      serverPubkey: xonly(3),
+      emulatorPubkey: secp256k1.getPublicKey(new Uint8Array(32).fill(5), true),
+  preimage: PREIMAGE,
   recoveryDelaySeconds: 4096,
+  refundLocktime: 1_800_000_000,
 });
-const realLeaves = handler.createScript(realParams).leaves;
+const realParams = {
+  ...handler.serializeParams(covenant.vtxo.options),
+  preimage: hex.encode(PREIMAGE),
+};
+
+/** Keyed by the txid it actually hashes to, so PrevArkTx resolution can find it. */
+const virtualTxs = new Map<string, string>();
+function fundedVtxo(valueSat = 2_000, opts: { spent?: boolean } = {}) {
+  const tx = new Transaction({ version: 3, allowUnknownOutputs: true });
+  tx.addInput({ txid: randomBytes(32), index: 0 });
+  tx.addOutput({ script: covenant.vtxo.pkScript, amount: BigInt(valueSat) });
+  virtualTxs.set(tx.id, base64.encode(tx.toPSBT()));
+  return { txid: tx.id, vout: 0, value: valueSat, isSpent: opts.spent ?? false };
+}
+
+const fakeIndexer = {
+  getVirtualTxs: async (txids: string[]) => ({
+    txs: txids.map((id) => virtualTxs.get(id)).filter(Boolean) as string[],
+  }),
+} as never;
 
 // The funded path is proven against a live arkd + emulator (the e2e). What a fake can
 // hold is which destinations are attempted at all, that a spent output is left alone,
-// and that one broken destination cannot stop the others.
+// that every live output goes into one claim, and that one broken destination cannot
+// stop the others.
 
-const contract = (script: string) => ({
+const contract = (script: string, params: Record<string, string> = realParams) => ({
   type: COVENANT_CONTRACT_TYPE,
-  // Real params: the sweeper rebuilds the script from these to find its leaf.
-  params: realParams,
+  params,
   script,
   address: `tark1for-${script}`,
   state: "active" as const,
   createdAt: Date.now(),
 });
 
-const vtxo = (txid: string, opts: { spent?: boolean } = {}) => ({
-  txid,
-  vout: 0,
-  value: 2000,
-  isSpent: opts.spent ?? false,
-});
-
-function managerWith(entries: { script: string; vtxos: ReturnType<typeof vtxo>[] }[]) {
-  const getSpendablePaths = vi.fn(async () => [{ leaf: {} as never, extraWitness: [] }]);
+function managerWith(entries: { script: string; vtxos: ReturnType<typeof fundedVtxo>[]; params?: Record<string, string> }[]) {
   const getContractsWithVtxos = vi.fn(async () =>
-    entries.map((e) => ({ contract: contract(e.script), vtxos: e.vtxos })),
+    entries.map((e) => ({ contract: contract(e.script, e.params), vtxos: e.vtxos })),
   );
   return {
-    manager: { getContractsWithVtxos, getSpendablePaths } as unknown as IContractManager,
+    manager: { getContractsWithVtxos } as unknown as IContractManager,
     getContractsWithVtxos,
-    getSpendablePaths,
   };
 }
 
-const sweeperWith = (manager: IContractManager) =>
-  createCovenantSweeper({
+/** Captures what reached the emulator, which is the only side effect worth asserting. */
+function sweeperWith(manager: IContractManager) {
+  const submitted: { arkTx: string }[] = [];
+  const sweeper = createCovenantSweeper({
     contracts: manager,
     arkServerUrl: "http://unused",
     emulatorUrl: "http://unused",
-    indexer: {} as never,
-    arkProvider: { getInfo: async () => ({ checkpointTapscript: "00" }) } as never,
-    emulator: { submitTx: async () => ({ signedArkTx: "", signedCheckpointTxs: [] }) },
+    indexer: fakeIndexer,
+    arkProvider: { getInfo: async () => ({ checkpointTapscript: CHECKPOINT_TAPSCRIPT }) } as never,
+    emulator: {
+      submitTx: async (arkTx: string) => {
+        submitted.push({ arkTx });
+        return { signedArkTx: "", signedCheckpointTxs: [] };
+      },
+    },
   });
+  return { sweeper, submitted };
+}
 
 describe("createCovenantSweeper", () => {
   it("asks the manager only for covenant destinations", async () => {
     const { manager, getContractsWithVtxos } = managerWith([]);
-
-    await sweeperWith(manager).sweep();
-
+    await sweeperWith(manager).sweeper.sweep();
     expect(getContractsWithVtxos).toHaveBeenCalledWith({ type: COVENANT_CONTRACT_TYPE });
   });
 
-  // One query for every destination, where the old shape issued one per record.
   it("reads every funded destination in a single query", async () => {
     const { manager, getContractsWithVtxos } = managerWith([
-      { script: "5120aa", vtxos: [vtxo("tx-a")] },
-      { script: "5120bb", vtxos: [vtxo("tx-b")] },
-      { script: "5120cc", vtxos: [vtxo("tx-c")] },
+      { script: "5120aa", vtxos: [fundedVtxo()] },
+      { script: "5120bb", vtxos: [fundedVtxo()] },
     ]);
-
-    await sweeperWith(manager).sweep();
-
+    await sweeperWith(manager).sweeper.sweep();
     expect(getContractsWithVtxos).toHaveBeenCalledTimes(1);
   });
 
-  it("leaves a spent output alone", async () => {
-    const { manager, getSpendablePaths } = managerWith([
-      { script: "5120aa", vtxos: [vtxo("tx-spent", { spent: true })] },
+  it("leaves a destination whose only output is already spent alone", async () => {
+    const { manager } = managerWith([{ script: "5120aa", vtxos: [fundedVtxo(2_000, { spent: true })] }]);
+    const { sweeper, submitted } = sweeperWith(manager);
+    expect(await sweeper.sweep()).toBe(0);
+    expect(submitted).toHaveLength(0);
+  });
+
+  // The covenant checks each spent input against the output at its own index, so a
+  // destination funded twice is one claim over both — not two claims, and not a
+  // single output swept while the other is stranded.
+  it("puts every live output of one destination into a single claim", async () => {
+    const { manager } = managerWith([
+      { script: "5120aa", vtxos: [fundedVtxo(), fundedVtxo(), fundedVtxo(2_000, { spent: true })] },
     ]);
-
-    await sweeperWith(manager).sweep();
-
-    expect(getSpendablePaths).not.toHaveBeenCalled();
+    const { sweeper, submitted } = sweeperWith(manager);
+    expect(await sweeper.sweep()).toBe(2);
+    expect(submitted).toHaveLength(1);
   });
 
-  // A split payment left two outpoints at one script; both are the user's.
-  it("attempts each unspent outpoint at a destination", async () => {
-    const { manager, getSpendablePaths } = managerWith([
-      { script: "5120aa", vtxos: [vtxo("tx-1"), vtxo("tx-2")] },
-    ]);
-
-    await sweeperWith(manager).sweep();
-
-    expect(getSpendablePaths).toHaveBeenCalledTimes(2);
-  });
-
-  // Timelocked recovery and a down emulator both look like this, and neither is
-  // an error worth logging every pass.
-  it("skips a destination with no spendable path", async () => {
-    const { manager, getSpendablePaths } = managerWith([{ script: "5120aa", vtxos: [vtxo("tx-a")] }]);
-    getSpendablePaths.mockResolvedValue([]);
-
-    await expect(sweeperWith(manager).sweep()).resolves.toBe(0);
-  });
-
-  // Finding 7: taking paths[0] made this depend on the handler's push order. The
-  // manager promises no ordering, and the wrong leaf builds a witness-less tx the
-  // emulator refuses — a silent skip every pass rather than a readable error.
-  it("picks the sweep leaf whatever order the manager returns paths in", async () => {
-    const getInfo = vi.fn(async () => ({ checkpointTapscript: "00" }));
-    const contracts = {
-      getContractsWithVtxos: async () => [
-        { contract: { type: COVENANT_CONTRACT_TYPE, script: "5120aa", params: realParams }, vtxos: [vtxo("tx-a")] },
-      ],
-      // Reversed: recovery, collaborative, sweep.
-      getSpendablePaths: async () => [
-        { leaf: realLeaves[RECOVERY_LEAF]! },
-        { leaf: realLeaves[COLLABORATIVE_LEAF]! },
-        { leaf: realLeaves[SWEEP_LEAF]!, extraWitness: [new Uint8Array(32).fill(7)] },
-      ],
-    } as unknown as IContractManager;
-
-    await createCovenantSweeper({
-      contracts,
-      arkServerUrl: "http://unused",
-      emulatorUrl: "http://unused",
-      indexer: {} as never,
-      arkProvider: { getInfo } as never,
-      emulator: { submitTx: async () => ({ signedArkTx: "", signedCheckpointTxs: [] }) },
-    }).sweep();
-
-    // Reaching getInfo means a path was chosen; the sweep leaf is the only one here
-    // this service could complete, and it was last in the array.
-    expect(getInfo).toHaveBeenCalled();
-  });
-
-  it("skips when the manager offers no leaf this service can complete", async () => {
-    const getInfo = vi.fn(async () => ({ checkpointTapscript: "00" }));
-    const contracts = {
-      getContractsWithVtxos: async () => [
-        { contract: { type: COVENANT_CONTRACT_TYPE, script: "5120aa", params: realParams }, vtxos: [vtxo("tx-a")] },
-      ],
-      // The user's own two leaves, never ours to spend. Position-based selection
-      // would have taken the first of these and built an unsignable transaction.
-      getSpendablePaths: async () => [
-        { leaf: realLeaves[COLLABORATIVE_LEAF]! },
-        { leaf: realLeaves[RECOVERY_LEAF]! },
-      ],
-    } as unknown as IContractManager;
-
-    const moved = await createCovenantSweeper({
-      contracts,
-      arkServerUrl: "http://unused",
-      emulatorUrl: "http://unused",
-      indexer: {} as never,
-      arkProvider: { getInfo } as never,
-      emulator: { submitTx: async () => ({ signedArkTx: "", signedCheckpointTxs: [] }) },
-    }).sweep();
-
-    expect(moved).toBe(0);
-    expect(getInfo).not.toHaveBeenCalled();
+  it("skips a destination whose contract carries no preimage", async () => {
+    const { preimage: _dropped, ...withoutPreimage } = realParams;
+    const { manager } = managerWith([{ script: "5120aa", vtxos: [fundedVtxo()], params: withoutPreimage }]);
+    const { sweeper, submitted } = sweeperWith(manager);
+    expect(await sweeper.sweep()).toBe(0);
+    expect(submitted).toHaveLength(0);
   });
 
   it("keeps going after one destination throws", async () => {
-    const { manager, getSpendablePaths } = managerWith([
-      { script: "5120aa", vtxos: [vtxo("tx-a")] },
-      { script: "5120bb", vtxos: [vtxo("tx-b")] },
+    const { manager } = managerWith([
+      { script: "5120aa", vtxos: [fundedVtxo()] },
+      { script: "5120bb", vtxos: [fundedVtxo()] },
     ]);
-    getSpendablePaths.mockRejectedValueOnce(new Error("indexer down"));
-
-    await sweeperWith(manager).sweep();
-
-    expect(getSpendablePaths).toHaveBeenCalledTimes(2);
+    let calls = 0;
+    const sweeper = createCovenantSweeper({
+      contracts: manager,
+      arkServerUrl: "http://unused",
+      emulatorUrl: "http://unused",
+      indexer: fakeIndexer,
+      arkProvider: { getInfo: async () => ({ checkpointTapscript: CHECKPOINT_TAPSCRIPT }) } as never,
+      emulator: {
+        submitTx: async () => {
+          if (++calls === 1) throw new Error("emulator down");
+          return { signedArkTx: "", signedCheckpointTxs: [] };
+        },
+      },
+    });
+    expect(await sweeper.sweep()).toBe(1);
+    expect(calls).toBe(2);
   });
 });

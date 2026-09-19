@@ -5,35 +5,21 @@
 // why the preimage is stored in the clear and why any party could run this — the
 // user's own wallet can, through the two leaves keyed to them.
 //
-// What to spend and which leaf to spend it through both come from the contract
-// manager. It reads every funded destination in one query and picks the path from
-// the registered handler, so neither the outpoint set nor the leaf index is
-// restated here.
+// What to spend comes from the contract manager, which reads every funded
+// destination in one query. How to spend it comes from src/self-claim.ts: the
+// covenant here and the one on a solver's lockup are the same VHTLC leaf, so the
+// two rails share a builder rather than each assembling the transaction.
 
-import { base64, hex } from "@scure/base";
-import { RawWitness } from "@scure/btc-signer";
 import {
-  ArkAddress,
-  CSVMultisigTapscript,
-  ConditionWitness,
-  EmulatorPacket,
-  Extension,
   RestArkProvider,
   RestEmulatorProvider,
   RestIndexerProvider,
-  Transaction,
-  attachPrevArkTxs,
-  buildOffchainTx,
-  setArkPsbtField,
   type ArkProvider,
-  type Contract,
   type IContractManager,
   type IndexerProvider,
-  type PathSelection,
-  type VirtualCoin,
 } from "@arkade-os/sdk";
 import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler } from "./covenant-contract.js";
-import { SWEEP_LEAF, enforcePayTo } from "./covenant-destination.js";
+import { pushNonInteractiveClaim } from "./self-claim.js";
 
 interface EmulatorSubmit {
   submitTx(arkTx: string, checkpointTxs: string[]): Promise<{ signedArkTx: string; signedCheckpointTxs: string[] }>;
@@ -56,37 +42,6 @@ export function createCovenantSweeper(opts: {
   const indexer = opts.indexer ?? new RestIndexerProvider(opts.arkServerUrl);
   const emulator = opts.emulator ?? new RestEmulatorProvider(opts.emulatorUrl);
 
-  const sweepOne = async (
-    contract: Contract,
-    vtxo: VirtualCoin,
-    path: PathSelection,
-    tapTree: Uint8Array,
-  ): Promise<string> => {
-    const { staticAddress } = covenantDestinationHandler.deserializeParams(contract.params);
-    const payTo = ArkAddress.decode(staticAddress).pkScript;
-    // Recomputed, not read off the leaf: the leaf holds the cosigner key, which is
-    // a commitment to this script rather than the script itself.
-    const packet = EmulatorPacket.create([{ vin: 0, script: enforcePayTo(payTo), witness: RawWitness.encode([]) }]);
-    const info = await arkProvider.getInfo();
-    // The covenant reads the output at the spent input's index, so the payout stays 0.
-    const { arkTx, checkpoints } = buildOffchainTx(
-      [{ txid: vtxo.txid, vout: vtxo.vout, value: vtxo.value, tapLeafScript: path.leaf, tapTree }],
-      [{ script: payTo, amount: BigInt(vtxo.value) }, Extension.create([packet]).txOut()],
-      CSVMultisigTapscript.decode(hex.decode(info.checkpointTapscript)),
-    );
-    await attachPrevArkTxs(arkTx, [vtxo.txid], indexer);
-    for (const witness of path.extraWitness ?? []) {
-      setArkPsbtField(arkTx, 0, ConditionWitness, [witness]);
-      setArkPsbtField(checkpoints[0]!, 0, ConditionWitness, [witness]);
-    }
-
-    const res = await emulator.submitTx(
-      base64.encode(arkTx.toPSBT()),
-      checkpoints.map((c) => base64.encode(c.toPSBT())),
-    );
-    return Transaction.fromPSBT(base64.decode(res.signedArkTx)).id;
-  };
-
   return {
     async sweep() {
       let moved = 0;
@@ -95,28 +50,33 @@ export function createCovenantSweeper(opts: {
       for (const { contract, vtxos } of await opts.contracts.getContractsWithVtxos({
         type: COVENANT_CONTRACT_TYPE,
       })) {
-        const script = covenantDestinationHandler.createScript(contract.params);
-        const tapTree = script.encode();
-        const sweepLeaf = hex.encode(script.leaves[SWEEP_LEAF]![1]);
-        for (const vtxo of vtxos) {
-          if (vtxo.isSpent) continue;
-          try {
-            const paths = await opts.contracts.getSpendablePaths({ contractScript: contract.script, vtxo });
-            // Chosen by leaf, not by position. The handler happens to return the sweep
-            // first, but nothing in the manager's contract promises an order, and the
-            // wrong leaf builds a transaction with no preimage that the emulator simply
-            // refuses — a silent skip every pass rather than an error worth reading.
-            const path = paths.find((p) => hex.encode(p.leaf[1]) === sweepLeaf);
-            // No sweepable path is not a failure: the emulator may be down, and the
-            // user's own two leaves are never ours to spend.
-            if (!path) continue;
-            const arkTxid = await sweepOne(contract, vtxo, path, tapTree);
-            moved++;
-            console.log(`covenant sweep: ${contract.script.slice(0, 16)}… -> ${arkTxid}`);
-          } catch (err) {
-            // One stuck destination must not stop the rest, and the next pass retries.
-            console.warn(`covenant sweep failed for ${contract.script.slice(0, 16)}…:`, err);
-          }
+        const live = vtxos.filter((v) => !v.isSpent);
+        if (live.length === 0) continue;
+        // Rides alongside the VHTLC's own serialized parameters, which carry the
+        // preimage HASH and not the preimage. Nothing is lost by storing it in the
+        // clear: the covenant, not the secret, is what pins where a sweep can pay.
+        const preimage = contract.params.preimage;
+        if (!preimage) {
+          console.warn(`covenant sweep: ${contract.script.slice(0, 16)}… has no stored preimage`);
+          continue;
+        }
+        try {
+          // Every live output in one transaction, as the lockup path does: the
+          // covenant checks each spent input against the output at its own index,
+          // so a destination funded twice sweeps once rather than not at all.
+          const arkTxid = await pushNonInteractiveClaim({
+            script: covenantDestinationHandler.createScript(contract.params),
+            vtxos: live,
+            preimage,
+            arkProvider,
+            indexer,
+            emulator,
+          });
+          moved += live.length;
+          console.log(`covenant sweep: ${contract.script.slice(0, 16)}… -> ${arkTxid}`);
+        } catch (err) {
+          // One stuck destination must not stop the rest, and the next pass retries.
+          console.warn(`covenant sweep failed for ${contract.script.slice(0, 16)}…:`, err);
         }
       }
       return moved;

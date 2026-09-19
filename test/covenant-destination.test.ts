@@ -5,7 +5,7 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { MultisigTapscript, VtxoScript } from "@arkade-os/sdk";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { ripemd160 } from "@noble/hashes/legacy.js";
-import { deriveCovenantDestination, createCovenantDestinationProvider, SWEEP_LEAF } from "../src/covenant-destination.js";
+import { deriveCovenantDestination, createCovenantDestinationProvider, covenantVtxoScript } from "../src/covenant-destination.js";
 import { loadConfig } from "../src/config.js";
 
 const xonly = (fill: number) => secp256k1.getPublicKey(new Uint8Array(32).fill(fill), true).subarray(1);
@@ -24,6 +24,7 @@ const derive = (preimage: Uint8Array) =>
     emulatorPubkey,
     preimage,
     recoveryDelaySeconds: 4096,
+    refundLocktime: 1_800_000_000,
   });
 
 describe("deriveCovenantDestination", () => {
@@ -48,21 +49,27 @@ describe("deriveCovenantDestination", () => {
       emulatorPubkey,
       preimage: new Uint8Array(32).fill(7),
       recoveryDelaySeconds: offlineReceive.covenantRecoveryDelaySeconds,
+      refundLocktime: 1_800_000_000,
     });
     expect(d.address.startsWith("tark1")).toBe(true);
   });
 
   // Golden values from the construction funded and swept on regtest, so a drift
   // here means the emulator would stop co-signing rather than a test going stale.
+  //
+  // The covenant bytes are the SAME ones the hand-rolled construction was proven
+  // with, which is the load-bearing half: it is what the emulator hashes to the
+  // cosigner key, so an identical value means it co-signs this tree exactly as it
+  // did the old one. The script and address moved because the taptree did.
   it("reproduces the construction proven on-chain, byte for byte", () => {
     const d = derive(new Uint8Array(32).fill(7));
 
     expect(hex.encode(d.covenantScript)).toBe(
       "cd76d15188208ad35e9b86ff428ab4e125e27eb1bb05714dcb82a689ac1e40e736f4cfcdc12888cfcdc9a2",
     );
-    expect(d.script).toBe("5120aaa385c70e9d339b3d1744ef2d409f9641a23c11370792b743ef2b485a71e1b1");
+    expect(d.script).toBe("5120fbfc4ec4355e0e14011105b61a26096eb3aa8614e45a821f809bdd3f47212bde");
     expect(d.address).toBe(
-      "tark1qpf3lesxsy69q0f8yvfnyf7gv7kglfkg83fhaxjyc0zmm0wtrl3n024rshrsa8fnnv73w38094qfl9jp5g7pzdc8j2m58metfpd8rcd37nqs45",
+      "tark1qpf3lesxsy69q0f8yvfnyf7gv7kglfkg83fhaxjyc0zmm0wtrl3n07lufmzr2hswzsq3zpdkrgnqjm4n42rpfez6sg0cpx7a8arjz277wfhxyr",
     );
   });
 
@@ -88,7 +95,8 @@ describe("deriveCovenantDestination", () => {
     const d = derive(new Uint8Array(32).fill(7));
     const decoded = VtxoScript.decode(d.tapTree);
 
-    expect(decoded.scripts).toHaveLength(3);
+    // The VHTLC ladder, not the three leaves the bespoke construction had.
+    expect(decoded.scripts).toHaveLength(9);
     expect(hex.encode(decoded.pkScript)).toBe(d.script);
   });
 
@@ -105,6 +113,7 @@ describe("deriveCovenantDestination", () => {
         emulatorPubkey,
         preimage: new Uint8Array(32).fill(7),
         recoveryDelaySeconds: 4096,
+        refundLocktime: 1_800_000_000,
       }),
     ).toThrow(/32- or 33-byte key/);
   });
@@ -118,6 +127,7 @@ describe("deriveCovenantDestination", () => {
       emulatorPubkey,
       preimage: new Uint8Array(32).fill(7),
       recoveryDelaySeconds: 4096,
+      refundLocktime: 1_800_000_000,
     });
 
     expect(withCompressed.script).toBe(derive(new Uint8Array(32).fill(7)).script);
@@ -154,14 +164,18 @@ describe("createCovenantDestinationProvider", () => {
       }).derive({ arkadeAddress: staticAddress, claimPublicKey: hex.encode(secp256k1.getPublicKey(new Uint8Array(32).fill(4), true)) });
 
       const expected = hex.encode(ripemd160(sha256(preimage)));
-      const leaf = VtxoScript.decode(deriveCovenantDestination({
+      // The leaf the sweep actually spends, asked for by name. Reading an index
+      // would pass off the VHTLC's collaborative claim, which commits to the same
+      // hash and is not the leaf this server can push.
+      const leaf = covenantVtxoScript({
         staticAddress,
         userPubkey,
         serverPubkey,
         emulatorPubkey,
         preimage,
         recoveryDelaySeconds: 86_528,
-      }).tapTree).scripts[SWEEP_LEAF]!;
+        refundLocktime: 1_800_000_000,
+      }).vtxo.nonInteractiveClaim()[0][1];
       let found = "";
       for (let i = 0; i + 22 <= leaf.length; i++) {
         if (leaf[i] === 0xa9 && leaf[i + 1] === 0x14 && leaf[i + 22] === 0x87) found = hex.encode(leaf.subarray(i + 2, i + 22));

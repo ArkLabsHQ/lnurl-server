@@ -1,12 +1,15 @@
 // Per-payment destinations for the Arkade rail: the script is the identifier, so
 // concurrent payments need no guessing from amount and arrival time.
 //
-//   leaf 0  condition(H(P)) + operator + covenant cosigner  sweep, pinned
-//   leaf 1  user + operator                                 collaborative
-//   leaf 2  user alone after CSV                            unilateral recovery
+// The script is the SDK's own VHTLC with BOTH roles held by the user. That is what
+// makes the whole leaf ladder safe without auditing it leaf by leaf: every path
+// either requires the user's signature or is `enforcePayTo`-pinned to the user's
+// registered address, so none of them can send the payment anywhere else. The one
+// we spend is `nonInteractiveClaim` — preimage + operator + covenant-tweaked
+// emulator — which is the same leaf the offline-swap rail claims.
 //
-// Only leaf 0 carries H(P): a fresh preimage moves the address, the covenant bytes
-// stay fixed, and the user's two recovery paths need neither P nor this server.
+// Only that leaf carries H(P): a fresh preimage moves the address, the covenant
+// bytes stay fixed, and the user's recovery paths need neither P nor this server.
 
 import type { IContractManager } from "@arkade-os/sdk";
 import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler } from "./covenant-contract.js";
@@ -14,49 +17,7 @@ import { checkedPreimage, randomEntropy, type EntropyProvider } from "./entropy.
 import { hex } from "@scure/base";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { ripemd160 } from "@noble/hashes/legacy.js";
-import {
-  arkade,
-  ArkAddress,
-  CSVMultisigTapscript,
-  ConditionMultisigTapscript,
-  MultisigTapscript,
-  VtxoScript,
-} from "@arkade-os/sdk";
-
-/** `HASH160 <hash20> EQUAL` — the condition the sweep leaf gates on. */
-const preimageCondition = (hash20: Uint8Array): Uint8Array =>
-  arkade.ArkadeScript.encode(["HASH160", hash20, "EQUAL"] as Parameters<typeof arkade.ArkadeScript.encode>[0]);
-
-/**
- * "This input's output pays `destination`, value >= the input." Re-emitted rather
- * than imported: the emulator co-signs only a covenant hashing to the key in the
- * leaf, so these bytes must match `solver-arkade/arkade/covenant.ts` exactly.
- *
- * `INSPECTOUTPUTSCRIPTPUBKEY` pushes program THEN witness version, so version is on
- * top — hence `1 EQUALVERIFY` (Taproot) before the 32-byte program, which reads
- * backwards in source order. Swapping them compares a version against a key and the
- * emulator refuses every sweep.
- */
-export const enforcePayTo = (destinationPkScript: Uint8Array): Uint8Array => {
-  if (destinationPkScript.length !== 34 || destinationPkScript[0] !== 0x51 || destinationPkScript[1] !== 0x20) {
-    throw new Error("destination must be a P2TR pkScript (0x5120 + 32 bytes)");
-  }
-  return arkade.ArkadeScript.encode([
-    "PUSHCURRENTINPUTINDEX",
-    "DUP",
-    // Pushes (program, version) with VERSION ON TOP, so the two EQUALVERIFYs below
-    // read backwards from source order: version first, then program. See the docblock.
-    "INSPECTOUTPUTSCRIPTPUBKEY",
-    1, // witness version — Taproot
-    "EQUALVERIFY",
-    destinationPkScript.subarray(2), // the 32-byte program
-    "EQUALVERIFY",
-    "INSPECTOUTPUTVALUE",
-    "PUSHCURRENTINPUTINDEX",
-    "INSPECTINPUTVALUE",
-    "GREATERTHANOREQUAL",
-  ] as Parameters<typeof arkade.ArkadeScript.encode>[0]);
-};
+import { ArkAddress, VHTLC } from "@arkade-os/sdk";
 
 export interface CovenantDestinationInput {
   /** The user's registered Arkade address — the only place the sweep may pay. */
@@ -67,6 +28,10 @@ export interface CovenantDestinationInput {
   /** 32 bytes, fresh per payment. Not a secret: the covenant makes it useless for theft. */
   preimage: Uint8Array;
   recoveryDelaySeconds: number;
+  /** Absolute unix seconds. Gates the covenant's second recovery tier, which pays
+   *  the user's own address, so it is a floor on when that opens and not a
+   *  deadline anyone can miss. */
+  refundLocktime: number;
 }
 
 export interface CovenantDestination {
@@ -76,7 +41,6 @@ export interface CovenantDestination {
   script: string;
   tapTree: Uint8Array;
   covenantScript: Uint8Array;
-  sweepLeafIndex: number;
 }
 
 /** What the callback needs per payment: the address to hand the payer and the script
@@ -171,7 +135,12 @@ export function createCovenantDestinationProvider(opts: {
         emulatorPubkey,
         preimage,
         recoveryDelaySeconds: opts.recoveryDelaySeconds,
+        // The covenant's second recovery tier opens here. Measured from now so it
+        // tracks the payment rather than a fixed epoch, and stored in the contract
+        // params, so re-deriving the script later reproduces this exact address.
+        refundLocktime: Math.floor(now() / 1000) + opts.recoveryDelaySeconds,
       };
+      const { vtxo } = covenantVtxoScript(params);
       const d = deriveCovenantDestination(params);
       // Before the address is returned, never after: a payer handed a destination
       // nothing is watching has no way to be credited. A throw here reaches the
@@ -180,7 +149,11 @@ export function createCovenantDestinationProvider(opts: {
       // watched until a vtxo lands, then demoted off every background channel.
       await opts.contracts?.createContract({
         type: COVENANT_CONTRACT_TYPE,
-        params: covenantDestinationHandler.serializeParams(params),
+        // The VHTLC's own parameters commit to the preimage HASH, so P rides
+        // alongside them under a key the SDK's deserializer ignores. The sweeper
+        // needs it and nothing else stores it; keeping it in the clear costs
+        // nothing, since the covenant is what pins where a sweep may pay.
+        params: { ...covenantDestinationHandler.serializeParams(vtxo.options), preimage: hex.encode(preimage) },
         script: d.script,
         address: d.address,
         watch: "awaiting-funds",
@@ -217,23 +190,37 @@ export const RECOVERY_LEAF = 2;
 
 /** The construction itself, shared by {@link deriveCovenantDestination} and the
  *  contract handler's `createScript` so neither can drift from the other. */
-export function covenantVtxoScript(input: CovenantDestinationInput): { vtxo: VtxoScript; covenantScript: Uint8Array } {
+export function covenantVtxoScript(
+  input: CovenantDestinationInput,
+): { vtxo: InstanceType<typeof VHTLC.ScriptV2>; covenantScript: Uint8Array } {
   if (input.preimage.length !== 32) throw new Error(`preimage must be 32 bytes, got ${input.preimage.length}`);
-  const userPubkey = toXOnly(input.userPubkey);
-  const serverPubkey = toXOnly(input.serverPubkey);
-  const covenantScript = enforcePayTo(ArkAddress.decode(input.staticAddress).pkScript);
-  const cosigner = arkade.computeArkadeScriptPublicKey(toCompressed(input.emulatorPubkey), covenantScript);
-  const vtxo = new VtxoScript([
-    ConditionMultisigTapscript.encode({
-      conditionScript: preimageCondition(ripemd160(sha256(input.preimage))),
-      pubkeys: [serverPubkey, cosigner],
-    }).script,
-    MultisigTapscript.encode({ pubkeys: [userPubkey, serverPubkey] }).script,
-    CSVMultisigTapscript.encode({
-      timelock: { type: "seconds", value: BigInt(input.recoveryDelaySeconds) },
-      pubkeys: [userPubkey],
-    }).script,
-  ]);
+  const user = toXOnly(input.userPubkey);
+  const payTo = ArkAddress.decode(input.staticAddress).pkScript;
+  const delay = { type: "seconds", value: BigInt(input.recoveryDelaySeconds) } as const;
+  const vtxo = new VHTLC.ScriptV2({
+    // Both roles are the user. That is what makes every leaf safe without us
+    // auditing any of them: each one either needs the user's own signature or is
+    // `enforcePayTo`-pinned to the user's address, so none can redirect funds.
+    sender: user,
+    receiver: user,
+    server: toXOnly(input.serverPubkey),
+    preimageHash: ripemd160(sha256(input.preimage)),
+    // Wall-clock typed: arkd refuses a height-typed locktime on a forfeit-eligible
+    // leaf. It gates only `nonInteractiveRefundWithoutReceiver`, which pays the
+    // user too, so it is a second recovery tier rather than a deadline.
+    refundLocktime: BigInt(input.refundLocktime),
+    // One value for all three tiers. The ladder exists to keep a claim ahead of a
+    // counterparty's refund; with no counterparty there is no race to order.
+    unilateralClaimDelay: delay,
+    unilateralRefundDelay: delay,
+    unilateralRefundWithoutReceiverDelay: delay,
+    nonInteractiveParameters: {
+      emulatorPubkey: toCompressed(input.emulatorPubkey),
+      receiverPkScript: payTo,
+      senderPkScript: payTo,
+    },
+  });
+  const [, covenantScript] = vtxo.nonInteractiveClaim();
   return { vtxo, covenantScript };
 }
 
@@ -245,6 +232,5 @@ export function deriveCovenantDestination(input: CovenantDestinationInput): Cove
     script: hex.encode(vtxo.pkScript),
     tapTree: vtxo.encode(),
     covenantScript,
-    sweepLeafIndex: SWEEP_LEAF,
   };
 }

@@ -127,32 +127,57 @@ export function createSelfClaimer(opts: {
       const total = vtxos.reduce((sum, v) => sum + v.value, 0);
       if (total < reg.expectedAmount) return { state: "skipped", reason: "underfunded" };
 
-      const [leaf, arkadeScript] = reg.script.nonInteractiveClaim();
-      const payTo = reg.script.options.nonInteractiveParameters?.receiverPkScript;
-      if (!payTo) throw new Error(`self-claim: registration for ${swapId} carries no nonInteractiveParameters`);
-      const packet = EmulatorPacket.create(vtxos.map((_, vin) => ({ vin, script: arkadeScript, witness: RawWitness.encode([]) })));
-      const info = await arkProvider.getInfo();
-      const tapTree = reg.script.encode();
-      // The covenant checks output[i] against input[i]: one payout per input, in order, packet last.
-      const { arkTx, checkpoints } = buildOffchainTx(
-        vtxos.map((v) => ({ txid: v.txid, vout: v.vout, value: v.value, tapLeafScript: leaf, tapTree })),
-        [...vtxos.map((v) => ({ script: payTo, amount: BigInt(v.value) })), Extension.create([packet]).txOut()],
-        CSVMultisigTapscript.decode(hex.decode(info.checkpointTapscript)),
-      );
-      // The emulator resolves the spent input's prevout from its creating ark tx.
-      await attachPrevArkTxs(arkTx, vtxos.map((v) => v.txid), indexer);
-      vtxos.forEach((_, i) => setArkPsbtField(arkTx, i, ConditionWitness, [hex.decode(preimage)]));
-      for (const checkpoint of checkpoints) setArkPsbtField(checkpoint, 0, ConditionWitness, [hex.decode(preimage)]);
-
-      await emulator.submitTx(
-        base64.encode(arkTx.toPSBT()),
-        checkpoints.map((c) => base64.encode(c.toPSBT())),
-      );
+      const arkTxid = await pushNonInteractiveClaim({
+        script: reg.script, vtxos, preimage, arkProvider, indexer, emulator,
+      });
       registry.delete(swapId);
-      // Not read back from the reply: a txid commits to no witness data, so the
-      // emulator's signatures cannot change it. Sound while this input stays
-      // taproot-only — a scriptSig one could gain a finalScriptSig server-side.
-      return { state: "claimed", arkTxid: arkTx.id };
+      return { state: "claimed", arkTxid };
     },
   };
+}
+
+/**
+ * Spend a VHTLC's `nonInteractiveClaim` leaf over every supplied output at once,
+ * paying the covenant's own pinned destination.
+ *
+ * Shared by the offline-swap lockups and the covenant destinations, which differ
+ * in who funds the script and when it is safe to spend but not in how the spend
+ * is assembled — the covenant enforces the same thing for both, so building it
+ * twice only let the two drift.
+ */
+export async function pushNonInteractiveClaim(input: {
+  script: InstanceType<typeof VHTLC.ScriptV2>;
+  vtxos: readonly { txid: string; vout: number; value: number }[];
+  /** Hex. Satisfies the leaf's hashlock; the covenant decides where it can go. */
+  preimage: string;
+  arkProvider: ArkProvider;
+  indexer: IndexerProvider;
+  emulator: EmulatorSubmit;
+}): Promise<string> {
+  const { script, vtxos, preimage, arkProvider, indexer, emulator } = input;
+  const [leaf, arkadeScript] = script.nonInteractiveClaim();
+  const payTo = script.options.nonInteractiveParameters?.receiverPkScript;
+  if (!payTo) throw new Error("non-interactive claim needs a script carrying nonInteractiveParameters");
+  const packet = EmulatorPacket.create(vtxos.map((_, vin) => ({ vin, script: arkadeScript, witness: RawWitness.encode([]) })));
+  const info = await arkProvider.getInfo();
+  const tapTree = script.encode();
+  // The covenant checks output[i] against input[i]: one payout per input, in order, packet last.
+  const { arkTx, checkpoints } = buildOffchainTx(
+    vtxos.map((v) => ({ txid: v.txid, vout: v.vout, value: v.value, tapLeafScript: leaf, tapTree })),
+    [...vtxos.map((v) => ({ script: payTo, amount: BigInt(v.value) })), Extension.create([packet]).txOut()],
+    CSVMultisigTapscript.decode(hex.decode(info.checkpointTapscript)),
+  );
+  // The emulator resolves the spent input's prevout from its creating ark tx.
+  await attachPrevArkTxs(arkTx, vtxos.map((v) => v.txid), indexer);
+  vtxos.forEach((_, i) => setArkPsbtField(arkTx, i, ConditionWitness, [hex.decode(preimage)]));
+  for (const checkpoint of checkpoints) setArkPsbtField(checkpoint, 0, ConditionWitness, [hex.decode(preimage)]);
+
+  await emulator.submitTx(
+    base64.encode(arkTx.toPSBT()),
+    checkpoints.map((c) => base64.encode(c.toPSBT())),
+  );
+  // Not read back from the reply: a txid commits to no witness data, so the
+  // emulator's signatures cannot change it. Sound while this input stays
+  // taproot-only — a scriptSig one could gain a finalScriptSig server-side.
+  return arkTx.id;
 }

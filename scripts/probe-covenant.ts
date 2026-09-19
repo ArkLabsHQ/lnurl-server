@@ -47,6 +47,7 @@ const staticAddress = new VtxoScript([
 
 console.log(`operator   ${arkServerUrl}  signer ${String(info.signerPubkey)}`);
 console.log(`emulator   ${emulatorHex}  (${covclaimdUrl ? `from ${covclaimdUrl}` : `pinned for ${network}`})`);
+const refundLocktime = Math.floor(Date.now() / 1000) + recoveryDelaySeconds;
 console.log(`delay      ${recoveryDelaySeconds}s  (multiple of 512: ${recoveryDelaySeconds % 512 === 0})`);
 
 const first = deriveCovenantDestination({
@@ -54,12 +55,14 @@ const first = deriveCovenantDestination({
   emulatorPubkey: hex.decode(emulatorHex),
   preimage: new Uint8Array(32).fill(7),
   recoveryDelaySeconds,
+  refundLocktime,
 });
 const second = deriveCovenantDestination({
   staticAddress, userPubkey, serverPubkey,
   emulatorPubkey: hex.decode(emulatorHex),
   preimage: new Uint8Array(32).fill(8),
   recoveryDelaySeconds,
+  refundLocktime,
 });
 
 const staticScript = hex.encode(ArkAddress.decode(staticAddress).pkScript);
