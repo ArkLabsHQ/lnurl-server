@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PaymentOption, WalletBalance } from "@arkade-os/sdk";
-import type { StoredPayment } from "@arkade-os/lnurl-client";
+import type { InvoiceResult, PayRequest } from "@arkade-os/lnurl-client";
 import { EXPLORER, LNURL_DOMAIN, USERNAME_KEY } from "./config.js";
+import { mergeFeed, readWalletActivity, type FeedRow, type FeedStatus } from "./activity.js";
 import { createMnemonic, loadMnemonic, openWallet, wipeWallet, type DemoWallet } from "./wallet.js";
 import { lnurl } from "./lnurl.js";
 import { createRouter, RAIL_PRIORITY } from "./router.js";
@@ -10,7 +11,7 @@ import { autoSettleBoarding, type BoardingState } from "./boarding.js";
 import { Backup } from "./Backup.js";
 import { Settings } from "./Settings.js";
 import { forgetPayments } from "./payment-store.js";
-import { ReceiveQr } from "./Qr.js";
+import { CopyableQr, ReceiveQr } from "./Qr.js";
 
 type Tab = "Receive" | "Send" | "Activity" | "Settings";
 const TABS: Tab[] = ["Receive", "Send", "Activity", "Settings"];
@@ -210,9 +211,9 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
         ))}
       </nav>
 
-      {tab === "Receive" && <Receive lightningAddress={lightningAddress} wallet={wallet} />}
+      {tab === "Receive" && <Receive lightningAddress={lightningAddress} />}
       {tab === "Send" && <Send wallet={wallet} onSent={refresh} />}
-      {tab === "Activity" && <Activity token={token} username={username} lightningAddress={lightningAddress} />}
+      {tab === "Activity" && <Activity token={token} username={username} lightningAddress={lightningAddress} wallet={wallet} />}
       {tab === "Settings" && (
         <>
           <Backup onRestored={onRestored} onReset={() => { forgetPayments(); onReset(); }} />
@@ -223,33 +224,116 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
   );
 }
 
-function Receive({ lightningAddress, wallet }: { lightningAddress: string; wallet: DemoWallet }) {
+/**
+ * The address is the whole interface. Nothing here shows an Arkade or boarding
+ * address, because a payer never needs one: they resolve the address, read the
+ * rails it offers, and ask for the one they want. Funding this wallet is the
+ * same act — request the `onchain` option and pay what it answers with.
+ *
+ * Options are listed on demand and requested one at a time, never eagerly: a
+ * callback mints a destination and files a settlement record, so rendering the
+ * list by calling every rail would leave a trail of quotes nobody asked for.
+ */
+function Receive({ lightningAddress }: { lightningAddress: string }) {
+  const [payRequest, setPayRequest] = useState<PayRequest | null>(null);
+  const [amount, setAmount] = useState(1000);
+  const [result, setResult] = useState<{ option: string; value: InvoiceResult } | null>(null);
+  const [settled, setSettled] = useState<string>("");
+  const [busy, setBusy] = useState("");
+  const [err, setErr] = useState("");
+
+  const load = async () => {
+    setBusy("options"); setErr(""); setResult(null); setSettled("");
+    try { setPayRequest(await lnurl.ownPayRequest(lightningAddress.split("@")[0]!)); }
+    catch (e) { setErr((e as Error).message); }
+    finally { setBusy(""); }
+  };
+
+  const request = async (optionId: string) => {
+    setBusy(optionId); setErr(""); setResult(null); setSettled("");
+    try {
+      const value = await lnurl.requestPayment(payRequest!, amount, optionId === "lightning" ? undefined : optionId);
+      setResult({ option: optionId, value });
+      // Absence is "no answer available", not failure: only a destination that
+      // identifies the payment gets a verify URL. @see lnurl.ts
+      if (value.verify) {
+        void lnurl.pollVerify(value.verify, { timeoutMs: 300_000, intervalMs: 3_000 })
+          .then((v) => setSettled(v.settled ? "settled" : "not settled within the poll window"))
+          .catch((e: Error) => setSettled(`verify failed: ${e.message}`));
+      }
+    } catch (e) { setErr((e as Error).message); }
+    finally { setBusy(""); }
+  };
+
+  const options = payRequest?.paymentOptions ?? (payRequest ? [{ id: "lightning", type: "lightning" }] : []);
+
   return (
     <>
       <div style={card}>
         <h2 style={{ fontSize: 16, marginTop: 0 }}>Your Lightning address</h2>
         <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "flex-start" }}>
-          <ReceiveQr
-            lightningAddress={lightningAddress}
-            arkadeAddress={wallet.arkadeAddress}
-            boardingAddress={wallet.boardingAddress}
-          />
+          <ReceiveQr lightningAddress={lightningAddress} />
           <div style={{ flex: 1, minWidth: 260 }}>
             <Field label="Lightning address" value={lightningAddress} />
-            <Field label="Arkade address" value={wallet.arkadeAddress} />
             <p style={{ color: "#555", fontSize: 13 }}>
-              Payments arrive whether or not this page is open: the server takes the swap
-              or covenant destination on your behalf, constrained to pay the address above.
+              Everything this wallet receives arrives through this one address, open page or
+              not — the server takes the swap or destination on your behalf, constrained to
+              pay you. To fund it, request the <code>onchain</code> rail below and pay what
+              it hands back.
             </p>
           </div>
         </div>
       </div>
+
       <div style={card}>
-        <h2 style={{ fontSize: 16, marginTop: 0 }}>Fund this wallet</h2>
-        <p style={{ color: "#555", fontSize: 13, marginTop: 0 }}>
-          Send mutinynet BTC to the boarding address, then onboard it to spend offchain.
-        </p>
-        <Field label="Boarding address (onchain)" value={wallet.boardingAddress} />
+        <h2 style={{ fontSize: 16, marginTop: 0 }}>What this address accepts</h2>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
+          <button style={btn} disabled={busy !== ""} onClick={() => void load()}>
+            {busy === "options" ? "Resolving…" : payRequest ? "Reload options" : "Load options"}
+          </button>
+          <input type="number" value={amount} min={1} onChange={(e) => setAmount(Number(e.target.value))}
+            style={{ padding: 8, borderRadius: 6, border: "1px solid #bbb", width: 120 }} />
+          <span style={{ color: "#666", fontSize: 13 }}>sats</span>
+        </div>
+
+        {payRequest && (
+          <p style={{ color: "#666", fontSize: 12, marginTop: 0 }}>
+            accepts {payRequest.minSendable / 1000}–{payRequest.maxSendable / 1000} sats
+          </p>
+        )}
+
+        {options.map((option) => (
+          <div key={option.id}
+            style={{ display: "flex", gap: 12, alignItems: "center", padding: "8px 0", borderTop: "1px solid #eee", fontSize: 13 }}>
+            <span style={{ width: 90 }}>{option.id}</span>
+            <span style={{ color: "#666", flex: 1 }}>
+              {option.minSendable !== undefined && option.maxSendable !== undefined
+                ? `${option.minSendable / 1000}–${option.maxSendable / 1000} sats`
+                : "inherits the address bounds"}
+            </span>
+            <button style={btn} disabled={busy !== ""} onClick={() => void request(option.id)}>
+              {busy === option.id ? "Requesting…" : `Request ${amount} sats`}
+            </button>
+          </div>
+        ))}
+
+        {err && <p style={{ ...mono, color: "crimson" }}>{err}</p>}
+        {result && (() => {
+          const payable = (result.value.kind === "bolt11" ? result.value.pr : result.value.paymentDestination) ?? "";
+          return (
+            <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12, display: "flex", gap: 20, flexWrap: "wrap" }}>
+              <CopyableQr uri={payable} caption={`${result.option} · ${amount} sats`} />
+              <div style={{ flex: 1, minWidth: 240 }}>
+                <Field label={`${result.option} — pay this`} value={payable} />
+                <p style={{ color: "#666", fontSize: 12 }}>
+                  {result.value.verify
+                    ? settled || "polling verify…"
+                    : "no verify on this rail — the server cannot say whether this was paid"}
+                </p>
+              </div>
+            </div>
+          );
+        })()}
         <a href={EXPLORER} target="_blank" rel="noreferrer" style={{ color: "#06c", fontSize: 13 }}>explorer</a>
       </div>
     </>
@@ -343,41 +427,67 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
   );
 }
 
-function Activity({ token, username, lightningAddress }: { token: string; username: string; lightningAddress: string }) {
+const STATUS_STYLE: Record<FeedStatus, { color: string; text: string; title: string }> = {
+  settled: { color: "#16834b", text: "settled", title: "Confirmed." },
+  pending: { color: "#946200", text: "pending", title: "Quoted, not yet observed as paid." },
+  untracked: {
+    color: "#888",
+    text: "not tracked",
+    title: "This rail pays a Bitcoin address, and the server watches the Arkade indexer rather than Bitcoin — so it never reports settlement, whether or not the payment arrived.",
+  },
+};
+
+function Activity({ token, username, lightningAddress, wallet }: {
+  token: string; username: string; lightningAddress: string; wallet: DemoWallet;
+}) {
   const store = useMemo(() => localPaymentStore(), []);
-  const [rows, setRows] = useState<StoredPayment[] | null>(null);
+  const [rows, setRows] = useState<FeedRow[] | null>(null);
   const [err, setErr] = useState("");
 
   useEffect(() => {
     let live = true;
-    // Read the local store first so a closed-and-reopened wallet shows its
-    // history immediately, then sync from the cursor rather than re-fetching.
-    const show = () => { if (live) setRows(storedPayments(lightningAddress)); };
-    show();
+    // The wallet half comes from the SDK and needs no server, so it renders even
+    // when the sync fails — which is also why the error does not replace the list.
+    const show = async () => {
+      if (!live) return;
+      const activities = await readWalletActivity(wallet.wallet);
+      if (live) setRows(mergeFeed(activities, storedPayments(lightningAddress)));
+    };
+    void show();
     const load = () => lnurl.syncActivity(token, username, store)
       .then(() => show())
       .catch((e: Error) => { if (live) setErr(e.message); });
     void load();
     const id = setInterval(() => void load(), 8000);
     return () => { live = false; clearInterval(id); };
-  }, [token, username, lightningAddress, store]);
+  }, [token, username, lightningAddress, store, wallet]);
 
-  if (err) return <div style={card}><p style={{ color: "crimson" }}>{err}</p></div>;
   if (!rows) return <div style={card}>Loading…</div>;
-  if (!rows.length) return <div style={card}><p style={{ color: "#666" }}>No payments yet.</p></div>;
 
   return (
     <div style={card}>
-      <h2 style={{ fontSize: 16, marginTop: 0 }}>Payments to {username}</h2>
-      {rows.map((r) => (
-        <div key={r.key}
-          style={{ display: "flex", gap: 12, padding: "8px 0", borderTop: "1px solid #eee", fontSize: 13 }}>
-          <span style={{ width: 70, color: "#666" }}>{r.kind === "bolt11" ? "lightning" : r.paymentOption ?? "destination"}</span>
-          <span style={{ width: 90 }}>{r.amountMsat ? `${r.amountMsat / 1000} sats` : "—"}</span>
-          <span style={{ color: r.settled ? "#16834b" : "#946200" }}>{r.settled ? "settled" : "pending"}</span>
-          <span style={{ marginLeft: "auto", color: "#666" }}>{new Date(r.createdAt).toLocaleString()}</span>
-        </div>
-      ))}
+      <h2 style={{ fontSize: 16, marginTop: 0 }}>Activity</h2>
+      <p style={{ color: "#555", fontSize: 13, marginTop: 0 }}>
+        This wallet's own transactions, and everything quoted against {username} — including
+        quotes nobody paid, which have no transaction to show up as.
+      </p>
+      {err && <p style={{ ...mono, color: "crimson", fontSize: 12 }}>payment sync failed: {err}</p>}
+      {!rows.length && <p style={{ color: "#666" }}>Nothing yet.</p>}
+      {rows.map((r) => {
+        const status = STATUS_STYLE[r.status];
+        return (
+          <div key={r.key}
+            style={{ display: "flex", gap: 12, padding: "8px 0", borderTop: "1px solid #eee", fontSize: 13 }}>
+            <span style={{ width: 58, color: "#999", fontSize: 11, textTransform: "uppercase" }}>{r.source}</span>
+            <span style={{ width: 80, color: "#666" }}>{r.label}</span>
+            <span style={{ width: 90 }}>
+              {r.amountSat === null ? "—" : `${r.amountSat > 0 && r.source === "wallet" ? "+" : ""}${r.amountSat} sats`}
+            </span>
+            <span style={{ color: status.color }} title={status.title}>{status.text}</span>
+            <span style={{ marginLeft: "auto", color: "#666" }}>{new Date(r.createdAt).toLocaleString()}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
