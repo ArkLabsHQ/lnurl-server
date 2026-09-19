@@ -233,12 +233,31 @@ async function loadBitcoinWallet(): Promise<void> {
 }
 
 /** Bring the corridor stack up (idempotent; reuses a healthy stack). Long on first boot. */
+/**
+ * Re-sync lnd if the chain tip has gone stale.
+ *
+ * `AUTOMINE_INTERVAL` is 0 here deliberately, so nothing mines between runs and
+ * lnd eventually reports `synced_to_chain: false` on a stack that is otherwise
+ * perfectly healthy. `stackIsUp` reads that flag, so an idle stack looks down
+ * and gets restarted — and the restart cannot fix it either, because the tip is
+ * what is stale. One block is enough, and mining on a live stack is harmless.
+ */
+async function nudgeChainIfStale(): Promise<void> {
+  try {
+    const info = await lncli<{ synced_to_chain: boolean }>("lnd", ["getinfo"]);
+    if (!info.synced_to_chain) await mine(1);
+  } catch {
+    // lnd is not answering yet; the caller's own poll covers that case.
+  }
+}
+
 export async function ensureStack(log: (s: string) => void = console.log): Promise<void> {
   if (!existsSync(join(REGTEST_DIR, "regtest.mjs"))) {
     throw new Error("arkade-regtest submodule missing — run: git submodule update --init");
   }
   await assertDockerRunning();
   await ensureIntentSolverImage(log);
+  await nudgeChainIfStale();
   if (await stackIsUp()) {
     if (await arkTimelocksMatch()) {
       await applySolverOverlay();
@@ -256,7 +275,13 @@ export async function ensureStack(log: (s: string) => void = console.log): Promi
   await pollUntil(
     "regtest stack",
     async () => {
-      if (child.exitCode !== null) throw new Error(`regtest start exited with code ${child.exitCode}`);
+      // A NON-ZERO exit is fatal; a clean one only means the command finished.
+      // `start` returns as soon as compose is up, which is before lnd reports
+      // synced_to_chain, so treating any exit as failure turned a slow boot
+      // into "regtest start exited with code 0".
+      if (child.exitCode !== null && child.exitCode !== 0) {
+        throw new Error(`regtest start exited with code ${child.exitCode}`);
+      }
       return stackIsUp();
     },
     1_200_000,
