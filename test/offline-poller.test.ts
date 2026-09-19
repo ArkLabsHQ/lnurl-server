@@ -84,6 +84,20 @@ describe("settleOfflineSwaps", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_underfunded"'));
   });
 
+  it("names a passed refund deadline distinctly from a lockup that is merely unfunded", async () => {
+    const store = new MemorySettlementStore(60_000);
+    store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await settleOfflineSwaps(store, {
+      ...creatorReporting([]),
+      selfClaim: async () => ({ state: "skipped", reason: "expired" }),
+    });
+
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_refund_deadline_passed"'));
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("swap-1"));
+  });
+
   it("leaves a swap pending when the status check throws, and names it in a warning", async () => {
     const store = new MemorySettlementStore(60_000);
     store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });

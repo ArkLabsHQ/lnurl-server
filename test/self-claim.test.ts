@@ -134,11 +134,11 @@ beforeEach(() => {
 });
 
 /** A claimer plus the lockup a solver would have funded for it. */
-function registered(opts: { swapId: string; expectedAmount: number }) {
+function registered(opts: { swapId: string; expectedAmount: number; refundLocktime?: number }) {
   const claimer = createSelfClaimer({ arkServerUrl: ark.baseUrl, emulatorUrl: ark.baseUrl });
   const script = receiveVtxoScript({
     solverPubkey: solverXonly,
-    refundLocktime: REFUND_LOCKTIME,
+    refundLocktime: opts.refundLocktime ?? REFUND_LOCKTIME,
     serverPubkey: operatorXonly,
     paymentHash: PAYMENT_HASH,
     claimDelay: unilateralClaimDelay(UNILATERAL_EXIT_DELAY),
@@ -151,12 +151,17 @@ function registered(opts: { swapId: string; expectedAmount: number }) {
   return { claimer, script, lockupScript: hex.encode(script.pkScript) };
 }
 
-function funded(opts: { swapId: string; expectedAmount: number; valueSat: number }) {
-  const r = registered(opts);
-  const { txid, psbt } = fundingTx(r.script.pkScript, opts.valueSat);
+/** One more solver-funded output at the lockup — piecemeal funding is a real state. */
+function addOutput(r: ReturnType<typeof registered>, valueSat: number): string {
+  const { txid, psbt } = fundingTx(r.script.pkScript, valueSat);
   virtualTxs.set(txid, psbt);
-  vtxos.push(wireVtxo({ txid, valueSat: opts.valueSat, script: r.lockupScript }));
-  return { ...r, txid };
+  vtxos.push(wireVtxo({ txid, valueSat, script: r.lockupScript }));
+  return txid;
+}
+
+function funded(opts: { swapId: string; expectedAmount: number; valueSat: number; refundLocktime?: number }) {
+  const r = registered(opts);
+  return { ...r, txid: addOutput(r, opts.valueSat) };
 }
 
 describe("createSelfClaimer", () => {
@@ -222,14 +227,66 @@ describe("createSelfClaimer", () => {
     expect(submitted).toHaveLength(0);
   });
 
-  it("leaves a multi-vtxo lockup alone instead of spending one below the quote", async () => {
-    const r = funded({ swapId: "swap-6", expectedAmount: 4_900, valueSat: 2_500 });
-    const second = fundingTx(r.script.pkScript, 2_500);
-    virtualTxs.set(second.txid, second.psbt);
-    vtxos.push(wireVtxo({ txid: second.txid, valueSat: 2_500, script: r.lockupScript }));
+  it("refuses a multi-output lockup whose outputs SUM below the quote", async () => {
+    const r = funded({ swapId: "swap-6", expectedAmount: 4_900, valueSat: 2_400 });
+    addOutput(r, 2_400);
 
-    expect(await r.claimer.claim("swap-6", hex.encode(PREIMAGE))).toEqual({ state: "skipped", reason: "unfunded" });
+    expect(await r.claimer.claim("swap-6", hex.encode(PREIMAGE))).toEqual({ state: "skipped", reason: "underfunded" });
     expect(submitted).toHaveLength(0);
+  });
+
+  it("aggregates a piecemeal-funded lockup into one claim, output i paying input i's value", async () => {
+    const r = funded({ swapId: "swap-8", expectedAmount: 4_900, valueSat: 2_500 });
+    const second = addOutput(r, 3_100);
+
+    expect(await r.claimer.claim("swap-8", hex.encode(PREIMAGE))).toMatchObject({ state: "claimed" });
+
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0].checkpointTxs).toHaveLength(2);
+    const arkTx = Transaction.fromPSBT(base64.decode(submitted[0].arkTx));
+    expect(arkTx.inputsLength).toBe(2);
+    // Two payouts, then the packet, then buildOffchainTx's own P2A.
+    expect(arkTx.outputsLength).toBe(4);
+    expect([0, 1].map((i) => hex.encode(arkTx.getOutput(i).script!))).toEqual([
+      hex.encode(PAYOUT_PKSCRIPT),
+      hex.encode(PAYOUT_PKSCRIPT),
+    ]);
+    // The covenant reads output[i] against input[i], so these may not be merged or reordered.
+    expect([arkTx.getOutput(0).amount, arkTx.getOutput(1).amount]).toEqual([2_500n, 3_100n]);
+    expect(submitted[0].checkpointTxs.map((c) => hex.encode(Transaction.fromPSBT(base64.decode(c)).getInput(0).txid!))).toEqual([
+      r.txid,
+      second,
+    ]);
+
+    const ext = arkTx.getOutput(2).script!;
+    expect(Extension.isExtension(ext)).toBe(true);
+    expect(Extension.fromBytes(ext).getEmulatorPacket()!.entries.map((e) => e.vin)).toEqual([0, 1]);
+
+    for (const i of [0, 1]) {
+      expect(getArkPsbtFields(arkTx, i, ConditionWitness)[0]?.map(hex.encode)).toEqual([hex.encode(PREIMAGE)]);
+      expect(getArkPsbtFields(arkTx, i, PrevArkTxField)).toHaveLength(1);
+      const checkpoint = Transaction.fromPSBT(base64.decode(submitted[0].checkpointTxs[i]));
+      expect(getArkPsbtFields(checkpoint, 0, ConditionWitness)[0]?.map(hex.encode)).toEqual([hex.encode(PREIMAGE)]);
+    }
+  });
+
+  it("refuses to publish the preimage once the solver's refund deadline has passed", async () => {
+    const { claimer } = funded({
+      swapId: "swap-9",
+      expectedAmount: 4_900,
+      valueSat: 4_900,
+      refundLocktime: Math.floor(Date.now() / 1000) - 60,
+    });
+
+    expect(await claimer.claim("swap-9", hex.encode(PREIMAGE))).toEqual({ state: "skipped", reason: "expired" });
+    expect(submitted).toHaveLength(0);
+  });
+
+  it("still claims under a block-height refund locktime, which is no wall-clock deadline", async () => {
+    const { claimer } = funded({ swapId: "swap-10", expectedAmount: 4_900, valueSat: 4_900, refundLocktime: 900_000 });
+
+    expect((await claimer.claim("swap-10", hex.encode(PREIMAGE))).state).toBe("claimed");
+    expect(submitted).toHaveLength(1);
   });
 
   it("skips a swap it never quoted (nothing to rebuild the covenant from)", async () => {

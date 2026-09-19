@@ -29,6 +29,8 @@ export async function settleOfflineSwaps(
           logger.info("offline_swap_self_claimed", { swapId: p.swapId, arkTxid: outcome.arkTxid });
         } else if (outcome.reason === "underfunded") {
           logger.warn("offline_swap_underfunded", { swapId: p.swapId });
+        } else if (outcome.reason === "expired") {
+          logger.error("offline_swap_refund_deadline_passed", { swapId: p.swapId });
         }
       } catch (err) {
         logger.warn("offline_swap_self_claim_failed", { swapId: p.swapId, error: err });

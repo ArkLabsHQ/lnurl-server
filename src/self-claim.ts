@@ -23,6 +23,7 @@ import {
   type IndexerProvider,
   type VHTLC,
 } from "@arkade-os/sdk";
+import { LOCKTIME_THRESHOLD } from "@arkade-os/swap";
 
 export interface SelfClaimRegistration {
   swapId: string;
@@ -35,7 +36,7 @@ export interface SelfClaimRegistration {
 export type SelfClaimOutcome =
   | { state: "claimed"; arkTxid: string }
   /** `unregistered` also covers an already-claimed swap: the entry is dropped on success. */
-  | { state: "skipped"; reason: "unregistered" | "unfunded" | "underfunded" };
+  | { state: "skipped"; reason: "unregistered" | "unfunded" | "underfunded" | "expired" };
 
 interface EmulatorSubmit {
   submitTx(arkTx: string, checkpointTxs: string[]): Promise<{ signedArkTx: string; signedCheckpointTxs: string[] }>;
@@ -112,29 +113,36 @@ export function createSelfClaimer(opts: {
     async claim(swapId, preimage) {
       const reg = registry.get(swapId);
       if (!reg) return { state: "skipped", reason: "unregistered" };
+      // Publishing P inside the solver's live refund window risks losing the race and giving it
+      // away for nothing. A height-typed locktime is not wall clock, so it gates nothing.
+      const deadline = reg.script.options.refundLocktime;
+      if (deadline >= BigInt(LOCKTIME_THRESHOLD) && BigInt(Math.floor(Date.now() / 1000)) >= deadline) {
+        return { state: "skipped", reason: "expired" };
+      }
       const lockupScript = hex.encode(reg.script.pkScript);
       const { vtxos } = await indexer.getVtxos({ scripts: [lockupScript], spendableOnly: true });
       // "Not funded yet" and "already spent" are the same no-op: retries are safe.
-      if (vtxos.length !== 1) return { state: "skipped", reason: "unfunded" };
-      const vtxo = vtxos[0]!;
-      // The outpoint spent, never a sum across outpoints: the preimage buys THIS one.
-      if (vtxo.value < reg.expectedAmount) return { state: "skipped", reason: "underfunded" };
+      if (vtxos.length === 0) return { state: "skipped", reason: "unfunded" };
+      // A sum, not one outpoint: `spendableOnly` dropped what is not live, and this one tx spends all the rest.
+      const total = vtxos.reduce((sum, v) => sum + v.value, 0);
+      if (total < reg.expectedAmount) return { state: "skipped", reason: "underfunded" };
 
       const [leaf, arkadeScript] = reg.script.nonInteractiveClaim();
       const payTo = reg.script.options.nonInteractiveParameters?.receiverPkScript;
       if (!payTo) throw new Error(`self-claim: registration for ${swapId} carries no nonInteractiveParameters`);
-      const packet = EmulatorPacket.create([{ vin: 0, script: arkadeScript, witness: RawWitness.encode([]) }]);
+      const packet = EmulatorPacket.create(vtxos.map((_, vin) => ({ vin, script: arkadeScript, witness: RawWitness.encode([]) })));
       const info = await arkProvider.getInfo();
-      // The covenant checks the output at the SPENT INPUT's index: payout stays 0.
+      const tapTree = reg.script.encode();
+      // The covenant checks output[i] against input[i]: one payout per input, in order, packet last.
       const { arkTx, checkpoints } = buildOffchainTx(
-        [{ txid: vtxo.txid, vout: vtxo.vout, value: vtxo.value, tapLeafScript: leaf, tapTree: reg.script.encode() }],
-        [{ script: payTo, amount: BigInt(vtxo.value) }, Extension.create([packet]).txOut()],
+        vtxos.map((v) => ({ txid: v.txid, vout: v.vout, value: v.value, tapLeafScript: leaf, tapTree })),
+        [...vtxos.map((v) => ({ script: payTo, amount: BigInt(v.value) })), Extension.create([packet]).txOut()],
         CSVMultisigTapscript.decode(hex.decode(info.checkpointTapscript)),
       );
       // The emulator resolves the spent input's prevout from its creating ark tx.
-      await attachPrevArkTxs(arkTx, [vtxo.txid], indexer);
-      setArkPsbtField(arkTx, 0, ConditionWitness, [hex.decode(preimage)]);
-      setArkPsbtField(checkpoints[0]!, 0, ConditionWitness, [hex.decode(preimage)]);
+      await attachPrevArkTxs(arkTx, vtxos.map((v) => v.txid), indexer);
+      vtxos.forEach((_, i) => setArkPsbtField(arkTx, i, ConditionWitness, [hex.decode(preimage)]));
+      for (const checkpoint of checkpoints) setArkPsbtField(checkpoint, 0, ConditionWitness, [hex.decode(preimage)]);
 
       await emulator.submitTx(
         base64.encode(arkTx.toPSBT()),
