@@ -150,10 +150,13 @@ export function createCovenantDestinationProvider(opts: {
       await opts.contracts?.createContract({
         type: COVENANT_CONTRACT_TYPE,
         // The VHTLC's own parameters commit to the preimage HASH, so P rides
-        // alongside them under a key the SDK's deserializer ignores. The sweeper
-        // needs it and nothing else stores it; keeping it in the clear costs
-        // nothing, since the covenant is what pins where a sweep may pay.
-        params: { ...covenantDestinationHandler.serializeParams(vtxo.options), preimage: hex.encode(preimage) },
+        // alongside them under a key the SDK's deserializer ignores. Deliberately
+        // NOT `preimage`: the SDK's selectPath reads that key to offer the
+        // collaborative `claim()` leaf, a different leaf with different signers,
+        // and only the sender-before-receiver order in its resolveRole keeps the
+        // two apart today. Keeping P in the clear costs nothing — the covenant,
+        // not the secret, is what pins where a sweep may pay.
+        params: { ...covenantDestinationHandler.serializeParams(vtxo.options), covenantPreimage: hex.encode(preimage) },
         script: d.script,
         address: d.address,
         watch: "awaiting-funds",

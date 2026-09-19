@@ -29,7 +29,7 @@ const covenant = covenantVtxoScript({
 });
 const realParams = {
   ...handler.serializeParams(covenant.vtxo.options),
-  preimage: hex.encode(PREIMAGE),
+  covenantPreimage: hex.encode(PREIMAGE),
 };
 
 /** Keyed by the txid it actually hashes to, so PrevArkTx resolution can find it. */
@@ -127,7 +127,7 @@ describe("createCovenantSweeper", () => {
   });
 
   it("skips a destination whose contract carries no preimage", async () => {
-    const { preimage: _dropped, ...withoutPreimage } = realParams;
+    const { covenantPreimage: _dropped, ...withoutPreimage } = realParams;
     const { manager } = managerWith([{ script: "5120aa", vtxos: [fundedVtxo()], params: withoutPreimage }]);
     const { sweeper, submitted } = sweeperWith(manager);
     expect(await sweeper.sweep()).toBe(0);

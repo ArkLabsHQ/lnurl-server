@@ -111,7 +111,9 @@ describe("createCovenantDestinationProvider registration", () => {
 
     await provider.derive({ arkadeAddress: input.staticAddress, claimPublicKey: hex.encode(input.userPubkey) });
 
-    expect(created[0]!.params.preimage).toBe(hex.encode(preimage));
+    expect(created[0]!.params.covenantPreimage).toBe(hex.encode(preimage));
+    // Never under `preimage`: that key gates a different leaf in the SDK.
+    expect(created[0]!.params.preimage).toBeUndefined();
   });
 
   it("refuses to hand out an address it could not register", async () => {

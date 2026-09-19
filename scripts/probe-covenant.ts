@@ -47,8 +47,12 @@ const staticAddress = new VtxoScript([
 
 console.log(`operator   ${arkServerUrl}  signer ${String(info.signerPubkey)}`);
 console.log(`emulator   ${emulatorHex}  (${covclaimdUrl ? `from ${covclaimdUrl}` : `pinned for ${network}`})`);
+// Wall-clock, and baked into the script: two runs otherwise derive two different
+// addresses for the same user, which is exactly what this probe compares. Printed
+// so a mismatch between runs reads as the locktime moving rather than a real drift.
 const refundLocktime = Math.floor(Date.now() / 1000) + recoveryDelaySeconds;
 console.log(`delay      ${recoveryDelaySeconds}s  (multiple of 512: ${recoveryDelaySeconds % 512 === 0})`);
+console.log(`locktime   ${refundLocktime}  (wall clock — addresses differ between runs)`);
 
 const first = deriveCovenantDestination({
   staticAddress, userPubkey, serverPubkey,

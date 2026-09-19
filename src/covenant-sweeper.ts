@@ -53,9 +53,9 @@ export function createCovenantSweeper(opts: {
         const live = vtxos.filter((v) => !v.isSpent);
         if (live.length === 0) continue;
         // Rides alongside the VHTLC's own serialized parameters, which carry the
-        // preimage HASH and not the preimage. Nothing is lost by storing it in the
-        // clear: the covenant, not the secret, is what pins where a sweep can pay.
-        const preimage = contract.params.preimage;
+        // preimage HASH and not the preimage. Under its own key, not `preimage`,
+        // which the SDK reads to gate a different leaf. @see covenant-destination.ts
+        const preimage = contract.params.covenantPreimage;
         if (!preimage) {
           console.warn(`covenant sweep: ${contract.script.slice(0, 16)}… has no stored preimage`);
           continue;
@@ -72,6 +72,8 @@ export function createCovenantSweeper(opts: {
             indexer,
             emulator,
           });
+          // VTXOs, not transactions: one aggregated claim can move several, so
+          // this counts what was swept rather than how many pushes it took.
           moved += live.length;
           console.log(`covenant sweep: ${contract.script.slice(0, 16)}… -> ${arkTxid}`);
         } catch (err) {
