@@ -244,6 +244,42 @@ describe("listPayments contract against a DB-backed server", () => {
     expect(records.size).toBe(4);
   });
 
+  // The cursor is creation-ordered, `settled` is not. A newer row exists by the
+  // time the older one settles, which is exactly when the cursor forgets it.
+  it("syncPayments converges on a row the server settles after a newer one arrived", async () => {
+    const owner = createLnurlClient({ baseUrl: ctx.baseUrl });
+    await owner.registerAddress({ token: TOKEN, username: "alice", domain: "domain.com" });
+    const addressId = repos.addresses.getByDomainAndUsername(repos.domains.getByDomain("domain.com")!.id, "alice")!.id;
+    for (const [at, hash] of [[1_000, HASH], [2_000, "s2"]] as const) {
+      clock = at;
+      settlements.create({ paymentHash: hash, pr: "lnbc1", sessionId: "sess", amountMsat: 1_000, addressId });
+    }
+
+    const records = new Map<string, StoredPayment>();
+    const watermarks = new Map<string, number>();
+    const store: PaymentSyncStore = {
+      upsert: async (next) => {
+        for (const r of next) records.set(r.key, r);
+      },
+      readWatermark: async (b, a) => watermarks.get(`${b}|${a}`),
+      writeWatermark: async (b, a, since) => {
+        watermarks.set(`${b}|${a}`, since);
+      },
+    };
+    const target = { baseUrl: ctx.baseUrl, token: TOKEN, username: "alice", domain: "domain.com" };
+
+    const first = await syncPayments([target], { client: () => owner, store });
+    expect(first.failures).toEqual([]);
+    expect(records.get(`${ctx.baseUrl}|${HASH}`)?.settled).toBe(false);
+
+    clock = 5_000;
+    expect(settlements.markSettled(HASH, PREIMAGE)).toBe(true);
+    const second = await syncPayments([target], { client: () => owner, store });
+
+    expect(second.failures).toEqual([]);
+    expect(records.get(`${ctx.baseUrl}|${HASH}`)).toMatchObject({ settled: true, preimage: PREIMAGE, settledAt: 5_000 });
+  });
+
   // The stall guard was written from reading the server's cursor. This proves
   // the condition is reachable against the real one rather than imagined: the
   // page is full, nextSince is the last row's created_at, and it cannot move.

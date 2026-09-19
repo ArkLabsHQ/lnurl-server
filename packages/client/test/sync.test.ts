@@ -42,11 +42,24 @@ const makeDestination = (
   settledAt: null,
 });
 
+const settle = <T extends PaymentActivity>(entry: T, settledAt: number): T => ({ ...entry, settled: true, settledAt });
+
 const makePage = (target: PaymentSyncTarget, payments: PaymentActivity[], nextSince: number): PaymentPage => ({
   source: { domain: target.domain, lightningAddress: addressOf(target) },
   payments,
   nextSince,
 });
+
+// The server's own cursor: `created_at >= since`, and nextSince is the last
+// row's createdAt or the requested since when the page is empty.
+const serve =
+  (target: PaymentSyncTarget, rows: PaymentActivity[]): ListPayments["listPayments"] =>
+  async (_token, _username, opts) => {
+    const page = rows
+      .filter((row) => opts?.since === undefined || row.createdAt >= opts.since)
+      .slice(0, opts?.limit ?? 50);
+    return makePage(target, page, page[page.length - 1]?.createdAt ?? opts?.since ?? 0);
+  };
 
 interface MemoryStore extends PaymentSyncStore {
   all(): StoredPayment[];
@@ -71,11 +84,11 @@ type ListPayments = Pick<LnurlClient, "listPayments">;
 
 describe("syncPayments", () => {
   it("requests another page after a full page and stops after a short page", async () => {
-    const full = Array.from({ length: 50 }, (_, index) => makeBolt11(`hash-${index}`, 1000 + index));
+    const full = Array.from({ length: 50 }, (_, index) => settle(makeBolt11(`hash-${index}`, 1000 + index), 1000 + index));
     const listPayments = vi
       .fn<ListPayments["listPayments"]>()
       .mockResolvedValueOnce(makePage(targetA, full, 1050))
-      .mockResolvedValueOnce(makePage(targetA, [makeBolt11("hash-50", 1050)], 1051));
+      .mockResolvedValueOnce(makePage(targetA, [settle(makeBolt11("hash-50", 1050), 1050)], 1051));
     const store = createMemoryStore();
 
     const result = await syncPayments([targetA], { client: () => ({ listPayments }), store });
@@ -138,7 +151,7 @@ describe("syncPayments", () => {
   });
 
   it("keeps the last good cursor when a target fails mid-pagination", async () => {
-    const full = Array.from({ length: 50 }, (_, index) => makeBolt11(`hash-${index}`, 1000 + index));
+    const full = Array.from({ length: 50 }, (_, index) => settle(makeBolt11(`hash-${index}`, 1000 + index), 1000 + index));
     const listPayments = vi
       .fn<ListPayments["listPayments"]>()
       .mockResolvedValueOnce(makePage(targetA, full, 1050))
@@ -224,6 +237,102 @@ describe("syncPayments", () => {
     expect((result.failures[0]?.error as LnurlError).retryable).toBe(false);
     expect(store.all()).toHaveLength(50);
     expect(await store.readWatermark(SERVER_A, addressOf(targetA))).toBe(1000);
+  });
+
+  it("re-reads a pending row on the next sync until it settles", async () => {
+    const rows: PaymentActivity[] = [makeBolt11("hash-old", 1000), settle(makeBolt11("hash-new", 2000), 2000)];
+    const listPayments = vi.fn<ListPayments["listPayments"]>(serve(targetA, rows));
+    const store = createMemoryStore();
+
+    await syncPayments([targetA], { client: () => ({ listPayments }), store });
+    expect(store.all().find((r) => r.identifier === "hash-old")?.settled).toBe(false);
+
+    rows[0] = settle(rows[0] as Bolt11Activity, 2500);
+    await syncPayments([targetA], { client: () => ({ listPayments }), store });
+
+    expect(store.all().find((r) => r.identifier === "hash-old")).toMatchObject({ settled: true, settledAt: 2500 });
+    expect(listPayments).toHaveBeenNthCalledWith(2, "token-a", "alice", { domain: DOMAIN, since: 1000, limit: 50 });
+    expect(await store.readWatermark(SERVER_A, addressOf(targetA))).toBe(2000);
+  });
+
+  it("anchors on the oldest settleable row, never on an onchain one", async () => {
+    const onchain: DestinationActivity = { ...makeDestination("verify-onchain", 1000), paymentOption: "onchain" };
+    const rows: PaymentActivity[] = [onchain, makeDestination("verify-arkade", 2000), settle(makeBolt11("hash-new", 3000), 3000)];
+    const listPayments = vi.fn<ListPayments["listPayments"]>(serve(targetA, rows));
+    const store = createMemoryStore();
+
+    await syncPayments([targetA], { client: () => ({ listPayments }), store });
+
+    expect(await store.readWatermark(SERVER_A, addressOf(targetA))).toBe(2000);
+  });
+
+  it("leaves the cursor at the newest row when only an onchain row is pending", async () => {
+    const onchain: DestinationActivity = { ...makeDestination("verify-onchain", 1000), paymentOption: "onchain" };
+    const rows: PaymentActivity[] = [onchain, settle(makeBolt11("hash-new", 2000), 2000)];
+    const listPayments = vi.fn<ListPayments["listPayments"]>(serve(targetA, rows));
+    const store = createMemoryStore();
+
+    await syncPayments([targetA], { client: () => ({ listPayments }), store });
+    await syncPayments([targetA], { client: () => ({ listPayments }), store });
+
+    expect(listPayments).toHaveBeenNthCalledWith(2, "token-a", "alice", { domain: DOMAIN, since: 2000, limit: 50 });
+    expect(listPayments).toHaveBeenCalledTimes(2);
+  });
+
+  it("drags the cursor back by at most one page, so a stuck row stops re-paging", async () => {
+    const rows: PaymentActivity[] = [
+      makeBolt11("hash-stuck", 1000),
+      ...[2000, 3000, 4000].map((at) => settle(makeBolt11(`hash-${at}`, at), at)),
+    ];
+    const listPayments = vi.fn<ListPayments["listPayments"]>(serve(targetA, rows));
+    const store = createMemoryStore();
+
+    await syncPayments([targetA], { client: () => ({ listPayments }), store, limit: 2 });
+    expect(await store.readWatermark(SERVER_A, addressOf(targetA))).toBe(4000);
+
+    listPayments.mockClear();
+    await syncPayments([targetA], { client: () => ({ listPayments }), store, limit: 2 });
+
+    expect(listPayments).toHaveBeenNthCalledWith(1, "token-a", "alice", { domain: DOMAIN, since: 4000, limit: 2 });
+    expect(listPayments).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a pending row reachable when a target fails mid-pagination", async () => {
+    const full = [
+      makeBolt11("hash-stuck", 1000),
+      ...Array.from({ length: 49 }, (_, index) => settle(makeBolt11(`hash-${index}`, 1001 + index), 1001 + index)),
+    ];
+    const listPayments = vi
+      .fn<ListPayments["listPayments"]>()
+      .mockResolvedValueOnce(makePage(targetA, full, 1049))
+      .mockRejectedValueOnce(new Error("connection reset"));
+    const store = createMemoryStore();
+
+    const result = await syncPayments([targetA], { client: () => ({ listPayments }), store });
+
+    expect(result.failures).toHaveLength(1);
+    expect(await store.readWatermark(SERVER_A, addressOf(targetA))).toBe(1000);
+  });
+
+  it("still fails a stalled full page while pending rows are dragging the cursor", async () => {
+    const first = [
+      makeBolt11("hash-stuck", 1000),
+      ...Array.from({ length: 49 }, (_, index) => settle(makeBolt11(`hash-${index}`, 1001 + index), 1001 + index)),
+    ];
+    const stalled = Array.from({ length: 50 }, (_, index) => makeBolt11(`stalled-${index}`, 1049));
+    const listPayments = vi
+      .fn<ListPayments["listPayments"]>()
+      .mockResolvedValueOnce(makePage(targetA, first, 1049))
+      .mockResolvedValue(makePage(targetA, stalled, 1049));
+    const store = createMemoryStore();
+
+    const result = await syncPayments([targetA], { client: () => ({ listPayments }), store });
+
+    expect(listPayments).toHaveBeenCalledTimes(2);
+    expect(result.failures).toHaveLength(1);
+    expect((result.failures[0]?.error as LnurlError).retryable).toBe(false);
+    expect(String((result.failures[0]?.error as LnurlError).message)).toContain("stalled");
+    expect(await store.readWatermark(SERVER_A, addressOf(targetA))).toBe(1049);
   });
 
   it("surfaces a terminal failure once without retrying", async () => {

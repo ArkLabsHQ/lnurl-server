@@ -200,7 +200,7 @@ const { synced, failures } = await syncPayments(
 interface PaymentSyncStore {
   upsert(records: StoredPayment[]): Promise<void>  // keyed by record.key; overwrite, never append
   readWatermark(baseUrl: string, lightningAddress: string): Promise<number | undefined>
-  writeWatermark(baseUrl: string, lightningAddress: string, since: number): Promise<void>
+  writeWatermark(baseUrl: string, lightningAddress: string, since: number): Promise<void>  // may move backwards; store verbatim
 }
 ```
 
@@ -208,10 +208,11 @@ interface PaymentSyncStore {
 
 A target that fails lands in `failures` while the others keep syncing, and its watermark stays put — so a transient outage cannot silently skip the payments that arrived during it.
 
-Three things that matter for correctness. `syncPayments` handles all three; you must handle them yourself if you drive `listPayments` directly:
+These matter for correctness. `syncPayments` handles them all; you must handle them yourself if you drive `listPayments` directly:
 
 - **`page.source`** carries `{ domain, lightningAddress }`. Store it with each entry: a wallet holding addresses on several servers needs it to attribute them, and the deduplication key is `(baseUrl, identifier)` — identifiers are unique per server, not globally.
 - **`nextSince` is inclusive**, so the boundary row comes back on the next sync. Upsert rather than insert. An exclusive cursor would silently drop payments sharing a millisecond, which is why it works this way.
+- **A creation-ordered cursor cannot track settlement.** `settled` mutates long after a row is created, so a cursor parked at the newest `createdAt` never re-reads an older row that settles later — the wallet shows it pending forever. `syncPayments` persists the oldest row still waiting to settle instead, and reaches at most one page back so a row nothing will ever settle — an `onchain` destination, which nothing server-side watches, or an invoice nobody paid — costs one extra page per sync rather than re-paging your whole history.
 - **Switch on `kind`, never on the presence of a payment hash.** On the arkade rail the server's own record has no payment hash — the identifier is an opaque verify id — which is why `DestinationActivity` calls it `verifyId` and has no `paymentHash` property at all.
 - **A full page need not advance the cursor.** `nextSince` is the last row's `createdAt`, so if a whole page shares one millisecond the next request returns that same page. Stop and report rather than loop; `syncPayments` fails that target with a terminal `LnurlError`.
 

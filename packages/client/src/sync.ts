@@ -55,7 +55,7 @@ export interface PaymentSyncStore {
   upsert(records: StoredPayment[]): Promise<void>;
   /** Last good inclusive cursor for one address, undefined when never synced. */
   readWatermark(baseUrl: string, lightningAddress: string): Promise<number | undefined>;
-  /** Persists the inclusive cursor after a page is successfully upserted. */
+  /** Persists the inclusive cursor after a page is upserted; it moves backwards. */
   writeWatermark(baseUrl: string, lightningAddress: string, since: number): Promise<void>;
 }
 
@@ -76,6 +76,8 @@ export interface PaymentSyncTarget {
 const DEFAULT_SYNC_PAGE_LIMIT = 50;
 const SYNC_MAX_ATTEMPTS = 3;
 const SYNC_RETRY_DELAY_MS = 250;
+// Rails nothing server-side watches: unsettled there is terminal, not late.
+const NEVER_SETTLES = new Set(["onchain"]);
 
 type SyncClient = Pick<LnurlClient, "listPayments">;
 
@@ -112,6 +114,16 @@ const toStored = (
   };
 };
 
+const mayStillSettle = (row: StoredPayment): boolean =>
+  !row.settled && (row.paymentOption === null || !NEVER_SETTLES.has(row.paymentOption));
+
+/** Oldest row still worth re-reading, or `fallback` when none is. */
+const resumeFrom = (tail: StoredPayment[], fallback: number): number => {
+  let oldest = fallback;
+  for (const row of tail) if (mayStillSettle(row) && row.createdAt < oldest) oldest = row.createdAt;
+  return oldest;
+};
+
 const listWithBackoff = (
   client: SyncClient,
   token: string,
@@ -141,6 +153,8 @@ const syncTarget = async (
 ): Promise<void> => {
   const lightningAddress = `${target.username}@${target.domain}`;
   let since = await store.readWatermark(target.baseUrl, lightningAddress);
+  // One page's worth: how far back the cursor may reach for a pending row.
+  const tail: StoredPayment[] = [];
   for (;;) {
     const page = await listWithBackoff(client, target.token, target.username, target.domain, since, limit);
     const records = page.payments.map((entry) =>
@@ -150,9 +164,11 @@ const syncTarget = async (
     // Reported per page rather than returned, so a target that fails later
     // still counts the rows it did store — `synced` must match the store.
     onStored(records.length);
+    for (const record of records) tail.push(record);
+    if (tail.length > limit) tail.splice(0, tail.length - limit);
     const previous = since;
     since = page.nextSince;
-    await store.writeWatermark(target.baseUrl, lightningAddress, since);
+    await store.writeWatermark(target.baseUrl, lightningAddress, resumeFrom(tail, since));
     if (page.payments.length < limit) return;
     // The cursor is the last row's createdAt, so a full page that fails to
     // advance it would re-fetch itself forever. The page is already stored.
@@ -169,10 +185,13 @@ const syncTarget = async (
  * Syncs payment activity for every target into the consumer-supplied store.
  *
  * Each target paginates while a page comes back full
- * (`payments.length === limit`); a short page ends that target. The
- * watermark advances only after a page is successfully upserted, so a target
- * that fails wholly keeps its old cursor and a target failing mid-pagination
- * keeps its last good one. `nextSince` is inclusive, so the boundary row is
+ * (`payments.length === limit`); a short page ends that target. The watermark
+ * is written only after a page is successfully upserted, so a target that fails
+ * wholly keeps its old cursor. It holds the oldest row still waiting to settle,
+ * not the newest `createdAt`, because `settled` mutates after a row is created;
+ * it reaches one page back at most, so a row nothing will ever settle costs one
+ * extra page per sync rather than re-paging the history. Pagination itself still
+ * walks `nextSince` forward. `nextSince` is inclusive, so the boundary row is
  * deliberately re-fetched and the store's key-overwrite absorbs it — the loop
  * itself never dedupes. Only `LnurlError.retryable` (HTTP 429) is retried;
  * anything else is terminal. A full page that leaves the cursor where it was
