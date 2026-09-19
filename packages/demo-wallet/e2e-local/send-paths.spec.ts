@@ -44,8 +44,10 @@ async function fundedBalance(page: Page, atLeast: number): Promise<number> {
 
 const name = (prefix: string) => `${prefix}${Date.now().toString(36)}${randomBytes(2).toString("hex")}`;
 
-/** Arrival is asserted here, not on the recipient's balance: a fresh browser
- *  wallet does not surface a transfer it did not make itself. */
+/** Arrival is asserted on the chain rather than the recipient's balance because
+ *  the covenant sweep, not the payment, is what puts a spendable VTXO there —
+ *  and the amount is exact here, where a balance nets off the transfer fee.
+ *  (A browser wallet does surface an incoming transfer: incoming-transfer.spec.ts.) */
 async function spendableAt(arkadeAddress: string): Promise<number[]> {
   const script = hex.encode(ArkAddress.decode(arkadeAddress).pkScript);
   const { vtxos } = await new RestIndexerProvider(stack.arkServer).getVtxos({ scripts: [script], spendableOnly: true });
