@@ -154,30 +154,6 @@ await client.registerArkadeIdentity({
 
 `boardingAddress` is the one exception to that overwrite: register it and the address advertises an `onchain` payment option paying it, omit it and an already-registered one is left alone — so a later identity update does not silently withdraw the rail. It is sent unvalidated, unlike `claimPublicKey`, because it is an ordinary Bitcoin address on whatever network the operator runs and this package cannot know which. Payers get no `verify` URL on that rail: nothing server-side observes Bitcoin, so those payments never settle there and a URL could only ever answer "not yet".
 
-### Making covenant destinations recoverable
-
-A covenant destination's address commits to six values, one of which is a preimage the server used to mint with `randomBytes`. If that server disappears, its user cannot rebuild the script their money sits at. `covenantSupply` fixes that: the **wallet** derives the preimages from its own key and uploads a batch the server spends one per payment, so every destination is re-derivable from the seed alone.
-
-```ts
-import { covenantSupplyRequest } from '@arkade-os/lnurl-client/arkade'
-
-const supply = await covenantSupplyRequest(identity, {
-  domain: 'example.com',   // the LUD-16 domain, not a base URL — it is hashed into every salt
-  startIndex: 0,           // must equal the server's reported nextIndex
-  count: 64,
-  profile: { recoveryDelaySeconds: 86_528, emulatorPubkey: '…' },
-})
-
-const result = await client.registerArkadeIdentity({ ...identity, covenantSupply: supply })
-assertCovenantSupplyAccepted(result, supply)   // throws if the server did not store it
-```
-
-**Check the result, always.** A server older than this protocol parses the body field by field, drops `covenantSupply` silently, and still answers `{ok:true}` — so treating "no error" as success is exactly how a wallet ends up believing its destinations are recoverable when they are not. `registerArkadeIdentity` returns `{}` in that case; `assertCovenantSupplyAccepted` turns it into a throw.
-
-`profile` is asserted rather than requested: the server rejects the whole upload with `400` if its own covenant profile differs, because a supply accepted under terms the covenant does not use would rebuild the wrong address. Sending no supply is still valid and leaves the server on its existing behaviour.
-
-The offline-swap rail has its **own separate supply**, `swapSupply`, minted with `leg: 'swap'`. Never reuse one batch for both: the covenant sweep leaf and the swap VHTLC would hash to the same secret, so revealing it on one rail unlocks the other. Note that a derivable swap preimage is not on its own enough to claim a swap — the VHTLC's script params come from the solver's quote, which only the server stored — so pull `fetchSwapRecovery` for the blob that closes that gap, and `fetchCovenantRecovery` for destinations issued before any supply existed, whose random preimage no seed reproduces.
-
 ### With the Arkade SDK
 
 The main entry point stays free of `@arkade-os/sdk`, because the payer half of this package has nothing to do with Arkade and a checkout page should not pull the SDK and its Expo peers to ask an address for an invoice. A receiver already has the SDK, so the Arkade-aware helpers live behind a subpath with the SDK as an **optional peer dependency**:

@@ -17,8 +17,6 @@ interface AddressRecord {
   arkade_address: string | null;
   claim_public_key: string | null;
   boarding_address: string | null;
-  covenant_scheme: string | null;
-  covenant_profile: string | null;
   disabled_rails: string | null;
   created_at: number;
   updated_at: number;
@@ -45,8 +43,6 @@ function rowToAddress(r: AddressRecord): AddressRow {
     arkadeAddress: r.arkade_address,
     claimPublicKey: r.claim_public_key,
     boardingAddress: r.boarding_address,
-    covenantScheme: r.covenant_scheme,
-    covenantProfile: r.covenant_profile,
     disabledRails: parseDisabledRails(r.disabled_rails),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -123,14 +119,6 @@ export class AddressesRepo {
     this.db
       .prepare("UPDATE addresses SET boarding_address = ?, updated_at = ? WHERE id = ?")
       .run(boardingAddress, Date.now(), id);
-  }
-
-  /** Record the scheme and operator profile one accepted preimage supply was
-   *  uploaded under, so a later upload can be held to the same terms. */
-  setCovenantSupplyTerms(id: number, scheme: string, profile: string): void {
-    this.db
-      .prepare("UPDATE addresses SET covenant_scheme = ?, covenant_profile = ?, updated_at = ? WHERE id = ?")
-      .run(scheme, profile, Date.now(), id);
   }
 
   /** Replace the per-address rail policy (operator-controlled, per LNURL). */

@@ -67,59 +67,8 @@ export interface RegisterArkadeIdentityRequest {
   claimPublicKey: string;
   /** Boarding address the onchain rail pays; omit it to leave a registered one alone. */
   boardingAddress?: string;
-  /** Preimages the server spends on this address's covenant destinations, so the
-   *  owner can rebuild them without it. Omit to leave an existing supply alone. */
-  covenantSupply?: CovenantSupplyRequest;
-  /** The offline-swap rail's own supply, SEPARATE from `covenantSupply`: one
-   *  shared secret would let a reveal on either rail unlock the other. */
-  swapSupply?: SwapSupplyRequest;
   /** Receiving domain; the server default when omitted. */
   domain?: string;
-}
-
-/** Operator terms a supply is minted against. The server refuses one whose
- *  profile disagrees with its own — different terms, different script. */
-export interface CovenantProfile {
-  recoveryDelaySeconds: number;
-  emulatorPubkey: string;
-}
-
-/** One batch of 32-byte-hex preimages plus the terms it was minted under.
- *  `startIndex` must equal the server's reported `nextIndex`; a gap is refused. */
-export interface CovenantSupplyRequest {
-  scheme: string;
-  startIndex: number;
-  preimages: string[];
-  profile: CovenantProfile;
-}
-
-/** No profile: no covenant config enters a solver's VHTLC. */
-export interface SwapSupplyRequest {
-  scheme: string;
-  startIndex: number;
-  preimages: string[];
-}
-
-/** What the server reports about a supply it stored. */
-export interface CovenantSupplyAck {
-  accepted: true;
-  nextIndex: number;
-  remaining: number;
-  scheme: string;
-  profile: CovenantProfile;
-}
-
-export interface SwapSupplyAck {
-  accepted: true;
-  nextIndex: number;
-  remaining: number;
-  scheme: string;
-}
-
-/** Each field is present only when that supply was sent AND stored. */
-export interface ArkadeIdentityResult {
-  covenantSupply?: CovenantSupplyAck;
-  swapSupply?: SwapSupplyAck;
 }
 
 function rootOf(baseUrl: string): string {
@@ -274,34 +223,6 @@ export async function revokeAddress(
   }, fetchImpl);
 }
 
-/** One covenant destination and what rebuilds it. `covenantIndex` is null when
- *  the preimage was random: no seed reproduces those, so `params` is the copy. */
-export interface CovenantDestinationRecord {
-  verifyId: string;
-  address: string | null;
-  covenantScript: string;
-  covenantIndex: number | null;
-  params: Record<string, string> | null;
-  createdAt: number;
-}
-
-export interface CovenantRecovery {
-  scheme: string | null;
-  profile: CovenantProfile | null;
-  destinations: CovenantDestinationRecord[];
-}
-
-/** One offline swap plus the blob that makes it claimable without the server.
- *  `swapIndex` is a SWAP-supply slot, never the covenant's. */
-export interface SwapRecoveryRecord {
-  paymentHash: string;
-  preimage: string;
-  swapIndex: number | null;
-  settled: boolean;
-  createdAt: number;
-  recovery: unknown;
-}
-
 const COMPRESSED_KEY = /^0[23][0-9a-f]{64}$/i;
 
 /**
@@ -316,102 +237,27 @@ const COMPRESSED_KEY = /^0[23][0-9a-f]{64}$/i;
  * address on the operator's network, which this package cannot know — and
  * omitting it sends no field, read server-side as "leave the onchain rail".
  *
- * **If you sent `covenantSupply`, check the result.** A server older than the
- * supply protocol drops the unknown field and still answers `{ok:true}`, so an
- * absent `covenantSupply` in the result means NOT accepted.
- *
- * @returns The supply acknowledgement, or `{}` when none was sent or stored.
+ * @param baseUrl - Server root, e.g. `https://lnurl.example.com`.
+ * @param req - Token, username, Arkade address, claim key, optional boarding address and domain.
+ * @param fetchImpl - The injected `fetch` implementation to call.
+ * @returns A promise settling when the server records the identity.
  */
 export async function registerArkadeIdentity(
   baseUrl: string,
   req: RegisterArkadeIdentityRequest,
   fetchImpl: FetchImpl,
-): Promise<ArkadeIdentityResult> {
+): Promise<void> {
   // Free to check locally and it is the covenant receiver role; the Arkade
   // address itself is left to the server, validating it needs @arkade-os/sdk.
   if (!COMPRESSED_KEY.test(req.claimPublicKey)) {
     throw new LnurlError("claimPublicKey must be a compressed 33-byte public key (02/03 prefix plus 64 hex chars)");
   }
-  const body: Record<string, unknown> = { arkadeAddress: req.arkadeAddress, claimPublicKey: req.claimPublicKey };
+  const body: Record<string, string> = { arkadeAddress: req.arkadeAddress, claimPublicKey: req.claimPublicKey };
   if (req.boardingAddress !== undefined) body["boardingAddress"] = req.boardingAddress;
-  if (req.covenantSupply !== undefined) body["covenantSupply"] = req.covenantSupply;
-  if (req.swapSupply !== undefined) body["swapSupply"] = req.swapSupply;
   if (req.domain !== undefined) body["domain"] = req.domain;
-  const res = await apiFetch<{ covenantSupply?: CovenantSupplyAck; swapSupply?: SwapSupplyAck }>(
-    `${rootOf(baseUrl)}/lnurl/address/${encodeURIComponent(req.username)}/arkade`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json", Authorization: `Bearer ${req.token}` },
-      body: JSON.stringify(body),
-    },
-    fetchImpl,
-  );
-  return {
-    ...(res?.covenantSupply?.accepted === true ? { covenantSupply: res.covenantSupply } : {}),
-    ...(res?.swapSupply?.accepted === true ? { swapSupply: res.swapSupply } : {}),
-  };
-}
-
-/** Throws unless the server actually stored the supply that was sent. Gate on
- *  this, not on the absence of an error: an old server drops an unknown body
- *  field and still answers `{ok:true}`. */
-export function assertCovenantSupplyAccepted(
-  result: ArkadeIdentityResult,
-  sent: CovenantSupplyRequest | undefined,
-): CovenantSupplyAck {
-  if (!sent) throw new LnurlError("no covenant supply was sent");
-  const ack = result.covenantSupply;
-  if (!ack) {
-    throw new LnurlError(
-      "the server did not acknowledge the covenant supply — it is likely older than the supply protocol and dropped the field. " +
-        "Destinations it hands out are NOT recoverable from your seed.",
-    );
-  }
-  if (ack.scheme !== sent.scheme) {
-    throw new LnurlError(`the server stored the supply under scheme "${ack.scheme}", not "${sent.scheme}"`);
-  }
-  if (ack.nextIndex !== sent.startIndex + sent.preimages.length) {
-    throw new LnurlError(
-      `the server reports nextIndex ${ack.nextIndex}, not the ${sent.startIndex + sent.preimages.length} this batch ends at`,
-    );
-  }
-  return ack;
-}
-
-/** Every covenant destination on one owned address, with its rebuild params.
- *  Pull it while the server is reachable: destinations minted before any supply
- *  existed carry a random preimage no seed reproduces, so `params` is the only
- *  copy of what spends them. */
-export function fetchCovenantRecovery(
-  baseUrl: string,
-  token: string,
-  username: string,
-  opts: { domain?: string } | undefined,
-  fetchImpl: FetchImpl,
-): Promise<CovenantRecovery> {
-  const query = opts?.domain !== undefined ? `?domain=${encodeURIComponent(opts.domain)}` : "";
-  return apiFetch<CovenantRecovery>(
-    `${rootOf(baseUrl)}/lnurl/address/${encodeURIComponent(username)}/covenant-recovery${query}`,
-    { headers: { Authorization: `Bearer ${token}` } },
-    fetchImpl,
-  );
-}
-
-/** The recovery blob for every offline swap on one owned address. A derivable
- *  swap preimage is not enough on its own — the VHTLC's script params come from
- *  the solver's quote, which only the server stored. */
-export async function fetchSwapRecovery(
-  baseUrl: string,
-  token: string,
-  username: string,
-  opts: { domain?: string } | undefined,
-  fetchImpl: FetchImpl,
-): Promise<SwapRecoveryRecord[]> {
-  const query = opts?.domain !== undefined ? `?domain=${encodeURIComponent(opts.domain)}` : "";
-  const page = await apiFetch<{ swaps: SwapRecoveryRecord[] }>(
-    `${rootOf(baseUrl)}/lnurl/address/${encodeURIComponent(username)}/swap-recovery${query}`,
-    { headers: { Authorization: `Bearer ${token}` } },
-    fetchImpl,
-  );
-  return page.swaps;
+  await apiFetch<unknown>(`${rootOf(baseUrl)}/lnurl/address/${encodeURIComponent(req.username)}/arkade`, {
+    method: "POST",
+    headers: { "content-type": "application/json", Authorization: `Bearer ${req.token}` },
+    body: JSON.stringify(body),
+  }, fetchImpl);
 }

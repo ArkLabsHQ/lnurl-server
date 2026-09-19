@@ -26,12 +26,6 @@ export interface SettlementRecord {
   /** Set on destination records with a per-payment covenant address; null for the
    *  static-address shape and for lightning. @see covenant-destination.ts */
   covenantScript: string | null;
-  /** Supply index the covenant preimage came from; null when it was random and
-   *  the owner therefore cannot re-derive it. @see covenant-supply.ts */
-  covenantIndex: number | null;
-  /** Slot taken from the SWAP supply. A different secret from the same index
-   *  in the covenant supply, which is why it is its own column. */
-  swapIndex: number | null;
   addressId: number | null;
   createdAt: number;
   settledAt: number | null;
@@ -67,8 +61,6 @@ export interface NewSettlement {
   paymentDestination?: string;
   amountMsat?: number;
   covenantScript?: string;
-  covenantIndex?: number;
-  swapIndex?: number;
   addressId?: number;
 }
 
@@ -123,8 +115,6 @@ export class MemorySettlementStore implements SettlementStore {
       paymentReference: null,
       amountMsat: rec.amountMsat ?? null,
       covenantScript: rec.covenantScript ?? null,
-      covenantIndex: rec.covenantIndex ?? null,
-      swapIndex: rec.swapIndex ?? null,
       addressId: rec.addressId ?? null,
       createdAt: this.now(),
       settledAt: null,
@@ -239,8 +229,6 @@ interface SettlementRow {
   payment_reference: string | null;
   amount_msat: number | null;
   covenant_script: string | null;
-  covenant_index: number | null;
-  swap_index: number | null;
   address_id: number | null;
   created_at: number;
   settled_at: number | null;
@@ -260,7 +248,7 @@ export class DbSettlementStore implements SettlementStore {
   create(rec: NewSettlement): void {
     const info = this.db
       .prepare(
-        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, covenant_script, covenant_index, swap_index, address_id, created_at, settled_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, covenant_script, address_id, created_at, settled_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
       )
       .run(
         rec.paymentHash,
@@ -272,8 +260,6 @@ export class DbSettlementStore implements SettlementStore {
         rec.paymentDestination ?? null,
         rec.amountMsat ?? null,
         rec.covenantScript ?? null,
-        rec.covenantIndex ?? null,
-        rec.swapIndex ?? null,
         rec.addressId ?? null,
         this.now(),
       );
@@ -335,8 +321,6 @@ export class DbSettlementStore implements SettlementStore {
       paymentReference: row.payment_reference ?? null,
       amountMsat: row.amount_msat ?? null,
       covenantScript: row.covenant_script ?? null,
-      covenantIndex: row.covenant_index ?? null,
-      swapIndex: row.swap_index ?? null,
       addressId: row.address_id ?? null,
       createdAt: row.created_at,
       settledAt: row.settled_at ?? null,
@@ -420,8 +404,6 @@ export class DbSettlementStore implements SettlementStore {
       paymentReference: row.payment_reference ?? null,
       amountMsat: row.amount_msat ?? null,
       covenantScript: row.covenant_script ?? null,
-      covenantIndex: row.covenant_index ?? null,
-      swapIndex: row.swap_index ?? null,
       addressId: row.address_id ?? null,
       createdAt: row.created_at,
       settledAt: row.settled_at ?? null,
@@ -450,8 +432,6 @@ export class DbSettlementStore implements SettlementStore {
       paymentReference: row.payment_reference ?? null,
       amountMsat: row.amount_msat ?? null,
       covenantScript: row.covenant_script ?? null,
-      covenantIndex: row.covenant_index ?? null,
-      swapIndex: row.swap_index ?? null,
       addressId: row.address_id ?? null,
       createdAt: row.created_at,
       settledAt: row.settled_at ?? null,

@@ -48,11 +48,6 @@ export interface OfflineSwapParams {
   receiveAddress: string;
   /** Receiver's compressed claim public key (hex); its x-only part is the covenant's receiver. */
   claimPublicKey: string;
-  /** Client-derived preimage from the swap supply. Absent falls back to
-   *  `randomBytes`, which the owner cannot re-derive. Note that a derivable
-   *  preimage alone does not make a swap claimable: the VHTLC's script params
-   *  come from the solver's quote, so the recovery blob is what closes that. */
-  preimage?: Uint8Array;
 }
 
 export interface OfflineSwapResult {
@@ -268,8 +263,7 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
       for (const candidate of candidates) {
         const transport = transportFor(candidate);
         try {
-          const preimage = params.preimage ?? randomBytes(32);
-          if (preimage.length !== 32) throw new Error(`preimage must be 32 bytes, got ${preimage.length}`);
+          const preimage = randomBytes(32);
           const paymentHash = paymentHashOf(preimage);
           const rfqId = newRfqId();
           // Self-claim mode sends no packet: claim_packet is optional on the wire

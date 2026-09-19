@@ -6,8 +6,6 @@ import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
 import type { OfflineSwapCreator } from "../src/intent-swap.js";
 import type { CovenantDestinationProvider } from "../src/covenant-destination.js";
-
-const STUB_PROFILE = async () => ({ emulatorPubkey: "ab".repeat(32), recoveryDelaySeconds: 86_528 });
 import type { LnurlServiceConfig } from "../src/types.js";
 
 const CONFIG: LnurlServiceConfig = { port: 0, baseUrl: "", minSendable: 1000, maxSendable: 100_000_000, invoiceTimeoutMs: 3000 };
@@ -108,7 +106,6 @@ describe("per-address rail policy", () => {
     repos.addresses.setDisabledRails(a.id, ["covenant"]);
     let derived = 0;
     const provider: CovenantDestinationProvider = {
-      profile: STUB_PROFILE,
       derive: async () => { derived++; return { address: "tark1derived", script: "5120", preimage: "00".repeat(32), tapTree: "ee", payoutScript: "51" }; },
     };
     await withServer({ covenantDestinations: provider });

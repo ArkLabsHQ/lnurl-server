@@ -81,24 +81,14 @@ export interface CovenantDestination {
 
 /** What the callback needs per payment: the address to hand the payer and the script
  *  that attributes their payment. Everything else about the covenant lives on the
- *  contract registered at derivation. `covenantIndex` is absent when the preimage
- *  was `randomBytes` and is therefore not derivable by the owner. */
+ *  contract registered at derivation. */
 export interface DerivedDestination {
   address: string;
   script: string;
-  covenantIndex?: number;
-}
-
-/** The slice of {@link CovenantSupplyStore} derivation needs. */
-export interface PreimageSupply {
-  allocate(addressId: number, leg?: "covenant" | "swap"): { index: number; preimage: Uint8Array } | undefined;
 }
 
 export interface CovenantDestinationProvider {
-  derive(address: { arkadeAddress: string; claimPublicKey: string; addressId?: number }): Promise<DerivedDestination>;
-  /** Operator config every destination commits to, so a client can be told what
-   *  its supply is accepted against. */
-  profile(): Promise<{ emulatorPubkey: string; recoveryDelaySeconds: number }>;
+  derive(address: { arkadeAddress: string; claimPublicKey: string }): Promise<DerivedDestination>;
 }
 
 const CONTEXT_TTL_MS = 5 * 60_000;
@@ -118,9 +108,6 @@ export function createCovenantDestinationProvider(opts: {
   /** Absent keeps the provider standalone (unit tests, the probe script); present
    *  makes every derived destination a contract the SDK watches and can spend. */
   contracts?: IContractManager;
-  /** Client-minted preimages. Absent, or empty for this address, falls back to
-   *  `randomBytes` — today's behaviour, and not re-derivable by the owner. */
-  supply?: PreimageSupply;
   now?: () => number;
 }): CovenantDestinationProvider {
   // Here rather than only at derivation: BIP68's throw arrives per payment, where
@@ -159,18 +146,9 @@ export function createCovenantDestinationProvider(opts: {
   };
 
   return {
-    async profile() {
-      const { emulatorPubkey } = await context();
-      return { emulatorPubkey: hex.encode(emulatorPubkey), recoveryDelaySeconds: opts.recoveryDelaySeconds };
-    },
-
     async derive(address) {
       const { serverPubkey, emulatorPubkey } = await context();
-      // Never released: a burned index is a gap in the owner's range scan, where
-      // a reused one is two payments at one address — the ambiguity this rail
-      // exists to remove.
-      const allocated = address.addressId === undefined ? undefined : opts.supply?.allocate(address.addressId);
-      const preimage = allocated?.preimage ?? randomBytes(32);
+      const preimage = randomBytes(32);
       const params = {
         staticAddress: address.arkadeAddress,
         userPubkey: toXOnly(hex.decode(address.claimPublicKey)),
@@ -192,7 +170,7 @@ export function createCovenantDestinationProvider(opts: {
         address: d.address,
         watch: "awaiting-funds",
       });
-      return { address: d.address, script: d.script, ...(allocated ? { covenantIndex: allocated.index } : {}) };
+      return { address: d.address, script: d.script };
     },
   };
 }

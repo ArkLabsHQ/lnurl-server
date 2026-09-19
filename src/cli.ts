@@ -53,12 +53,7 @@ async function main(): Promise<void> {
       console.warn("WARNING: ALLOW_INSECURE_TOKEN_STORAGE — using a static, source-readable encryption key. Do NOT use in production.");
     }
     const key = config.tokenEncryptionKey ?? hashSecret("INSECURE-DEV-KEY"); // effective key (insecure dev fallback)
-    const { CovenantSupplyStore } = await import("./covenant-supply.js");
-    // The first production caller of decryptToken. Under the dev fallback above the
-    // key is in the repository, so the store refuses uploads outright rather than
-    // promising a recoverable supply it is storing behind a known key.
-    const covenantSupply = new CovenantSupplyStore(db, key, { insecureKeyStorage: !config.tokenEncryptionKey });
-    const addressService = new AddressService(repos, key, covenantSupply);
+    const addressService = new AddressService(repos, key);
     const settings = new SettingsService(repos.settings, {
       minSendable: config.minSendable,
       maxSendable: config.maxSendable,
@@ -163,7 +158,6 @@ async function main(): Promise<void> {
         ...(off.emulatorUrl ? { emulatorUrl: off.emulatorUrl } : {}),
         recoveryDelaySeconds: off.covenantRecoveryDelaySeconds,
         contracts,
-        supply: covenantSupply,
       });
       // Event-driven, with the repeating catch-up behind it as the dropped-subscription
       // backstop OFFLINE_POLL_INTERVAL_MS is already documented to size.
@@ -188,17 +182,6 @@ async function main(): Promise<void> {
       ...(solverDiscovery ? { solverDiscovery } : {}),
       ...(config.offlineReceive.arkServerUrl ? { arkServerUrl: config.offlineReceive.arkServerUrl } : {}),
       ...(covenantDestinations ? { covenantDestinations } : {}),
-      preimageSupply: covenantSupply,
-      ...(contracts
-        ? {
-            covenantParams: async (scripts: string[]) => {
-              if (scripts.length === 0) return new Map<string, Record<string, string>>();
-              const { COVENANT_CONTRACT_TYPE } = await import("./covenant-contract.js");
-              const found = await contracts!.getContracts({ script: scripts, type: COVENANT_CONTRACT_TYPE });
-              return new Map(found.map((c) => [c.script, c.params]));
-            },
-          }
-        : {}),
     };
     // Every background scheduler registers its stop hook before the listeners
     // begin accepting traffic.

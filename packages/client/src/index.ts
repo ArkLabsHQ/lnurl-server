@@ -8,32 +8,14 @@ import { deriveSessionToken, deriveSessionTokenWithSigner, deriveSessionId } fro
 // the wallet's send form and its tests need isValidLnUrl on its own.
 import { isLnAddress, isLnUrl, isValidLnUrl, toPayRequestUrl } from "./encoding.js";
 import type { LnurlSurface } from "./encoding.js";
-import {
-  assertCovenantSupplyAccepted,
-  fetchCovenantRecovery,
-  fetchSwapRecovery,
-  listAddresses,
-  listPayments,
-  registerAddress,
-  registerArkadeIdentity,
-  revokeAddress,
-} from "./addresses.js";
+import { listAddresses, listPayments, registerAddress, registerArkadeIdentity, revokeAddress } from "./addresses.js";
 import { syncPayments } from "./sync.js";
 import type { PaymentSyncStore, PaymentSyncTarget, StoredPayment } from "./sync.js";
 import type {
   AddressListEntry,
-  ArkadeIdentityResult,
-  CovenantDestinationRecord,
-  CovenantProfile,
-  CovenantRecovery,
-  CovenantSupplyAck,
-  CovenantSupplyRequest,
   RegisterAddressRequest,
   RegisterArkadeIdentityRequest,
   RegisteredAddress,
-  SwapRecoveryRecord,
-  SwapSupplyAck,
-  SwapSupplyRequest,
 } from "./addresses.js";
 import type {
   AmountObject,
@@ -142,13 +124,10 @@ export interface LnurlClient {
   /**
    * Binds an Arkade identity to a registered address. Requires `baseUrl`.
    *
-   * An absent `covenantSupply` in the result means the supply was NOT stored,
-   * including by a server too old to know the field.
-   *
-   * @param req - Token, username, Arkade address, claim key, optional boarding address, supply and domain.
-   * @returns The server's supply acknowledgement, or `{}` when none was sent or stored.
+   * @param req - Token, username, Arkade address, claim key, optional boarding address and domain.
+   * @returns A promise settling when the server records the identity.
    */
-  registerArkadeIdentity(req: RegisterArkadeIdentityRequest): Promise<ArkadeIdentityResult>;
+  registerArkadeIdentity(req: RegisterArkadeIdentityRequest): Promise<void>;
   /**
    * Lists the payments made to one address owned by a token. Requires `baseUrl`.
    *
@@ -204,9 +183,6 @@ export function createLnurlClient(opts?: LnurlClientOptions): LnurlClient {
 
 /** Lower-level functions, also reachable through `createLnurlClient`; documented at their definition sites. */
 export {
-  assertCovenantSupplyAccepted,
-  fetchCovenantRecovery,
-  fetchSwapRecovery,
   deriveSessionId,
   deriveSessionToken,
   deriveSessionTokenWithSigner,
@@ -231,15 +207,6 @@ export {
 export type {
   AddressListEntry,
   AmountObject,
-  ArkadeIdentityResult,
-  CovenantDestinationRecord,
-  CovenantProfile,
-  CovenantRecovery,
-  CovenantSupplyAck,
-  CovenantSupplyRequest,
-  SwapRecoveryRecord,
-  SwapSupplyAck,
-  SwapSupplyRequest,
   Bolt11Activity,
   Bolt11Result,
   Bolt11VerifyStatus,

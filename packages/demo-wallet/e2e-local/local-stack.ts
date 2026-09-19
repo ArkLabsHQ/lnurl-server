@@ -91,11 +91,7 @@ export async function startLnurlServer(opts: LnurlServerOptions): Promise<LnurlS
         BASE_URL: base,
         BOOTSTRAP_DOMAIN: LNURL_DOMAIN,
         DB_PATH: opts.dbPath,
-        // A real key, not ALLOW_INSECURE_TOKEN_STORAGE: the preimage supply
-        // refuses to store recovery-critical secrets behind a source-known key,
-        // so the insecure fallback would leave that path untestable here.
-        // Fixed and public on purpose — this database is rebuilt every run.
-        TOKEN_ENCRYPTION_KEY: "0".repeat(63) + "1",
+        ALLOW_INSECURE_TOKEN_STORAGE: "1",
         TRUST_PROXY: "false",
         SOLVER_CARDS_FILE: opts.cardsFile,
         // The stack's solver runs `serve`; its card's relay is a fiction here.

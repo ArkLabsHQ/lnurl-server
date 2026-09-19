@@ -1,14 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  assertCovenantSupplyAccepted,
-  fetchCovenantRecovery,
-  fetchSwapRecovery,
-  listAddresses,
-  listPayments,
-  registerAddress,
-  registerArkadeIdentity,
-  revokeAddress,
-} from "../src/addresses.js";
+import { registerAddress, listAddresses, listPayments, revokeAddress, registerArkadeIdentity } from "../src/addresses.js";
 import { LnurlError } from "../src/errors.js";
 
 const json = (body: unknown, status = 200) =>
@@ -97,91 +88,6 @@ describe("registerArkadeIdentity", () => {
       token: "tok", username: "alice", arkadeAddress: "ark1qqq", claimPublicKey: "02" + "ab".repeat(32),
     }, fetchImpl as never);
     expect("boardingAddress" in body).toBe(false);
-  });
-});
-
-describe("registerArkadeIdentity covenant supply", () => {
-  const base = { token: "tok", username: "alice", arkadeAddress: "ark1qqq", claimPublicKey: "02" + "ab".repeat(32) };
-  const profile = { recoveryDelaySeconds: 86_528, emulatorPubkey: "ab".repeat(32) };
-  const supply = { scheme: "salted-v1", startIndex: 0, preimages: ["cd".repeat(32), "ef".repeat(32)], profile };
-  const ack = { accepted: true as const, nextIndex: 2, remaining: 2, scheme: "salted-v1", profile };
-
-  it("sends the supply and returns the acknowledgement", async () => {
-    let body: Record<string, unknown> = {};
-    const fetchImpl = async (_u: string, init?: RequestInit) => { body = JSON.parse(String(init?.body)); return json({ ok: true, covenantSupply: ack }); };
-    const res = await registerArkadeIdentity("https://x", { ...base, covenantSupply: supply }, fetchImpl as never);
-    expect(body.covenantSupply).toEqual(supply);
-    expect(res.covenantSupply).toEqual(ack);
-  });
-
-  it("omits both supplies entirely when neither is given", async () => {
-    let body: Record<string, unknown> = {};
-    const fetchImpl = async (_u: string, init?: RequestInit) => { body = JSON.parse(String(init?.body)); return json({ ok: true }); };
-    const res = await registerArkadeIdentity("https://x", base, fetchImpl as never);
-    expect("covenantSupply" in body).toBe(false);
-    expect("swapSupply" in body).toBe(false);
-    expect(res).toEqual({});
-  });
-
-  it("keeps the two legs as separate fields on the wire", async () => {
-    let body: Record<string, unknown> = {};
-    const swap = { scheme: "salted-v1", startIndex: 0, preimages: ["11".repeat(32)] };
-    const fetchImpl = async (_u: string, init?: RequestInit) => {
-      body = JSON.parse(String(init?.body));
-      return json({ ok: true, covenantSupply: ack, swapSupply: { accepted: true, nextIndex: 1, remaining: 1, scheme: "salted-v1" } });
-    };
-    const res = await registerArkadeIdentity("https://x", { ...base, covenantSupply: supply, swapSupply: swap }, fetchImpl as never);
-    expect(body.swapSupply).toEqual(swap);
-    expect(body.covenantSupply).not.toEqual(body.swapSupply);
-    expect(res.swapSupply?.nextIndex).toBe(1);
-  });
-
-  // The dangerous compatibility direction: a server older than the protocol
-  // parses the body field by field, drops what it does not know, and answers
-  // {ok:true}. Silent success there is a wallet believing its destinations are
-  // recoverable when they are not.
-  it("reports NOT accepted when an old server answers {ok:true} with no echo", async () => {
-    const fetchImpl = async () => json({ ok: true });
-    const res = await registerArkadeIdentity("https://x", { ...base, covenantSupply: supply }, fetchImpl as never);
-    expect(res.covenantSupply).toBeUndefined();
-    expect(() => assertCovenantSupplyAccepted(res, supply)).toThrow(/did not acknowledge/);
-  });
-
-  it("refuses an echo that does not cover the batch that was sent", async () => {
-    const short = async () => json({ ok: true, covenantSupply: { ...ack, nextIndex: 1 } });
-    const wrongScheme = async () => json({ ok: true, covenantSupply: { ...ack, scheme: "hd-v9" } });
-    await expect(registerArkadeIdentity("https://x", { ...base, covenantSupply: supply }, short as never)
-      .then((r) => assertCovenantSupplyAccepted(r, supply))).rejects.toThrow(/nextIndex 1/);
-    await expect(registerArkadeIdentity("https://x", { ...base, covenantSupply: supply }, wrongScheme as never)
-      .then((r) => assertCovenantSupplyAccepted(r, supply))).rejects.toThrow(/scheme "hd-v9"/);
-  });
-
-  it("accepts an echo that matches", async () => {
-    const fetchImpl = async () => json({ ok: true, covenantSupply: ack });
-    const res = await registerArkadeIdentity("https://x", { ...base, covenantSupply: supply }, fetchImpl as never);
-    expect(assertCovenantSupplyAccepted(res, supply)).toEqual(ack);
-  });
-});
-
-describe("recovery reads", () => {
-  it("fetches covenant destinations with the bearer token", async () => {
-    let seen = "";
-    let headers: Record<string, string> = {};
-    const body = { scheme: "salted-v1", profile: null, destinations: [{ verifyId: "v1", address: "tark1", covenantScript: "51", covenantIndex: 0, params: { preimage: "aa" }, createdAt: 1 }] };
-    const fetchImpl = async (url: string, init?: RequestInit) => { seen = String(url); headers = init?.headers as Record<string, string>; return json(body); };
-    const r = await fetchCovenantRecovery("https://x", "tok", "alice", { domain: "d.example" }, fetchImpl as never);
-    expect(seen).toBe("https://x/lnurl/address/alice/covenant-recovery?domain=d.example");
-    expect(headers.Authorization).toBe("Bearer tok");
-    expect(r.destinations[0]!.params).toEqual({ preimage: "aa" });
-  });
-
-  it("unwraps the swap recovery page", async () => {
-    let seen = "";
-    const swaps = [{ paymentHash: "aa", preimage: "bb", swapIndex: 3, settled: false, createdAt: 1, recovery: { version: 1 } }];
-    const fetchImpl = async (url: string) => { seen = String(url); return json({ swaps }); };
-    const r = await fetchSwapRecovery("https://x", "tok", "alice", undefined, fetchImpl as never);
-    expect(seen).toBe("https://x/lnurl/address/alice/swap-recovery");
-    expect(r).toEqual(swaps);
   });
 });
 describe("listPayments", () => {
