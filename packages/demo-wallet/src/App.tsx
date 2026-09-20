@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PaymentOption, WalletBalance } from "@arkade-os/sdk";
 import type { InvoiceResult, PayRequest } from "@arkade-os/lnurl-client";
 import { EXPLORER, LNURL_DOMAIN, USERNAME_KEY } from "./config.js";
@@ -166,15 +166,34 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
 
   const [boarding, setBoarding] = useState<BoardingState>({ status: "idle" });
 
+  const [balanceErr, setBalanceErr] = useState("");
+  // `getBalance` reads the contract manager's stored view, so polling it only
+  // ever reports what some earlier sync wrote. The indexer read is the part that
+  // makes a new payment visible at all.
   const refresh = useCallback(() => {
-    wallet.wallet.getBalance().then(setBalance).catch(() => undefined);
+    void (async () => {
+      try {
+        await (await wallet.wallet.getContractManager()).refreshVtxos();
+        setBalance(await wallet.wallet.getBalance());
+        setBalanceErr("");
+      } catch (e) {
+        setBalanceErr((e as Error).message);
+      }
+    })();
   }, [wallet]);
 
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, 5000);
-    return () => clearInterval(id);
-  }, [refresh]);
+    // Pushed, not polled: an arrival lands here the moment the SDK sees it, and
+    // the interval is only the net behind a subscription that drops.
+    let stop: (() => void) | undefined;
+    let live = true;
+    void wallet.wallet.notifyIncomingFunds(() => refresh())
+      .then((unsubscribe) => { if (live) stop = unsubscribe; else unsubscribe(); })
+      .catch((e: Error) => setBalanceErr(`incoming funds unwatched: ${e.message}`));
+    const id = setInterval(refresh, 30_000);
+    return () => { live = false; stop?.(); clearInterval(id); };
+  }, [wallet, refresh]);
 
   // Onchain arrivals are otherwise inert: they sit as boarding funds until
   // somebody settles them, and nothing in a receive demo should need a manual
@@ -197,6 +216,8 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
               {view.settling} sats settling — returns when the batch completes
             </div>
           )}
+          {/* A stalled balance used to be indistinguishable from an idle one. */}
+          {balanceErr && <div style={{ ...mono, color: "crimson", fontSize: 12 }}>balance not updating: {balanceErr}</div>}
         </div>
         {boarding.status !== "idle" && (
           <span style={{ ...mono, fontSize: 12, color: boarding.status === "failed" ? "crimson" : "#946200" }}>
@@ -447,6 +468,43 @@ const STATUS_STYLE: Record<FeedStatus, { color: string; text: string; title: str
   },
 };
 
+/** One event. A wallet row shows no settled/pending: the money is either in the
+ *  history or it is not, and the detail a holder can act on is the transaction
+ *  and what the rail charged. A quote keeps its status — that is all it has. */
+function ActivityRow({ row }: { row: FeedRow }) {
+  const [open, setOpen] = useState(false);
+  const status = row.status ? STATUS_STYLE[row.status] : undefined;
+  return (
+    <div style={{ borderTop: "1px solid #eee", fontSize: 13 }}>
+      <div style={{ display: "flex", gap: 12, padding: "8px 0", alignItems: "baseline" }}>
+        <button
+          onClick={() => setOpen(!open)}
+          disabled={row.details.length === 0}
+          style={{ width: 22, border: "none", background: "none", cursor: row.details.length ? "pointer" : "default", color: "#999" }}
+        >{row.details.length ? (open ? "▾" : "▸") : ""}</button>
+        <span style={{ width: 92, color: "#666" }}>{row.label}</span>
+        <span style={{ width: 96 }}>
+          {row.amountSat === null ? "—" : `${row.amountSat > 0 && row.kind === "wallet" ? "+" : ""}${row.amountSat} sats`}
+        </span>
+        {status
+          ? <span style={{ color: status.color }} title={status.title}>{status.text}</span>
+          : row.txid && <a href={`${EXPLORER}/tx/${row.txid}`} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>explorer</a>}
+        <span style={{ marginLeft: "auto", color: "#666" }}>{new Date(row.createdAt).toLocaleString()}</span>
+      </div>
+      {open && (
+        <div style={{ padding: "0 0 10px 34px", display: "grid", gridTemplateColumns: "auto 1fr", gap: "4px 12px" }}>
+          {row.details.map(([label, value]) => (
+            <Fragment key={label}>
+              <span style={{ color: "#999", fontSize: 12 }}>{label}</span>
+              <span style={{ ...mono, fontSize: 12 }}>{value}</span>
+            </Fragment>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Activity({ token, username, lightningAddress, wallet }: {
   token: string; username: string; lightningAddress: string; wallet: DemoWallet;
 }) {
@@ -491,21 +549,7 @@ function Activity({ token, username, lightningAddress, wallet }: {
       {err && <p style={{ ...mono, color: "crimson", fontSize: 12 }}>payment sync failed: {err}</p>}
       {walletErr && <p style={{ ...mono, color: "crimson", fontSize: 12 }}>wallet history unavailable: {walletErr}</p>}
       {!rows.length && <p style={{ color: "#666" }}>Nothing yet.</p>}
-      {rows.map((r) => {
-        const status = STATUS_STYLE[r.status];
-        return (
-          <div key={r.key}
-            style={{ display: "flex", gap: 12, padding: "8px 0", borderTop: "1px solid #eee", fontSize: 13 }}>
-            <span style={{ width: 58, color: "#999", fontSize: 11, textTransform: "uppercase" }}>{r.source}</span>
-            <span style={{ width: 80, color: "#666" }}>{r.label}</span>
-            <span style={{ width: 90 }}>
-              {r.amountSat === null ? "—" : `${r.amountSat > 0 && r.source === "wallet" ? "+" : ""}${r.amountSat} sats`}
-            </span>
-            <span style={{ color: status.color }} title={status.title}>{status.text}</span>
-            <span style={{ marginLeft: "auto", color: "#666" }}>{new Date(r.createdAt).toLocaleString()}</span>
-          </div>
-        );
-      })}
+      {rows.map((r) => <ActivityRow key={r.key} row={r} />)}
     </div>
   );
 }

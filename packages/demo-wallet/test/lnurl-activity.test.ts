@@ -103,22 +103,41 @@ describe("mergeFeed", () => {
     const rows = mergeFeed([activity(`lnurl:${p.key}`, { settled: true })], [p]);
 
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.source).toBe("wallet");
+    expect(rows[0]).toMatchObject({ kind: "wallet", label: "arkade" });
+    // A wallet row carries no status: the money moved or it did not.
+    expect(rows[0]!.status).toBeUndefined();
   });
 
   it("keeps a quote nobody paid, which has no transaction to enhance", () => {
-    const unpaid = payment({ identifier: "id2", settled: false, payoutReference: null });
+    const unpaid = payment({ identifier: "id2", settled: false, payoutReference: null, amountMsat: 9_000_000 });
     const rows = mergeFeed([], [unpaid]);
 
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ source: "lnurl", status: "pending" });
+    expect(rows[0]).toMatchObject({ kind: "quote", status: "pending" });
   });
 
-  it("keeps a Lightning payment beside the wallet row it cannot be joined to", () => {
-    const swap = payment({ identifier: "id3", kind: "bolt11", payoutReference: null });
-    const rows = mergeFeed([activity("plain-wallet-row")], [swap]);
+  // The window the screenshot caught: the money is in the wallet, the server has
+  // not observed it yet, and two rows for one payment read as a double charge.
+  it("folds an unobserved quote into the payment that already arrived", () => {
+    const p = payment({ settled: false, payoutReference: null, amountMsat: 1_000_000, createdAt: 1_700_000_000_000 });
+    const rows = mergeFeed([activity("plain", { amount: 1000, createdAt: 1_700_000_000_500 })], [p]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ kind: "wallet", label: "arkade" });
+    expect(rows[0]!.details).toContainEqual(["matched", expect.stringContaining("amount and timing")]);
+  });
+
+  it("never folds a quote into a payment smaller than it was quoted for", () => {
+    const p = payment({ settled: false, payoutReference: null, amountMsat: 5_000_000, createdAt: 1_700_000_000_000 });
+    const rows = mergeFeed([activity("plain", { amount: 1000, createdAt: 1_700_000_000_500 })], [p]);
 
     expect(rows).toHaveLength(2);
-    expect(rows.map((r) => r.source).sort()).toEqual(["lnurl", "wallet"]);
+  });
+
+  it("reports the rail's cut as the gap between quoted and received", () => {
+    const p = payment({ payoutReference: "abc123", amountMsat: 1_000_000 });
+    const rows = mergeFeed([activity(`lnurl:${p.key}`, { amount: 947 })], [p]);
+
+    expect(rows[0]!.details).toContainEqual(["rail fee", "53 sats"]);
   });
 });

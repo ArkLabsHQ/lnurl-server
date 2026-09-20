@@ -87,8 +87,10 @@ test("a browser wallet surfaces an incoming Arkade transfer it did not make", as
   // address, so an `lnurl` row cannot explain it: only getActivityHistory can.
   await page.getByRole("button", { name: "Activity" }).click();
   await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible();
-  const walletRow = page.locator("div").filter({ hasText: /^wallet/ }).filter({ hasText: /\+?\d+ sats/ }).first();
-  await expect(walletRow).toBeVisible({ timeout: 120_000 });
+  // The explorer link is what marks a row as the wallet's own: a quote the
+  // server minted has no transaction to link to.
+  await expect(page.getByRole("link", { name: "explorer" }).first()).toBeVisible({ timeout: 120_000 });
+  await expect(page.getByText(/\+\d+ sats/).first()).toBeVisible();
   // A failure here would otherwise render as an empty feed, indistinguishable
   // from a wallet with no transactions.
   await expect(page.getByText(/wallet history unavailable/)).toHaveCount(0);

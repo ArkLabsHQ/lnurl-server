@@ -147,7 +147,9 @@ test("pays both directions over both rails between two lightning addresses @fund
     for (const [page, who] of [[a.page, "A"], [b.page, "B"]] as const) {
       await page.getByRole("button", { name: "Activity" }).click();
       await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible();
-      await expect(page.locator("div").filter({ hasText: /^wallet/ }).first())
+      // An explorer link is the tell that the row came from the wallet's own
+      // history: a quote the server minted has no transaction to link to.
+      await expect(page.getByRole("link", { name: "explorer" }).first())
         .toBeVisible({ timeout: 120_000 });
       await expect(page.getByText(/wallet history unavailable/)).toHaveCount(0);
       console.log(`MATRIX ${who} activity shows wallet-sourced rows`);

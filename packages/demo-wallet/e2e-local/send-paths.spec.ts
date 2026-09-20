@@ -174,7 +174,11 @@ test("lnurl-arkade: one wallet pays another's LNURL and the receiver confirms it
     .filter({ has: recipient.page.getByRole("heading", { name: "Activity" }) })
     .last();
   await expect(activity).toContainText(`${LNURL_SATS} sats`, { timeout: 60_000 });
-  await expect(activity).toContainText("settled");
+  // Not "settled": a wallet row carries no status, because the transaction being
+  // in the history IS the fact. The rail label is what says the server's record
+  // was folded into it rather than listed beside it as a second row.
+  await expect(activity).toContainText("arkade");
+  await expect(activity).toContainText("explorer");
 });
 
 test("ark: a bare tark1 address pasted into the send box pays it directly", async () => {

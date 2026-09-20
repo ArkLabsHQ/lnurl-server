@@ -268,13 +268,13 @@ test.describe("a wallet that stays open", () => {
     expect(quote.status, `arkade quote refused: ${quote.reason}`).toBe("OK");
 
     await page.getByRole("button", { name: "Activity" }).click();
-    const row = page.locator("div").filter({ hasText: /lnurlarkade2500 sats/ }).first();
+    const row = page.locator("div").filter({ hasText: /arkade2500 sats/ }).first();
     await expect(row).toBeVisible({ timeout: 60_000 });
     await expect(row).toContainText("pending");
 
     await page.reload();
     await page.getByRole("button", { name: "Activity" }).click();
     await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible({ timeout: 120_000 });
-    await expect(page.locator("div").filter({ hasText: /lnurlarkade2500 sats/ }).first()).toBeVisible();
+    await expect(page.locator("div").filter({ hasText: /arkade2500 sats/ }).first()).toBeVisible();
   });
 });
