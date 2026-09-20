@@ -18,7 +18,9 @@
 // like OfflineSwapCreator plus the covenant destinations when the SDK exposes
 // it; no plumbing changes are needed beyond a new entry here.
 
+import type { Network } from "@arkade-os/solver-discovery";
 import type { PaymentOption } from "./payment-options.js";
+import { caip19Id, isRailType } from "./caip.js";
 
 /** Every receive rail the server knows. The order is the advertise order. */
 export const RAIL_IDS = ["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain"] as const;
@@ -120,6 +122,9 @@ export interface ServerRailCaps {
   arkServerUrl?: string;
   /** A covenant destination provider is wired. */
   covenantDestinations: boolean;
+  /** The network arkd reports. Absent leaves `caip19Id` off every option, since
+   *  an id guessing its own network is worse than no id. */
+  network?: Network;
 }
 
 /** Server-level state of one rail: configured in this process or not. */
@@ -455,7 +460,13 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
   if (lightning.offer) options.push({ id: "lightning", type: "lightning", ...(lightning.available ? {} : { available: false }) });
   if (arkadeReady) options.push({ id: "arkade", type: "arkade", ...(arkadeState.available ? {} : { available: false }) });
   if (onchainReady) options.push({ id: "onchain", type: "onchain", ...(onchainState.available ? {} : { available: false }) });
-  if (!base) return options;
+  // Attached last and never as the selector: `id` is what a payer sends back.
+  const network = caps.network;
+  const withCaip = (opts: PaymentOption[]): PaymentOption[] =>
+    network === undefined
+      ? opts
+      : opts.map((o) => (isRailType(o.type) ? { ...o, caip19Id: caip19Id(o.type, network) } : o));
+  if (!base) return withCaip(options);
   // Emitted relative to the pair the payRequest actually advertises, not to the
   // envelope. A client falls back to the top-level pair for an option that
   // publishes nothing, and the top level is the lightning rail's — so an option
@@ -463,7 +474,7 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
   // the server would accept. Equal to the top level means nothing to emit, so
   // an operator who configured no rail limits sees the payRequest as before.
   const advertised = advertisedBounds(address, caps, base);
-  return options.map((option) => {
+  return withCaip(options.map((option) => {
     const bounds = optionBounds(option.id, address, caps, base);
     if (!bounds) return option;
     return {
@@ -471,5 +482,5 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
       ...(bounds.min !== advertised.min ? { minSendable: bounds.min } : {}),
       ...(bounds.max !== advertised.max ? { maxSendable: bounds.max } : {}),
     };
-  });
+  }));
 }

@@ -1,3 +1,6 @@
+import type { Network } from "@arkade-os/solver-discovery";
+import { matchCaip19Id } from "./caip.js";
+
 // LUD-XX paymentOptions: advertise multiple payment rails on a LUD-06 payRequest
 // and resolve the wallet's selection. The rail registry lives in ./rails.js -
 // this module keeps the historical identity-only rule for unit scope. The rail-aware
@@ -7,6 +10,9 @@
 export interface PaymentOption {
   id: string;
   type: string;
+  /** The same option in the CAIP-19 vocabulary the solver registry validates.
+   *  Additive: `id` stays the selector, so a payer ignoring this is unaffected. */
+  caip19Id?: string;
   available?: boolean;
   minSendable?: number;
   maxSendable?: number;
@@ -40,9 +46,25 @@ export type ResolvedPaymentOption =
   | { kind: "error"; reason: string };
 
 /** Resolve the wallet's `paymentOption` query value. Extend with new rails here. */
-export function resolvePaymentOption(optionId: string | undefined, address: OptionAddress): ResolvedPaymentOption {
+export function resolvePaymentOption(
+  optionId: string | undefined,
+  address: OptionAddress,
+  network?: Network,
+): ResolvedPaymentOption {
   // Ids are canonical lowercase; be liberal about the case payers send.
-  const id = optionId?.toLowerCase();
+  const raw = optionId?.toLowerCase();
+  // A CAIP-19 id is folded to its bare rail name and resolved by the same path
+  // below, so the two spellings cannot drift apart.
+  let id = raw;
+  if (raw?.includes(":")) {
+    if (!network) return { kind: "error", reason: "Unsupported paymentOption" };
+    const match = matchCaip19Id(raw, network);
+    if (match.kind === "wrong-network") {
+      return { kind: "error", reason: `paymentOption settles on ${match.got}, this service settles on ${network}` };
+    }
+    if (match.kind === "unknown") return { kind: "error", reason: "Unsupported paymentOption" };
+    id = match.type;
+  }
   if (id === undefined || id === "lightning") return { kind: "lightning" };
   if (id === "arkade") {
     return address.arkadeAddress
