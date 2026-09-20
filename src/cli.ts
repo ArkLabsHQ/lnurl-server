@@ -182,12 +182,15 @@ async function main(): Promise<void> {
       // Event-driven, with the repeating catch-up behind it as the dropped-subscription
       // backstop OFFLINE_POLL_INTERVAL_MS is already documented to size.
       const { startCovenantWatcher } = await import("./covenant-watcher.js");
-      runtime.addStop(startCovenantWatcher(settlements, contracts, off.pollIntervalMs));
       const { createCovenantSweeper, startCovenantSweeper } = await import("./covenant-sweeper.js");
-      runtime.addStop(startCovenantSweeper(
+      // Built before the watcher so its trigger can be handed over: the event that
+      // settles a covenant payment is the same event that makes it sweepable.
+      const sweeper = startCovenantSweeper(
         createCovenantSweeper({ contracts, arkServerUrl: off.arkServerUrl!, emulatorUrl: off.emulatorUrl!, settlements }),
         15_000,
-      ));
+      );
+      runtime.addStop(sweeper.stop);
+      runtime.addStop(startCovenantWatcher(settlements, contracts, off.pollIntervalMs, sweeper.trigger));
       console.log(`covenant destinations: enabled (emulator=${off.emulatorUrl}, recovery=${off.covenantRecoveryDelaySeconds}s)`);
     }
     deps = {

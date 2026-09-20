@@ -130,16 +130,59 @@ export function createCovenantSweeper(opts: {
   };
 }
 
-/** Run {@link CovenantSweeper.sweep} on an interval. Returns a stop function. */
-export function startCovenantSweeper(sweeper: CovenantSweeper, intervalMs: number): () => void {
+export interface CovenantSweeperHandle {
+  /** Sweep now — for a destination the watcher just saw funded. */
+  trigger(): void;
+  stop(): void;
+}
+
+/**
+ * Run {@link CovenantSweeper.sweep} on demand, with a catch-up behind it.
+ *
+ * The sweep is what the recipient can spend, so a tick spent the whole interval with
+ * their money at an address only this server can move it from. covenant-watcher.ts
+ * already learns the moment one is funded.
+ */
+export function startCovenantSweeper(sweeper: CovenantSweeper, catchUpIntervalMs: number): CovenantSweeperHandle {
   let inFlight = false;
-  const timer = setInterval(() => {
-    if (inFlight) return;
+  let queued = false;
+  let stopped = false;
+  let next: ReturnType<typeof setTimeout> | undefined;
+  const schedule = (): void => {
+    if (stopped) return;
+    next = setTimeout(() => pass(), catchUpIntervalMs);
+    next.unref?.();
+  };
+  const pass = (): void => {
+    if (stopped) return;
     inFlight = true;
     void sweeper.sweep().finally(() => {
       inFlight = false;
+      if (queued && !stopped) {
+        queued = false;
+        pass();
+        return;
+      }
+      schedule();
     });
-  }, intervalMs);
-  timer.unref?.();
-  return () => clearInterval(timer);
+  };
+  const trigger = (): void => {
+    if (stopped) return;
+    // Queued rather than dropped: the running pass may have listed the contracts
+    // before this one was funded.
+    if (inFlight) queued = true;
+    else {
+      if (next) clearTimeout(next);
+      pass();
+    }
+  };
+  schedule();
+  return {
+    trigger,
+    stop: () => {
+      stopped = true;
+      queued = false;
+      if (next) clearTimeout(next);
+    },
+  };
 }

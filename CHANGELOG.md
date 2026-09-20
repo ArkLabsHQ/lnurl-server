@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Changed
+- **A covenant payment is swept the moment it lands, not up to fifteen seconds later** — the sweep is what the recipient can actually spend, and `startCovenantSweeper` ran on a blind interval while the covenant watcher already knew, from a contract event, the instant a destination was funded. The two are now wired together: the sweeper takes a `trigger`, the watcher calls it from the handler it already had, and what remains reschedules itself after each pass rather than ticking. Measured on the local stack at production intervals, wallet-to-wallet: **14971ms to spendable, down to 306ms** — parity with a bare Arkade transfer (307ms), which is the floor.
+
+### Added
+- **A rail latency benchmark** — `pnpm test:bench:local`, a third suite beside the correctness ones. It runs with production intervals on purpose: the browser harness sets `OFFLINE_POLL_INTERVAL_MS=2000`, which flatters every polled rail by 7x and hides exactly what a benchmark is for. Reports quote, observe and spendable latency per rail against a bare Arkade transfer as the floor, so a scheduling artefact is told apart from protocol cost.
+
+### Changed
 - **The offline rail settles from its own claim, and its interval became a catch-up** — the claim is what makes the solver settle the hold invoice, so once it lands the solver can only confirm what we already caused. The pass now marks the swap settled directly and skips the status call, taking a round trip to a remote party off every happy-path receive; the solver is still asked for swaps the claim could not resolve. The fixed 15s `setInterval` is gone: `src/lockup-watcher.ts` was already the mechanism — a contract-event subscription that triggers a pass the moment a lockup is funded — and what remains reschedules itself after each pass finishes rather than ticking on a wall-clock grid, so a slow solver spaces passes out instead of queueing them. Settled now means the emulator accepted our claim submission rather than that the solver confirmed it, which is the earlier and more truthful of the two for a recipient's own service.
 
 ### Security

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { MultisigTapscript, VtxoScript, type IContractManager } from "@arkade-os/sdk";
-import { createCovenantSweeper } from "../src/covenant-sweeper.js";
+import { createCovenantSweeper, startCovenantSweeper } from "../src/covenant-sweeper.js";
 import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler as handler } from "../src/covenant-contract.js";
 import { COLLABORATIVE_LEAF, RECOVERY_LEAF, SWEEP_LEAF } from "../src/covenant-destination.js";
 
@@ -170,6 +170,30 @@ describe("createCovenantSweeper", () => {
 
     expect(moved).toBe(0);
     expect(getInfo).not.toHaveBeenCalled();
+  });
+
+  it("sweeps on a trigger rather than waiting out the catch-up", async () => {
+    let passes = 0;
+    // An interval long enough that a tick cannot be what satisfies this.
+    const handle = startCovenantSweeper({ sweep: async () => { passes++; return 0; } }, 600_000);
+    try {
+      await vi.waitFor(() => expect(passes).toBe(0));
+      handle.trigger();
+      await vi.waitFor(() => expect(passes).toBe(1));
+      handle.trigger();
+      await vi.waitFor(() => expect(passes).toBe(2));
+    } finally {
+      handle.stop();
+    }
+  });
+
+  it("runs no further passes once stopped", async () => {
+    let passes = 0;
+    const handle = startCovenantSweeper({ sweep: async () => { passes++; return 0; } }, 600_000);
+    handle.stop();
+    handle.trigger();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(passes).toBe(0);
   });
 
   it("keeps going after one destination throws", async () => {

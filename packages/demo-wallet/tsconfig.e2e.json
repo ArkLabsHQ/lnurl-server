@@ -9,5 +9,5 @@
       "@arkade-os/lnurl-client/arkade": ["../client/src/arkade.ts"]
     }
   },
-  "include": ["e2e", "e2e-local", "playwright.config.ts", "playwright.local.config.ts"]
+  "include": ["e2e", "e2e-local", "e2e-bench", "playwright.config.ts", "playwright.local.config.ts", "playwright.bench.config.ts"]
 }

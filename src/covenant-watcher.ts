@@ -34,10 +34,17 @@ function settleFrom(
  * pushed either. Re-armed after each pass finishes, not on a fixed interval, so a
  * slow pass cannot stack on itself.
  */
-export function startCovenantWatcher(store: SettlementStore, contracts: IContractManager, catchUpIntervalMs = 15_000): () => void {
+export function startCovenantWatcher(
+  store: SettlementStore,
+  contracts: IContractManager,
+  catchUpIntervalMs = 15_000,
+  onFunded: () => void = () => {},
+): () => void {
   const unsubscribe = contracts.onContractEvent((event) => {
     if (event.type !== "vtxo_received" || !isContractVtxoEvent(event) || event.contract.type !== COVENANT_CONTRACT_TYPE) return;
     settleFrom(store, event.contractScript, event.vtxos);
+    // Funded is also sweepable, and the sweep is what the recipient can spend.
+    onFunded();
   });
 
   let stopped = false;

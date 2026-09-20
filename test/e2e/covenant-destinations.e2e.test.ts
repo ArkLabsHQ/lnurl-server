@@ -100,7 +100,7 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
   let baseUrl: string;
   let payer: Wallet;
   let stopWatcher: () => void;
-  let stopSweeper: () => void;
+  let sweeper: import("../../src/covenant-sweeper.js").CovenantSweeperHandle;
   let receiver: { arkadeAddress: string; claimPublicKey: string };
   const token = randomBytes(32).toString("hex");
 
@@ -166,11 +166,11 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
     });
     baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     defaults.baseUrl = baseUrl;
-    stopWatcher = startCovenantWatcher(settlements, contracts);
-    stopSweeper = startCovenantSweeper(
+    sweeper = startCovenantSweeper(
       createCovenantSweeper({ contracts, arkServerUrl: ARKD_URL, emulatorUrl: EMULATOR_URL }),
       3000,
     );
+    stopWatcher = startCovenantWatcher(settlements, contracts, 3000, sweeper.trigger);
 
     expect((await post(`${baseUrl}/lnurl/address`, { token, username: "alice" })).status).toBe(201);
     expect((await post(`${baseUrl}/lnurl/address/alice/arkade`, receiver, token)).status).toBe(200);
@@ -178,7 +178,7 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
 
   afterAll(async () => {
     stopWatcher?.();
-    stopSweeper?.();
+    sweeper?.stop();
     // The manager holds an indexer subscription; leaving it open leaks it into the
     // next file in the suite, which shares this stack.
     //
