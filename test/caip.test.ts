@@ -43,6 +43,11 @@ describe("matchCaip19Id", () => {
     expect(matchCaip19Id("nonsense:mutinynet/slip44:1", "mutinynet")).toEqual({ kind: "unknown" });
   });
 
+  it("rejects an id with extra segments instead of dropping the tail", () => {
+    expect(matchCaip19Id("bolt11:bitcoin:extra/slip44:0", "bitcoin")).toEqual({ kind: "unknown" });
+    expect(matchCaip19Id("arkade:bitcoin/slip44:0/extra", "bitcoin")).toEqual({ kind: "unknown" });
+  });
+
   it("rejects a coin type that is not BTC on a BTC-only rail", () => {
     expect(matchCaip19Id("arkade:bitcoin/slip44:60", "bitcoin")).toEqual({ kind: "unknown" });
     expect(matchCaip19Id("arkade:mutinynet/slip44:0", "mutinynet")).toEqual({ kind: "unknown" });

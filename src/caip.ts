@@ -27,10 +27,11 @@ export type Caip19Match =
 /** A wrong network is reported separately because it is the one mistake a bare
  *  rail name cannot express — the whole reason for carrying the longer id. */
 export function matchCaip19Id(id: string, network: Network): Caip19Match {
-  const [head, assetRef] = id.split("/");
-  if (!head || !assetRef) return { kind: "unknown" };
-  const [namespace, chainRef] = head.split(":");
-  if (!namespace || !chainRef) return { kind: "unknown" };
+  const parts = id.split("/");
+  const head = parts.length === 2 ? parts[0]!.split(":") : [];
+  if (head.length !== 2) return { kind: "unknown" };
+  const [namespace, chainRef] = head as [string, string];
+  const assetRef = parts[1]!;
   const type = RAIL_BY_NAMESPACE.get(namespace);
   if (!type) return { kind: "unknown" };
   // A different recognised network is the one case worth naming; a bad coin type
