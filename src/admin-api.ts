@@ -10,6 +10,8 @@ import type { AppConfig } from "./config.js";
 import type { SettlementStore } from "./settlement-store.js";
 import { adminOpenApiSpec } from "./admin-openapi.js";
 import { validateCard } from "@arkade-os/solver-discovery";
+import { hex } from "@scure/base";
+import { ArkAddress, type IndexerProvider } from "@arkade-os/sdk";
 import type { DiscoveryService } from "./solver-discovery.js";
 import type { Logger } from "./logger.js";
 import { describeServerRails, effectiveRails, type ServerRailCaps } from "./rails.js";
@@ -43,6 +45,9 @@ export interface AdminDeps {
   /** Settlement records view (offline swaps, destination payments, relay invoices). */
   settlements?: SettlementStore;
   discovery?: Pick<DiscoveryService, "status" | "refresh">;
+  /** Arkade indexer, for the post-mortem reconcile. Absent disables that route
+   *  rather than failing it, since every other admin read works without one. */
+  indexer?: Pick<IndexerProvider, "getVtxos">;
   logger?: Logger;
 }
 
@@ -220,6 +225,66 @@ export function createAdminApi(deps: AdminDeps): Router {
       rails: effectiveRails({ arkadeAddress: updated.arkadeAddress, claimPublicKey: updated.claimPublicKey, boardingAddress: updated.boardingAddress, disabledRails: updated.disabledRails }, serverCaps()),
     });
   });
+  /**
+   * Post-mortem: what actually arrived at this address, against what the service
+   * recorded. For when a user says they were paid and nothing here shows it.
+   *
+   * A destination record stops being watched after DESTINATION_WATCH_MS, so a
+   * payment arriving later is never attributed: `verify` answers "not found" and
+   * the address history stays blank. The money is not lost — a static Arkade
+   * address is the user's own, and a covenant destination is still swept to it,
+   * because the sweeper reads the contract manager rather than the settlement
+   * store. Only the record lapses, and nothing else here can answer "did it land".
+   *
+   * Read-only by design. Re-attributing a lapsed payment at an address shared by
+   * every payment to it would be guesswork; this exists to inform a human.
+   */
+  r.get("/addresses/:id/reconcile", async (req, res) => {
+    if (!deps.indexer) { res.status(501).json({ error: "reconcile needs an Arkade indexer (ARK_SERVER_URL)" }); return; }
+    const address = repos.addresses.getById(Number(req.params.id));
+    if (!address) { res.status(404).json({ error: "address not found" }); return; }
+    if (!address.arkadeAddress) { res.status(400).json({ error: "address has no registered Arkade identity" }); return; }
+    let script: string;
+    try {
+      script = hex.encode(ArkAddress.decode(address.arkadeAddress).pkScript);
+    } catch {
+      res.status(400).json({ error: "registered Arkade address is undecodable" });
+      return;
+    }
+    let vtxos: { txid: string; vout: number; value: number; createdAt: Date }[];
+    try {
+      ({ vtxos } = await deps.indexer.getVtxos({ scripts: [script] }));
+    } catch (err) {
+      res.status(502).json({ error: `indexer lookup failed: ${err instanceof Error ? err.message : String(err)}` });
+      return;
+    }
+    // Matched on the observed reference, which is what a watcher writes when it
+    // attributes an arrival — not on amount, which cannot tell two apart.
+    const byReference = new Map(
+      (deps.settlements?.listByAddress(address.id, 500) ?? [])
+        .filter((r) => r.paymentReference)
+        .map((r) => [r.paymentReference!, r]),
+    );
+    const arrivals = vtxos.map((v) => {
+      const record = byReference.get(v.txid);
+      return {
+        txid: v.txid,
+        vout: v.vout,
+        value: v.value,
+        createdAt: v.createdAt instanceof Date ? v.createdAt.toISOString() : v.createdAt,
+        attributed: Boolean(record),
+        ...(record ? { paymentHash: record.paymentHash } : {}),
+      };
+    });
+    res.json({
+      addressId: address.id,
+      arkadeAddress: address.arkadeAddress,
+      script,
+      arrivals,
+      unattributed: arrivals.filter((a) => !a.attributed).length,
+    });
+  });
+
   r.delete("/addresses/:id", (req, res) => { repos.addresses.delete(Number(req.params.id)); res.json({ ok: true }); });
 
   // ── API keys ──────────────────────────────────────────────

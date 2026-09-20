@@ -227,7 +227,13 @@ async function main(): Promise<void> {
     console.log(`persistence: enabled at ${config.dbPath} (${deps.repos.domains.list().length} domain(s))`);
 
     const { createAdminServer } = await import("./admin-server.js");
-    const adminServer = createAdminServer({ repos, addressService, sessions, settings, config, settlements, discovery: solverDiscovery, logger }).listen(config.adminPort, config.adminBind, () => {
+    // Its own indexer client rather than a shared one: the reconcile route is an
+    // operator-triggered read, and giving it the contract manager's would let a
+    // support query contend with the watchers for the same connection.
+    const adminIndexer = off.arkServerUrl
+      ? new (await import("@arkade-os/sdk")).RestIndexerProvider(off.arkServerUrl)
+      : undefined;
+    const adminServer = createAdminServer({ repos, addressService, sessions, settings, config, settlements, discovery: solverDiscovery, ...(adminIndexer ? { indexer: adminIndexer } : {}), logger }).listen(config.adminPort, config.adminBind, () => {
       console.log(`admin server on http://${config.adminBind}:${config.adminPort} (front with a proxy)`);
     });
     runtime.addServer(adminServer);

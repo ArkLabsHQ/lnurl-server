@@ -294,6 +294,55 @@ export const adminOpenApiSpec = {
       },
       delete: { summary: "Delete an address", tags: ["Addresses"], parameters: [idParam], responses: { ...OK } },
     },
+    "/addresses/{id}/reconcile": {
+      get: {
+        summary: "Post-mortem: what arrived at this address vs what was recorded",
+        description:
+          "For when a user says they were paid and nothing here shows it. A destination record stops being " +
+          "watched after DESTINATION_WATCH_MS, so a later payment is never attributed: verify answers " +
+          "\"not found\" and the address history stays blank. The money is not lost — a static Arkade address " +
+          "is the user's own, and a covenant destination is still swept to it, because the sweeper reads the " +
+          "contract manager rather than the settlement store. Only the record lapses. Read-only: re-attributing " +
+          "a lapsed payment at an address shared by every payment to it would be guesswork.",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
+        responses: {
+          "200": {
+            description: "Arrivals at the address, each flagged with whether a settlement record accounts for it",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    addressId: { type: "integer" },
+                    arkadeAddress: { type: "string" },
+                    script: { type: "string", description: "hex pkScript the indexer was queried for" },
+                    unattributed: { type: "integer", description: "Arrivals no settlement record accounts for" },
+                    arrivals: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        properties: {
+                          txid: { type: "string" },
+                          vout: { type: "integer" },
+                          value: { type: "integer", description: "sats" },
+                          createdAt: { type: "string" },
+                          attributed: { type: "boolean" },
+                          paymentHash: { type: "string", description: "The record that claims it, when attributed" },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "400": { description: "Address has no registered Arkade identity, or it is undecodable" },
+          "404": { description: "Address not found" },
+          "501": { description: "No Arkade indexer configured (ARK_SERVER_URL)" },
+          "502": { description: "Indexer lookup failed" },
+        },
+      },
+    },
     "/addresses/{id}/rails": {
       patch: {
         summary: "Replace the per-address rail policy",
