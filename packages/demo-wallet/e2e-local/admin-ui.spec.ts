@@ -264,3 +264,31 @@ test("api keys: requiring one gates registration, and revoking it closes the doo
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(domain).toContainText("no");
 });
+
+// Support's view of "the user says they were paid and nothing shows it". The
+// arrivals here are all attributed, because the watcher is running — the value
+// under test is that the check reaches the indexer and reports honestly, not
+// that it manufactures a discrepancy.
+test("reconcile: the address panel and the sweep both report what the indexer holds", async ({ page }) => {
+  const mine = name("rc");
+  await register(mine);
+  await quoteArkade(mine);
+
+  await page.goto(ADMIN_BASE);
+  await tab(page, "Addresses").click();
+  await page.getByPlaceholder("search username…").fill(mine);
+  await rowWith(page, mine).getByRole("button", { name: "Reconcile" }).click();
+
+  // Either outcome is a pass: what must not happen is a spinner that never
+  // resolves or an error, both of which mean the route is not reachable.
+  await expect(
+    page.getByText(/No arrivals at this address|no record|Recorded/).first(),
+  ).toBeVisible({ timeout: 60_000 });
+
+  // The batch sweep answers the same question across every address at once.
+  await tab(page, "Settlements").click();
+  await page.getByRole("button", { name: "Check for unrecorded payments" }).click();
+  await expect(
+    page.getByText(/is accounted for|have no settlement record/).first(),
+  ).toBeVisible({ timeout: 60_000 });
+});

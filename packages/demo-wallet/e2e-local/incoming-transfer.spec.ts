@@ -79,4 +79,17 @@ test("a browser wallet surfaces an incoming Arkade transfer it did not make", as
   const vtxos = (await new RestIndexerProvider(local.arkServer)
     .getVtxos({ scripts: [script], spendableOnly: true })).vtxos;
   console.log(`TRIAGE indexer vtxos at that script: ${JSON.stringify(vtxos.map((v) => ({ value: v.value})))}`);
+
+  // The SDK half of the feed, which nothing else covers. Every other activity
+  // assertion in this suite matches an `lnurl` row — the server's record of a
+  // quote — so the wallet's own history could have been broken or unwired
+  // without a single test noticing. This transfer was never quoted against the
+  // address, so an `lnurl` row cannot explain it: only getActivityHistory can.
+  await page.getByRole("button", { name: "Activity" }).click();
+  await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible();
+  const walletRow = page.locator("div").filter({ hasText: /^wallet/ }).filter({ hasText: /\+?\d+ sats/ }).first();
+  await expect(walletRow).toBeVisible({ timeout: 120_000 });
+  // A failure here would otherwise render as an empty feed, indistinguishable
+  // from a wallet with no transactions.
+  await expect(page.getByText(/wallet history unavailable/)).toHaveCount(0);
 });

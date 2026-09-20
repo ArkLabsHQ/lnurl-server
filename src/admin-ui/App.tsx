@@ -305,6 +305,7 @@ function Settlements({ addressId, onAddressFilter }: { addressId?: number; onAdd
         {items.length} record{items.length === 1 ? "" : "s"} · auto-refreshes every 5s{" "}
         <button onClick={reload}>Refresh</button>
       </p>
+      <ReconcileSweep />
       <div style={{ marginBottom: 12, display: "flex", gap: 8 }}>
         <select value={state} onChange={(e) => setState(e.target.value)}>
           <option value="">all states</option>
@@ -478,6 +479,7 @@ function Addresses({ onShowSettlements }: { onShowSettlements?: (id: number) => 
     try { await api.del(`/addresses/${id}`); reload(); } catch (e) { setMutErr(errMsg(e)); }
   };
   const [railsFor, setRailsFor] = useState<number>();
+  const [reconcileFor, setReconcileFor] = useState<number>();
 
   return (
     <div>
@@ -508,6 +510,9 @@ function Addresses({ onShowSettlements }: { onShowSettlements?: (id: number) => 
               <Td>
                 <button onClick={() => setRailsFor(railsFor === a.id ? undefined : a.id)}>{railsFor === a.id ? "Close" : "Rails"}</button>{" "}
                 <button onClick={() => onShowSettlements?.(a.id)}>Payments</button>{" "}
+                <button onClick={() => setReconcileFor(reconcileFor === a.id ? undefined : a.id)}>
+                  {reconcileFor === a.id ? "Close" : "Reconcile"}
+                </button>{" "}
                 {a.status === "revoked"
                   ? <button onClick={() => setStatusOf(a.id, "active")}>Reactivate</button>
                   : <button onClick={() => setStatusOf(a.id, "revoked")}>Revoke</button>}{" "}
@@ -515,6 +520,7 @@ function Addresses({ onShowSettlements }: { onShowSettlements?: (id: number) => 
               </Td>
             </tr>
             {railsFor === a.id && <AddressRails address={a} onChanged={reload} />}
+            {reconcileFor === a.id && <AddressReconcile addressId={a.id} />}
           </Fragment>
         ))}</tbody>
       </table>
@@ -549,6 +555,135 @@ function AddressRails({ address, onChanged }: { address: Address; onChanged: () 
     </tr>
   );
 }
+/**
+ * The "did anything go missing" sweep, across every address holding an Arkade
+ * identity. Lives beside the settlement records because that is the question it
+ * answers: these are payments those records do not have.
+ *
+ * On demand only. It reads the indexer for every address, which is a support
+ * action rather than something to run on a timer beside a 5s poll.
+ */
+function ReconcileSweep() {
+  const [result, setResult] = useState<{ addresses: ReconcileRow[]; unattributed: number }>();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string>();
+  const run = async () => {
+    setBusy(true); setErr(undefined);
+    try { setResult(await api.get("/reconcile")); }
+    catch (e) { setErr(errMsg(e)); }
+    finally { setBusy(false); }
+  };
+  // Only the addresses with something to say: a clean sweep is a one-line answer.
+  const notable = result?.addresses.filter((a) => a.error || a.unattributed) ?? [];
+  return (
+    <div style={{ border: "1px solid #eee", borderRadius: 6, padding: 12, marginBottom: 12 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+        <button onClick={() => void run()} disabled={busy}>{busy ? "Checking…" : "Check for unrecorded payments"}</button>
+        <span style={{ color: "#666", fontSize: 13 }}>
+          asks the indexer what arrived at every address, against what is recorded here
+        </span>
+      </div>
+      {err && <p style={{ color: "crimson", marginBottom: 0 }}>{err}</p>}
+      {result && (
+        <>
+          <p style={{ marginBottom: notable.length ? 8 : 0, color: result.unattributed ? "#946200" : "#16834b" }}>
+            {result.unattributed
+              ? `${result.unattributed} arrival(s) across ${notable.length} address(es) have no settlement record. The money reached the user — a destination stays payable after this server stops watching it — but nothing here attributes it.`
+              : `Every arrival across ${result.addresses.length} address(es) is accounted for.`}
+          </p>
+          {notable.map((row) => (
+            <div key={row.addressId} style={{ borderTop: "1px solid #eee", paddingTop: 8, marginTop: 8 }}>
+              <p style={{ margin: "0 0 6px", fontSize: 13 }}>
+                <strong>#{row.addressId}</strong>{" "}
+                <code style={{ fontSize: 11 }}>{row.arkadeAddress?.slice(0, 24)}…</code>
+              </p>
+              <Arrivals row={row} />
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+interface Arrival {
+  txid: string;
+  vout: number;
+  value: number;
+  createdAt: string;
+  attributed: boolean;
+  paymentHash?: string;
+}
+interface ReconcileRow {
+  addressId: number;
+  arkadeAddress?: string;
+  arrivals?: Arrival[];
+  unattributed?: number;
+  error?: string;
+}
+
+/**
+ * What arrived at an address against what the service recorded.
+ *
+ * Read-only, and the empty case is the common one: this answers "the user says
+ * they were paid and nothing shows it", which happens when a payment lands
+ * after the destination stopped being watched. The money is not lost — the
+ * address is the user's own and a covenant destination is still swept to it —
+ * so an unattributed row is a bookkeeping gap, not a missing payment.
+ */
+function Arrivals({ row }: { row: ReconcileRow }) {
+  if (row.error) return <p style={{ color: "crimson", margin: 0 }}>{row.error}</p>;
+  if (!row.arrivals?.length) return <p style={{ color: "#666", margin: 0 }}>No arrivals at this address.</p>;
+  return (
+    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+      <thead><tr><Th>When</Th><Th>Amount</Th><Th>Txid</Th><Th>Recorded</Th></tr></thead>
+      <tbody>{row.arrivals.map((a) => (
+        <tr key={`${a.txid}:${a.vout}`}>
+          <Td>{new Date(a.createdAt).toLocaleString()}</Td>
+          <Td>{a.value} sats</Td>
+          <Td><code style={{ fontSize: 11 }}>{a.txid.slice(0, 16)}…</code></Td>
+          <Td>
+            {a.attributed
+              ? <span style={{ color: "#16834b" }}>yes · {a.paymentHash?.slice(0, 12)}…</span>
+              : <span style={{ color: "#946200" }}>no record</span>}
+          </Td>
+        </tr>
+      ))}</tbody>
+    </table>
+  );
+}
+
+function AddressReconcile({ addressId }: { addressId: number }) {
+  const [row, setRow] = useState<ReconcileRow>();
+  const [err, setErr] = useState<string>();
+  useEffect(() => {
+    let live = true;
+    api.get<ReconcileRow>(`/addresses/${addressId}/reconcile`)
+      .then((r) => { if (live) { setRow(r); setErr(undefined); } })
+      .catch((e) => { if (live) setErr(errMsg(e)); });
+    return () => { live = false; };
+  }, [addressId]);
+  return (
+    <tr>
+      <td colSpan={4} style={{ background: "#fafafa", padding: 12 }}>
+        {err && <p style={{ color: "crimson" }}>{err}</p>}
+        {!row && !err && <p style={{ color: "#666", margin: 0 }}>Checking the indexer…</p>}
+        {row && (
+          <>
+            {Boolean(row.unattributed) && (
+              <p style={{ color: "#946200", marginTop: 0 }}>
+                {row.unattributed} arrival(s) no settlement record accounts for — paid after the
+                destination stopped being watched. The money reached the user; only the record is missing.
+              </p>
+            )}
+            <Arrivals row={row} />
+          </>
+        )}
+      </td>
+    </tr>
+  );
+}
+
 function ApiKeys() {
   const { items, reload, err } = useList<ApiKey>("/api-keys");
   const domains = useList<Domain>("/domains");
