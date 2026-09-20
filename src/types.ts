@@ -142,9 +142,11 @@ export interface LnurlPayDestinationResponse {
    * Absent on rails nothing here watches, where there is no such window.
    */
   expiresAt?: number;
-  /** BIP21 URI for the destination, carrying the requested amount, so the payer
-   *  does not rebuild one from an address and a number the server already has. */
-  uri?: string;
+  /** LUD-XX `paymentURI`: the wallet-executable instruction for this destination,
+   *  carrying the requested amount, so the payer does not rebuild one from an
+   *  address and a number the server already has. The spec requires a successful
+   *  non-`pr` response to carry this or `paymentDestination`; we send both. */
+  paymentURI?: string;
 }
 
 /** LNURL error response */

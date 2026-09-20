@@ -711,10 +711,10 @@ export const openApiSpec = {
                             "stops answering and the payment leaves no trace in the address's history. Absent on rails " +
                             "nothing here watches, such as onchain boarding.",
                         },
-                        uri: {
+                        paymentURI: {
                           type: "string",
                           description:
-                            "BIP21 URI for the destination carrying the requested amount. The Arkade destination is in " +
+                            "LUD-XX: wallet-executable payment URI carrying the requested amount. The Arkade destination is in " +
                             "`ark=` rather than the address slot, which the scheme reserves for an onchain address; " +
                             "`amount` is BTC per BIP21, though every other amount in this API is millisats.",
                         },

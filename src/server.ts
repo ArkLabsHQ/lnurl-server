@@ -712,7 +712,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           status: "OK",
           paymentOption: resolved.paymentOption,
           paymentDestination: destination,
-          ...(destination ? { uri: destinationUri(resolved.paymentOption, destination, amountMsat) } : {}),
+          ...(destination ? { paymentURI: destinationUri(resolved.paymentOption, destination, amountMsat) } : {}),
           // Only for rails this server watches. The onchain rail is a static
           // boarding address nothing here observes, so it has no window to end.
           ...(resolved.paymentOption === "onchain"

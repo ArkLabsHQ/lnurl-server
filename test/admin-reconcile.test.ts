@@ -97,3 +97,48 @@ describe("admin reconcile", () => {
     expect(settlements.listByAddress(a.id, 10)).toHaveLength(0);
   });
 });
+
+describe("admin reconcile, in bulk", () => {
+  // Support does not arrive one address at a time: an operator asking "did
+  // anything go missing" wants the sweep, not N round trips they have to stitch.
+  it("reconciles several addresses in one call", async () => {
+    const a = addr("alice");
+    const b = addr("bob");
+    arrivals = [vtxo("aa".repeat(32), 5_000)];
+    const res = await request(app).get(`/admin/api/reconcile?ids=${a.id},${b.id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.addresses).toHaveLength(2);
+    expect(res.body.unattributed).toBe(2);
+    expect(res.body.addresses.map((x: { addressId: number }) => x.addressId)).toEqual([a.id, b.id]);
+  });
+
+  // One undecodable or unregistered address must not cost the operator the
+  // whole sweep; it is reported in place instead.
+  it("reports a per-address failure without failing the batch", async () => {
+    const a = addr("alice");
+    const bare = repos.addresses.create({ domainId, username: "bare", status: "active", sessionId: "s" });
+    arrivals = [vtxo("aa".repeat(32), 5_000)];
+    const res = await request(app).get(`/admin/api/reconcile?ids=${a.id},${bare.id},9999`);
+    expect(res.status).toBe(200);
+    const byId = new Map(res.body.addresses.map((x: { addressId: number }) => [x.addressId, x]));
+    expect((byId.get(a.id) as { unattributed: number }).unattributed).toBe(1);
+    expect(String((byId.get(bare.id) as { error: string }).error)).toMatch(/Arkade/i);
+    expect(String((byId.get(9999) as { error: string }).error)).toMatch(/not found/i);
+  });
+
+  // Every address with an Arkade identity, for the "is anything stuck" sweep.
+  it("covers every registered address when no ids are named", async () => {
+    addr("alice");
+    addr("bob");
+    repos.addresses.create({ domainId, username: "bare", status: "active", sessionId: "s" });
+    arrivals = [];
+    const res = await request(app).get("/admin/api/reconcile");
+    expect(res.body.addresses).toHaveLength(2);
+  });
+
+  it("refuses a batch larger than it will serve", async () => {
+    const res = await request(app).get(`/admin/api/reconcile?ids=${Array.from({ length: 201 }, (_, i) => i + 1).join(",")}`);
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toMatch(/at most/i);
+  });
+});

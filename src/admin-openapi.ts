@@ -294,6 +294,57 @@ export const adminOpenApiSpec = {
       },
       delete: { summary: "Delete an address", tags: ["Addresses"], parameters: [idParam], responses: { ...OK } },
     },
+    "/reconcile": {
+      get: {
+        summary: "Post-mortem in bulk: what arrived vs what was recorded, across addresses",
+        description:
+          "Same check as /addresses/{id}/reconcile, over many addresses in one call — an operator asking " +
+          "\"did anything go missing\" wants the sweep rather than N calls to stitch together. Indexer reads are " +
+          "chunked, so the sweep costs a handful of round trips rather than one per address. A per-address " +
+          "failure (no Arkade identity, undecodable address, unknown id, a failed chunk) is reported in place " +
+          "rather than failing the batch. Read-only.",
+        parameters: [
+          {
+            name: "ids",
+            in: "query",
+            required: false,
+            schema: { type: "string" },
+            description: "Comma-separated address ids, at most 200. Omitted, covers every address holding an Arkade identity.",
+          },
+        ],
+        responses: {
+          "200": {
+            description: "Per-address results, each either a reconcile row or an error, plus the batch total",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    unattributed: { type: "integer", description: "Arrivals across the batch that no settlement record accounts for" },
+                    addresses: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        properties: {
+                          addressId: { type: "integer" },
+                          arkadeAddress: { type: "string" },
+                          script: { type: "string" },
+                          unattributed: { type: "integer" },
+                          arrivals: { type: "array", items: { type: "object" } },
+                          error: { type: "string", description: "Present instead of a result when this address could not be checked" },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "400": { description: "Malformed or oversized ids" },
+          "501": { description: "No Arkade indexer configured (ARK_SERVER_URL)" },
+        },
+      },
+    },
     "/addresses/{id}/reconcile": {
       get: {
         summary: "Post-mortem: what arrived at this address vs what was recorded",

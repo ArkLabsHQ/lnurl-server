@@ -349,8 +349,8 @@ describe("destination response: expiry and payment link", () => {
     const res = await cb("alice", "amount=1000000&paymentOption=arkade");
     // 1_000_000 msat = 1000 sats = 0.00001 BTC, and the Arkade destination goes
     // in `ark=` rather than as the bare address, which is an onchain one.
-    expect(String(res.uri)).toContain("ark=");
-    expect(String(res.uri)).toContain(String(res.paymentDestination));
-    expect(String(res.uri)).toContain("amount=0.00001");
+    expect(String(res.paymentURI)).toContain("ark=");
+    expect(String(res.paymentURI)).toContain(String(res.paymentDestination));
+    expect(String(res.paymentURI)).toContain("amount=0.00001");
   });
 });
