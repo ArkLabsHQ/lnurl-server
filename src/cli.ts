@@ -185,7 +185,7 @@ async function main(): Promise<void> {
       runtime.addStop(startCovenantWatcher(settlements, contracts, off.pollIntervalMs));
       const { createCovenantSweeper, startCovenantSweeper } = await import("./covenant-sweeper.js");
       runtime.addStop(startCovenantSweeper(
-        createCovenantSweeper({ contracts, arkServerUrl: off.arkServerUrl!, emulatorUrl: off.emulatorUrl! }),
+        createCovenantSweeper({ contracts, arkServerUrl: off.arkServerUrl!, emulatorUrl: off.emulatorUrl!, settlements }),
         15_000,
       ));
       console.log(`covenant destinations: enabled (emulator=${off.emulatorUrl}, recovery=${off.covenantRecoveryDelaySeconds}s)`);

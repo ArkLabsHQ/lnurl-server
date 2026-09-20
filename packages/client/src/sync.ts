@@ -31,6 +31,9 @@ export interface StoredPayment {
   swapId: string | null;
   /** Arkade txid once observed on a destination payment, null otherwise. */
   paymentReference: string | null;
+  /** Arkade txid that credited the owner's own address, on any rail — the one
+   *  their wallet can match against its own transaction history. */
+  payoutReference: string | null;
   /** Preimage once a bolt11 payment settled; null while pending and on the
    * destination rail, which has no invoice to prove. */
   preimage: string | null;
@@ -108,6 +111,8 @@ const toStored = (
     settledAt: entry.settledAt,
     swapId: entry.kind === "bolt11" ? entry.swapId : null,
     paymentReference: entry.kind === "destination" ? entry.paymentReference : null,
+    // Present on both shapes: every rail eventually credits the owner somewhere.
+    payoutReference: entry.payoutReference ?? null,
     preimage: entry.kind === "bolt11" ? entry.preimage : null,
     paymentOption: entry.kind === "destination" ? entry.paymentOption : null,
     covenantScript: entry.kind === "destination" ? entry.covenantScript : null,

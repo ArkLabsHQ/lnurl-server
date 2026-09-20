@@ -523,6 +523,7 @@ export const adminOpenApiSpec = {
               paymentOption: { type: "string" },
               paymentDestination: { type: "string", nullable: true },
               paymentReference: { type: "string", nullable: true, description: "Observed Arkade txid, once settled by observation" },
+              payoutReference: { type: "string", nullable: true, description: "Arkade txid that credited the recipient's own address; differs from paymentReference on the covenant and swap rails" },
               amountMsat: { type: "integer", nullable: true },
               hasPreimage: { type: "boolean", description: "Whether the record holds its preimage (never exposed here)" },
               createdAt: { type: "integer" },

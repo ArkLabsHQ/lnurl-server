@@ -129,6 +129,7 @@ interface AddressPaymentRow {
   paymentDestination: string | null;
   covenantScript: string | null;
   paymentReference: string | null;
+  payoutReference: string | null;
   settled: boolean;
   amountMsat: number | null;
   createdAt: number;
@@ -145,6 +146,7 @@ function toActivity(row: AddressPaymentRow): PaymentActivity {
       pr: row.pr,
       preimage: row.preimage,
       swapId: row.swapId,
+      payoutReference: row.payoutReference ?? null,
       settled: row.settled,
       amountMsat: row.amountMsat,
       createdAt: row.createdAt,
@@ -159,6 +161,7 @@ function toActivity(row: AddressPaymentRow): PaymentActivity {
     paymentDestination: row.paymentDestination,
     covenantScript: row.covenantScript,
     paymentReference: row.paymentReference,
+    payoutReference: row.payoutReference ?? null,
     settled: row.settled,
     amountMsat: row.amountMsat,
     createdAt: row.createdAt,

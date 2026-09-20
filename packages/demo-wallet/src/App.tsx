@@ -3,6 +3,7 @@ import type { PaymentOption, WalletBalance } from "@arkade-os/sdk";
 import type { InvoiceResult, PayRequest } from "@arkade-os/lnurl-client";
 import { EXPLORER, LNURL_DOMAIN, USERNAME_KEY } from "./config.js";
 import { mergeFeed, readWalletActivity, type FeedRow, type FeedStatus } from "./activity.js";
+import { lnurlActivityResolver } from "./lnurl-activity.js";
 import { balanceView } from "./balance.js";
 import { createMnemonic, loadMnemonic, openWallet, wipeWallet, type DemoWallet } from "./wallet.js";
 import { lnurl } from "./lnurl.js";
@@ -205,7 +206,7 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
           </span>
         )}
         <button style={{ ...btn, marginLeft: "auto" }} onClick={refresh}>Refresh</button>
-        <button style={btn} onClick={() => { wipeWallet(); forgetPayments(); onReset(); }}>Reset</button>
+        <button style={btn} onClick={async () => { await wipeWallet(); forgetPayments(); onReset(); }}>Reset</button>
       </div>
 
       <nav style={{ display: "flex", gap: 12, borderBottom: "1px solid #ccc", marginBottom: 16 }}>
@@ -456,6 +457,10 @@ function Activity({ token, username, lightningAddress, wallet }: {
 
   useEffect(() => {
     let live = true;
+    // Registered on the wallet rather than merged afterwards, so the server's
+    // record lands on the SDK's own activity row. `use` is keyed by id, so
+    // re-running this effect replaces the resolver instead of stacking copies.
+    wallet.wallet.activity.use(lnurlActivityResolver(() => storedPayments(lightningAddress)));
     // The wallet half comes from the SDK and needs no server, so it renders even
     // when the sync fails — which is also why the error does not replace the list.
     const show = async () => {

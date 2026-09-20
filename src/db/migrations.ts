@@ -221,6 +221,18 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE addresses ADD COLUMN boarding_address TEXT;
     `,
   },
+  {
+    version: 13,
+    // The txid that credited the user's OWN address — not always the one observed,
+    // since a covenant payment is credited by its later sweep and a swap by its
+    // claim. Backfilled only for the static rail, where the two are the same.
+    up: `
+      ALTER TABLE settlements ADD COLUMN payout_reference TEXT;
+
+      UPDATE settlements SET payout_reference = payment_reference
+        WHERE payment_reference IS NOT NULL AND covenant_script IS NULL;
+    `,
+  },
 ];
 
 /** Apply all pending forward-only migrations inside a transaction each. */

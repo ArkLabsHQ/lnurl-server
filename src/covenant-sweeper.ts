@@ -33,6 +33,7 @@ import {
   type VirtualCoin,
 } from "@arkade-os/sdk";
 import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler } from "./covenant-contract.js";
+import type { SettlementStore } from "./settlement-store.js";
 import { SWEEP_LEAF, enforcePayTo } from "./covenant-destination.js";
 
 interface EmulatorSubmit {
@@ -51,6 +52,8 @@ export function createCovenantSweeper(opts: {
   arkProvider?: ArkProvider;
   indexer?: IndexerProvider;
   emulator?: EmulatorSubmit;
+  /** Optional: records which transaction credited the user. Sweeping works without it. */
+  settlements?: SettlementStore;
 }): CovenantSweeper {
   const arkProvider = opts.arkProvider ?? new RestArkProvider(opts.arkServerUrl);
   const indexer = opts.indexer ?? new RestIndexerProvider(opts.arkServerUrl);
@@ -112,6 +115,9 @@ export function createCovenantSweeper(opts: {
             if (!path) continue;
             const arkTxid = await sweepOne(contract, vtxo, path, tapTree);
             moved++;
+            // What the user's wallet holds: the payment landed at the covenant.
+            const record = opts.settlements?.findByCovenantScript(contract.script);
+            if (record) opts.settlements?.markPaidOut(record.paymentHash, arkTxid);
             console.log(`covenant sweep: ${contract.script.slice(0, 16)}… -> ${arkTxid}`);
           } catch (err) {
             // One stuck destination must not stop the rest, and the next pass retries.

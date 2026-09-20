@@ -500,6 +500,7 @@ export function createAdminApi(deps: AdminDeps): Router {
         paymentOption: x.paymentOption,
         paymentDestination: x.paymentDestination,
         paymentReference: x.paymentReference,
+        payoutReference: x.payoutReference,
         amountMsat: x.amountMsat,
         hasPreimage: x.preimage !== null,
         createdAt: x.createdAt,

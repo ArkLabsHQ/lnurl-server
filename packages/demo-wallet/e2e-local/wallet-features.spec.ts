@@ -93,6 +93,51 @@ test("backup: the revealed phrase is the stored key, and erasing destroys it", a
   }
 });
 
+/** Records across every store in the SDK's IndexedDB. Summed rather than named,
+ *  so a store added by a later SDK counts without editing this. */
+const sdkRecords = (page: Page): Promise<number> =>
+  page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const req = indexedDB.open("arkade-service-worker");
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    const names = Array.from(db.objectStoreNames);
+    const counts = await Promise.all(
+      names.map((n) => new Promise<number>((resolve) => {
+        const req = db.transaction(n, "readonly").objectStore(n).count();
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(0);
+      })),
+    );
+    db.close();
+    return counts.reduce((a, b) => a + b, 0);
+  });
+
+test("erase empties the SDK store, so the next wallet cannot inherit it", async ({ browser }) => {
+  const { context, page } = await freshWallet(browser, "wipe");
+  try {
+    // Opening a wallet writes its arkd snapshot, so there is something to erase.
+    await expect.poll(() => sdkRecords(page), { timeout: 60_000 }).toBeGreaterThan(0);
+
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: "Erase wallet…" }).click();
+    await page.getByPlaceholder("ERASE").fill("ERASE");
+    await page.getByRole("button", { name: "Erase wallet", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Create your wallet" })).toBeVisible();
+
+    // The regression: erase cleared localStorage only, leaving the next identity
+    // the previous one's VTXOs and unsignable contracts.
+    expect(await sdkRecords(page)).toBe(0);
+
+    await onboard(page, "wipe2");
+    await expect(page.locator("div").filter({ hasText: /^0 sats$/ }).first())
+      .toBeVisible({ timeout: 120_000 });
+  } finally {
+    await context.close();
+  }
+});
+
 test("restore: adopting another phrase takes over the name that key owns", async ({ browser }) => {
   const first = await freshWallet(browser, "r1");
   const phrase = await first.page.evaluate((k) => localStorage.getItem(k), MNEMONIC_KEY);

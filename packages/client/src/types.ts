@@ -165,6 +165,8 @@ export interface DestinationVerifyStatus {
   paymentDestination?: string;
   /** Server-assigned payment reference, when the server reports one. */
   paymentReference?: string;
+  /** Txid that credited the recipient's own address, when the server reports one. */
+  payoutReference?: string;
 }
 /**
  * Tuning for `pollVerify`: how often to re-poll, how long to wait overall,
@@ -215,6 +217,9 @@ export interface Bolt11Activity {
   preimage: string | null;
   /** RFQ id when this was an offline swap, null for relay invoices. */
   swapId: string | null;
+  /** Arkade txid of the claim that paid the covenant out to the owner — a swap
+   *  settles on a preimage, so this is the only txid their wallet holds. */
+  payoutReference: string | null;
   /** Whether the payment has settled. */
   settled: boolean;
   /** Agreed amount in millisats, when recorded. */
@@ -242,6 +247,9 @@ export interface DestinationActivity {
   covenantScript: string | null;
   /** Arkade txid once observed, null until then. */
   paymentReference: string | null;
+  /** Arkade txid that credited the owner's own address — the payment itself on
+   *  the static rail, the sweep on a covenant one. */
+  payoutReference: string | null;
   /** Whether the payment has settled. */
   settled: boolean;
   /** Agreed amount in millisats, when recorded. */

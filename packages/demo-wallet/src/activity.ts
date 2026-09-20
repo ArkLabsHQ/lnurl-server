@@ -1,5 +1,6 @@
 import type { Activity, Wallet } from "@arkade-os/sdk";
 import type { StoredPayment } from "@arkade-os/lnurl-client";
+import { absorbedPaymentKey } from "./lnurl-activity.js";
 
 /**
  * `untracked` is not a softer `pending`. A rail whose settlement nothing
@@ -49,15 +50,15 @@ export function lnurlRows(payments: StoredPayment[]): FeedRow[] {
   }));
 }
 
-/**
- * The two halves answer different questions and neither subsumes the other: the
- * wallet knows what its keys moved, the server knows what was quoted against
- * this address — including payments that never arrived, which have no
- * transaction to appear as. They are shown side by side rather than reconciled,
- * because a settled receive legitimately exists in both.
- */
+/** One row per payment. What the resolver matched is already on the wallet row,
+ *  so only what has no transaction to enhance survives here — quotes nobody paid,
+ *  and payments not yet credited. */
 export function mergeFeed(activities: Activity[], payments: StoredPayment[]): FeedRow[] {
-  return [...walletRows(activities), ...lnurlRows(payments)].sort((a, b) => b.createdAt - a.createdAt);
+  const absorbed = new Set(
+    activities.map((a) => absorbedPaymentKey(a.id)).filter((key): key is string => key !== undefined),
+  );
+  const unmatched = payments.filter((p) => !absorbed.has(p.key));
+  return [...walletRows(activities), ...lnurlRows(unmatched)].sort((a, b) => b.createdAt - a.createdAt);
 }
 
 /**

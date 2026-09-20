@@ -218,6 +218,13 @@ test("arkade rail, static destination: the user's own address, no verify, settle
     SETTLE_TIMEOUT_MS,
     3000,
   );
+
+  // The join the activity resolver depends on: what the server recorded is a txid
+  // the receiving wallet's own history carries.
+  await expect
+    .poll(async () => (await user.wallet.getTransactionHistory()).map((t) => t.key.arkTxid),
+      { timeout: SETTLE_TIMEOUT_MS, intervals: [3_000] })
+    .toContain(txid);
 });
 
 test("onchain rail: the boarding address, no verify, and no settlement even once it is funded", async () => {
@@ -308,6 +315,27 @@ test.describe("arkade rail, per-payment covenant destinations", () => {
         const { vtxos } = await indexer.getVtxos({ scripts: [staticScript], spendableOnly: true });
         return vtxos.some((v) => v.value === COVENANT_SATS);
       },
+      SETTLE_TIMEOUT_MS,
+      3000,
+    );
+
+    let payoutReference = "";
+    await pollUntil(
+      "the sweep recorded as the payout reference",
+      async () => {
+        const body = await (await fetch(second.verify!)).json() as { payoutReference?: string | null };
+        payoutReference = body.payoutReference ?? "";
+        return Boolean(payoutReference);
+      },
+      SETTLE_TIMEOUT_MS,
+      3000,
+    );
+    // Never the observed txid: that output sat at the covenant, which the user's
+    // keys never held. Only the sweep appears in their own history.
+    expect(payoutReference).not.toBe(txid);
+    await pollUntil(
+      "the swept txid in the user's own transaction history",
+      async () => (await user.wallet.getTransactionHistory()).some((t) => t.key.arkTxid === payoutReference),
       SETTLE_TIMEOUT_MS,
       3000,
     );

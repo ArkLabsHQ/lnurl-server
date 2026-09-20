@@ -418,6 +418,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         paymentOption: rec.paymentOption,
         ...(rec.paymentDestination ? { paymentDestination: rec.paymentDestination } : {}),
         paymentReference: rec.paymentReference,
+        payoutReference: rec.payoutReference,
       });
       return;
     }

@@ -26,6 +26,8 @@ export async function settleOfflineSwaps(
       try {
         const outcome = await creator.selfClaim(p.swapId, p.preimage, p.recovery);
         if (outcome.state === "claimed") {
+          // The swap settles on a preimage; the claim is the only txid they hold.
+          store.markPaidOut(p.paymentHash, outcome.arkTxid);
           logger.info("offline_swap_self_claimed", { swapId: p.swapId, arkTxid: outcome.arkTxid });
         } else if (outcome.reason === "underfunded") {
           logger.warn("offline_swap_underfunded", { swapId: p.swapId });

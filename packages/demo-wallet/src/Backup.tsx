@@ -49,7 +49,7 @@ export function Backup({ onRestored, onReset }: BackupProps) {
 
   /** Erase, or erase and adopt the pasted phrase. The import is validated BEFORE
    *  anything is wiped: a typo must not cost the caller the wallet they had. */
-  const replace = () => {
+  const replace = async () => {
     const wants = draft.trim();
     if (wants) {
       const checked = restoreMnemonic(draft);
@@ -65,7 +65,7 @@ export function Backup({ onRestored, onReset }: BackupProps) {
       onRestored(checked.mnemonic);
       return;
     }
-    wipeWallet();
+    await wipeWallet();
     setPhrase(null);
     setConfirming(false);
     setConfirmWord("");
