@@ -701,6 +701,23 @@ export const openApiSpec = {
                         status: { type: "string", enum: ["OK"] },
                         paymentOption: { type: "string" },
                         paymentDestination: { type: "string", description: "Rail destination, e.g. an Arkade address" },
+                        expiresAt: {
+                          type: "number",
+                          description:
+                            "Unix seconds after which this server stops attributing payments to this quote. A BOLT11 " +
+                            "carries its own expiry and an address carries none, so without this the payer cannot know " +
+                            "one exists. NOT a deadline on the money: past it a payment still reaches the destination, " +
+                            "and on the covenant rail the sweeper still moves it — what lapses is the record, so verify " +
+                            "stops answering and the payment leaves no trace in the address's history. Absent on rails " +
+                            "nothing here watches, such as onchain boarding.",
+                        },
+                        uri: {
+                          type: "string",
+                          description:
+                            "BIP21 URI for the destination carrying the requested amount. The Arkade destination is in " +
+                            "`ark=` rather than the address slot, which the scheme reserves for an onchain address; " +
+                            "`amount` is BTC per BIP21, though every other amount in this API is millisats.",
+                        },
                         verify: {
                           type: "string",
                           description:

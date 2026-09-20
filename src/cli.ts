@@ -259,6 +259,9 @@ async function main(): Promise<void> {
       maxSendable: config.maxSendable,
       invoiceTimeoutMs: config.invoiceTimeoutMs,
       verifyTtlMs: config.verifyTtlMs,
+      // The store already honours it; without it here the advertised expiresAt
+      // would quietly keep the default while the watcher used the override.
+      destinationWatchMs: config.destinationWatchMs,
       trustProxy: config.trustProxy,
       traceRequests: config.traceRequests,
       maxSessions: config.maxSessions,

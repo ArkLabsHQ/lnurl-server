@@ -321,3 +321,36 @@ describe("payRequest bounds vs the published schema", () => {
     expect(documented).toEqual(expect.arrayContaining(Object.keys(option)));
   });
 });
+
+describe("destination response: expiry and payment link", () => {
+  const cb = (username: string, q: string) =>
+    getJson(`${ctx.baseUrl}/.well-known/lnurlp/${username}/callback?${q}`, "domain.com");
+
+  // A bolt11 carries its own expiry; an address does not. The server stops
+  // attributing payments to this quote after DESTINATION_WATCH_MS, and a payer
+  // was never told that deadline existed.
+  it("tells the payer when the destination stops being watched", async () => {
+    ctx = await start(repos, undefined, undefined, undefined, 330);
+    addr("alice");
+    const before = Math.floor(Date.now() / 1000);
+    const res = await cb("alice", "amount=1000000&paymentOption=arkade");
+    expect(res.status).toBe("OK");
+    // Default window is seven days.
+    const expected = before + 604_800;
+    expect(Number(res.expiresAt)).toBeGreaterThanOrEqual(expected - 5);
+    expect(Number(res.expiresAt)).toBeLessThanOrEqual(expected + 5);
+  });
+
+  // The payer asked for a rail and an amount; making them rebuild a URI from an
+  // address and a number is work the server already has the pieces for.
+  it("returns a payable BIP21 URI carrying the amount", async () => {
+    ctx = await start(repos, undefined, undefined, undefined, 330);
+    addr("alice");
+    const res = await cb("alice", "amount=1000000&paymentOption=arkade");
+    // 1_000_000 msat = 1000 sats = 0.00001 BTC, and the Arkade destination goes
+    // in `ark=` rather than as the bare address, which is an onchain one.
+    expect(String(res.uri)).toContain("ark=");
+    expect(String(res.uri)).toContain(String(res.paymentDestination));
+    expect(String(res.uri)).toContain("amount=0.00001");
+  });
+});

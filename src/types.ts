@@ -16,6 +16,9 @@ export interface LnurlServiceConfig {
   invoiceTimeoutMs?: number;
   /** How long (ms) a LUD-21 settlement record is retained for `verify` polling (default: 24h) */
   verifyTtlMs?: number;
+  /** How long (ms) a handed-out destination stays watched, and so how long a
+   *  payment to it can still be attributed (default: 7d). @see LnurlPayDestinationResponse.expiresAt */
+  destinationWatchMs?: number;
   /** Trust X-Forwarded-* headers from a reverse proxy (default: 1 hop). Pass a number for
    *  the hop count, true to trust all, or false to disable. */
   trustProxy?: number | boolean;
@@ -126,6 +129,22 @@ export interface LnurlPayDestinationResponse {
   paymentOption: string;
   paymentDestination?: string;
   verify?: string;
+  /**
+   * Unix seconds after which this server stops attributing payments to this
+   * quote. A BOLT11 carries its own expiry and an address carries none, so
+   * without this the payer cannot know one exists.
+   *
+   * It is not a deadline on the money: past it a payment still reaches the
+   * destination, and on the covenant rail the sweeper still moves it. What
+   * lapses is this server's record of it — `verify` stops answering and the
+   * payment leaves no trace in the address's history.
+   *
+   * Absent on rails nothing here watches, where there is no such window.
+   */
+  expiresAt?: number;
+  /** BIP21 URI for the destination, carrying the requested amount, so the payer
+   *  does not rebuild one from an address and a number the server already has. */
+  uri?: string;
 }
 
 /** LNURL error response */

@@ -17,7 +17,7 @@ import type { OfflineSwapCreator } from "./intent-swap.js";
 import type { OfflineSwapStore } from "./offline-swap-store.js";
 import { HealthRegistry } from "./health.js";
 import { createLogger, type Logger } from "./logger.js";
-import { ArkAddress } from "@arkade-os/sdk";
+import { ArkAddress, BIP21 } from "@arkade-os/sdk";
 import { resolvePaymentOption } from "./payment-options.js";
 import {
   advertisedBounds,
@@ -45,6 +45,17 @@ import type {
 } from "./types.js";
 
 const DEFAULT_INVOICE_TIMEOUT_MS = 30_000;
+const DEFAULT_DESTINATION_WATCH_MS = 604_800_000;
+
+/** A payable URI for a destination-rail quote. The Arkade destination goes in
+ *  `ark=` rather than the address slot, which BIP21 reserves for an onchain one,
+ *  and `amount` is BTC per the scheme even though everything else here is msat. */
+function destinationUri(paymentOption: string, destination: string, amountMsat: number): string {
+  const amount = amountMsat / 1000 / 100_000_000;
+  return paymentOption === "onchain"
+    ? BIP21.create({ address: destination, amount })
+    : BIP21.create({ ark: destination, amount });
+}
 const METADATA_DESCRIPTION = "Arkade LNURL Receive";
 
 const PROVISIONING_STATUS: Record<string, number> = {
@@ -696,10 +707,17 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           // at derivation owns the preimage, the taptree and the payout script.
           ...(derived ? { covenantScript: derived.script } : {}),
         });
+        const destination = derived?.address ?? resolved.paymentDestination;
         res.json({
           status: "OK",
           paymentOption: resolved.paymentOption,
-          paymentDestination: derived?.address ?? resolved.paymentDestination,
+          paymentDestination: destination,
+          ...(destination ? { uri: destinationUri(resolved.paymentOption, destination, amountMsat) } : {}),
+          // Only for rails this server watches. The onchain rail is a static
+          // boarding address nothing here observes, so it has no window to end.
+          ...(resolved.paymentOption === "onchain"
+            ? {}
+            : { expiresAt: Math.floor((Date.now() + (config.destinationWatchMs ?? DEFAULT_DESTINATION_WATCH_MS)) / 1000) }),
           // Only when the destination identifies the payment. A covenant script
           // does; the static fallback is one address reused for every payment and
           // settled by amount/window correlation, so two concurrent payments of
