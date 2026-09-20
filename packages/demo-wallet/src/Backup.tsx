@@ -47,19 +47,24 @@ export function Backup({ onRestored, onReset }: BackupProps) {
     setTimeout(() => setCopied(false), 1200);
   };
 
-  const restore = () => {
-    const checked = restoreMnemonic(draft);
-    if (!checked.ok) {
-      setResult({ ok: false, text: checked.error });
+  /** Erase, or erase and adopt the pasted phrase. The import is validated BEFORE
+   *  anything is wiped: a typo must not cost the caller the wallet they had. */
+  const replace = () => {
+    const wants = draft.trim();
+    if (wants) {
+      const checked = restoreMnemonic(draft);
+      if (!checked.ok) {
+        setResult({ ok: false, text: checked.error });
+        return;
+      }
+      setResult({ ok: true, text: "Phrase adopted — re-opening the wallet." });
+      setDraft("");
+      setPhrase(null);
+      setConfirming(false);
+      setConfirmWord("");
+      onRestored(checked.mnemonic);
       return;
     }
-    setResult({ ok: true, text: "Phrase adopted — re-opening the wallet." });
-    setDraft("");
-    setPhrase(null);
-    onRestored(checked.mnemonic);
-  };
-
-  const erase = () => {
     wipeWallet();
     setPhrase(null);
     setConfirming(false);
@@ -93,32 +98,19 @@ export function Backup({ onRestored, onReset }: BackupProps) {
         </>
       )}
 
+      {/* One destructive door, not two. Restoring and erasing both end this
+          wallet and start another; offering "restore" as its own routine
+          setting invited it to be used as if it were one, with the current key
+          discarded as a side effect nobody was asked about. */}
       <div style={section}>
-        <h3 style={{ fontSize: 14, margin: "0 0 4px" }}>Restore from a phrase</h3>
-        <p style={note}>
-          Adopts an existing phrase as this browser's wallet.
-          {stored && " The phrase above is overwritten — reveal and copy it first if you still need it."}
-          {" "}A different phrase also releases the claimed Lightning address, which belongs to the
-          key that registered it.
-        </p>
-        <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          rows={3}
-          placeholder="twelve words separated by spaces"
-          style={{ ...field, ...mono, marginBottom: 8, resize: "vertical" }}
-        />
-        <button style={btn} disabled={!draft.trim()} onClick={restore}>Restore wallet</button>
-        {result && (
-          <p style={{ ...mono, color: result.ok ? "#16834b" : "crimson" }}>{result.text}</p>
-        )}
-      </div>
-
-      <div style={section}>
-        <h3 style={{ fontSize: 14, margin: "0 0 4px" }}>Erase this wallet</h3>
+        <h3 style={{ fontSize: 14, margin: "0 0 4px" }}>Replace this wallet</h3>
         {!confirming ? (
           <>
-            <p style={note}>Removes the key and the claimed address from this browser, and starts over.</p>
+            <p style={note}>
+              Ends this wallet and starts another — either a fresh key, or one you import
+              from a phrase. Either way the key here is gone, and with it the claimed
+              Lightning address, which belongs to the key that registered it.
+            </p>
             <button style={danger} onClick={() => setConfirming(true)}>Erase wallet…</button>
           </>
         ) : (
@@ -134,17 +126,31 @@ export function Backup({ onRestored, onReset }: BackupProps) {
               placeholder="ERASE"
               style={{ ...field, maxWidth: 200, marginBottom: 8 }}
             />
+            <p style={note}>
+              Leave the box below empty to start fresh, or paste twelve words to import that
+              wallet instead.
+            </p>
+            <textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              rows={3}
+              placeholder="twelve words separated by spaces (optional)"
+              style={{ ...field, ...mono, marginBottom: 8, resize: "vertical" }}
+            />
             <div>
               <button
                 style={danger}
                 disabled={confirmWord.trim().toUpperCase() !== "ERASE"}
-                onClick={erase}
-              >Erase wallet</button>
+                onClick={replace}
+              >{draft.trim() ? "Erase and import" : "Erase wallet"}</button>
               <button
                 style={{ ...btn, marginLeft: 8 }}
-                onClick={() => { setConfirming(false); setConfirmWord(""); }}
+                onClick={() => { setConfirming(false); setConfirmWord(""); setDraft(""); setResult(null); }}
               >Cancel</button>
             </div>
+            {result && (
+              <p style={{ ...mono, color: result.ok ? "#16834b" : "crimson" }}>{result.text}</p>
+            )}
           </>
         )}
       </div>

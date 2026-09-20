@@ -185,10 +185,10 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
     <>
       <div style={{ ...card, display: "flex", alignItems: "baseline", gap: 16 }}>
         <div>
+          {/* One number. Settled vs preconfirmed is an Arkade implementation
+              detail — both are spendable now, and splitting them invites a
+              holder to think half their balance is not really theirs. */}
           <div style={{ fontSize: 28 }}>{balance?.available ?? "—"} <span style={{ fontSize: 14, color: "#666" }}>sats</span></div>
-          <div style={{ color: "#666", fontSize: 12 }}>
-            available · {balance?.settled ?? 0} settled · {balance?.preconfirmed ?? 0} preconfirmed
-          </div>
         </div>
         {boarding.status !== "idle" && (
           <span style={{ ...mono, fontSize: 12, color: boarding.status === "failed" ? "crimson" : "#946200" }}>
@@ -228,7 +228,8 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
  * The address is the whole interface. Nothing here shows an Arkade or boarding
  * address, because a payer never needs one: they resolve the address, read the
  * rails it offers, and ask for the one they want. Funding this wallet is the
- * same act — request the `onchain` option and pay what it answers with.
+ * same act through the same door — every rail credits it, so there is no
+ * separate deposit flow and no rail that is the funding one.
  *
  * Options are listed on demand and requested one at a time, never eagerly: a
  * callback mints a destination and files a settlement record, so rendering the
@@ -278,15 +279,15 @@ function Receive({ lightningAddress }: { lightningAddress: string }) {
             <p style={{ color: "#555", fontSize: 13 }}>
               Everything this wallet receives arrives through this one address, open page or
               not — the server takes the swap or destination on your behalf, constrained to
-              pay you. To fund it, request the <code>onchain</code> rail below and pay what
-              it hands back.
+              pay you. Funding it is the same act as being paid: pick whichever rail suits
+              where the money is coming from and pay what it hands back.
             </p>
           </div>
         </div>
-      </div>
 
-      <div style={card}>
-        <h2 style={{ fontSize: 16, marginTop: 0 }}>What this address accepts</h2>
+        {/* Same card as the address: the rails are what the address IS, and a
+            separate panel read as a second, unrelated thing to configure. */}
+        <div style={{ borderTop: "1px solid #eee", marginTop: 16, paddingTop: 16 }}>
         <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
           <button style={btn} disabled={busy !== ""} onClick={() => void load()}>
             {busy === "options" ? "Resolving…" : payRequest ? "Reload options" : "Load options"}
@@ -335,6 +336,7 @@ function Receive({ lightningAddress }: { lightningAddress: string }) {
           );
         })()}
         <a href={EXPLORER} target="_blank" rel="noreferrer" style={{ color: "#06c", fontSize: 13 }}>explorer</a>
+        </div>
       </div>
     </>
   );
@@ -443,6 +445,7 @@ function Activity({ token, username, lightningAddress, wallet }: {
   const store = useMemo(() => localPaymentStore(), []);
   const [rows, setRows] = useState<FeedRow[] | null>(null);
   const [err, setErr] = useState("");
+  const [walletErr, setWalletErr] = useState("");
 
   useEffect(() => {
     let live = true;
@@ -450,8 +453,10 @@ function Activity({ token, username, lightningAddress, wallet }: {
     // when the sync fails — which is also why the error does not replace the list.
     const show = async () => {
       if (!live) return;
-      const activities = await readWalletActivity(wallet.wallet);
-      if (live) setRows(mergeFeed(activities, storedPayments(lightningAddress)));
+      const { activities, error } = await readWalletActivity(wallet.wallet);
+      if (!live) return;
+      setWalletErr(error ?? "");
+      setRows(mergeFeed(activities, storedPayments(lightningAddress)));
     };
     void show();
     const load = () => lnurl.syncActivity(token, username, store)
@@ -472,6 +477,7 @@ function Activity({ token, username, lightningAddress, wallet }: {
         quotes nobody paid, which have no transaction to show up as.
       </p>
       {err && <p style={{ ...mono, color: "crimson", fontSize: 12 }}>payment sync failed: {err}</p>}
+      {walletErr && <p style={{ ...mono, color: "crimson", fontSize: 12 }}>wallet history unavailable: {walletErr}</p>}
       {!rows.length && <p style={{ color: "#666" }}>Nothing yet.</p>}
       {rows.map((r) => {
         const status = STATUS_STYLE[r.status];

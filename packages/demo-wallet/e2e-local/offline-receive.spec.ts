@@ -26,7 +26,10 @@ test("a browser wallet claims a name on the local server and receives a Lightnin
 
   await expect(page.getByRole("heading", { name: "Your Lightning address" })).toBeVisible({ timeout: 120_000 });
   await expect(page.getByText(`${username}@${stack.lnurlDomain}`)).toBeVisible();
-  await expect(page.getByRole("heading", { name: "What this address accepts" })).toBeVisible();
+  // The rails live in the address card now rather than a panel of their own, and
+  // are fetched on demand, so the control that fetches them is what proves the
+  // receive screen is whole.
+  await expect(page.getByRole("button", { name: /Load options/ })).toBeVisible();
   expect(errors).toEqual([]);
 
   const balanceBefore = sats(await page.locator("div").filter({ hasText: /^\d+ sats$/ }).first().innerText());

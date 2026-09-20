@@ -36,7 +36,9 @@ const COVENANT_ADMIN_PORT = 4286;
 const INTERACTIVE_SATS = 1500;
 const ARKADE_SATS = 2100;
 const COVENANT_SATS = 3300;
-const ONCHAIN_SATS = 4200;
+// Above ONCHAIN_MIN_SENDABLE_SATS: the onchain rail's floor is economic, not
+// dust, because delivering it costs the payer a Bitcoin fee.
+const ONCHAIN_SATS = 12_000;
 const SETTLE_TIMEOUT_MS = 3 * 60_000;
 
 const payer = createLnurlClient();

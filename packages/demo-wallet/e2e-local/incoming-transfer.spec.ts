@@ -1,7 +1,7 @@
 // Does a browser wallet surface an Arkade transfer it did not make itself?
 //
-// A Node wallet built from the same phrase sees one immediately (available =
-// the transferred amount, preconfirmed, settled 0) and can spend it, so the
+// A Node wallet built from the same phrase sees one immediately (spendable as
+// soon as it is preconfirmed) and can spend it, so the
 // money is the recipient's. This asks the only remaining question: whether the
 // wallet in the page sees it too.
 import { expect, test, type Page } from "@playwright/test";
@@ -74,8 +74,8 @@ test("a browser wallet surfaces an incoming Arkade transfer it did not make", as
     }, { timeout: 180_000, intervals: [5_000] })
     .toBeGreaterThan(0);
 
-  const breakdown = await page.locator("div").filter({ hasText: /available · / }).last().innerText();
-  console.log(`TRIAGE browser shows: ${await shown(page)} available | ${breakdown.replace(/\n/g, " ")}`);
+  // One unified figure now; the settled/preconfirmed split is no longer rendered.
+  console.log(`TRIAGE browser shows: ${await shown(page)} sats`);
   const vtxos = (await new RestIndexerProvider(local.arkServer)
     .getVtxos({ scripts: [script], spendableOnly: true })).vtxos;
   console.log(`TRIAGE indexer vtxos at that script: ${JSON.stringify(vtxos.map((v) => ({ value: v.value})))}`);

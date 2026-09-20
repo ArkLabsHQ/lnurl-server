@@ -102,9 +102,13 @@ test("restore: adopting another phrase takes over the name that key owns", async
   try {
     await expect(second.page.getByText(`${second.username}@${stack.lnurlDomain}`)).toBeVisible();
 
+    // Importing is a way of replacing this wallet, not a routine setting, so it
+    // sits behind the same confirmation as erasing.
     await second.page.getByRole("button", { name: "Settings" }).click();
-    await second.page.getByPlaceholder("twelve words separated by spaces").fill(phrase!);
-    await second.page.getByRole("button", { name: "Restore wallet" }).click();
+    await second.page.getByRole("button", { name: "Erase wallet…" }).click();
+    await second.page.getByPlaceholder("ERASE").fill("ERASE");
+    await second.page.getByPlaceholder(/twelve words/).fill(phrase!);
+    await second.page.getByRole("button", { name: "Erase and import" }).click();
 
     // Nothing re-registers here: the server refuses an existing username even to
     // its owner, so the name can only come back from asking what the key owns.
@@ -193,10 +197,16 @@ test.describe("a wallet that stays open", () => {
 
     await page.getByRole("button", { name: /Load options/ }).click();
     await expect(page.getByText(/accepts \d+/)).toBeVisible({ timeout: 60_000 });
-    const card = page.locator("div").filter({ has: page.getByRole("heading", { name: "What this address accepts" }) }).last();
+    // One card now: the rails are part of the address, not a panel beside it.
+    const card = page.locator("div").filter({ has: page.getByRole("heading", { name: "Your Lightning address" }) }).last();
     for (const rail of ["lightning", "arkade", "onchain"]) {
       await expect(card.getByText(rail, { exact: true })).toBeVisible({ timeout: 60_000 });
     }
+
+    // Above the onchain rail's economic floor (ONCHAIN_MIN_SENDABLE_SATS): dust is
+    // what arkd accepts, not what is worth a Bitcoin fee to deliver, so the rail
+    // refuses the 1000 the box defaults to.
+    await page.getByRole("spinbutton").fill("12000");
 
     // Requesting one is what mints a destination, which is why listing does not.
     await card.locator("div").filter({ hasText: /^onchain/ }).first()

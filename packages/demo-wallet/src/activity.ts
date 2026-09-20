@@ -60,11 +60,20 @@ export function mergeFeed(activities: Activity[], payments: StoredPayment[]): Fe
   return [...walletRows(activities), ...lnurlRows(payments)].sort((a, b) => b.createdAt - a.createdAt);
 }
 
-export async function readWalletActivity(wallet: Wallet): Promise<Activity[]> {
+/**
+ * The SDK's own history. A failure is reported rather than swallowed: an empty
+ * list and a broken call render identically, so eating the error makes the feed
+ * look like it never consulted the wallet at all — which is indistinguishable,
+ * from the outside, from not having wired the SDK up.
+ */
+export async function readWalletActivity(
+  wallet: Wallet,
+): Promise<{ activities: Activity[]; error?: string }> {
   try {
-    return await wallet.getActivityHistory();
-  } catch {
-    // A wallet too old to group activities must not blank the LNURL half.
-    return [];
+    return { activities: await wallet.getActivityHistory() };
+  } catch (err) {
+    // Still returns the empty half: a wallet too old to group activities must
+    // not blank the LNURL rows beside it.
+    return { activities: [], error: err instanceof Error ? err.message : String(err) };
   }
 }
