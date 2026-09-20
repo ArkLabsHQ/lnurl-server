@@ -177,8 +177,14 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   const arkServerUrl = env.ARK_SERVER_URL ? httpUrl(env.ARK_SERVER_URL, "ARK_SERVER_URL") : undefined;
   const rfqHttpUrl = env.SOLVER_RFQ_HTTP_URL ? httpUrl(env.SOLVER_RFQ_HTTP_URL, "SOLVER_RFQ_HTTP_URL") : undefined;
   const hasCards = (registryUrls?.length ?? 0) > 0 || cardsFile !== undefined;
-  const selfClaim = env.OFFLINE_SELF_CLAIM === "true";
   const emulatorUrl = env.OFFLINE_EMULATOR_URL ? httpUrl(env.OFFLINE_EMULATOR_URL, "OFFLINE_EMULATOR_URL") : undefined;
+  // On wherever it can run. This server generates the swap preimage, so it can
+  // push the covenant's claim leaf itself — no key of its own, and the covenant
+  // pins the payout to the user. Deferring to covclaimd instead makes a third
+  // party the single point of failure for every receive, and it cannot claim
+  // this covenant today, so a covclaimd-only deployment claims nothing at all.
+  // "false" still opts out; anything else is not a vote.
+  const selfClaim = env.OFFLINE_SELF_CLAIM === undefined ? Boolean(emulatorUrl) : env.OFFLINE_SELF_CLAIM === "true";
   const stampClaimPacket = env.OFFLINE_STAMP_CLAIM_PACKET === "true";
   const covenantDestinations = env.OFFLINE_COVENANT_DESTINATIONS === "true";
   if (selfClaim && !emulatorUrl) {
@@ -192,6 +198,10 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   // waits for the client's own claim): with OFFLINE_SELF_CLAIM the server holds
   // P and pushes the covenant leaf itself, so no covclaimd is needed.
   const selfClaimMode = selfClaim && emulatorUrl;
+  // Configuration that only makes sense for the solver-mediated lightning rail.
+  // OFFLINE_EMULATOR_URL is deliberately absent: it serves the covenant rail too.
+  const offlineSwapRequested =
+    hasCards || Boolean(covclaimdUrl) || Boolean(rfqHttpUrl) || Boolean(nostrSecretKey) || env.OFFLINE_SELF_CLAIM === "true";
   if (stampClaimPacket && !covclaimdUrl) {
     throw new Error("OFFLINE_STAMP_CLAIM_PACKET=true requires COVCLAIMD_URL (there is no packet to stamp without one)");
   }
@@ -225,7 +235,11 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
     );
   }
   return {
-    enabled: Boolean(arkServerUrl && (covclaimdUrl || (selfClaim && emulatorUrl))),
+    // Two separate questions, previously one. A claimer must exist — but an
+    // emulator is also the covenant rail's co-signer, so it cannot by itself
+    // mean "serve lightning swaps too", or turning self-claim on by default
+    // would switch this rail on for a covenant-only deployment.
+    enabled: Boolean(arkServerUrl && (covclaimdUrl || (selfClaim && emulatorUrl)) && offlineSwapRequested),
     registryUrls,
     stampClaimPacket,
     selfClaim,

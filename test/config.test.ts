@@ -293,3 +293,65 @@ describe("loadConfig", () => {
   });
 
 });
+
+describe("self-claim is the default where it can run", () => {
+  const base = { NODE_ENV: "test", DB_PATH: "unused-test.sqlite", ALLOW_INSECURE_TOKEN_STORAGE: "1" } as Record<string, string>;
+  const swapRail = {
+    ...base,
+    SOLVER_CARDS_FILE: "/cards.json",
+    ARK_SERVER_URL: "https://ark.example",
+    OFFLINE_EMULATOR_URL: "https://emulator.example",
+  };
+
+  // covclaimd is not this service's claimer: the server generates the preimage,
+  // so it can push the covenant leaf itself. A deployment able to do that should
+  // not be waiting on a third party to decide whether a receive settles.
+  it("claims for itself when an emulator is configured", () => {
+    expect(loadConfig(swapRail).offlineReceive.selfClaim).toBe(true);
+  });
+
+  it("no longer forces COVCLAIMD_URL to make the offline rail legal", () => {
+    const off = loadConfig(swapRail).offlineReceive;
+    expect(off.enabled).toBe(true);
+    expect(off.covclaimdUrl).toBeUndefined();
+  });
+
+  // The deliberate covclaimd-only deployment. No emulator either: opting out of
+  // self-claim leaves nothing else on this rail using one, and a URL nothing
+  // consumes is already refused elsewhere.
+  it("still takes an explicit opt-out", () => {
+    const off = loadConfig({
+      ...base,
+      SOLVER_CARDS_FILE: "/cards.json",
+      ARK_SERVER_URL: "https://ark.example",
+      COVCLAIMD_URL: "https://cc.example",
+      OFFLINE_SELF_CLAIM: "false",
+    }).offlineReceive;
+    expect(off.selfClaim).toBe(false);
+    expect(off.enabled).toBe(true);
+  });
+
+  // The emulator co-signs the leaf, so asking without one is a misconfiguration
+  // rather than something to quietly downgrade.
+  it("still refuses an explicit opt-in with no emulator", () => {
+    expect(() => loadConfig({ ...base, SOLVER_CARDS_FILE: "/cards.json", ARK_SERVER_URL: "https://ark.example", OFFLINE_SELF_CLAIM: "true" }))
+      .toThrow(/requires OFFLINE_EMULATOR_URL/);
+  });
+
+  // The regression this default used to cause: an emulator is also the covenant
+  // rail's co-signer, so it cannot on its own mean "serve lightning swaps too".
+  it("does not switch the offline swap rail on for a covenant-only deployment", () => {
+    const off = loadConfig({
+      ...base,
+      ARK_SERVER_URL: "https://ark.example",
+      OFFLINE_EMULATOR_URL: "https://emulator.example",
+      OFFLINE_COVENANT_DESTINATIONS: "true",
+    }).offlineReceive;
+    expect(off.covenantDestinations).toBe(true);
+    expect(off.enabled).toBe(false);
+  });
+
+  it("stays off where there is no emulator to co-sign with", () => {
+    expect(loadConfig({ ...base }).offlineReceive.selfClaim).toBe(false);
+  });
+});
