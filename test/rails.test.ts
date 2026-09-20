@@ -154,38 +154,67 @@ describe("advertisedRailOptions", () => {
 
 describe("withVtxoFloors", () => {
   it("raises the VTXO-settled rails to arkd's dust", () => {
-    const limits = withVtxoFloors(undefined, 330);
+    const limits = withVtxoFloors(undefined, { dustSat: 330 });
     expect(limits?.arkade).toEqual({ minSendable: 330_000 });
     expect(limits?.covenant).toEqual({ minSendable: 330_000 });
     expect(limits?.onchain).toEqual({ minSendable: 330_000 });
   });
 
   it("leaves the lightning rails alone, which carry millisats natively", () => {
-    const limits = withVtxoFloors({ "offline-swap": { minSendable: 400 } }, 330);
+    const limits = withVtxoFloors({ "offline-swap": { minSendable: 400 } }, { dustSat: 330 });
     expect(limits?.["offline-swap"]).toEqual({ minSendable: 400 });
     expect(limits?.["interactive-lightning"]).toBeUndefined();
   });
 
   it("keeps an operator minimum that is already above dust", () => {
-    const limits = withVtxoFloors({ arkade: { minSendable: 900_000, maxSendable: 5_000_000 } }, 330);
+    const limits = withVtxoFloors({ arkade: { minSendable: 900_000, maxSendable: 5_000_000 } }, { dustSat: 330 });
     expect(limits?.arkade).toEqual({ minSendable: 900_000, maxSendable: 5_000_000 });
   });
 
   // The reported symptom: a 400 msat domain minimum advertised as "0.4 sats" on
   // rails that can only ever settle a whole one.
   it("never advertises a fractional sat, even with dust unknown", () => {
-    const limits = withVtxoFloors({ arkade: { minSendable: 400 } }, undefined);
+    const limits = withVtxoFloors({ arkade: { minSendable: 400 } }, {});
     expect(limits?.arkade?.minSendable).toBe(1_000);
   });
 
   it("rounds a fractional maximum down rather than up", () => {
-    const limits = withVtxoFloors({ arkade: { maxSendable: 5_500 } }, 1);
+    const limits = withVtxoFloors({ arkade: { maxSendable: 5_500 } }, { dustSat: 1 });
     expect(limits?.arkade?.maxSendable).toBe(5_000);
   });
 
   it("is a no-op on the lightning rails' own configured pair", () => {
     const configured = { "interactive-lightning": { minSendable: 400, maxSendable: 5_500 } };
-    expect(withVtxoFloors(configured, 330)?.["interactive-lightning"]).toEqual(configured["interactive-lightning"]);
+    expect(withVtxoFloors(configured, { dustSat: 330 })?.["interactive-lightning"]).toEqual(configured["interactive-lightning"]);
+  });
+});
+
+describe("withVtxoFloors — the onchain rail's economic floor", () => {
+  // Dust is what arkd will accept, not what is worth accepting. A payer spending
+  // a Bitcoin transaction fee of a few hundred to a few thousand sats to deliver
+  // 330 is losing money to receive money, and this server has no onchain fee
+  // source to work the break-even out per payment.
+  it("holds the onchain rail above dust, at the configured economic floor", () => {
+    const limits = withVtxoFloors(undefined, { dustSat: 330, onchainMinSat: 10_000 });
+    expect(limits?.onchain).toEqual({ minSendable: 10_000_000 });
+    // The other VTXO rails settle offchain and carry no such cost.
+    expect(limits?.arkade).toEqual({ minSendable: 330_000 });
+    expect(limits?.covenant).toEqual({ minSendable: 330_000 });
+  });
+
+  it("never drops the onchain rail below dust, whatever is configured", () => {
+    const limits = withVtxoFloors(undefined, { dustSat: 330, onchainMinSat: 10 });
+    expect(limits?.onchain?.minSendable).toBe(330_000);
+  });
+
+  it("keeps an operator minimum that is already higher", () => {
+    const limits = withVtxoFloors({ onchain: { minSendable: 25_000_000 } }, { dustSat: 330, onchainMinSat: 10_000 });
+    expect(limits?.onchain?.minSendable).toBe(25_000_000);
+  });
+
+  it("leaves the lightning rails alone", () => {
+    const limits = withVtxoFloors({ "offline-swap": { minSendable: 400 } }, { dustSat: 330, onchainMinSat: 10_000 });
+    expect(limits?.["offline-swap"]).toEqual({ minSendable: 400 });
   });
 });
 

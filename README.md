@@ -329,6 +329,7 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `PORT` | `3000` | Public server port |
 | `BASE_URL` | `http://localhost:3000` | Public URL for generating LNURLs |
 | `MIN_SENDABLE` | `1000` | Minimum sendable amount in millisats |
+| `ONCHAIN_MIN_SENDABLE_SATS` | `10000` | Economic floor for the onchain option, sats. arkd's dust (330) is what it will *accept*, not what is worth accepting: delivering an onchain payment costs the payer a Bitcoin transaction fee this server cannot see, so a dust-sized minimum invites payments that cost more to make than they deliver. Never lowers the rail below dust. |
 | `MAX_SENDABLE` | `100000000000` | Maximum sendable amount in millisats |
 | `INVOICE_TIMEOUT_MS` | `30000` | How long to wait (ms) for the wallet to provide a bolt11 |
 | `VERIFY_TTL_MS` | `86400000` | How long (ms) a **bolt11** record stays readable by `verify`. Past it the invoice is dead, so the record is hidden — and reclaimed only if no address owns it. A record belonging to a registered address is that owner's history and is kept for `listPayments`. |

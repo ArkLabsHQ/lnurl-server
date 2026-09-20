@@ -45,6 +45,8 @@ export interface AppConfig {
   baseUrl: string;
   minSendable: number;
   maxSendable: number;
+  /** Economic floor for the onchain rail, sats. @see ONCHAIN_MIN_SENDABLE_SATS */
+  onchainMinSendableSats: number;
   invoiceTimeoutMs: number;
   verifyTtlMs: number;
   /** How long a handed-out destination stays watched. Separate from verifyTtlMs
@@ -132,6 +134,12 @@ export function loadConfig(env: Env = process.env): AppConfig {
     throw new Error("OFFLINE_COVENANT_DESTINATIONS=true requires a file-backed DB_PATH (contracts and settlement attribution must survive restart)");
   }
 
+  // Sats, and policy rather than protocol: arkd's dust says what it will accept,
+  // not what is worth accepting. A payer delivering an onchain receive pays a
+  // Bitcoin transaction fee this server cannot see — hundreds to thousands of
+  // sats — so advertising a dust-sized onchain minimum invites payments that cost
+  // more to make than they deliver. Never lowers the rail below dust.
+  const onchainMinSendableSats = integer(env, "ONCHAIN_MIN_SENDABLE_SATS", 10_000, { min: 1 });
   const minSendable = integer(env, "MIN_SENDABLE", 1_000, { min: 1 });
   const maxSendable = integer(env, "MAX_SENDABLE", 100_000_000_000, { min: 1 });
   if (maxSendable < minSendable) throw new Error("MAX_SENDABLE must be greater than or equal to MIN_SENDABLE");
@@ -144,6 +152,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
     baseUrl,
     minSendable,
     maxSendable,
+    onchainMinSendableSats,
     invoiceTimeoutMs: integer(env, "INVOICE_TIMEOUT_MS", 30_000, { min: 1 }),
     verifyTtlMs: integer(env, "VERIFY_TTL_MS", 86_400_000, { min: 1 }),
     destinationWatchMs: integer(env, "DESTINATION_WATCH_MS", 604_800_000, { min: 1 }),

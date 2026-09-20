@@ -316,13 +316,19 @@ const VTXO_SETTLED: readonly RailId[] = ["arkade", "covenant", "onchain"];
  */
 export function withVtxoFloors(
   limits: ServerRailCaps["limits"],
-  dustSat?: number,
+  floors: { dustSat?: number; onchainMinSat?: number } = {},
 ): ServerRailCaps["limits"] {
-  const floor = Math.max((dustSat ?? 0) * 1000, 1000);
+  const dustFloor = Math.max((floors.dustSat ?? 0) * 1000, 1000);
   const next: Partial<Record<RailId, RailLimits>> = { ...limits };
   for (const rail of VTXO_SETTLED) {
     const own = next[rail];
     const max = own?.maxSendable;
+    // Dust is what arkd will accept; onchain is the one rail where that is not
+    // the same as what is worth accepting. Delivering it costs the payer a
+    // Bitcoin transaction fee that can exceed the payment several times over,
+    // and this server has no onchain fee source to work the break-even out per
+    // payment, so the floor is policy rather than arithmetic. Never below dust.
+    const floor = rail === "onchain" ? Math.max(dustFloor, (floors.onchainMinSat ?? 0) * 1000) : dustFloor;
     next[rail] = {
       minSendable: Math.max(floor, Math.ceil((own?.minSendable ?? 0) / 1000) * 1000),
       ...(max === undefined ? {} : { maxSendable: Math.floor(max / 1000) * 1000 }),
