@@ -311,7 +311,6 @@ export const openApiSpec = {
                         paymentOption: { type: "string" },
                         paymentDestination: { type: "string" },
                         paymentReference: { type: "string", nullable: true, description: "Method-specific reference (e.g. a txid) once observed" },
-                        payoutReference: { type: "string", nullable: true, description: "Arkade txid that credited the recipient's own address — the payment itself on the static rail, the sweep on a covenant destination, the claim on a swap. The one a recipient's wallet can match against its own history" },
                       },
                     },
                     {

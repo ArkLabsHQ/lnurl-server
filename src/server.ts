@@ -417,8 +417,10 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         settled: rec.settled,
         paymentOption: rec.paymentOption,
         ...(rec.paymentDestination ? { paymentDestination: rec.paymentDestination } : {}),
+        // Deliberately not payoutReference: verify is public, and on the covenant
+        // rail that txid links the per-payment destination to the user's static
+        // address. Owners read it from the authenticated payments sync.
         paymentReference: rec.paymentReference,
-        payoutReference: rec.payoutReference,
       });
       return;
     }

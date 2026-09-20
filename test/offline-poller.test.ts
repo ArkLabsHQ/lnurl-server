@@ -56,6 +56,31 @@ describe("settleOfflineSwaps", () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining("ark-tx-1"));
   });
 
+  it("settles from its own claim without asking the solver to confirm it", async () => {
+    const store = new MemorySettlementStore(60_000);
+    store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    const creator = { ...creatorReporting([]), selfClaim: async () => ({ state: "claimed" as const, arkTxid: "ark-tx-1" }) };
+    const isSettled = vi.spyOn(creator, "isSettled");
+
+    const n = await settleOfflineSwaps(store, creator);
+
+    expect(isSettled).not.toHaveBeenCalled();
+    expect(n).toBe(1);
+    expect(store.get("aa")).toMatchObject({ settled: true, preimage: "beef", payoutReference: "ark-tx-1" });
+  });
+
+  it("still asks the solver when the claim could not resolve the swap", async () => {
+    const store = new MemorySettlementStore(60_000);
+    store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const creator = { ...creatorReporting(["swap-1"]), selfClaim: async () => ({ state: "skipped" as const, reason: "unfunded" as const }) };
+    const isSettled = vi.spyOn(creator, "isSettled");
+
+    expect(await settleOfflineSwaps(store, creator)).toBe(1);
+    expect(isSettled).toHaveBeenCalledOnce();
+  });
+
   it("still checks status when the claim throws, so a broken claim path cannot wedge a swap", async () => {
     const store = new MemorySettlementStore(60_000);
     store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });

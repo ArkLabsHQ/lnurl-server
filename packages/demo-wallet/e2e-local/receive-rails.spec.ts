@@ -276,7 +276,7 @@ test.describe("arkade rail, per-payment covenant destinations", () => {
     const user = await newUser();
     opened.push(user.wallet);
     const username = name("cov");
-    await register(server.base, username, user);
+    const { token, owner } = await register(server.base, username, user);
 
     const payRequest = await payRequestFor(server.base, username);
     const quote = async () => {
@@ -319,17 +319,19 @@ test.describe("arkade rail, per-payment covenant destinations", () => {
       3000,
     );
 
+    // From the owner's authenticated sync, never from public verify.
     let payoutReference = "";
     await pollUntil(
       "the sweep recorded as the payout reference",
       async () => {
-        const body = await (await fetch(second.verify!)).json() as { payoutReference?: string | null };
-        payoutReference = body.payoutReference ?? "";
+        const page = await owner.listPayments(token, username);
+        payoutReference = page.payments.find((p) => p.kind === "destination" && p.verifyId === second.verify!.split("/").pop())?.payoutReference ?? "";
         return Boolean(payoutReference);
       },
       SETTLE_TIMEOUT_MS,
       3000,
     );
+    expect(await (await fetch(second.verify!)).json()).not.toHaveProperty("payoutReference");
     // Never the observed txid: that output sat at the covenant, which the user's
     // keys never held. Only the sweep appears in their own history.
     expect(payoutReference).not.toBe(txid);

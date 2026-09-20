@@ -165,8 +165,6 @@ export interface DestinationVerifyStatus {
   paymentDestination?: string;
   /** Server-assigned payment reference, when the server reports one. */
   paymentReference?: string;
-  /** Txid that credited the recipient's own address, when the server reports one. */
-  payoutReference?: string;
 }
 /**
  * Tuning for `pollVerify`: how often to re-poll, how long to wait overall,

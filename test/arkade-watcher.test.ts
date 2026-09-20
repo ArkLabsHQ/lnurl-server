@@ -254,6 +254,8 @@ describe("arkade watcher end-to-end", () => {
       paymentDestination: DEST,
       paymentReference: indexerVtxos[0].outpoint.txid,
     });
+    // Owner-only: verify is public and this txid would link a covenant destination.
+    expect(v).not.toHaveProperty("payoutReference");
 
     await new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); });
   });

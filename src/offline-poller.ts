@@ -22,12 +22,14 @@ export async function settleOfflineSwaps(
   for (const p of pending) {
     // Its own try: the claim precedes settlement, so a claim that keeps failing
     // must never stop the status check that would otherwise resolve the swap.
+    let claimed = false;
     if (creator.selfClaim) {
       try {
         const outcome = await creator.selfClaim(p.swapId, p.preimage, p.recovery);
         if (outcome.state === "claimed") {
           // The swap settles on a preimage; the claim is the only txid they hold.
           store.markPaidOut(p.paymentHash, outcome.arkTxid);
+          claimed = true;
           logger.info("offline_swap_self_claimed", { swapId: p.swapId, arkTxid: outcome.arkTxid });
         } else if (outcome.reason === "underfunded") {
           logger.warn("offline_swap_underfunded", { swapId: p.swapId });
@@ -39,7 +41,9 @@ export async function settleOfflineSwaps(
       }
     }
     try {
-      if (await creator.isSettled(p.swapId, p.recovery)) {
+      // Our claim is what makes the solver settle, so once it lands the solver can
+      // only confirm what we already did — at the cost of a remote round trip.
+      if (claimed || await creator.isSettled(p.swapId, p.recovery)) {
         (recovered ?? store).markSettled(p.paymentHash, p.preimage);
         await creator.release?.(p.swapId);
         settled++;
@@ -60,53 +64,58 @@ export interface OfflineSettlementPoller {
 }
 
 /**
- * Run {@link settleOfflineSwaps} on an interval, and on demand.
+ * Run {@link settleOfflineSwaps} on demand, with a catch-up behind it.
  *
- * The interval is the safety net behind src/lockup-watcher.ts, not the fast path. The
- * first pass runs at once, so a lockup funded while the process was down is claimed at
- * boot rather than an interval later.
+ * src/lockup-watcher.ts is the mechanism; this covers what no event can. Rescheduled
+ * after each pass rather than on a fixed grid, so a slow solver spaces passes out.
  */
 export function startOfflineSettlementPoller(
   store: SettlementStore,
   creator: OfflineSwapCreator,
-  intervalMs: number,
+  catchUpIntervalMs: number,
   recovered?: OfflineSwapStore,
   logger: Logger = createLogger(),
 ): OfflineSettlementPoller {
   let inFlight = false;
   let queued = false;
   let stopped = false;
+  let next: ReturnType<typeof setTimeout> | undefined;
+  const schedule = (): void => {
+    if (stopped) return;
+    next = setTimeout(() => pass(), catchUpIntervalMs);
+    // Don't keep the process alive just for the catch-up.
+    next.unref?.();
+  };
   const pass = (): void => {
+    if (stopped) return;
     inFlight = true;
     void settleOfflineSwaps(store, creator, recovered, logger).finally(() => {
       inFlight = false;
       if (queued && !stopped) {
         queued = false;
         pass();
+        return;
       }
+      schedule();
     });
   };
   const trigger = (): void => {
     if (stopped) return;
     // Queued rather than dropped: the running pass may already have looked at this
-    // swap and found it unfunded, and the next tick is a whole interval away.
+    // swap and found it unfunded, and the catch-up is a whole interval away.
     if (inFlight) queued = true;
-    else pass();
+    else {
+      if (next) clearTimeout(next);
+      pass();
+    }
   };
-  const timer = setInterval(() => {
-    // A slow solver must not stack overlapping passes.
-    if (inFlight) return;
-    pass();
-  }, intervalMs);
-  // Don't keep the process alive just for polling.
-  timer.unref?.();
   trigger();
   return {
     trigger,
     stop: () => {
       stopped = true;
       queued = false;
-      clearInterval(timer);
+      if (next) clearTimeout(next);
     },
   };
 }

@@ -114,7 +114,6 @@ function parseVerifyStatus(body: Record<string, unknown>): VerifyStatus {
     paymentOption: body.paymentOption,
     ...(typeof body.paymentDestination === "string" ? { paymentDestination: body.paymentDestination } : {}),
     ...(typeof body.paymentReference === "string" ? { paymentReference: body.paymentReference } : {}),
-    ...(typeof body.payoutReference === "string" ? { payoutReference: body.payoutReference } : {}),
   };
 }
 
