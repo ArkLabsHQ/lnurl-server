@@ -107,8 +107,9 @@ test("lists the rails its own address advertises", async ({ page }) => {
   // Listing resolves the payRequest and stops there; a destination is minted
   // only when a rail is requested, so this asserts the list and not a result.
   await page.getByRole("button", { name: /Load options/ }).click();
+  // One card now: the rails are part of the address rather than a panel beside it.
   const card = page.locator("div")
-    .filter({ has: page.getByRole("heading", { name: "What this address accepts" }) }).last();
+    .filter({ has: page.getByRole("heading", { name: "Your Lightning address" }) }).last();
   await expect(card.getByText("lightning", { exact: true })).toBeVisible({ timeout: 60_000 });
   await expect(card.getByText(/accepts \d+/)).toBeVisible();
 });
