@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { hex } from "@scure/base";
 import { ArkAddress, RestIndexerProvider } from "@arkade-os/sdk";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
-import { settleDestinationPayments, SETTLEMENT_SKEW_MS } from "../src/arkade-watcher.js";
+import { settleDestinationPayments, startArkadeWatcher, SETTLEMENT_SKEW_MS } from "../src/arkade-watcher.js";
 import { MemorySettlementStore } from "../src/settlement-store.js";
 import { createServer } from "../src/server.js";
 import { openDb, type Db } from "../src/db/connection.js";
@@ -318,5 +318,135 @@ describe("rails this watcher does not own", () => {
     await settleDestinationPayments(store, new RestIndexerProvider(indexerCtx.baseUrl), (stage) => failures.push(stage));
     expect(failures).toHaveLength(1);
     expect(failures[0]).toContain("undecodable destination");
+  });
+});
+
+describe("startArkadeWatcher", () => {
+  /** The provider PARSED shape: injection bypasses RestIndexerProvider. */
+  const arrival = (script: string, value: number, createdAt: number) =>
+    ({ txid: randomBytes(32).toString("hex"), vout: 0, value, createdAt: new Date(createdAt), script });
+
+  /** Records what was watched; emits the watch-only shape: script, no contract. */
+  function fakeContracts() {
+    let handler: ((event: unknown) => void) | undefined;
+    const watched: string[] = [];
+    return {
+      watched,
+      emit: (contractScript: string) =>
+        handler?.({ type: "vtxo_received", contractScript, vtxos: [], timestamp: Date.now() }),
+      manager: {
+        watchScript: async (script: string | string[]) => { watched.push(...(Array.isArray(script) ? script : [script])); },
+        unwatchScript: async () => {},
+        onContractEvent: (cb: (event: unknown) => void) => { handler = cb; return () => { handler = undefined; }; },
+      },
+    };
+  }
+
+  it("settles on watched-script activity rather than waiting out the catch-up", async () => {
+    const store = storeWith({ hash: "w1", amountMsat: 50_000 });
+    let visible: ReturnType<typeof arrival>[] = [];
+    const fake = fakeContracts();
+    const indexer = { getVtxos: async () => ({ vtxos: visible }) };
+    // Long enough that a catch-up tick cannot be what settles this.
+    const watcher = startArkadeWatcher(store, "http://unused", 600_000, {
+      contracts: fake.manager as never, indexer: indexer as never, syncMs: 20,
+    });
+    try {
+      await expect.poll(() => fake.watched.includes(DEST_SCRIPT), { timeout: 3000, interval: 20 }).toBe(true);
+      expect(store.get("w1")!.settled).toBe(false);
+
+      visible = [arrival(DEST_SCRIPT, 50, store.get("w1")!.createdAt)];
+      fake.emit(DEST_SCRIPT);
+
+      await expect.poll(() => store.get("w1")!.settled, { timeout: 5000, interval: 50 }).toBe(true);
+    } finally {
+      watcher.stop();
+    }
+  });
+
+  it("ignores activity at a script it is not watching", async () => {
+    const store = storeWith({ hash: "w2", amountMsat: 50_000 });
+    const fake = fakeContracts();
+    // Empty until after the boot pass, so only an event could settle this.
+    let visible: ReturnType<typeof arrival>[] = [];
+    const indexer = { getVtxos: async () => ({ vtxos: visible }) };
+    const watcher = startArkadeWatcher(store, "http://unused", 600_000, {
+      contracts: fake.manager as never, indexer: indexer as never, syncMs: 20,
+    });
+    try {
+      await expect.poll(() => fake.watched.includes(DEST_SCRIPT), { timeout: 3000, interval: 20 }).toBe(true);
+
+      // The money is there to be found; the event names someone else's script.
+      visible = [arrival(DEST_SCRIPT, 50, store.get("w2")!.createdAt)];
+      fake.emit("5120deadbeef");
+
+      await new Promise((r) => setTimeout(r, 120));
+      expect(store.get("w2")!.settled).toBe(false);
+    } finally {
+      watcher.stop();
+    }
+  });
+
+  it("still settles from the catch-up when the manager cannot watch", async () => {
+    const store = storeWith({ hash: "w3", amountMsat: 50_000 });
+    const indexer = { getVtxos: async () => ({ vtxos: [arrival(DEST_SCRIPT, 50, store.get("w3")!.createdAt)] }) };
+    // No contracts at all: the boot pass is the whole mechanism.
+    const watcher = startArkadeWatcher(store, "http://unused", 600_000, { indexer: indexer as never });
+    try {
+      await expect.poll(() => store.get("w3")!.settled, { timeout: 5000, interval: 50 }).toBe(true);
+    } finally {
+      watcher.stop();
+    }
+  });
+});
+
+describe("startArkadeWatcher watch()", () => {
+  const arrival = (script: string, value: number, createdAt: number) =>
+    ({ txid: randomBytes(32).toString("hex"), vout: 0, value, createdAt: new Date(createdAt), script });
+
+  it("registers a destination as it is issued, ahead of the resync", async () => {
+    const store = storeWith({ hash: "h1", amountMsat: 50_000 });
+    const watched: string[] = [];
+    const manager = {
+      watchScript: async (s: string | string[]) => { watched.push(...(Array.isArray(s) ? s : [s])); },
+      unwatchScript: async () => {},
+      onContractEvent: () => () => {},
+    };
+    // A resync far enough out that only watch() can explain the registration.
+    const watcher = startArkadeWatcher(store, "http://unused", 600_000, {
+      contracts: manager as never,
+      indexer: { getVtxos: async () => ({ vtxos: [] as ReturnType<typeof arrival>[] }) } as never,
+      syncMs: 600_000,
+    });
+    try {
+      watcher.watch(DEST);
+      await expect.poll(() => watched.includes(DEST_SCRIPT), { timeout: 2000, interval: 20 }).toBe(true);
+    } finally {
+      watcher.stop();
+    }
+  });
+
+  it("ignores a destination that is not an Arkade address", async () => {
+    // Empty: a pending record would be registered by the boot resync.
+    const store = new MemorySettlementStore(3_600_000);
+    const watched: string[] = [];
+    const manager = {
+      watchScript: async (s: string | string[]) => { watched.push(...(Array.isArray(s) ? s : [s])); },
+      unwatchScript: async () => {},
+      onContractEvent: () => () => {},
+    };
+    const watcher = startArkadeWatcher(store, "http://unused", 600_000, {
+      contracts: manager as never,
+      indexer: { getVtxos: async () => ({ vtxos: [] }) } as never,
+      syncMs: 600_000,
+    });
+    try {
+      // The onchain rail hands out a Bitcoin address; decoding it must not throw.
+      watcher.watch("bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080");
+      await new Promise((r) => setTimeout(r, 60));
+      expect(watched).toHaveLength(0);
+    } finally {
+      watcher.stop();
+    }
   });
 });

@@ -97,6 +97,9 @@ export interface ServerDeps {
    *  an onchain payment costs the payer a Bitcoin fee this server cannot see.
    *  Never lowers the rail below dust. @see withVtxoFloors */
   onchainMinSat?: number;
+  /** Called with a static-rail destination as it is handed out, so a watcher can
+   *  register it before the payer pays rather than on its next resync. */
+  onDestinationIssued?: (destination: string) => void;
   health?: HealthRegistry;
   logger?: Logger;
 }
@@ -710,6 +713,10 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           // at derivation owns the preimage, the taptree and the payout script.
           ...(derived ? { covenantScript: derived.script } : {}),
         });
+        // Only the static rail: a covenant destination is watched as a contract.
+        if (resolved.paymentOption === "arkade" && !derived) {
+          deps?.onDestinationIssued?.(resolved.paymentDestination);
+        }
         const destination = derived?.address ?? resolved.paymentDestination;
         res.json({
           status: "OK",

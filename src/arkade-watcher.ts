@@ -5,7 +5,7 @@
 // Arkade txid becomes `paymentReference` on the verify response.
 
 import { hex } from "@scure/base";
-import { ArkAddress, RestIndexerProvider, type IndexerProvider } from "@arkade-os/sdk";
+import { ArkAddress, RestIndexerProvider, isContractVtxoEvent, type IContractManager, type IndexerProvider } from "@arkade-os/sdk";
 import type { SettlementStore } from "./settlement-store.js";
 
 /** One watch pass: flip any pending destination record whose payment is visible at
@@ -118,9 +118,50 @@ function settleAtScript(
   return settled;
 }
 
-/** Run {@link settleDestinationPayments} on an interval. Returns a stop function. */
-export function startArkadeWatcher(store: SettlementStore, arkServerUrl: string, intervalMs: number): () => void {
-  const indexer = new RestIndexerProvider(arkServerUrl);
+/** The scripts a pass would read, under the same filter. */
+function pendingScripts(store: SettlementStore): string[] {
+  const scripts = new Set<string>();
+  for (const p of store.listPendingDestinations()) {
+    if (p.covenantScript !== null || p.paymentOption !== "arkade") continue;
+    try {
+      scripts.add(hex.encode(ArkAddress.decode(p.paymentDestination).pkScript));
+    } catch { /* undecodable is the pass's to report, not the watch's */ }
+  }
+  return [...scripts];
+}
+
+export interface ArkadeWatcherHandle {
+  trigger(): void;
+  /** Register a destination the instant it is issued, ahead of the resync. */
+  watch(destination: string): void;
+  stop(): void;
+}
+
+export interface ArkadeWatcherOptions {
+  /** Absent, or on a manager without `watchScript`, this degrades to the catch-up. */
+  contracts?: IContractManager;
+  indexer?: IndexerProvider;
+  /** How often the watched set is re-derived. A local read; re-registering is a
+   *  no-op, so the network is touched only on a change. */
+  syncMs?: number;
+}
+
+/**
+ * Settle destination payments, driven by VTXO activity at the watched addresses,
+ * with a catch-up behind it.
+ *
+ * `watchScript` rides the contract manager's subscription; a second one loses the
+ * race for arkd's stream and reports an EventSource error for the process's life.
+ * The watch only ever calls `trigger` — which record a payment belongs to stays in
+ * {@link settleDestinationPayments}, unchanged.
+ */
+export function startArkadeWatcher(
+  store: SettlementStore,
+  arkServerUrl: string,
+  catchUpIntervalMs: number,
+  opts: ArkadeWatcherOptions = {},
+): ArkadeWatcherHandle {
+  const indexer = opts.indexer ?? new RestIndexerProvider(arkServerUrl);
   let inFlight = false;
   // Deduped: a down indexer fails identically every tick, and a line every
   // intervalMs would bury the first one. Cleared on a clean pass, so a
@@ -132,9 +173,18 @@ export function startArkadeWatcher(store: SettlementStore, arkServerUrl: string,
     lastReported = msg;
     console.warn(`arkade watcher: ${msg}`);
   };
-  const timer = setInterval(() => {
-    // A slow indexer must not stack overlapping passes.
-    if (inFlight) return;
+  let queued = false;
+  let stopped = false;
+  let next: ReturnType<typeof setTimeout> | undefined;
+
+  const schedule = (): void => {
+    if (stopped) return;
+    next = setTimeout(() => pass(), catchUpIntervalMs);
+    // Don't keep the process alive just for the catch-up.
+    next.unref?.();
+  };
+  const pass = (): void => {
+    if (stopped) return;
     inFlight = true;
     let failed = false;
     void settleDestinationPayments(store, indexer, (stage, err) => {
@@ -143,9 +193,97 @@ export function startArkadeWatcher(store: SettlementStore, arkServerUrl: string,
     }).finally(() => {
       if (!failed) lastReported = undefined;
       inFlight = false;
+      if (queued && !stopped) {
+        queued = false;
+        pass();
+        return;
+      }
+      schedule();
     });
-  }, intervalMs);
-  // Don't keep the process alive just for polling.
-  timer.unref?.();
-  return () => clearInterval(timer);
+  };
+  const trigger = (): void => {
+    if (stopped) return;
+    // Queued rather than dropped: the running pass may have read the indexer
+    // before this payment landed.
+    if (inFlight) queued = true;
+    else {
+      if (next) clearTimeout(next);
+      pass();
+    }
+  };
+
+  const watching = new Set<string>();
+  const contracts = opts.contracts;
+  const canWatch = Boolean(contracts?.watchScript && contracts.unwatchScript);
+  const register = async (scripts: string[]): Promise<void> => {
+    const added = scripts.filter((s) => !watching.has(s));
+    if (added.length === 0) return;
+    // Recorded BEFORE the call: registering re-announces what is already at the
+    // script, during the await. A destination can be paid before this resolves,
+    // so that announcement IS the payment — adding after dropped it.
+    for (const s of added) watching.add(s);
+    try {
+      await contracts!.watchScript!(added, { label: "lnurl-destination" });
+    } catch (err) {
+      for (const s of added) watching.delete(s);
+      throw err;
+    }
+  };
+
+  /** Watch a destination as it is handed out. The resync would find it within a
+   *  tick, but the payer does not wait for one — and an arrival at a script not
+   *  yet registered is only found by the catch-up, fifteen seconds later. */
+  const watch = (destination: string): void => {
+    if (stopped || !canWatch) return;
+    let script: string;
+    try {
+      script = hex.encode(ArkAddress.decode(destination).pkScript);
+    } catch {
+      return;
+    }
+    void register([script]).catch((err) => onFailure("watch registration", err));
+  };
+
+  const syncWatched = async (): Promise<void> => {
+    if (stopped || !canWatch) return;
+    try {
+      const want = new Set(pendingScripts(store));
+      await register([...want]);
+      const gone = [...watching].filter((s) => !want.has(s));
+      if (gone.length > 0) {
+        await contracts!.unwatchScript!(gone);
+        for (const s of gone) watching.delete(s);
+      }
+    } catch (err) {
+      onFailure("watch registration", err);
+    }
+  };
+
+  const unsubscribe = canWatch
+    ? contracts!.onContractEvent((event) => {
+        if (event.type !== "vtxo_received") return;
+        // A contract's own event belongs to another watcher; ours carry none.
+        if (isContractVtxoEvent(event) || !watching.has(event.contractScript)) return;
+        trigger();
+      })
+    : undefined;
+
+  // On its own clock: a destination handed out at T would otherwise stay unwatched
+  // until the pass that settles it anyway.
+  const resync = canWatch ? setInterval(() => void syncWatched(), opts.syncMs ?? 1000) : undefined;
+  resync?.unref?.();
+  void syncWatched();
+
+  pass();
+  return {
+    trigger,
+    watch,
+    stop: () => {
+      stopped = true;
+      queued = false;
+      if (next) clearTimeout(next);
+      if (resync) clearInterval(resync);
+      unsubscribe?.();
+    },
+  };
 }

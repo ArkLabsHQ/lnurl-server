@@ -78,10 +78,20 @@ test("a browser wallet claims a name on the local server and receives a Lightnin
     // Nothing but a real settlement produces this.
     const preimage = String(settled.preimage);
     expect(preimage).toMatch(/^[0-9a-f]{64}$/);
-    const payment = await counterpartyPayment(paymentHash);
-    expect(payment?.status).toBe("SUCCEEDED");
-    expect(payment?.payment_preimage).toBe(preimage);
-    expect(Number(payment?.value_sat)).toBe(SATS);
+    // Awaited, not snapshotted: verify settles when THIS server claims, and that
+    // claim is what lets the solver settle — so SUCCEEDED lands just after.
+    let payment: Awaited<ReturnType<typeof counterpartyPayment>> = null;
+    await pollUntil(
+      "the payer's Lightning payment to succeed",
+      async () => {
+        payment = await counterpartyPayment(paymentHash);
+        return payment?.status === "SUCCEEDED";
+      },
+      120_000,
+      2000,
+    );
+    expect(payment!.payment_preimage).toBe(preimage);
+    expect(Number(payment!.value_sat)).toBe(SATS);
   } finally {
     payer.stop();
   }

@@ -193,6 +193,7 @@ async function main(): Promise<void> {
       runtime.addStop(startCovenantWatcher(settlements, contracts, off.pollIntervalMs, sweeper.trigger));
       console.log(`covenant destinations: enabled (emulator=${off.emulatorUrl}, recovery=${off.covenantRecoveryDelaySeconds}s)`);
     }
+    let watchDestination: ((destination: string) => void) | undefined;
     deps = {
       repos,
       addressService,
@@ -207,6 +208,9 @@ async function main(): Promise<void> {
       ...(arkDustSat ? { arkDustSat } : {}),
       onchainMinSat: config.onchainMinSendableSats,
       ...(covenantDestinations ? { covenantDestinations } : {}),
+      // Late-bound: the watcher is built below, and nothing calls this until the
+      // listeners are accepting, which is later still.
+      onDestinationIssued: (destination) => watchDestination?.(destination),
     };
     // Every background scheduler registers its stop hook before the listeners
     // begin accepting traffic.
@@ -224,8 +228,14 @@ async function main(): Promise<void> {
     // preimage: watch the indexer for payments to registered Arkade addresses.
     if (config.offlineReceive.arkServerUrl) {
       const { startArkadeWatcher } = await import("./arkade-watcher.js");
-      runtime.addStop(startArkadeWatcher(settlements, config.offlineReceive.arkServerUrl, 15_000));
-      console.log(`arkade watcher: enabled (indexer=${config.offlineReceive.arkServerUrl})`);
+      // Shares the contract manager's subscription: a second one loses the race
+      // for arkd's stream and reports an EventSource error for the process's life.
+      const arkadeWatcher = startArkadeWatcher(settlements, config.offlineReceive.arkServerUrl, 15_000, {
+        ...(contracts ? { contracts } : {}),
+      });
+      runtime.addStop(arkadeWatcher.stop);
+      watchDestination = arkadeWatcher.watch;
+      console.log(`arkade watcher: enabled (indexer=${config.offlineReceive.arkServerUrl}, ${contracts ? "watched + 15s catch-up" : "15s catch-up only"})`);
     }
     console.log(`persistence: enabled at ${config.dbPath} (${deps.repos.domains.list().length} domain(s))`);
 
