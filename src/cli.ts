@@ -100,6 +100,7 @@ async function main(): Promise<void> {
     let offlineSwaps: import("./offline-swap-store.js").OfflineSwapStore | undefined;
     let arkDustSat: number | undefined;
     let arkNetwork: unknown;
+    let network: import("@arkade-os/solver-discovery").Network | undefined;
     // Read for any rail arkd backs, not just the swap one: the arkade and covenant
     // rails face the same dust floor, and a covenant-only deployment never enters
     // the branch below. A dust change is an operator reconfiguring arkd rather
@@ -112,6 +113,10 @@ async function main(): Promise<void> {
       if (!infoResponse.ok) throw new Error(`Arkade info endpoint: HTTP ${infoResponse.status}`);
       const arkInfo = await infoResponse.json() as { network?: unknown; dust?: unknown };
       arkNetwork = arkInfo.network;
+      // Validated here rather than in the swap branch: every rail's CAIP-19 id
+      // names the network, and a covenant-only deployment never enters that branch.
+      const { isNetwork } = await import("@arkade-os/solver-discovery");
+      if (isNetwork(arkNetwork)) network = arkNetwork;
       const dust = Number(arkInfo.dust);
       if (Number.isSafeInteger(dust) && dust > 0) arkDustSat = dust;
     }
@@ -120,9 +125,7 @@ async function main(): Promise<void> {
       const { createOfflineSwapCoordinator } = await import("./intent-swap.js");
       const { OfflineSwapStore } = await import("./offline-swap-store.js");
       const { DiscoveryService } = await import("./solver-discovery.js");
-      const { isNetwork } = await import("@arkade-os/solver-discovery");
-      const network = arkNetwork;
-      if (!isNetwork(network)) throw new Error(`Arkade info endpoint returned unsupported network ${String(network)}`);
+      if (!network) throw new Error(`Arkade info endpoint returned unsupported network ${String(arkNetwork)}`);
       const discovery = new DiscoveryService({
         network,
         registryUrls: off.registryUrls,
@@ -202,6 +205,7 @@ async function main(): Promise<void> {
       ...(solverDiscovery ? { solverDiscovery } : {}),
       ...(config.offlineReceive.arkServerUrl ? { arkServerUrl: config.offlineReceive.arkServerUrl } : {}),
       ...(arkDustSat ? { arkDustSat } : {}),
+      ...(network ? { network } : {}),
       onchainMinSat: config.onchainMinSendableSats,
       ...(covenantDestinations ? { covenantDestinations } : {}),
     };

@@ -18,6 +18,7 @@ import type { OfflineSwapStore } from "./offline-swap-store.js";
 import { HealthRegistry } from "./health.js";
 import { createLogger, type Logger } from "./logger.js";
 import { ArkAddress, BIP21 } from "@arkade-os/sdk";
+import type { Network } from "@arkade-os/solver-discovery";
 import { resolvePaymentOption } from "./payment-options.js";
 import {
   advertisedBounds,
@@ -97,6 +98,8 @@ export interface ServerDeps {
    *  an onchain payment costs the payer a Bitcoin fee this server cannot see.
    *  Never lowers the rail below dust. @see withVtxoFloors */
   onchainMinSat?: number;
+  /** The network arkd reports, as read at boot. Drives `caip19Id`. */
+  network?: Network;
   health?: HealthRegistry;
   logger?: Logger;
 }
@@ -252,6 +255,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       ...(discoveryStatus?.reason ? { discoveryReason: discoveryStatus.reason } : {}),
       ...(deps?.arkServerUrl ? { arkServerUrl: deps.arkServerUrl } : {}),
       covenantDestinations: Boolean(covenantDestinations),
+      ...(deps?.network ? { network: deps.network } : {}),
       ...(limits ? { limits } : {}),
     };
   };
@@ -620,7 +624,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       // LUD-XX paymentOptions: resolve the wallet's selected rail. "lightning" (or absent)
       // falls through to the BOLT11 flow below; a destination rail (arkade) returns the
       // registered address + a non-`pr` verify record.
-      const resolved = resolvePaymentOption(paymentOptionId, address);
+      const resolved = resolvePaymentOption(paymentOptionId, address, deps?.network);
       if (resolved.kind === "error") {
         res.json({ status: "ERROR", reason: resolved.reason } satisfies LnurlErrorResponse);
         return;
