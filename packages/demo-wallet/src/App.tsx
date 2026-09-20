@@ -3,6 +3,7 @@ import type { PaymentOption, WalletBalance } from "@arkade-os/sdk";
 import type { InvoiceResult, PayRequest } from "@arkade-os/lnurl-client";
 import { EXPLORER, LNURL_DOMAIN, USERNAME_KEY } from "./config.js";
 import { mergeFeed, readWalletActivity, type FeedRow, type FeedStatus } from "./activity.js";
+import { balanceView } from "./balance.js";
 import { createMnemonic, loadMnemonic, openWallet, wipeWallet, type DemoWallet } from "./wallet.js";
 import { lnurl } from "./lnurl.js";
 import { createRouter, RAIL_PRIORITY } from "./router.js";
@@ -157,6 +158,7 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
 }) {
   const [tab, setTab] = useState<Tab>("Receive");
   const [balance, setBalance] = useState<WalletBalance | null>(null);
+  const view = balanceView(balance);
   // From the pinned domain, never location.hostname: this is served from GitHub
   // Pages, where the page's own host has nothing to do with the LNURL server.
   const lightningAddress = `${username}@${LNURL_DOMAIN}`;
@@ -188,7 +190,12 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
           {/* One number. Settled vs preconfirmed is an Arkade implementation
               detail — both are spendable now, and splitting them invites a
               holder to think half their balance is not really theirs. */}
-          <div style={{ fontSize: 28 }}>{balance?.available ?? "—"} <span style={{ fontSize: 14, color: "#666" }}>sats</span></div>
+          <div style={{ fontSize: 28 }}>{view.sats ?? "—"} <span style={{ fontSize: 14, color: "#666" }}>sats</span></div>
+          {view.settling !== undefined && (
+            <div style={{ ...mono, color: "#946200", fontSize: 12 }}>
+              {view.settling} sats settling — returns when the batch completes
+            </div>
+          )}
         </div>
         {boarding.status !== "idle" && (
           <span style={{ ...mono, fontSize: 12, color: boarding.status === "failed" ? "crimson" : "#946200" }}>

@@ -204,7 +204,14 @@ test("pays a lightning address's onchain option by offboarding to its boarding a
     const bBefore = await balanceOf(b.page);
 
     // The generic onchain rail, which offboards VTXOs to a Bitcoin address.
-    await pay(a.page, boarding, ONCHAIN, "onchain", "A->B onchain");
+    // Watched concurrently rather than awaited: the settling indicator only
+    // exists while the batch holds the lock.
+    const paying = pay(a.page, boarding, ONCHAIN, "onchain", "A->B onchain");
+    await expect(a.page.getByText(/sats settling/)).toBeVisible({ timeout: 300_000 });
+    console.log(`ONCHAIN settling indicator shown: ${await a.page.getByText(/sats settling/).innerText()}`);
+    await paying;
+    // Gone once the batch is terminal; a permanent one would be its own bug.
+    await expect(a.page.getByText(/sats settling/)).toHaveCount(0, { timeout: 300_000 });
 
     // Arrival is the whole point and the slowest part: the offboard has to
     // confirm, then B's wallet boards it back into a VTXO on its own.
