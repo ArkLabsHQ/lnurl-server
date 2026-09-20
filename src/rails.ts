@@ -204,6 +204,18 @@ export interface AddressRailState {
   id: RailId;
   label: string;
   enabled: boolean;
+  /**
+   * This address has what the rail needs — an Arkade identity, a boarding
+   * address. Separate from {@link available}, which also requires the server to
+   * be able to serve it right now.
+   *
+   * The distinction is what LUD-XX's `available: false` means: a rail the
+   * address offers but that is currently down is worth advertising as such,
+   * because omitting it tells a payer the address does not do this at all and
+   * they go elsewhere instead of retrying. A rail the address never set up is
+   * genuinely not on offer, and stays omitted.
+   */
+  applicable: boolean;
   available: boolean;
   reason?: string;
 }
@@ -253,6 +265,7 @@ export function effectiveRails(address: RailAddress, caps: ServerRailCaps): Addr
     id: "interactive-lightning",
     label: RAIL_DEFS["interactive-lightning"].label,
     enabled: !disabled.has("interactive-lightning"),
+    applicable: true,
     available: !disabled.has("interactive-lightning"),
   };
   if (!interactive.enabled) interactive.reason = "disabled for this address";
@@ -260,6 +273,7 @@ export function effectiveRails(address: RailAddress, caps: ServerRailCaps): Addr
     id: "offline-swap",
     label: RAIL_DEFS["offline-swap"].label,
     enabled: !disabled.has("offline-swap"),
+    applicable: hasIdentity,
     available: !disabled.has("offline-swap") && hasIdentity && caps.offlineSwapCreator && caps.discoveryReady,
   };
   if (!offline.enabled) offline.reason = "disabled for this address";
@@ -270,6 +284,7 @@ export function effectiveRails(address: RailAddress, caps: ServerRailCaps): Addr
     id: "arkade",
     label: RAIL_DEFS.arkade.label,
     enabled: !disabled.has("arkade"),
+    applicable: hasIdentity,
     available: !disabled.has("arkade") && hasIdentity,
   };
   if (!arkade.enabled) arkade.reason = "disabled for this address";
@@ -278,6 +293,7 @@ export function effectiveRails(address: RailAddress, caps: ServerRailCaps): Addr
     id: "covenant",
     label: RAIL_DEFS.covenant.label,
     enabled: !disabled.has("covenant"),
+    applicable: hasIdentity,
     available: !disabled.has("covenant") && hasIdentity && caps.covenantDestinations,
   };
   if (!covenant.enabled) covenant.reason = "disabled for this address";
@@ -289,6 +305,7 @@ export function effectiveRails(address: RailAddress, caps: ServerRailCaps): Addr
     id: "onchain",
     label: RAIL_DEFS.onchain.label,
     enabled: !disabled.has("onchain"),
+    applicable: Boolean(address.boardingAddress),
     available: !disabled.has("onchain") && Boolean(address.boardingAddress),
   };
   if (!onchain.enabled) onchain.reason = "disabled for this address";
@@ -417,17 +434,27 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
   // paymentOptions is emitted only when there is a non-lightning option to offer;
   // otherwise the address stays pure LUD-06 even though lightning may serve.
   const states = new Map(effectiveRails(address, caps).map((s) => [s.id, s]));
-  const arkadeReady = states.get("arkade")?.available === true;
-  const onchainReady = states.get("onchain")?.available === true;
+  /** Serving now, or offered-but-down — the two cases worth advertising at all.
+   *  A rail the address never set up is neither, and stays omitted. */
+  const offered = (...ids: RailId[]): { offer: boolean; available: boolean } => {
+    const rails = ids.map((id) => states.get(id)).filter((s): s is AddressRailState => Boolean(s));
+    if (rails.some((s) => s.available)) return { offer: true, available: true };
+    return { offer: rails.some((s) => s.enabled && s.applicable), available: false };
+  };
+  const lightning = offered("interactive-lightning", "offline-swap");
+  const arkadeState = offered("arkade");
+  const onchainState = offered("onchain");
+  const arkadeReady = arkadeState.offer;
+  const onchainReady = onchainState.offer;
   // paymentOptions exists to name a non-lightning rail; with none to offer the
   // address stays pure LUD-06 even though lightning may still serve it.
   if (!arkadeReady && !onchainReady) return [];
   const options: PaymentOption[] = [];
-  if (states.get("interactive-lightning")?.available || states.get("offline-swap")?.available) {
-    options.push({ id: "lightning", type: "lightning" });
-  }
-  if (arkadeReady) options.push({ id: "arkade", type: "arkade" });
-  if (onchainReady) options.push({ id: "onchain", type: "onchain" });
+  // `available` is emitted only when false: LUD-XX says an absent one means true,
+  // so stating it on every healthy option would be noise.
+  if (lightning.offer) options.push({ id: "lightning", type: "lightning", ...(lightning.available ? {} : { available: false }) });
+  if (arkadeReady) options.push({ id: "arkade", type: "arkade", ...(arkadeState.available ? {} : { available: false }) });
+  if (onchainReady) options.push({ id: "onchain", type: "onchain", ...(onchainState.available ? {} : { available: false }) });
   if (!base) return options;
   // Emitted relative to the pair the payRequest actually advertises, not to the
   // envelope. A client falls back to the top-level pair for an option that

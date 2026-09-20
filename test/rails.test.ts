@@ -152,6 +152,35 @@ describe("advertisedRailOptions", () => {
   });
 });
 
+describe("advertisedRailOptions — LUD-XX `available`", () => {
+  // The spec lets a service say a rail exists but is down right now. Omitting it
+  // instead tells a payer this address does not do lightning at all, which is a
+  // different and wrong statement — they go elsewhere rather than retry.
+  it("advertises a rail the server cannot serve right now as unavailable", () => {
+    const caps: ServerRailCaps = { ...FULL, offlineSwapCreator: true, discoveryReady: false, discoveryReason: "registry down" };
+    const options = advertisedRailOptions({ ...IDENTITY, disabledRails: ["interactive-lightning"] }, caps, BASE);
+    expect(options.find((o) => o.id === "lightning")).toMatchObject({ id: "lightning", available: false });
+  });
+
+  // Not applicable is not the same as down: this address never registered an
+  // Arkade identity, so the rail is not something it offers at all.
+  it("still omits a rail this address has no identity for", () => {
+    const options = advertisedRailOptions({ arkadeAddress: null, claimPublicKey: null, disabledRails: [] }, FULL, BASE);
+    expect(options).toEqual([]);
+  });
+
+  it("still omits a rail the address disabled outright", () => {
+    const options = advertisedRailOptions({ ...IDENTITY, disabledRails: ["arkade"] }, FULL, BASE);
+    expect(options.find((o) => o.id === "arkade")).toBeUndefined();
+  });
+
+  // "If absent, assume true" — emitting it on every healthy option is noise.
+  it("says nothing at all when a rail is serving", () => {
+    const options = advertisedRailOptions(IDENTITY, FULL, BASE);
+    for (const option of options) expect(option).not.toHaveProperty("available");
+  });
+});
+
 describe("withVtxoFloors", () => {
   it("raises the VTXO-settled rails to arkd's dust", () => {
     const limits = withVtxoFloors(undefined, { dustSat: 330 });

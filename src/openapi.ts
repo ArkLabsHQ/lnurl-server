@@ -598,6 +598,14 @@ export const openApiSpec = {
                             properties: {
                               id: { type: "string" },
                               type: { type: "string", description: "e.g. lightning, arkade" },
+                              available: {
+                                type: "boolean",
+                                description:
+                                  "LUD-XX: emitted only as `false`, for a rail this address offers that the server " +
+                                  "cannot serve right now — absent means available. A rail the address never set up, " +
+                                  "or disabled outright, is omitted from the list instead: that is a different " +
+                                  "statement, and one a payer should act on differently.",
+                              },
                               minSendable: {
                                 type: "number",
                                 description:
