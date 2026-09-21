@@ -10,7 +10,7 @@ import {
   type Wallet,
 } from "@arkade-os/sdk";
 import { bech32 } from "@scure/base";
-import { arkadeIdentityRequest, deriveSessionTokenForIdentity } from "./arkade.js";
+import { arkadeIdentityRequest, deriveSessionTokenForIdentity, type ArkadeSigner } from "./arkade.js";
 import { LnurlError } from "./errors.js";
 import { createLnurlClient, type LnurlClient } from "./index.js";
 import { lnurlRails } from "./rail.js";
@@ -22,8 +22,15 @@ export function encodeLnurl(url: string): string {
   return bech32.encode("lnurl", bech32.toWords(new TextEncoder().encode(url)), 1023);
 }
 
-export interface ArkadeLnurlOptions {
-  wallet: Wallet;
+/** A wallet supplies the signer and both addresses. Without one — a script, a
+ *  test, a server holding only a key — name them; only sending needs a wallet. */
+export type ArkadeLnurlSource =
+  | { wallet: Wallet; identity?: never; arkadeAddress?: never }
+  | { wallet?: never; identity: ArkadeSigner; arkadeAddress: string; boardingAddress?: string };
+
+export type ArkadeLnurlOptions = ArkadeLnurlSource & ArkadeLnurlConfig;
+
+export interface ArkadeLnurlConfig {
   baseUrl: string;
   /** Defaults to `baseUrl`'s hostname, as the server derives it: a LUD-16
    *  domain cannot carry a port. */
@@ -82,20 +89,28 @@ export function arkadePaymentRouter(opts: {
 export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
   const { wallet, baseUrl } = opts;
   const domain = opts.domain ?? new URL(baseUrl).hostname;
+  const identity = wallet ? wallet.identity : opts.identity;
+  const addresses = async () => (wallet
+    ? { arkadeAddress: await wallet.getAddress(), boardingAddress: await wallet.getBoardingAddress() }
+    : { arkadeAddress: opts.arkadeAddress, ...(opts.boardingAddress ? { boardingAddress: opts.boardingAddress } : {}) });
   const client = opts.client ?? createLnurlClient({ baseUrl });
   // A client per target, never this one: a client is pinned to one baseUrl, so
   // sharing it would send this server's bearer token to another.
   const payer = createLnurlClient();
 
   let tokenOnce: Promise<string> | undefined;
-  const token = (): Promise<string> => (tokenOnce ??= deriveSessionTokenForIdentity(wallet.identity, domain));
+  const token = (): Promise<string> => (tokenOnce ??= deriveSessionTokenForIdentity(identity, domain));
 
   let routerOnce: PaymentRouter | undefined;
-  const router = (): PaymentRouter => (routerOnce ??= arkadePaymentRouter({
-    wallet,
-    client: payer,
-    ...(opts.lightningRail ? { lightning: opts.lightningRail } : {}),
-  }));
+  const router = (): PaymentRouter => {
+    // Receiving needs only a signer; spending the wallet's own coins needs the wallet.
+    if (!wallet) throw new LnurlError("paying needs a wallet; arkadeLnurl was given an identity only");
+    return (routerOnce ??= arkadePaymentRouter({
+      wallet,
+      client: payer,
+      ...(opts.lightningRail ? { lightning: opts.lightningRail } : {}),
+    }));
+  };
 
   const needStore = (): PaymentSyncStore => {
     if (!opts.store) throw new LnurlError("sync needs a store; pass one to arkadeLnurl");
@@ -114,11 +129,10 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
       // Boarding rides along: a later call omitting it leaves the rail unregistered.
       await client.registerArkadeIdentity(
         await arkadeIdentityRequest({
-          identity: wallet.identity,
-          arkadeAddress: await wallet.getAddress(),
+          identity,
           token: held,
           username: registered.username,
-          boardingAddress: await wallet.getBoardingAddress(),
+          ...(await addresses()),
         }),
       );
       return { username: registered.username, lightningAddress: registered.lightningAddress };

@@ -10,7 +10,8 @@ import { runMigrations } from "../../../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../../../src/db/repositories/index.js";
 import { AddressService } from "../../../src/address-service.js";
 import { createLnurlClient } from "@arkade-os/lnurl-client";
-import { createLnurlApi } from "../src/lnurl.js";
+import type { ArkadeSigner } from "@arkade-os/lnurl-client/arkade";
+import { receiverAt } from "../src/lnurl.js";
 
 // The host the client will send, since it connects by IP: the server resolves
 // the domain from the Host header when the body names none.
@@ -26,6 +27,13 @@ async function payRequestFor(username: string): Promise<{ paymentOptions?: { id:
   const res = await fetch(`${baseUrl}/.well-known/lnurlp/${username}`);
   return res.json() as Promise<{ paymentOptions?: { id: string; type: string }[] }>;
 }
+
+/** The old `api.onboard` shape over the facade, plus the token tests need. */
+const onboard = async (identity: ArkadeSigner, arkadeAddress: string, username: string) => {
+  const rx = receiverAt(baseUrl, DOMAIN, { identity, arkadeAddress });
+  const claimed = await rx.claim(username);
+  return { ...claimed, token: await rx.token() };
+};
 
 let db: Db;
 let repos: Repositories;
@@ -55,10 +63,9 @@ afterEach(async () => {
 
 describe("onboarding", () => {
   it("binds the identity so the payRequest advertises the arkade rail", async () => {
-    const api = createLnurlApi(baseUrl, DOMAIN);
     const identity = MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist));
 
-    const result = await api.onboard(identity, arkadeAddress(), "alice");
+    const result = await onboard(identity, arkadeAddress(), "alice");
     expect(result.lightningAddress).toBe(`alice@${DOMAIN}`);
 
     const payRequest = await payRequestFor(result.username);
@@ -66,19 +73,17 @@ describe("onboarding", () => {
   });
 
   it("derives the same token every call, so the address is not orphaned", async () => {
-    const api = createLnurlApi(baseUrl, DOMAIN);
     const identity = MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist));
 
-    expect(await api.deriveToken(identity)).toBe(await api.deriveToken(identity));
+    expect(await receiverAt(baseUrl, DOMAIN, { identity, arkadeAddress: arkadeAddress() }).token()).toBe(await receiverAt(baseUrl, DOMAIN, { identity, arkadeAddress: arkadeAddress() }).token());
   });
 
   it("leaves a username with no bound identity off the arkade rail", async () => {
-    const api = createLnurlApi(baseUrl, DOMAIN);
     const client = createLnurlClient({ baseUrl });
     const identity = MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist));
 
     // Register only — the half of onboard() that claims the name.
-    const registered = await client.registerAddress({ token: await api.deriveToken(identity), username: "bob" });
+    const registered = await client.registerAddress({ token: await receiverAt(baseUrl, DOMAIN, { identity, arkadeAddress: arkadeAddress() }).token(), username: "bob" });
 
     const payRequest = await payRequestFor(registered.username);
     expect(payRequest.paymentOptions ?? []).toEqual([]);

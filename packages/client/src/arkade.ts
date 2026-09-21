@@ -15,7 +15,7 @@ import { deriveSessionTokenWithSigner } from "./token.js";
 export { LNURL_ARKADE_RAIL, LNURL_LIGHTNING_RAIL, lnurlRails } from "./rail.js";
 export type { LnurlRailDeps } from "./rail.js";
 export { arkadeLnurl, arkadePaymentRouter, encodeLnurl, DEFAULT_RAIL_PRIORITY } from "./wallet.js";
-export type { ArkadeLnurl, ArkadeLnurlOptions } from "./wallet.js";
+export type { ArkadeLnurl, ArkadeLnurlConfig, ArkadeLnurlOptions, ArkadeLnurlSource } from "./wallet.js";
 
 /** The slice of `@arkade-os/sdk`'s `Identity` these helpers need. */
 export interface ArkadeSigner {

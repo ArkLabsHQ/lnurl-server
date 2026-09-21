@@ -94,6 +94,40 @@ describe("arkadeLnurl", () => {
     expect(await lnurl.owned()).toBe("current");
   });
 
+  // A script, a test or a server may hold only a key. Receiving needs a signer
+  // and an address; only spending the wallet's own coins needs the wallet.
+  it("claims with an identity and an address, no wallet", async () => {
+    const client = fakeClient();
+    const wallet = fakeWallet();
+    const lnurl = arkadeLnurl({
+      identity: wallet.identity,
+      arkadeAddress: ARKADE_ADDRESS,
+      baseUrl: "https://lnurl.example.com",
+      client,
+    });
+
+    await lnurl.claim("alice");
+
+    expect(client.registerArkadeIdentity).toHaveBeenCalledWith(
+      expect.objectContaining({ arkadeAddress: ARKADE_ADDRESS }),
+    );
+    // Omitted rather than sent as undefined: the onchain rail is advertised
+    // only where a boarding address was actually registered.
+    expect(client.registerArkadeIdentity).toHaveBeenCalledWith(
+      expect.not.objectContaining({ boardingAddress: expect.anything() }),
+    );
+  });
+
+  it("says a wallet is needed before it fails somewhere obscure", () => {
+    const lnurl = arkadeLnurl({
+      identity: fakeWallet().identity,
+      arkadeAddress: ARKADE_ADDRESS,
+      baseUrl: "https://lnurl.example.com",
+      client: fakeClient(),
+    });
+    expect(() => lnurl.router()).toThrow(/needs a wallet/);
+  });
+
   it("says what is missing when sync has nowhere to write", async () => {
     const lnurl = arkadeLnurl({ wallet: fakeWallet(), baseUrl: "https://lnurl.example.com", client: fakeClient() });
     await expect(lnurl.sync("alice")).rejects.toThrow(LnurlError);

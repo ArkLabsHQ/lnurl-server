@@ -6,9 +6,9 @@ import { mergeFeed, readWalletActivity, type FeedRow, type FeedStatus } from "./
 import { lnurlActivityResolver, sentActivityResolver } from "./lnurl-activity.js";
 import { balanceView } from "./balance.js";
 import { createMnemonic, loadMnemonic, openWallet, wipeWallet, type DemoWallet } from "./wallet.js";
-import { lnurl } from "./lnurl.js";
+import { ownPayRequest, payer, receiver } from "./lnurl.js";
 import { createRouter, RAIL_PRIORITY } from "./router.js";
-import { browserPaymentStore, storedPayments } from "@arkade-os/lnurl-client";
+import { storedPayments } from "@arkade-os/lnurl-client";
 import { autoSettleBoarding, type BoardingState } from "./boarding.js";
 import { Backup } from "./Backup.js";
 import { Settings } from "./Settings.js";
@@ -57,13 +57,13 @@ export function App() {
     try {
       const w = await openWallet(mnemonic);
       setWallet(w);
-      setToken(await lnurl.deriveToken(w.identity));
+      const rx = receiver({ wallet: w.wallet });
+      setToken(await rx.token());
 
       // The username is not in the phrase, so on a fresh browser ask the server
       // which one this token owns. Re-registering it would fail: the server
       // refuses any existing username, owner or not.
-      const token = await lnurl.deriveToken(w.identity);
-      const owned = localStorage.getItem(USERNAME_KEY) ?? (await lnurl.ownedUsername(token).catch(() => undefined));
+      const owned = localStorage.getItem(USERNAME_KEY) ?? (await rx.owned().catch(() => undefined));
       if (owned) localStorage.setItem(USERNAME_KEY, owned);
       setUsername(owned ?? null);
     } catch (e) {
@@ -122,9 +122,9 @@ function Onboarding({ wallet, username, onReady, onError }: {
       // Claim the name and bind the identity in one step: an address without a
       // bound identity advertises no rails, so a half-done onboarding is a
       // wallet that silently cannot receive.
-      const result = username
-        ? { token: await lnurl.deriveToken(w.identity), username }
-        : await lnurl.onboard(w.identity, w.arkadeAddress, name.trim(), w.boardingAddress);
+      const rx = receiver({ wallet: w.wallet });
+      const claimed = username ? { username } : await rx.claim(name.trim());
+      const result = { ...claimed, token: await rx.token() };
       localStorage.setItem(USERNAME_KEY, result.username);
       onReady(w, result.username, result.token);
     } catch (e) {
@@ -275,7 +275,7 @@ function Receive({ lightningAddress }: { lightningAddress: string }) {
 
   const load = async () => {
     setBusy("options"); setErr(""); setResult(null); setSettled("");
-    try { setPayRequest(await lnurl.ownPayRequest(lightningAddress.split("@")[0]!)); }
+    try { setPayRequest(await ownPayRequest(lightningAddress.split("@")[0]!)); }
     catch (e) { setErr((e as Error).message); }
     finally { setBusy(""); }
   };
@@ -283,12 +283,15 @@ function Receive({ lightningAddress }: { lightningAddress: string }) {
   const request = async (optionId: string) => {
     setBusy(optionId); setErr(""); setResult(null); setSettled("");
     try {
-      const value = await lnurl.requestPayment(payRequest!, amount, optionId === "lightning" ? undefined : optionId);
+      const value = await payer.requestInvoice(payRequest!, {
+        amountSat: amount,
+        ...(optionId === "lightning" ? {} : { paymentOption: optionId }),
+      });
       setResult({ option: optionId, value });
       // Absence is "no answer available", not failure: only a destination that
       // identifies the payment gets a verify URL. @see lnurl.ts
       if (value.verify) {
-        void lnurl.pollVerify(value.verify, { timeoutMs: 300_000, intervalMs: 3_000 })
+        void payer.pollVerify(value.verify, { timeoutMs: 300_000, intervalMs: 3_000 })
           .then((v) => setSettled(v.settled ? "settled" : "not settled within the poll window"))
           .catch((e: Error) => setSettled(`verify failed: ${e.message}`));
       }
@@ -436,7 +439,7 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
       // so absence is "no answer available" rather than a failure.
       const verifyUrl = (quote.meta?.lnurl as { verify?: string } | undefined)?.verify;
       if (verifyUrl) {
-        void lnurl.pollVerify(verifyUrl, { timeoutMs: 180_000, intervalMs: 2_000 })
+        void payer.pollVerify(verifyUrl, { timeoutMs: 180_000, intervalMs: 2_000 })
           .then((v) => {
             note({ receiverConfirmed: v.settled });
             setStatus(v.settled
@@ -534,7 +537,7 @@ function ActivityRow({ row }: { row: FeedRow }) {
 function Activity({ token, username, lightningAddress, wallet }: {
   token: string; username: string; lightningAddress: string; wallet: DemoWallet;
 }) {
-  const store = useMemo(() => browserPaymentStore(), []);
+  const rx = useMemo(() => receiver({ wallet: wallet.wallet }), [wallet]);
   const [rows, setRows] = useState<FeedRow[] | null>(null);
   const [err, setErr] = useState("");
   const [walletErr, setWalletErr] = useState("");
@@ -556,13 +559,13 @@ function Activity({ token, username, lightningAddress, wallet }: {
       setRows(mergeFeed(activities, storedPayments(lightningAddress)));
     };
     void show();
-    const load = () => lnurl.syncActivity(token, username, store)
+    const load = () => rx.sync(username)
       .then(() => show())
       .catch((e: Error) => { if (live) setErr(e.message); });
     void load();
     const id = setInterval(() => void load(), 8000);
     return () => { live = false; clearInterval(id); };
-  }, [token, username, lightningAddress, store, wallet]);
+  }, [token, username, lightningAddress, rx, wallet]);
 
   if (!rows) return <div style={card}>Loading…</div>;
 
