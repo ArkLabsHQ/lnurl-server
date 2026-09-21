@@ -3,7 +3,7 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { MultisigTapscript, VtxoScript, type IContractManager } from "@arkade-os/sdk";
 import { createCovenantSweeper, startCovenantSweeper } from "../src/covenant-sweeper.js";
 import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler as handler } from "../src/covenant-contract.js";
-import { COLLABORATIVE_LEAF, RECOVERY_LEAF, SWEEP_LEAF } from "../src/covenant-destination.js";
+import { COLLABORATIVE_LEAF, COVENANT_V1, RECOVERY_LEAF, SWEEP_LEAF } from "../src/covenant-destination.js";
 
 /** Real params, so the leaves the sweeper matches against are the real ones. */
 const xonly = (fill: number) => secp256k1.getPublicKey(new Uint8Array(32).fill(fill), true).subarray(1);
@@ -16,6 +16,7 @@ const realParams = handler.serializeParams({
   emulatorPubkey: secp256k1.getPublicKey(new Uint8Array(32).fill(5), true),
   preimage: new Uint8Array(32).fill(7),
   recoveryDelaySeconds: 4096,
+  version: COVENANT_V1,
 });
 const realLeaves = handler.createScript(realParams).leaves;
 

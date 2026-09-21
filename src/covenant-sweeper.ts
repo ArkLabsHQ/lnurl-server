@@ -24,6 +24,7 @@ import {
   Transaction,
   attachPrevArkTxs,
   buildOffchainTx,
+  createAssetPacket,
   setArkPsbtField,
   type ArkProvider,
   type Contract,
@@ -34,7 +35,7 @@ import {
 } from "@arkade-os/sdk";
 import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler } from "./covenant-contract.js";
 import type { SettlementStore } from "./settlement-store.js";
-import { SWEEP_LEAF, enforcePayTo } from "./covenant-destination.js";
+import { COVENANT_V1, COVENANT_V2, SWEEP_LEAF, enforcePayTo, enforcePayToWithAssets } from "./covenant-destination.js";
 
 interface EmulatorSubmit {
   submitTx(arkTx: string, checkpointTxs: string[]): Promise<{ signedArkTx: string; signedCheckpointTxs: string[] }>;
@@ -65,16 +66,26 @@ export function createCovenantSweeper(opts: {
     path: PathSelection,
     tapTree: Uint8Array,
   ): Promise<string> => {
-    const { staticAddress } = covenantDestinationHandler.deserializeParams(contract.params);
+    const params = covenantDestinationHandler.deserializeParams(contract.params);
+    const { staticAddress } = params;
     const payTo = ArkAddress.decode(staticAddress).pkScript;
-    // Recomputed, not read off the leaf: the leaf holds the cosigner key, which is
-    // a commitment to this script rather than the script itself.
-    const packet = EmulatorPacket.create([{ vin: 0, script: enforcePayTo(payTo), witness: RawWitness.encode([]) }]);
+    // Recomputed, not read off the leaf, and versioned from the contract's own
+    // params: v2 bytes do not reproduce a v1 cosigner, so the emulator would refuse.
+    const covenant = (params.version ?? COVENANT_V1) >= COVENANT_V2
+      ? enforcePayToWithAssets(payTo)
+      : enforcePayTo(payTo);
+    const packet = EmulatorPacket.create([{ vin: 0, script: covenant, witness: RawWitness.encode([]) }]);
+    // arkd rejects a spend of asset-carrying inputs declaring no packet, so without
+    // this the destination could never be swept. Under v2 the covenant requires it too.
+    const assets = vtxo.assets ?? [];
+    const packets = assets.length > 0
+      ? [createAssetPacket(new Map([[0, assets]]), [{ address: staticAddress, amount: vtxo.value, assets }]), packet]
+      : [packet];
     const info = await arkProvider.getInfo();
     // The covenant reads the output at the spent input's index, so the payout stays 0.
     const { arkTx, checkpoints } = buildOffchainTx(
       [{ txid: vtxo.txid, vout: vtxo.vout, value: vtxo.value, tapLeafScript: path.leaf, tapTree }],
-      [{ script: payTo, amount: BigInt(vtxo.value) }, Extension.create([packet]).txOut()],
+      [{ script: payTo, amount: BigInt(vtxo.value) }, Extension.create(packets).txOut()],
       CSVMultisigTapscript.decode(hex.decode(info.checkpointTapscript)),
     );
     await attachPrevArkTxs(arkTx, [vtxo.txid], indexer);

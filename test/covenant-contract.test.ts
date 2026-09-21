@@ -3,6 +3,7 @@ import http from "node:http";
 import { hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import {
+  ArkAddress,
   MultisigTapscript,
   VtxoScript,
   type Contract,
@@ -11,7 +12,11 @@ import {
 } from "@arkade-os/sdk";
 import { covenantDestinationHandler as handler, COVENANT_CONTRACT_TYPE } from "../src/covenant-contract.js";
 import {
+  COVENANT_V1,
+  COVENANT_V2,
   createCovenantDestinationProvider,
+  enforcePayTo,
+  enforcePayToWithAssets,
   deriveCovenantDestination,
   SWEEP_LEAF,
   RECOVERY_LEAF,
@@ -28,6 +33,7 @@ const params = {
   emulatorPubkey: secp256k1.getPublicKey(new Uint8Array(32).fill(5), true),
   preimage: new Uint8Array(32).fill(7),
   recoveryDelaySeconds: 4096,
+  version: COVENANT_V1,
 };
 
 const contract = (): Contract => ({
@@ -47,6 +53,38 @@ describe("covenantDestinationHandler", () => {
 
     expect(hex.encode(script.pkScript)).toBe("5120aaa385c70e9d339b3d1744ef2d409f9641a23c11370792b743ef2b485a71e1b1");
     expect(hex.encode(script.pkScript)).toBe(deriveCovenantDestination(params).script);
+  });
+
+  /**
+   * A COMPATIBILITY FIXTURE, not a golden value: a literal `ark_contracts` row,
+   * carrying no version key because v1 rows have none. Re-pinning it says every
+   * destination already handed to a payer is orphaned — their sweep would address
+   * a taptree nobody funded, which arkd refuses in silence. Version and branch.
+   */
+  it("still rebuilds a stored v1 row that predates any version key", () => {
+    const v1Row: Record<string, string> = {
+      staticAddress: "tark1qpf3lesxsy69q0f8yvfnyf7gv7kglfkg83fhaxjyc0zmm0wtrl3n0zknt6dcdl6z326wzf0z06cmkpt3fh9c9f5f4s0ypeek7n8umsfgt0g0l3",
+      userPubkey: "462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b",
+      serverPubkey: "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+      emulatorPubkey: "0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f7",
+      preimage: "07".repeat(32),
+      recoveryDelaySeconds: "4096",
+    };
+
+    expect(hex.encode(handler.createScript(v1Row).pkScript))
+      .toBe("5120aaa385c70e9d339b3d1744ef2d409f9641a23c11370792b743ef2b485a71e1b1");
+  });
+
+  // v2 must actually differ, or the version enforces nothing.
+  it("derives a different address for v2, carrying the asset tunnel", () => {
+    const v1 = handler.createScript(handler.serializeParams(params));
+    const v2 = handler.createScript(handler.serializeParams({ ...params, version: COVENANT_V2 }));
+
+    expect(hex.encode(v2.pkScript)).not.toBe(hex.encode(v1.pkScript));
+    // tunnel prefix, then the v1 bytes unchanged beneath it.
+    const covenantV1 = enforcePayTo(ArkAddress.decode(params.staticAddress).pkScript);
+    const covenantV2 = enforcePayToWithAssets(ArkAddress.decode(params.staticAddress).pkScript);
+    expect(hex.encode(covenantV2)).toBe("cd5400f769" + hex.encode(covenantV1));
   });
 
   it("round-trips its parameters through storage", () => {

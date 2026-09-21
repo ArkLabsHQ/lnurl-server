@@ -37,6 +37,19 @@ const preimageCondition = (hash20: Uint8Array): Uint8Array =>
  * backwards in source order. Swapping them compares a version against a key and the
  * emulator refuses every sweep.
  */
+/** 0xf7. Spliced as a byte: the SDK's opcode table stops at SIGHASH (0xf6). */
+const OP_TUNNEL = 0xf7;
+/** Flag 4 preserves input-local asset IDs and amounts. */
+const TUNNEL_ASSETS = 4;
+
+/** A row stored without a version is v1 and must stay v1: its money sits at an
+ *  address only those bytes reproduce. */
+export const COVENANT_V1 = 1;
+export const COVENANT_V2 = 2;
+/** REQUIRES an emulator implementing OP_TUNNEL (>= v0.0.8-rc.0). v0.0.7 maps 0xf7
+ *  to opcodeInvalid and refuses the sweep, stranding EVERY covenant destination. */
+export const COVENANT_CURRENT = COVENANT_V2;
+
 export const enforcePayTo = (destinationPkScript: Uint8Array): Uint8Array => {
   if (destinationPkScript.length !== 34 || destinationPkScript[0] !== 0x51 || destinationPkScript[1] !== 0x20) {
     throw new Error("destination must be a P2TR pkScript (0x5120 + 32 bytes)");
@@ -58,6 +71,29 @@ export const enforcePayTo = (destinationPkScript: Uint8Array): Uint8Array => {
   ] as Parameters<typeof arkade.ArkadeScript.encode>[0]);
 };
 
+/**
+ * v1 plus asset preservation: what arrives must leave on the output already pinned
+ * to the user, so the covenant secures assets rather than trusting this service.
+ *
+ * The tunnel goes FIRST, on an empty stack: opcodeTunnel pops the exception count
+ * and needs exactly [outputIndex, flags] beneath it. It pushes true, hence VERIFY.
+ */
+export const enforcePayToWithAssets = (destinationPkScript: Uint8Array): Uint8Array => {
+  const tunnel = arkade.ArkadeScript.encode([
+    "PUSHCURRENTINPUTINDEX", // the output this input must tunnel into
+    TUNNEL_ASSETS,
+    0, // no asset exceptions: everything that arrives must leave
+  ] as Parameters<typeof arkade.ArkadeScript.encode>[0]);
+  const verify = arkade.ArkadeScript.encode(["VERIFY"] as Parameters<typeof arkade.ArkadeScript.encode>[0]);
+  const payTo = enforcePayTo(destinationPkScript);
+  const out = new Uint8Array(tunnel.length + 1 + verify.length + payTo.length);
+  out.set(tunnel, 0);
+  out[tunnel.length] = OP_TUNNEL;
+  out.set(verify, tunnel.length + 1);
+  out.set(payTo, tunnel.length + 1 + verify.length);
+  return out;
+};
+
 export interface CovenantDestinationInput {
   /** The user's registered Arkade address — the only place the sweep may pay. */
   staticAddress: string;
@@ -67,6 +103,8 @@ export interface CovenantDestinationInput {
   /** 32 bytes, fresh per payment. Not a secret: the covenant makes it useless for theft. */
   preimage: Uint8Array;
   recoveryDelaySeconds: number;
+  /** Absent is v1 — the construction that predates asset preservation. */
+  version?: number;
 }
 
 export interface CovenantDestination {
@@ -171,6 +209,8 @@ export function createCovenantDestinationProvider(opts: {
         emulatorPubkey,
         preimage,
         recoveryDelaySeconds: opts.recoveryDelaySeconds,
+        // Stamped, so a row can always be rebuilt as whatever it was derived as.
+        version: COVENANT_CURRENT,
       };
       const d = deriveCovenantDestination(params);
       // Before the address is returned, never after: a payer handed a destination
@@ -221,7 +261,12 @@ export function covenantVtxoScript(input: CovenantDestinationInput): { vtxo: Vtx
   if (input.preimage.length !== 32) throw new Error(`preimage must be 32 bytes, got ${input.preimage.length}`);
   const userPubkey = toXOnly(input.userPubkey);
   const serverPubkey = toXOnly(input.serverPubkey);
-  const covenantScript = enforcePayTo(ArkAddress.decode(input.staticAddress).pkScript);
+  // Branch, never edit: a v1 row's money is at an address only the v1 bytes
+  // reproduce, and rebuilding it as v2 addresses a taptree nobody funded.
+  const destination = ArkAddress.decode(input.staticAddress).pkScript;
+  const covenantScript = (input.version ?? COVENANT_V1) >= COVENANT_V2
+    ? enforcePayToWithAssets(destination)
+    : enforcePayTo(destination);
   const cosigner = arkade.computeArkadeScriptPublicKey(toCompressed(input.emulatorPubkey), covenantScript);
   const vtxo = new VtxoScript([
     ConditionMultisigTapscript.encode({

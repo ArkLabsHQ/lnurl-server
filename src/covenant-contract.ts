@@ -5,7 +5,7 @@
 
 import { hex } from "@scure/base";
 import { getSequence, VtxoScript, type Contract, type ContractHandler, type PathSelection } from "@arkade-os/sdk";
-import { COLLABORATIVE_LEAF, RECOVERY_LEAF, SWEEP_LEAF, covenantVtxoScript } from "./covenant-destination.js";
+import { COLLABORATIVE_LEAF, COVENANT_V1, RECOVERY_LEAF, SWEEP_LEAF, covenantVtxoScript } from "./covenant-destination.js";
 
 export const COVENANT_CONTRACT_TYPE = "lnurl-covenant-destination";
 
@@ -16,6 +16,9 @@ export interface CovenantContractParams {
   emulatorPubkey: Uint8Array;
   preimage: Uint8Array;
   recoveryDelaySeconds: number;
+  /** Which covenant construction these params build. Absent on disk means v1 —
+   *  see deserialize; a stored row predates versioning and must never move. */
+  version: number;
 }
 
 const serialize = (p: CovenantContractParams): Record<string, string> => ({
@@ -25,6 +28,7 @@ const serialize = (p: CovenantContractParams): Record<string, string> => ({
   emulatorPubkey: hex.encode(p.emulatorPubkey),
   preimage: hex.encode(p.preimage),
   recoveryDelaySeconds: String(p.recoveryDelaySeconds),
+  version: String(p.version),
 });
 
 const deserialize = (p: Record<string, string>): CovenantContractParams => ({
@@ -34,6 +38,9 @@ const deserialize = (p: Record<string, string>): CovenantContractParams => ({
   emulatorPubkey: hex.decode(p.emulatorPubkey!),
   preimage: hex.decode(p.preimage!),
   recoveryDelaySeconds: Number(p.recoveryDelaySeconds),
+  // The load-bearing default: rows written before versioning carry no key, and
+  // their money sits at an address only the v1 bytes reproduce.
+  version: p.version === undefined ? COVENANT_V1 : Number(p.version),
 });
 
 const pathsFor = (script: VtxoScript, contract: Contract): PathSelection[] => {
