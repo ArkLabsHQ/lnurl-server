@@ -179,6 +179,18 @@ test("lnurl-arkade: one wallet pays another's LNURL and the receiver confirms it
   // was folded into it rather than listed beside it as a second row.
   await expect(activity).toContainText("arkade");
   await expect(activity).toContainText("explorer");
+
+  // The payer's own row. No record of theirs describes a send — the server that
+  // recorded this payment was the recipient's — so without what the wallet wrote
+  // down at send time this row can say nothing but "sent".
+  await payer.getByRole("button", { name: "Activity" }).click();
+  const payerFeed = payer.locator("div")
+    .filter({ has: payer.getByRole("heading", { name: "Activity" }) })
+    .last();
+  await expect(payerFeed).toContainText(`→ ${lnurl}`, { timeout: 60_000 });
+  await payerFeed.getByRole("button", { name: "▸" }).first().click();
+  await expect(payerFeed).toContainText("paid to");
+  await expect(payerFeed).toContainText("lnurl-arkade");
 });
 
 test("ark: a bare tark1 address pasted into the send box pays it directly", async () => {

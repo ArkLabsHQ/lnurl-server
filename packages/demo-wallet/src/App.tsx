@@ -3,7 +3,7 @@ import type { PaymentOption, WalletBalance } from "@arkade-os/sdk";
 import type { InvoiceResult, PayRequest } from "@arkade-os/lnurl-client";
 import { EXPLORER, LNURL_DOMAIN, USERNAME_KEY } from "./config.js";
 import { mergeFeed, readWalletActivity, type FeedRow, type FeedStatus } from "./activity.js";
-import { lnurlActivityResolver } from "./lnurl-activity.js";
+import { lnurlActivityResolver, sentActivityResolver } from "./lnurl-activity.js";
 import { balanceView } from "./balance.js";
 import { createMnemonic, loadMnemonic, openWallet, wipeWallet, type DemoWallet } from "./wallet.js";
 import { lnurl } from "./lnurl.js";
@@ -13,6 +13,7 @@ import { autoSettleBoarding, type BoardingState } from "./boarding.js";
 import { Backup } from "./Backup.js";
 import { Settings } from "./Settings.js";
 import { forgetPayments } from "./payment-store.js";
+import { forgetSent, recordSent, sentPayments, type SentPayment } from "./sent-store.js";
 import { CopyableQr, ReceiveQr } from "./Qr.js";
 
 type Tab = "Receive" | "Send" | "Activity" | "Settings";
@@ -227,7 +228,7 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
           </span>
         )}
         <button style={{ ...btn, marginLeft: "auto" }} onClick={() => refresh()}>Refresh</button>
-        <button style={btn} onClick={async () => { await wipeWallet(); forgetPayments(); onReset(); }}>Reset</button>
+        <button style={btn} onClick={async () => { await wipeWallet(); forgetPayments(); forgetSent(); onReset(); }}>Reset</button>
       </div>
 
       <nav style={{ display: "flex", gap: 12, borderBottom: "1px solid #ccc", marginBottom: 16 }}>
@@ -245,7 +246,7 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
       {tab === "Activity" && <Activity token={token} username={username} lightningAddress={lightningAddress} wallet={wallet} />}
       {tab === "Settings" && (
         <>
-          <Backup onRestored={onRestored} onReset={() => { forgetPayments(); onReset(); }} />
+          <Backup onRestored={onRestored} onReset={() => { forgetPayments(); forgetSent(); onReset(); }} />
           <Settings onChanged={() => undefined} />
         </>
       )}
@@ -402,10 +403,29 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
       const quote = await option.quote();
       const handle = await quote.send();
       setStatus(`sent ${quote.amount} sats via ${quote.railId} · fee ${quote.fee} · ${handle.status}`);
+      // Unless the wallet writes this down, nothing ever knows who it paid.
+      // `startedAt` is fixed so a later verify result updates the row, not its date.
+      const startedAt = Date.now();
+      const paidTo = (quote.meta?.lnurl as { target?: string } | undefined)?.target ?? target.trim();
+      let sentTxid: string | undefined;
+      const note = (over: Partial<SentPayment> = {}): void => {
+        if (!sentTxid) return;
+        recordSent({
+          txid: sentTxid, target: paidTo, railId: quote.railId,
+          amountSat: quote.amount, feeSat: quote.fee, createdAt: startedAt, ...over,
+        });
+      };
       // Not awaiting settled(): a fire-and-forget rail is allowed never to
       // resolve it, which would hang the button forever.
       handle.subscribe((u) => {
         setStatus(`${quote.railId} · ${u.status}${u.error ? ` · ${String(u.error)}` : ""}`);
+        if (u.result?.txid) {
+          sentTxid = u.result.txid;
+          note({
+            ...(u.result.swapId ? { swapId: u.result.swapId } : {}),
+            ...(u.result.preimage ? { preimage: u.result.preimage } : {}),
+          });
+        }
         if (u.status === "settled") onSent();
       });
       onSent();
@@ -417,9 +437,12 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
       const verifyUrl = (quote.meta?.lnurl as { verify?: string } | undefined)?.verify;
       if (verifyUrl) {
         void lnurl.pollVerify(verifyUrl, { timeoutMs: 180_000, intervalMs: 2_000 })
-          .then((v) => setStatus(v.settled
-            ? `receiver confirmed settled via ${quote.railId}`
-            : `receiver has not confirmed settlement via ${quote.railId}`))
+          .then((v) => {
+            note({ receiverConfirmed: v.settled });
+            setStatus(v.settled
+              ? `receiver confirmed settled via ${quote.railId}`
+              : `receiver has not confirmed settlement via ${quote.railId}`);
+          })
           .catch((e: Error) => setStatus(`sent via ${quote.railId}, but verify failed: ${e.message}`));
       }
     } catch (e) { setStatus(`payment failed: ${(e as Error).message}`); }
@@ -482,7 +505,10 @@ function ActivityRow({ row }: { row: FeedRow }) {
           disabled={row.details.length === 0}
           style={{ width: 22, border: "none", background: "none", cursor: row.details.length ? "pointer" : "default", color: "#999" }}
         >{row.details.length ? (open ? "▾" : "▸") : ""}</button>
-        <span style={{ width: 92, color: "#666" }}>{row.label}</span>
+        <span
+          title={row.label}
+          style={{ width: 168, color: "#666", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+        >{row.label}</span>
         <span style={{ width: 96 }}>
           {row.amountSat === null ? "—" : `${row.amountSat > 0 && row.kind === "wallet" ? "+" : ""}${row.amountSat} sats`}
         </span>
@@ -519,6 +545,7 @@ function Activity({ token, username, lightningAddress, wallet }: {
     // record lands on the SDK's own activity row. `use` is keyed by id, so
     // re-running this effect replaces the resolver instead of stacking copies.
     wallet.wallet.activity.use(lnurlActivityResolver(() => storedPayments(lightningAddress)));
+    wallet.wallet.activity.use(sentActivityResolver(sentPayments));
     // The wallet half comes from the SDK and needs no server, so it renders even
     // when the sync fails — which is also why the error does not replace the list.
     const show = async () => {

@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { TxType, type Activity, type ArkTransaction } from "@arkade-os/sdk";
 import type { StoredPayment } from "@arkade-os/lnurl-client";
-import { absorbedPaymentKey, lnurlActivityResolver, railOf } from "../src/lnurl-activity.js";
+import { absorbedPaymentKey, lnurlActivityResolver, railOf, sentActivityResolver } from "../src/lnurl-activity.js";
+import type { SentPayment } from "../src/sent-store.js";
 import { mergeFeed } from "../src/activity.js";
 
 const ADDRESS = "test2@lnurl.mutinynet.arkade.sh";
@@ -94,6 +95,86 @@ describe("lnurlActivityResolver", () => {
     expect(railOf(payment({ kind: "bolt11" }))).toBe("lightning");
     expect(railOf(payment({ paymentOption: "onchain" }))).toBe("onchain");
     expect(railOf(payment({ paymentOption: null }))).toBe("destination");
+  });
+});
+
+const TARGET = "lolita@lnurl.mutinynet.arkade.sh";
+
+const sent = (over: Partial<SentPayment> = {}): SentPayment => ({
+  txid: "sendtx1",
+  target: TARGET,
+  railId: "lnurl-arkade",
+  amountSat: 1000,
+  feeSat: 0,
+  createdAt: 1_700_000_000_000,
+  ...over,
+});
+
+describe("sentActivityResolver", () => {
+  it("names the address this wallet paid, from what it recorded at send time", async () => {
+    const resolver = sentActivityResolver(() => [sent({ feeSat: 3, swapId: "sw1" })]);
+    await resolver.prepare?.();
+
+    expect(resolver.resolve(tx("sendtx1"))).toEqual([{
+      groupId: "sent:sendtx1",
+      label: `→ ${TARGET}`,
+      kind: "lnurl-send",
+      metadata: { target: TARGET, rail: "lnurl-arkade", delivered: "1000 sats", fee: "3 sats", swap: "sw1" },
+    }]);
+  });
+
+  it("leaves a transaction it has no record of plain", async () => {
+    const resolver = sentActivityResolver(() => [sent()]);
+    await resolver.prepare?.();
+    expect(resolver.resolve(tx("some-other-tx"))).toBeUndefined();
+  });
+
+  it("reports whether the receiver confirmed, once verify has answered", async () => {
+    const yes = sentActivityResolver(() => [sent({ receiverConfirmed: true })]);
+    await yes.prepare?.();
+    expect(yes.resolve(tx("sendtx1"))).toMatchObject([{ metadata: { receiver: "confirmed settled" } }]);
+
+    const no = sentActivityResolver(() => [sent({ receiverConfirmed: false })]);
+    await no.prepare?.();
+    expect(no.resolve(tx("sendtx1"))).toMatchObject([{ metadata: { receiver: "has not confirmed" } }]);
+  });
+
+  // Silence is the honest answer before verify replies; "has not confirmed" would
+  // read as a negative result rather than an absent one.
+  it("says nothing about the receiver before verify has answered", async () => {
+    const resolver = sentActivityResolver(() => [sent()]);
+    await resolver.prepare?.();
+    expect(resolver.resolve(tx("sendtx1"))![0]!.metadata).not.toHaveProperty("receiver");
+  });
+});
+
+describe("mergeFeed, on a payment this wallet made", () => {
+  const sendIntent = {
+    label: `→ ${TARGET}`,
+    kind: "lnurl-send",
+    metadata: { target: TARGET, rail: "lnurl-arkade", delivered: "1000 sats", fee: "3 sats" },
+  };
+
+  it("says who was paid instead of only 'sent'", () => {
+    const rows = mergeFeed([activity("sent:sendtx1", { amount: -1000, intent: sendIntent })], []);
+
+    expect(rows[0]).toMatchObject({ kind: "wallet", label: `→ ${TARGET}` });
+    expect(rows[0]!.details).toContainEqual(["paid to", TARGET]);
+    expect(rows[0]!.details).toContainEqual(["rail", "lnurl-arkade"]);
+    expect(rows[0]!.details).toContainEqual(["rail fee", "3 sats"]);
+  });
+
+  // The server's record is the richer source where it exists, and rendering both
+  // would list the rail and the address twice on one row.
+  it("leaves a row the server already describes to the server's record", () => {
+    const p = payment({ payoutReference: "abc123" });
+    const rows = mergeFeed(
+      [activity(`lnurl:${p.key}`, { intent: { metadata: { target: "someone@else", rail: "wrong" } } })],
+      [p],
+    );
+
+    expect(rows[0]!.details).not.toContainEqual(["paid to", "someone@else"]);
+    expect(rows[0]!.details).toContainEqual(["paid to", ADDRESS]);
   });
 });
 

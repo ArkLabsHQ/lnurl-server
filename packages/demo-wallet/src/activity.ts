@@ -48,6 +48,26 @@ function paymentDetails(p: StoredPayment): Detail[] {
   return details;
 }
 
+/** A whitelist, so a resolver's machine fields never reach the UI as raw keys. */
+const INTENT_LABELS: [key: string, label: string][] = [
+  ["target", "paid to"],
+  ["rail", "rail"],
+  ["delivered", "delivered"],
+  ["fee", "rail fee"],
+  ["swap", "swap"],
+  ["preimage", "preimage"],
+  ["receiver", "receiver"],
+];
+
+/** The only source of detail for a send, which no record of ours describes. */
+function intentDetails(a: Activity): Detail[] {
+  const meta = a.intent?.metadata;
+  if (!meta) return [];
+  return INTENT_LABELS
+    .filter(([key]) => meta[key] !== undefined && meta[key] !== null && meta[key] !== "")
+    .map(([key, label]) => [label, String(meta[key])] as Detail);
+}
+
 /** A destination rail pays the quoted amount exactly; only a swap takes a cut.
  *  A looser bound would let any large quote swallow any small arrival. */
 const MAX_SWAP_CUT = 0.1;
@@ -104,7 +124,7 @@ export function mergeFeed(activities: Activity[], payments: StoredPayment[]): Fe
       ...(txid ? { txid } : {}),
       details: [
         ...(txid ? ([["txid", txid]] as Detail[]) : []),
-        ...(payment ? paymentDetails(payment) : []),
+        ...(payment ? paymentDetails(payment) : intentDetails(a)),
         ...(payment ? feeDetail(payment.amountMsat, a.amount) : []),
         ...(inferred ? ([["matched", "by amount and timing, pending the server's confirmation"]] as Detail[]) : []),
       ],
