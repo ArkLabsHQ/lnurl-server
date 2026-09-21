@@ -204,6 +204,7 @@ export {
   revokeAddress,
   syncPayments,
 };
+export { browserPaymentStore, forgetStoredPayments, storedPayments } from "./stores.js";
 export type {
   AddressListEntry,
   AmountObject,

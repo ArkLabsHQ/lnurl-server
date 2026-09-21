@@ -8,11 +8,11 @@ import { balanceView } from "./balance.js";
 import { createMnemonic, loadMnemonic, openWallet, wipeWallet, type DemoWallet } from "./wallet.js";
 import { lnurl } from "./lnurl.js";
 import { createRouter, RAIL_PRIORITY } from "./router.js";
-import { localPaymentStore, storedPayments } from "./payment-store.js";
+import { browserPaymentStore, storedPayments } from "@arkade-os/lnurl-client";
 import { autoSettleBoarding, type BoardingState } from "./boarding.js";
 import { Backup } from "./Backup.js";
 import { Settings } from "./Settings.js";
-import { forgetPayments } from "./payment-store.js";
+import { forgetStoredPayments } from "@arkade-os/lnurl-client";
 import { forgetSent, recordSent, sentPayments, type SentPayment } from "./sent-store.js";
 import { CopyableQr, ReceiveQr } from "./Qr.js";
 
@@ -228,7 +228,7 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
           </span>
         )}
         <button style={{ ...btn, marginLeft: "auto" }} onClick={() => refresh()}>Refresh</button>
-        <button style={btn} onClick={async () => { await wipeWallet(); forgetPayments(); forgetSent(); onReset(); }}>Reset</button>
+        <button style={btn} onClick={async () => { await wipeWallet(); forgetStoredPayments(); forgetSent(); onReset(); }}>Reset</button>
       </div>
 
       <nav style={{ display: "flex", gap: 12, borderBottom: "1px solid #ccc", marginBottom: 16 }}>
@@ -246,7 +246,7 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
       {tab === "Activity" && <Activity token={token} username={username} lightningAddress={lightningAddress} wallet={wallet} />}
       {tab === "Settings" && (
         <>
-          <Backup onRestored={onRestored} onReset={() => { forgetPayments(); forgetSent(); onReset(); }} />
+          <Backup onRestored={onRestored} onReset={() => { forgetStoredPayments(); forgetSent(); onReset(); }} />
           <Settings onChanged={() => undefined} />
         </>
       )}
@@ -534,7 +534,7 @@ function ActivityRow({ row }: { row: FeedRow }) {
 function Activity({ token, username, lightningAddress, wallet }: {
   token: string; username: string; lightningAddress: string; wallet: DemoWallet;
 }) {
-  const store = useMemo(() => localPaymentStore(), []);
+  const store = useMemo(() => browserPaymentStore(), []);
   const [rows, setRows] = useState<FeedRow[] | null>(null);
   const [err, setErr] = useState("");
   const [walletErr, setWalletErr] = useState("");

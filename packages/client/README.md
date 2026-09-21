@@ -10,6 +10,44 @@ pnpm add @arkade-os/lnurl-client
 
 Runtime dependencies are `@scure/base` and `@noble/hashes` - nothing else is pulled in, and the package never imports the server, so app bundles stay free of `express` and `sqlite`.
 
+## With an Arkade wallet
+
+If you hold an `@arkade-os/sdk` wallet, start here. `arkadeLnurl` takes the wallet and the server root and does the rest - token derivation, claiming the address, binding the identity, the sync loop, and the send rails:
+
+```ts
+import { arkadeLnurl } from '@arkade-os/lnurl-client/arkade'
+import { browserPaymentStore } from '@arkade-os/lnurl-client'
+
+const lnurl = arkadeLnurl({ wallet, baseUrl: 'https://lnurl.example.com', store: browserPaymentStore() })
+
+// Receive: claims the name AND binds the identity, which is what makes the
+// address advertise any paymentOptions at all.
+const { lightningAddress } = await lnurl.claim('alice')   // alice@lnurl.example.com
+await lnurl.sync('alice')                                 // pull the server's own records
+
+// Send: the router already knows how to pay a Lightning address.
+const [best] = await lnurl.options('bob@example.com', 1000)
+const handle = await (await best.quote()).send()
+```
+
+`wallet.identity` supplies the signing, so nothing else is passed in. The token is derived once and memoised - it signs twice on first use to prove the signer is deterministic, and a second call costs nothing.
+
+| you want | call |
+| --- | --- |
+| the name this wallet already owns here | `owned()` |
+| claim a name and bind the identity | `claim(username)` |
+| its `user@domain` | `lightningAddress(username)` |
+| an LNURL for a QR | `lnurl(username)` |
+| its own payRequest | `payRequest(username)` |
+| one page of the server's records | `payments(username, opts)` |
+| everything new, into your store | `sync(username)` |
+| rank the ways to pay a target | `options(target, amountSat)` |
+| the router itself | `router()` |
+
+Paying needs no address of your own, so the router is available separately - `arkadePaymentRouter({ wallet, lightning })` returns the SDK router with the LNURL rails registered, which is what makes `route()` accept a Lightning address instead of throwing `no rail for`.
+
+Everything below is the surface these are built on; reach for it when the facade does not fit.
+
 ## Payer
 
 `createLnurlClient()` with no `baseUrl` covers payer-only use: `resolve`, `requestInvoice` and `pollVerify` talk to whatever host the address or LNURL points at.
@@ -194,7 +232,7 @@ const { synced, failures } = await syncPayments(
 )
 ```
 
-**The package ships no storage implementation.** IndexedDB does not exist in Node or React Native, so you supply the store — the same injection the package uses for `fetchImpl`:
+**`browserPaymentStore()` is the only storage shipped, and it is `localStorage`** — synchronous, a few megabytes, and it rewrites every record per upsert. Fine for a demo, wrong past that, and absent entirely in Node and React Native. Anything real supplies its own store, the same injection the package uses for `fetchImpl`:
 
 ```ts
 interface PaymentSyncStore {
