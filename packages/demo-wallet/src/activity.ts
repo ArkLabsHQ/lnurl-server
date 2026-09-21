@@ -85,8 +85,11 @@ export function mergeFeed(activities: Activity[], payments: StoredPayment[]): Fe
     let payment = exact ? byKey.get(exact) : undefined;
     let inferred = false;
     if (!payment && a.amount > 0) {
+      // Keyed on the absence of a payout reference, not on `settled`: a covenant
+      // payment is observed at the covenant and only its later sweep records one,
+      // so it is settled with nothing to join on for the whole window between.
       payment = payments.find(
-        (p) => !claimed.has(p.key) && !p.settled && p.createdAt <= a.createdAt && covers(p, a.amount),
+        (p) => !claimed.has(p.key) && !p.payoutReference && p.createdAt <= a.createdAt && covers(p, a.amount),
       );
       inferred = payment !== undefined;
     }

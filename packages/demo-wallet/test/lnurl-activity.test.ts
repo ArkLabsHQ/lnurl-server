@@ -116,8 +116,16 @@ describe("mergeFeed", () => {
     expect(rows[0]).toMatchObject({ kind: "quote", status: "pending" });
   });
 
-  // The window the screenshot caught: the money is in the wallet, the server has
-  // not observed it yet, and two rows for one payment read as a double charge.
+  // The covenant window, caught live: the server HAS observed the payment, so it
+  // is settled, but only the later sweep records a payout to join on.
+  it("folds a settled quote that has no payout reference yet", () => {
+    const p = payment({ settled: true, payoutReference: null, amountMsat: 1_000_000, createdAt: 1_700_000_000_000 });
+    const rows = mergeFeed([activity("plain", { amount: 1000, createdAt: 1_700_000_000_500 })], [p]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ kind: "wallet", label: "arkade" });
+  });
+
   it("folds an unobserved quote into the payment that already arrived", () => {
     const p = payment({ settled: false, payoutReference: null, amountMsat: 1_000_000, createdAt: 1_700_000_000_000 });
     const rows = mergeFeed([activity("plain", { amount: 1000, createdAt: 1_700_000_000_500 })], [p]);
