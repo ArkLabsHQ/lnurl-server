@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { openDb } from "../../src/db/connection.js";
-import { runMigrations } from "../../src/db/migrations.js";
+import { LATEST_MIGRATION, MIGRATION_COUNT, runMigrations } from "../../src/db/migrations.js";
 
 function tableNames(db = openDb(":memory:")) {
   runMigrations(db);
@@ -21,7 +21,7 @@ describe("runMigrations", () => {
     const db = openDb(":memory:");
     runMigrations(db);
     const row = db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number };
-    expect(row.v).toBe(13);
+    expect(row.v).toBe(LATEST_MIGRATION);
     db.close();
   });
 
@@ -30,7 +30,7 @@ describe("runMigrations", () => {
     runMigrations(db);
     expect(() => runMigrations(db)).not.toThrow();
     const row = db.prepare("SELECT COUNT(*) AS c FROM schema_migrations").get() as { c: number };
-    expect(row.c).toBe(13);
+    expect(row.c).toBe(MIGRATION_COUNT);
     db.close();
   });
 
@@ -72,6 +72,36 @@ describe("runMigrations", () => {
     expect(at("static")).toBe("tx-a");
     expect(at("covenant")).toBeNull();
     expect(at("unsettled")).toBeNull();
+    db.close();
+  });
+
+  // What mutinynet actually was. A different migration shipped as version 13,
+  // was deployed, and was then reverted in the source only — so the database
+  // records 13, skips the payout_reference step forever, and `markObserved`
+  // queries a column that is not there. That took settlement down and, because
+  // it threw before the sweep trigger, every covenant sweep with it.
+  it("adds payout_reference where version 13 was a different, reverted migration", () => {
+    const db = openDb(":memory:");
+    runMigrations(db, { upToVersion: 12 });
+    db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (13, 1000)").run();
+    const insert = "INSERT INTO settlements (payment_hash, pr, session_id, settled, payment_option, payment_reference, covenant_script, created_at) VALUES (?, '', 's', 1, 'arkade', ?, ?, 1000)";
+    db.prepare(insert).run("static", "tx-a", null);
+
+    runMigrations(db);
+
+    const names = (db.prepare("SELECT name FROM pragma_table_info('settlements')").all() as { name: string }[]).map((c) => c.name);
+    expect(names).toContain("payout_reference");
+    expect((db.prepare("SELECT payout_reference AS p FROM settlements WHERE payment_hash = 'static'").get() as { p: string | null }).p).toBe("tx-a");
+    db.close();
+  });
+
+  it("does not add payout_reference twice where version 13 already did", () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    expect(() => runMigrations(db)).not.toThrow();
+    const names = (db.prepare("SELECT name FROM pragma_table_info('settlements')").all() as { name: string }[])
+      .filter((c) => c.name === "payout_reference");
+    expect(names).toHaveLength(1);
     db.close();
   });
 

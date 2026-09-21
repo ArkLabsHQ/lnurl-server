@@ -2,8 +2,11 @@ import type { Db } from "./connection.js";
 
 interface Migration {
   version: number;
-  up: string;
+  up: string | ((db: Db) => void);
 }
+
+const hasColumn = (db: Db, table: string, column: string): boolean =>
+  (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === column);
 
 const MIGRATIONS: Migration[] = [
   {
@@ -233,7 +236,23 @@ const MIGRATIONS: Migration[] = [
         WHERE payment_reference IS NOT NULL AND covenant_script IS NULL;
     `,
   },
+  {
+    version: 14,
+    // Version 13 is burned: another migration shipped under it, was deployed, then
+    // reverted in source, so databases that ran it skip 13 — and fresh ones have it.
+    up: (db) => {
+      if (hasColumn(db, "settlements", "payout_reference")) return;
+      db.exec("ALTER TABLE settlements ADD COLUMN payout_reference TEXT;");
+      db.exec(
+        "UPDATE settlements SET payout_reference = payment_reference" +
+        " WHERE payment_reference IS NOT NULL AND covenant_script IS NULL;",
+      );
+    },
+  },
 ];
+
+export const LATEST_MIGRATION = MIGRATIONS[MIGRATIONS.length - 1]!.version;
+export const MIGRATION_COUNT = MIGRATIONS.length;
 
 /** Apply all pending forward-only migrations inside a transaction each. */
 export function runMigrations(
@@ -265,7 +284,8 @@ export function runMigrations(
     if (options.upToVersion !== undefined && m.version > options.upToVersion) continue;
     db.exec("BEGIN");
     try {
-      db.exec(m.up);
+      if (typeof m.up === "string") db.exec(m.up);
+      else m.up(db);
       db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)").run(m.version, now());
       db.exec("COMMIT");
     } catch (err) {

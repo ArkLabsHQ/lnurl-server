@@ -60,6 +60,26 @@ describe("startCovenantWatcher", () => {
     expect(store.get("v2")).toMatchObject({ settled: true, paymentReference: "tx-for-v2" });
   });
 
+  // Production lost every covenant sweep to this: `markObserved` hit a missing
+  // column, the throw escaped before the trigger, and the sweep fell back to its
+  // catch-up. Bookkeeping must never cost the recipient the money itself.
+  it("still sweeps when recording the settlement throws", () => {
+    const store = storeWith([{ hash: "v1", script: "512011", amountMsat: 50_000 }]);
+    vi.spyOn(store, "markObserved").mockImplementation(() => {
+      throw new Error("no such column: payout_reference");
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const onFunded = vi.fn();
+    const { manager, received } = fakeManager();
+    startCovenantWatcher(store, manager, 15_000, onFunded);
+
+    expect(() => received("512011", [{ txid: "tx-for-v1", value: 50 }])).not.toThrow();
+
+    expect(onFunded).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it("never lets a smaller record consume a larger record's payment", () => {
     const store = storeWith([
       { hash: "small", script: "512033", amountMsat: 1_000 },

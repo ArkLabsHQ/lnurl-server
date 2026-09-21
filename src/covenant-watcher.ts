@@ -42,7 +42,12 @@ export function startCovenantWatcher(
 ): () => void {
   const unsubscribe = contracts.onContractEvent((event) => {
     if (event.type !== "vtxo_received" || !isContractVtxoEvent(event) || event.contract.type !== COVENANT_CONTRACT_TYPE) return;
-    settleFrom(store, event.contractScript, event.vtxos);
+    // Bookkeeping must not cost the recipient the sweep; a throw here once did.
+    try {
+      settleFrom(store, event.contractScript, event.vtxos);
+    } catch (err) {
+      console.warn("covenant watcher: settling the record failed; sweeping anyway:", err);
+    }
     // Funded is also sweepable, and the sweep is what the recipient can spend.
     onFunded();
   });
