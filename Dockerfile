@@ -39,4 +39,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 
 USER node
 
-CMD ["node", "--experimental-sqlite", "dist/cli.js"]
+# --experimental-eventsource is load-bearing: without it the SDK opens no contract
+# subscription and every watcher silently drops to a 20s poll. Pinned by a test.
+CMD ["node", "--experimental-sqlite", "--experimental-eventsource", "dist/cli.js"]

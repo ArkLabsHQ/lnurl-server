@@ -71,6 +71,7 @@ async function main(): Promise<void> {
     // One manager for both rails: the covenant rail spends through it, the swap rail
     // registers each lockup in it so funding arrives as an event.
     let contracts: import("@arkade-os/sdk").IContractManager | undefined;
+    let contractEvents = true;
     if (off.covenantDestinations || off.enabled) {
       const { ContractManager, RestIndexerProvider, contractHandlers } = await import("@arkade-os/sdk");
       const { sqliteContractStores } = await import("./contract-store.js");
@@ -80,6 +81,15 @@ async function main(): Promise<void> {
         // lets it build the script and pick a leaf without us restating either. Must
         // precede create(), which re-adds every stored contract.
         contractHandlers.register(covenantDestinationHandler);
+      }
+      // Without a global EventSource every subscription throws and the SDK drops to a 20s
+      // failsafe poll — correct, ~10x slower, and otherwise only visible as latency.
+      try {
+        (await import("@arkade-os/sdk")).resolveEventSource(undefined);
+      } catch (error) {
+        contractEvents = false;
+        logger.warn("contract_events_unavailable", { error: (error as Error).message });
+        console.warn(`WARNING: no EventSource — contract events are OFF, every watcher falls back to polling. Relaunch with --experimental-eventsource.`);
       }
       // Always SQLite: both rails need their contracts to survive a restart. In memory
       // the catch-up pass finds nothing, and a payment made while down never settles.
@@ -222,7 +232,7 @@ async function main(): Promise<void> {
       if (contracts && offlineSwaps) runtime.addStop(startLockupWatcher(contracts, offlineSwaps, poller.trigger, logger));
       const via = `cards:${config.offlineReceive.registryUrls?.[0] ?? config.offlineReceive.cardsFile ?? "network-default"}`;
       const rfq = off.rfqHttpUrl ? `http:${off.rfqHttpUrl}` : "nostr";
-      console.log(`offline receive: enabled (solver=${via}, rfq=${rfq}, claim=${contracts ? "event-driven" : "polled"})`);
+      console.log(`offline receive: enabled (solver=${via}, rfq=${rfq}, claim=${contracts && contractEvents ? "event-driven" : "polled"})`);
     }
     // The destination rail (paymentOptions: arkade) settles by observation, not by
     // preimage: watch the indexer for payments to registered Arkade addresses.
@@ -235,7 +245,7 @@ async function main(): Promise<void> {
       });
       runtime.addStop(arkadeWatcher.stop);
       watchDestination = arkadeWatcher.watch;
-      console.log(`arkade watcher: enabled (indexer=${config.offlineReceive.arkServerUrl}, ${contracts ? "watched + 15s catch-up" : "15s catch-up only"})`);
+      console.log(`arkade watcher: enabled (indexer=${config.offlineReceive.arkServerUrl}, ${contracts && contractEvents ? "watched + 15s catch-up" : "15s catch-up only"})`);
     }
     console.log(`persistence: enabled at ${config.dbPath} (${deps.repos.domains.list().length} domain(s))`);
 
