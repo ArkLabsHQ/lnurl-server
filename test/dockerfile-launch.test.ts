@@ -23,6 +23,14 @@ describe("the shipped container launch", () => {
     expect(cmd.at(-1)).toBe("dist/cli.js");
   });
 
+  // The CMD alone was not enough: a host that starts the image with its own
+  // command never sees it, and `pnpm start` carried the same gap the CMD did.
+  it("carries the flag on every path that can start the server", () => {
+    const pkg = JSON.parse(read("package.json")) as { scripts: Record<string, string> };
+    expect(pkg.scripts.start).toContain("--experimental-eventsource");
+    expect(read("Dockerfile")).toMatch(/ENV NODE_OPTIONS=.*--experimental-eventsource/);
+  });
+
   it("matches the argv the e2e harness launches dist with", () => {
     const harness = read("packages/demo-wallet/e2e-local/local-stack.ts");
     const distArgv = harness.slice(harness.indexOf('opts.entry === "dist"'));
