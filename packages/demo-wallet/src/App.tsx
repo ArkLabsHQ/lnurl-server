@@ -167,13 +167,13 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
   const [boarding, setBoarding] = useState<BoardingState>({ status: "idle" });
 
   const [balanceErr, setBalanceErr] = useState("");
-  // `getBalance` reads the contract manager's stored view, so polling it only
-  // ever reports what some earlier sync wrote. The indexer read is the part that
-  // makes a new payment visible at all.
-  const refresh = useCallback(() => {
+  // `getBalance` syncs against the indexer itself, and the SDK persists a funded
+  // contract before it emits — so a push needs nothing more. `refreshVtxos` stays
+  // on the pull paths: it alone advances the global sync cursor.
+  const refresh = useCallback((mode: "sync" | "read" = "sync") => {
     void (async () => {
       try {
-        await (await wallet.wallet.getContractManager()).refreshVtxos();
+        if (mode === "sync") await (await wallet.wallet.getContractManager()).refreshVtxos();
         setBalance(await wallet.wallet.getBalance());
         setBalanceErr("");
       } catch (e) {
@@ -188,10 +188,10 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
     // the interval is only the net behind a subscription that drops.
     let stop: (() => void) | undefined;
     let live = true;
-    void wallet.wallet.notifyIncomingFunds(() => refresh())
+    void wallet.wallet.notifyIncomingFunds(() => refresh("read"))
       .then((unsubscribe) => { if (live) stop = unsubscribe; else unsubscribe(); })
       .catch((e: Error) => setBalanceErr(`incoming funds unwatched: ${e.message}`));
-    const id = setInterval(refresh, 30_000);
+    const id = setInterval(() => refresh(), 30_000);
     return () => { live = false; stop?.(); clearInterval(id); };
   }, [wallet, refresh]);
 
@@ -226,7 +226,7 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
             {boarding.status === "failed" && `boarding failed: ${boarding.reason}`}
           </span>
         )}
-        <button style={{ ...btn, marginLeft: "auto" }} onClick={refresh}>Refresh</button>
+        <button style={{ ...btn, marginLeft: "auto" }} onClick={() => refresh()}>Refresh</button>
         <button style={btn} onClick={async () => { await wipeWallet(); forgetPayments(); onReset(); }}>Reset</button>
       </div>
 
