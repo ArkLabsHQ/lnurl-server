@@ -171,6 +171,11 @@ export function loadConfig(env: Env = process.env): AppConfig {
   if (enabled && !enclaveCheckpoint.storageToken) {
     throw new Error("ENCLAVE_RUNTIME_TOKEN is required when ENCLAVE_CHECKPOINT=1");
   }
+  // Genesis would accept this and checkpoint away, and only the restore after the
+  // first restart would discover there is nowhere to put the snapshot.
+  if (enabled && dbPath === ":memory:") {
+    throw new Error("ENCLAVE_CHECKPOINT=1 needs a file-backed DB_PATH; a restored snapshot cannot be opened in memory");
+  }
   if (enclaveCheckpoint.expectedHead && enclaveCheckpoint.allowGenesis) {
     throw new Error("ENCLAVE_CHECKPOINT_HEAD and ENCLAVE_CHECKPOINT_ALLOW_GENESIS contradict each other");
   }

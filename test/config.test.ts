@@ -254,6 +254,12 @@ describe("loadConfig", () => {
         .toThrow(/ENCLAVE_CHECKPOINT_INTERVAL_MS/);
     });
 
+    it("refuses an in-memory database it could never restore into", () => {
+      const on = { ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ALLOW_INSECURE_TOKEN_STORAGE: "1" };
+      expect(() => loadConfig({ ...on, DB_PATH: ":memory:" })).toThrow(/file-backed DB_PATH/);
+      expect(loadConfig({ ...on, DB_PATH: "/run/lnurl/state.sqlite" }).enclaveCheckpoint.enabled).toBe(true);
+    });
+
     it("takes its storage default from the loopback port the runtime hands the app", () => {
       const on = { ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ALLOW_INSECURE_TOKEN_STORAGE: "1" };
       expect(loadConfig({ ...on, ENCLAVE_PROXY_PORT: "9090" }).enclaveCheckpoint.storageUrl).toBe("http://127.0.0.1:9090");
