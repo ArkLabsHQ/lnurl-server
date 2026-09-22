@@ -50,7 +50,9 @@ Nitro gives the workload no persistent disk, so SQLite runs on the enclave's RAM
 | `ENCLAVE_CHECKPOINT_HEAD` | The snapshot digest the security administrator says is current. |
 | `ENCLAVE_CHECKPOINT_MIN_SEQUENCE` | Lowest head sequence this deployment will restore from. |
 
-Boot restores before opening the database: the snapshot is fetched by the exact key the head names, checked against its digest and size, written to `DB_PATH`, and only then opened. Stale `-wal`/`-shm` sidecars are removed first, because a journal belonging to a different image would otherwise be replayed into this one. A missing head aborts the boot unless genesis is explicitly allowed, and the state directory is created because the enclave's filesystem starts empty.
+Snapshots are taken with `VACUUM INTO`, not `DatabaseSync.serialize`: the pinned Node 22.23.1 has neither `serialize` nor `deserialize` nor `backup` on `node:sqlite`, so anything built on those works only on a newer Node than this image ships. `VACUUM INTO` is byte-stable for unchanged content, so an idle deployment re-advertises its existing head instead of uploading the database again. It stages a full copy in `scratchDir` — the directory holding `DB_PATH` — so budget the database size twice over in enclave memory at checkpoint time.
+
+Boot restores before opening the database: the snapshot is fetched by the exact key the head names, checked against its digest and size, written to `DB_PATH`, and only then opened. Stale `-wal`/`-shm` sidecars are removed first, because a journal belonging to a different image would otherwise be replayed into this one. Restore therefore needs a file-backed `DB_PATH`; `:memory:` is refused. A missing head aborts the boot unless genesis is explicitly allowed, and the state directory is created because the enclave's filesystem starts empty.
 
 An accepted offline swap is committed and then checkpointed before the payer is handed the invoice. A checkpoint that cannot be written fails that request instead of answering with an invoice whose preimage a restart would forget. Background writers do not yet take that barrier.
 

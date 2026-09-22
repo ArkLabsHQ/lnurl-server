@@ -26,6 +26,19 @@ class MemoryStorage implements EnclaveStorage {
   }
 }
 
+const scratchDirs: string[] = [];
+afterEach(() => {
+  for (const scratch of scratchDirs.splice(0)) rmSync(scratch, { recursive: true, force: true, maxRetries: 2 });
+});
+
+/** A checkpoint restores by writing the snapshot to a real path, so `:memory:` is
+ *  not available here the way it is for an ordinary open. */
+function restorePath(): string {
+  const scratch = mkdtempSync(join(tmpdir(), "lnurl-restore-"));
+  scratchDirs.push(scratch);
+  return join(scratch, "restored.db");
+}
+
 const ACCEPTED_SWAP = {
   paymentHash: "aa".repeat(32),
   pr: "lnbc1accepted",
@@ -82,7 +95,7 @@ function seedDb(value: number): DatabaseSync {
 }
 
 describe("enclave checkpoint store", () => {
-  it("serializes a consistent SQLite snapshot and restores it into the configured database path", async () => {
+  it("snapshots a consistent SQLite image and restores it into the configured database path", async () => {
     const db = seedDb(1);
     const storage = new MemoryStorage();
     const store = createCheckpointStore({ db, storage, prefix: "lnurl/db", intervalMs: 1000 });
@@ -97,7 +110,7 @@ describe("enclave checkpoint store", () => {
     await db.close();
 
     const restoredHead = await restoreCheckpoint({
-      dbPath: ":memory:",
+      dbPath: restorePath(),
       storage,
       prefix: "lnurl/db",
     });
@@ -114,14 +127,16 @@ describe("enclave checkpoint store", () => {
     const head = await store.flush();
     await db.close();
 
-    await expect(restoreCheckpoint({ dbPath: ":memory:", storage, prefix: "lnurl/db" })).resolves
-      .toEqual({ db: expect.anything(), head });
+    const good = await restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db" });
+    expect(good).toEqual({ db: expect.anything(), head });
+    good!.db.close();
+
     storage.objects.delete(head!.key);
-    await expect(restoreCheckpoint({ dbPath: ":memory:", storage, prefix: "lnurl/db" })).rejects
+    await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db" })).rejects
       .toThrow(/authoritative checkpoint snapshot is missing/);
 
     storage.objects.set(head!.key, new Uint8Array(64).fill(7));
-    await expect(restoreCheckpoint({ dbPath: ":memory:", storage, prefix: "lnurl/db" })).rejects
+    await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db" })).rejects
       .toThrow(/does not match/);
   });
 
@@ -139,7 +154,7 @@ describe("enclave checkpoint store", () => {
     await durable;
     await db.close();
 
-    const restored = await restoreCheckpoint({ dbPath: ":memory:", storage, prefix: "lnurl/db" });
+    const restored = await restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db" });
     expect(restored!.db.prepare("SELECT updated_at AS u FROM domains").get()).toEqual({ u: 2 });
     await restored!.db.close();
   });
@@ -164,11 +179,11 @@ describe("enclave checkpoint store", () => {
     // The host keeps every snapshot, so it can re-advertise a head it prefers.
     storage.objects.set("lnurl/db/HEAD.json", Buffer.from(JSON.stringify(first)));
 
-    await expect(restoreCheckpoint({ dbPath: ":memory:", storage, prefix: "lnurl/db", expectedDigest: second!.digest }))
+    await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", expectedDigest: second!.digest }))
       .rejects.toThrow(/is not the pinned head/);
 
     // Unpinned, the same replay is accepted — which is the exposure the pin closes.
-    const rolledBack = await restoreCheckpoint({ dbPath: ":memory:", storage, prefix: "lnurl/db" });
+    const rolledBack = await restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db" });
     expect(rolledBack!.db.prepare("SELECT updated_at AS u FROM domains").get()).toEqual({ u: 1 });
     await rolledBack!.db.close();
   });
@@ -182,24 +197,24 @@ describe("enclave checkpoint store", () => {
     await store.flush();
     await db.close();
 
-    const restored = await restoreCheckpoint({ dbPath: ":memory:", storage, prefix: "lnurl/db", minSequence: 2 });
+    const restored = await restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", minSequence: 2 });
     expect(restored!.head.sequence).toBe(2);
     await restored!.db.close();
 
     storage.objects.set("lnurl/db/HEAD.json", Buffer.from(JSON.stringify(first)));
-    await expect(restoreCheckpoint({ dbPath: ":memory:", storage, prefix: "lnurl/db", minSequence: 2 }))
+    await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", minSequence: 2 }))
       .rejects.toThrow(/behind the pinned floor/);
   });
 
   it("refuses to boot on a pinned head the host does not serve", async () => {
     await expect(restoreCheckpoint({
-      dbPath: ":memory:", storage: new MemoryStorage(), prefix: "lnurl/db", expectedDigest: "ab".repeat(32),
+      dbPath: restorePath(), storage: new MemoryStorage(), prefix: "lnurl/db", expectedDigest: "ab".repeat(32),
     })).rejects.toThrow(/pinned but the host served none/);
   });
 
   it("refuses genesis and a bad prefix", async () => {
     const storage = new MemoryStorage();
-    await expect(restoreCheckpoint({ dbPath: ":memory:", storage, prefix: "lnurl/db" })).resolves.toBeUndefined();
+    await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db" })).resolves.toBeUndefined();
     expect(() => createCheckpointStore({ db: openDb(":memory:"), storage, prefix: "../bad", intervalMs: 1000 }))
       .toThrow(/invalid ENCLAVE_CHECKPOINT_KEY/);
   });

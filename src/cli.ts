@@ -60,6 +60,7 @@ export async function initPersistence(opts: {
     }
     db = openDb(opts.dbPath);
   }
+  const scratchDir = opts.dbPath === ":memory:" ? undefined : dirname(opts.dbPath);
   const needsCheckpoint = !checkpointHead;
   // Read the restored schema version before migrating, so an upgrade that moves it
   // commits a fresh head instead of leaving the authority pointing at the old one.
@@ -72,6 +73,7 @@ export async function initPersistence(opts: {
       storage,
       prefix: checkpoint.checkpointKey,
       intervalMs: checkpoint.checkpointIntervalMs,
+      scratchDir,
     }).flush();
   } else if (previousMigrationVersion !== migrationVersion(db)) {
     checkpointHead = await createCheckpointStore({
@@ -80,6 +82,7 @@ export async function initPersistence(opts: {
       prefix: checkpoint.checkpointKey,
       intervalMs: checkpoint.checkpointIntervalMs,
       head: checkpointHead,
+      scratchDir,
     }).flush();
   }
   return { db, checkpointHead };
@@ -119,6 +122,7 @@ async function main(): Promise<void> {
         prefix: config.enclaveCheckpoint.checkpointKey,
         intervalMs: config.enclaveCheckpoint.checkpointIntervalMs,
         head: persistence!.checkpointHead,
+        scratchDir: config.dbPath === ":memory:" ? undefined : dirname(config.dbPath!),
       });
       health.register("persistenceCheckpoint", () => store.status());
       store.start();

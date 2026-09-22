@@ -1,5 +1,7 @@
-import { createHash } from "node:crypto";
-import { rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { openDb, type Db } from "../db/connection.js";
 import { LATEST_MIGRATION, runMigrations } from "../db/migrations.js";
 import { checkpointPrefix } from "./checkpoint-key.js";
@@ -75,16 +77,21 @@ export async function restoreCheckpoint(options: {
   return { db: openRestored(options.dbPath, snapshot), head };
 }
 
+/** A consistent copy of the database as bytes. `VACUUM INTO` rather than
+ *  `DatabaseSync.serialize`, which the pinned Node 22 runtime does not have. */
+function snapshotBytes(db: Db, scratchDir: string): Uint8Array {
+  const target = join(scratchDir, `checkpoint-${randomUUID()}.sqlite`);
+  try {
+    db.exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`);
+    return readFileSync(target);
+  } finally {
+    rmSync(target, { force: true });
+  }
+}
+
 function openRestored(dbPath: string, snapshot: Uint8Array): Db {
   if (dbPath === ":memory:") {
-    const db = openDb(dbPath);
-    try {
-      db.deserialize(snapshot);
-    } catch (error) {
-      db.close();
-      throw new Error(`authoritative checkpoint is not a valid SQLite database: ${(error as Error).message}`);
-    }
-    return db;
+    throw new Error("restoring a checkpoint needs a file-backed DB_PATH");
   }
 
   // The snapshot has to be on disk before openDb enables WAL on it, and any sidecar
@@ -122,8 +129,12 @@ export function createCheckpointStore(options: {
   intervalMs: number;
   head?: CheckpointHead;
   now?: () => number;
+  /** Where the snapshot is staged. Keep it on the same RAM-backed filesystem as
+   *  the database, so no plaintext copy lands on a mount the caller did not choose. */
+  scratchDir?: string;
 }): CheckpointStore {
   const prefix = checkpointPrefix(options.prefix);
+  const scratchDir = options.scratchDir ?? tmpdir();
   let head = options.head;
   let timer: NodeJS.Timeout | undefined;
   let running: Promise<CheckpointHead | undefined> | undefined;
@@ -133,7 +144,7 @@ export function createCheckpointStore(options: {
     if (running) return running;
     running = (async () => {
       try {
-        const snapshot = options.db.serialize();
+        const snapshot = snapshotBytes(options.db, scratchDir);
         const digest = sha256(snapshot);
         if (head?.digest === digest) return head;
         const key = `${prefix}/${digest}${snapshotSuffix}`;
