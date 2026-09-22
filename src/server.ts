@@ -15,6 +15,7 @@ import { isValidToken } from "./usernames.js";
 import { MemorySettlementStore, type SettlementStore } from "./settlement-store.js";
 import type { OfflineSwapCreator } from "./intent-swap.js";
 import type { OfflineSwapStore } from "./offline-swap-store.js";
+import type { DurabilityBarrier } from "./enclave/checkpoint.js";
 import { HealthRegistry } from "./health.js";
 import { createLogger, type Logger } from "./logger.js";
 import { ArkAddress, BIP21 } from "@arkade-os/sdk";
@@ -78,6 +79,9 @@ export interface ServerDeps {
    *  server-orchestrated corridor swap instead of an "offline" error. */
   offlineSwapCreator?: OfflineSwapCreator;
   offlineSwaps?: OfflineSwapStore;
+  /** When set, an accepted swap must reach durable storage before the payer is
+   *  handed the invoice; absent leaves ordinary deployments unchanged. */
+  durability?: DurabilityBarrier;
   /** When set, the arkade rail hands out a per-payment covenant address instead of the
    *  user's static one, so concurrent payments are told apart by script. */
   covenantDestinations?: CovenantDestinationProvider;
@@ -113,6 +117,7 @@ async function createOfflineSwapAndRespond(args: {
   creator: OfflineSwapCreator;
   store: SettlementStore;
   offlineSwaps?: OfflineSwapStore;
+  durability?: DurabilityBarrier;
   baseUrl: string;
   amountMsat: number;
   receiveAddress: string;
@@ -125,15 +130,19 @@ async function createOfflineSwapAndRespond(args: {
   logger: Logger;
   requestId: string;
 }): Promise<void> {
-  const { creator, store, offlineSwaps, baseUrl, amountMsat, receiveAddress, claimPublicKey, addressId, paymentQuote, echoLightningOption, res, logger, requestId } = args;
+  const { creator, store, offlineSwaps, durability, baseUrl, amountMsat, receiveAddress, claimPublicKey, addressId, paymentQuote, echoLightningOption, res, logger, requestId } = args;
   try {
     // Caller guarantees whole satoshis (rejected at the route otherwise).
     const swap = await creator.create({ amountSat: amountMsat / 1000, receiveAddress, claimPublicKey });
     const accepted = { paymentHash: swap.preimageHash, pr: swap.invoice, sessionId: `offline:${addressId}`, preimage: swap.preimage, amountMsat, addressId };
     // With DB_PATH, OfflineSwapStore is the single atomic persistence boundary:
     // it writes both settlement and restart recovery rows in one transaction.
-    if (offlineSwaps) offlineSwaps.createAccepted({ ...accepted, recovery: swap.recovery });
-    else store.create({ ...accepted, swapId: swap.swapId });
+    if (offlineSwaps) {
+      offlineSwaps.createAccepted({ ...accepted, recovery: swap.recovery });
+      // Answering with the invoice is what lets a payer act. Under checkpoints the
+      // row has to outlive this enclave first, or a restart forgets the preimage.
+      await durability?.barrier();
+    } else store.create({ ...accepted, swapId: swap.swapId });
     res.json({
       pr: swap.invoice,
       routes: [],
@@ -776,7 +785,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         offlineQuotes++;
         try {
           await createOfflineSwapAndRespond({
-            creator, store, offlineSwaps: deps.offlineSwaps, baseUrl: settings.baseUrl(), amountMsat,
+            creator, store, offlineSwaps: deps.offlineSwaps, durability: deps.durability, baseUrl: settings.baseUrl(), amountMsat,
             receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, paymentQuote,
             echoLightningOption: Boolean(paymentOptionId), res,
             logger, requestId: res.locals.requestId as string,
