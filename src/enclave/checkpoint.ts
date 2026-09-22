@@ -161,6 +161,13 @@ export function createCheckpointStore(options: {
         const key = `${prefix}/${digest}${snapshotSuffix}`;
         const previousHead = head;
         await options.storage.put(key, snapshot);
+        // Two enclaves on one prefix each extend their own chain, and whichever writes
+        // HEAD last erases the other's history. Detection only: closing the window
+        // between this read and the write below needs the authority's compare-and-set.
+        const remote = parseHead(await options.storage.load(`${prefix}${headSuffix}`), prefix);
+        if (remote?.digest !== previousHead?.digest) {
+          throw new Error(`another writer advanced the checkpoint head to ${remote?.digest ?? "none"}`);
+        }
         const next: CheckpointHead = {
           schema: "lnurl.enclave.checkpoint.v1",
           prefix,

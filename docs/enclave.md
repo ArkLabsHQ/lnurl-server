@@ -67,6 +67,8 @@ Nothing in a head reveals a rollback. Every head is internally consistent at eve
 
 Both are manual stand-ins. The independent checkpoint authority in the approved design — tracking the current head and the active writer — is not built, so an operator advances these by hand and a replay between the floor and the true head is still accepted.
 
+Two enclaves sharing one `ENCLAVE_CHECKPOINT_KEY` would each extend their own chain, and whichever wrote `HEAD.json` last would erase the other's history. Before committing a head, a writer re-reads the stored one and refuses if it is not the head it last wrote — so a second enclave started on a live prefix stops at its first checkpoint, and a writer whose head moved underneath it stops too. Both then read unready. This is detection, not mutual exclusion: the window between that read and the write is still open, and closing it needs the authority's compare-and-set.
+
 ## Security Blockers
 
 The pinned runtime allows its SSM overlay to replace `APP_BINARY_NAME` and passes broad environment values to the selected child. A local reproduction against that exact source confirmed the application launcher can be bypassed. Filed upstream as [ArkLabsHQ/enclave#194](https://github.com/ArkLabsHQ/enclave/issues/194). The native LNURL launcher only protects launches that actually reach it. Reproducible PCRs do not cure mutable post-measurement execution. This must be fixed upstream or prevented by independently governed, verified deployment controls before protecting user data.

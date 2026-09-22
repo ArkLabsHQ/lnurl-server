@@ -75,6 +75,16 @@ class GatedStorage extends MemoryStorage {
   }
 }
 
+/** Down for the first `failures` writes, then healthy — a transient outage. */
+class FlakyStorage extends MemoryStorage {
+  constructor(private failures: number) { super(); }
+
+  override async put(key: string, data: Uint8Array): Promise<void> {
+    if (this.failures-- > 0) throw new Error("enclave storage is down");
+    await super.put(key, data);
+  }
+}
+
 class FailingStorage implements EnclaveStorage {
   async put(): Promise<void> {
     throw new Error("enclave storage is down");
@@ -157,6 +167,48 @@ describe("enclave checkpoint store", () => {
     const restored = await restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db" });
     expect(restored!.db.prepare("SELECT updated_at AS u FROM domains").get()).toEqual({ u: 2 });
     await restored!.db.close();
+  });
+
+  it("refuses to erase a head another enclave advanced", async () => {
+    const db = seedDb(1);
+    const storage = new MemoryStorage();
+    const mine = createCheckpointStore({ db, storage, prefix: "lnurl/db", intervalMs: 60_000 });
+    const first = await mine.flush();
+
+    // A second enclave the host started on the same prefix, believing it is starting
+    // fresh, does not get to overwrite the head this one committed.
+    const theirDb = seedDb(7);
+    const theirs = createCheckpointStore({ db: theirDb, storage, prefix: "lnurl/db", intervalMs: 60_000 });
+    await expect(theirs.flush()).rejects.toThrow(/another writer advanced the checkpoint head/);
+    await theirDb.close();
+    expect(JSON.parse(Buffer.from(storage.objects.get("lnurl/db/HEAD.json")!).toString()).digest).toBe(first!.digest);
+
+    // And a head that moves underneath a running writer stops that writer too.
+    const usurper = {
+      schema: "lnurl.enclave.checkpoint.v1", prefix: "lnurl/db", sequence: 9,
+      digest: "cd".repeat(32), size: 4096, key: `lnurl/db/${"cd".repeat(32)}.sqlite`, previousDigest: null,
+    };
+    storage.objects.set("lnurl/db/HEAD.json", Buffer.from(JSON.stringify(usurper)));
+    db.prepare("UPDATE domains SET updated_at = ? WHERE domain = ?").run(2, "wallet-1.invalid");
+
+    await expect(mine.flush()).rejects.toThrow(/another writer advanced the checkpoint head/);
+    expect(mine.status()).toMatchObject({ ok: false });
+    await db.close();
+  });
+
+  it("recovers its head once a storage outage clears", async () => {
+    const db = seedDb(1);
+    const storage = new FlakyStorage(2);
+    const store = createCheckpointStore({ db, storage, prefix: "lnurl/db", intervalMs: 60_000 });
+
+    await expect(store.flush()).rejects.toThrow(/storage is down/);
+    expect(store.status()).toMatchObject({ ok: false });
+    await expect(store.flush()).rejects.toThrow(/storage is down/);
+
+    const head = await store.flush();
+    expect(head).toMatchObject({ sequence: 1, previousDigest: null });
+    expect(store.status().ok).toBe(true);
+    await db.close();
   });
 
   it("reports its own silence, not just the result of its last attempt", async () => {
