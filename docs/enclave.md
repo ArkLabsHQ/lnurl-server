@@ -2,7 +2,9 @@
 
 This packages LNURL for Nitro. It is **not a host-tamper-resistant deployment** yet. Do not enroll real users or put funds or production secrets in this research profile.
 
-The default profile deliberately uses `lnurl.invalid`, an in-memory application database and no managed application secrets. Independent writer fencing, signed owner setup, protected payment proofs, client verification and approved key release are not implemented. SQLite checkpoints are implemented, but their rollback resistance rests on an out-of-band head pin rather than an independent authority — see Durable State. Existing Docker deployments are unchanged.
+The default profile deliberately uses `lnurl.invalid`, an in-memory application database and no managed application secrets. Existing Docker deployments are unchanged.
+
+What is here is the packaging and its reproducibility evidence. **The durable-state half is a design, not a working feature** — it targets an application storage API Enclave does not have, so it cannot run at all today. See Durable State. Signed owner setup, protected payment proofs, client verification and approved key release are likewise not implemented; `src/enclave/owner-setup.ts` is a proposed encoding that no route reads.
 
 ## Build
 
@@ -32,6 +34,8 @@ node scripts/enclave-artifacts.mjs compare first/manifest.json second/manifest.j
 ```
 
 The comparison rejects missing evidence, zero debug measurements, different inputs/outputs and reuse of the same builder identifier. Distinct identifiers alone do not prove independent builders: inspect the trusted workflow/provenance. A successful same-machine `--rebuild` is useful but is not the two-builder gate. This is reproducibility from pinned npm packages, not a claim that every dependency was rebuilt from its original upstream source.
+
+The gate runs, and passes: two independent runners have produced byte-identical unsigned EIFs and identical PCR0/PCR1/PCR2 on every commit of this branch. The compare job prints the agreed measurement to its step summary, so it is readable from the run page rather than only from a downloaded artifact. PCR1 stays fixed across application changes, as the kernel measurement should; PCR0 and PCR2 move with the application.
 
 There is no enclave promotion or approval job. Before any protected release, the independent security administrator must approve the measured source/profile after both rebuilds and runtime/security tests. Publish the signed approval manifest separately. An unsigned build manifest, image signature certificate or host-provided PCR value is not a trust root. Existing Docker release jobs are not changed by this research gate.
 
@@ -75,7 +79,7 @@ Measured on the pinned Node 22.23.1 under Linux, seeding accepted offline swaps 
 
 About 1.3 KB of database per accepted swap. Snapshots are brotli-compressed before upload — around 25x on this shape of data, because SQLite pages of hex identifiers compress extremely well. Quality 1 was both the fastest to encode and the smallest of the codecs measured, so nothing is traded for it. Transfer was over half of an uncompressed barrier even on loopback; against real storage the reduction matters more than these figures show.
 
-The head's `digest` and `size` describe the **plaintext** image, so a snapshot's identity does not depend on the codec, and a stored object is decompressed under a limit taken from that `size` before its digest is checked — a doctored object cannot expand into memory first.
+The head's `digest` and `size` describe the **plaintext** image, so a snapshot's identity does not depend on the codec. A stored object is decompressed under a limit taken from that `size`, which stops a small object expanding without bound — but the head is the host's to write, so it can claim any size. That bound is not a defence against the host, and a host intent on denying service can simply not serve.
 
 Compression lowers the constant; it does not change the shape. **A barrier still snapshots the whole database, not the change**, so the wait before a payer receives an invoice remains proportional to total history rather than to current activity. Settlement rows carrying an `address_id` are never reclaimed — they are the owner's history and the only copy of it — so that total only grows. At the volumes above it is comfortable. A deployment expecting sustained traffic needs a retention or archival answer, or checkpoints that ship deltas rather than the whole image, before the barrier becomes the slowest part of a receive.
 
