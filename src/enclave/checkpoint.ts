@@ -77,8 +77,11 @@ export async function restoreCheckpoint(options: {
   return { db: openRestored(options.dbPath, snapshot), head };
 }
 
-/** A consistent copy of the database as bytes. `VACUUM INTO` rather than
- *  `DatabaseSync.serialize`, which the pinned Node 22 runtime does not have. */
+/** A consistent copy of the database as bytes, including committed WAL content.
+ *  `VACUUM INTO` rather than `DatabaseSync.serialize`, which the pinned Node 22
+ *  runtime does not have. SQLite refuses it inside a transaction, so every write
+ *  in this codebase must open and close one within a single synchronous block:
+ *  an await between BEGIN and COMMIT would let a checkpoint land inside it. */
 function snapshotBytes(db: Db, scratchDir: string): Uint8Array {
   const target = join(scratchDir, `checkpoint-${randomUUID()}.sqlite`);
   try {

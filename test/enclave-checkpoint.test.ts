@@ -159,6 +159,19 @@ describe("enclave checkpoint store", () => {
     await restored!.db.close();
   });
 
+  it("refuses a checkpoint rather than capturing a database mid-transaction", async () => {
+    const db = seedDb(1);
+    const store = createCheckpointStore({ db, storage: new MemoryStorage(), prefix: "lnurl/db", intervalMs: 60_000 });
+    db.exec("BEGIN");
+    db.prepare("UPDATE domains SET updated_at = ? WHERE domain = ?").run(2, "wallet-1.invalid");
+
+    await expect(store.barrier()).rejects.toThrow(/cannot VACUUM/);
+    expect(store.status()).toMatchObject({ ok: false });
+
+    db.exec("ROLLBACK");
+    await db.close();
+  });
+
   it("refuses to call state durable when the authority cannot be written", async () => {
     const db = seedDb(1);
     const store = createCheckpointStore({ db, storage: new FailingStorage(), prefix: "lnurl/db", intervalMs: 60_000 });
