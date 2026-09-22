@@ -138,10 +138,14 @@ export function createCheckpointStore(options: {
 }): CheckpointStore {
   const prefix = checkpointPrefix(options.prefix);
   const scratchDir = options.scratchDir ?? tmpdir();
+  const now = options.now ?? Date.now;
+  // Reporting the last attempt hides a store that has stopped attempting at all.
+  const staleAfterMs = Math.max(options.intervalMs * 6, 30_000);
   let head = options.head;
   let timer: NodeJS.Timeout | undefined;
   let running: Promise<CheckpointHead | undefined> | undefined;
   let last = { ok: true, detail: "checkpoint storage ready" };
+  let durableAt = now();
 
   async function flush(): Promise<CheckpointHead | undefined> {
     if (running) return running;
@@ -149,7 +153,11 @@ export function createCheckpointStore(options: {
       try {
         const snapshot = snapshotBytes(options.db, scratchDir);
         const digest = sha256(snapshot);
-        if (head?.digest === digest) return head;
+        if (head?.digest === digest) {
+          // Nothing changed, so what is stored is still exactly this state.
+          durableAt = now();
+          return head;
+        }
         const key = `${prefix}/${digest}${snapshotSuffix}`;
         const previousHead = head;
         await options.storage.put(key, snapshot);
@@ -165,6 +173,7 @@ export function createCheckpointStore(options: {
         await options.storage.put(`${prefix}${headSuffix}`, Buffer.from(JSON.stringify(next)));
         head = next;
         last = { ok: true, detail: `checkpoint ${next.sequence} committed` };
+        durableAt = now();
         return next;
       } catch (error) {
         last = { ok: false, detail: `checkpoint failed: ${(error as Error).message}` };
@@ -196,7 +205,12 @@ export function createCheckpointStore(options: {
       timer = undefined;
       await flush();
     },
-    status: () => last,
+    status() {
+      if (!last.ok) return last;
+      const age = now() - durableAt;
+      if (age <= staleAfterMs) return last;
+      return { ok: false, detail: `no checkpoint committed for ${Math.round(age / 1000)}s` };
+    },
   };
 }
 

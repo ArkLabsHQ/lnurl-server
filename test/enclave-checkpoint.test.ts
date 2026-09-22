@@ -159,6 +159,25 @@ describe("enclave checkpoint store", () => {
     await restored!.db.close();
   });
 
+  it("reports its own silence, not just the result of its last attempt", async () => {
+    const db = seedDb(1);
+    let clock = 1_000_000;
+    const store = createCheckpointStore({
+      db, storage: new MemoryStorage(), prefix: "lnurl/db", intervalMs: 5_000, now: () => clock,
+    });
+    await store.flush();
+    expect(store.status().ok).toBe(true);
+
+    clock += 31_000;
+    expect(store.status()).toMatchObject({ ok: false, detail: expect.stringContaining("no checkpoint committed") });
+
+    // An unchanged database is still exactly what is stored, so finding nothing to
+    // do counts as durable rather than as another silent interval.
+    await store.flush();
+    expect(store.status().ok).toBe(true);
+    await db.close();
+  });
+
   it("refuses a checkpoint rather than capturing a database mid-transaction", async () => {
     const db = seedDb(1);
     const store = createCheckpointStore({ db, storage: new MemoryStorage(), prefix: "lnurl/db", intervalMs: 60_000 });
@@ -343,6 +362,24 @@ describe("initPersistence under enclave checkpoints", () => {
 });
 
 describe("enclave storage client", () => {
+  it("gives up on a runtime that accepts the connection and never answers", async () => {
+    const server = createServer(() => { /* deliberately never responds */ });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("no local address");
+
+    const client = new EnclaveStorageClient({
+      baseUrl: `http://127.0.0.1:${address.port}`,
+      token: "token",
+      timeoutMs: 150,
+    });
+    await expect(client.load("lnurl/db/HEAD.json")).rejects.toThrow(/timed out after 150ms/);
+
+    server.closeAllConnections();
+    server.close();
+  });
+
   it("uses the authenticated runtime API", async () => {
     const server = createServer((req, res) => {
       if (req.headers.authorization !== "Bearer token") {
