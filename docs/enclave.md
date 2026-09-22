@@ -60,6 +60,23 @@ The settlement pass takes the same barrier after a claim it actually made, and s
 
 Everything else the server writes is covered more bluntly. `persistenceCheckpoint` is a required health check, so a failed checkpoint — or silence, meaning no commit within six intervals floored at 30 seconds — reports the server unready and should take it out of rotation rather than let it keep accepting state it cannot persist. Silence is tracked separately from failure because a store that has stopped attempting would otherwise keep answering with its last success. Storage requests time out after 30 seconds instead of hanging: the store coalesces onto a request already in flight, so one stuck call would stall every later flush and every caller waiting on a barrier.
 
+### Tested capacity
+
+Measured on the pinned Node 22.23.1 under Linux, seeding accepted offline swaps as the dominant row and checkpointing to a loopback HTTP storage endpoint. "Barrier" is the wait for one further accepted swap to become durable — what a payer actually sits behind.
+
+| Accepted swaps | Database | Snapshot | Barrier |
+| --- | --- | --- | --- |
+| 1,000 | 1.3 MB | 1.4 MB | 27 ms |
+| 10,000 | 13.3 MB | 12.9 MB | 196 ms |
+| 50,000 | 66.0 MB | 64.1 MB | 452 ms |
+| 200,000 | 264.3 MB | 256.5 MB | 1.8 s |
+
+About 1.3 KB per accepted swap, and roughly 7 ms per MB of database once past 50 MB. Against real storage rather than loopback, add the round trip for an object that size.
+
+The property to plan around: **a barrier snapshots the whole database, not the change.** The wait before a payer receives an invoice is proportional to total history, not to current activity. Settlement rows carrying an `address_id` are never reclaimed — they are the owner's history and the only copy of it — so that total only grows. At the volumes above it is comfortable. A deployment expecting sustained traffic needs a retention or archival answer, or checkpoints that ship deltas rather than the whole image, before the barrier becomes the slowest part of a receive.
+
+### Rollback
+
 Nothing in a head reveals a rollback. Every head is internally consistent at every sequence, so a host that retains old snapshots can re-advertise one and the enclave cannot tell from the object alone. Unpinned, that replay is accepted. Two out-of-band pins guard it, and they suit different restarts:
 
 - `ENCLAVE_CHECKPOINT_HEAD` names one exact digest, so it only fits a **controlled** restart: flush on shutdown, record the final digest, boot against it. The digest changes on every flush, so a pin set in advance is stale within seconds and a crash would leave the enclave unable to boot at all.
