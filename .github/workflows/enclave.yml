@@ -69,3 +69,21 @@ jobs:
         run: |
           node scripts/enclave-artifacts.mjs compare "$RUNNER_TEMP/evidence/enclave-a/manifest.json" "$RUNNER_TEMP/evidence/enclave-b/manifest.json"
           cmp "$RUNNER_TEMP/evidence/enclave-a/image.eif" "$RUNNER_TEMP/evidence/enclave-b/image.eif"
+
+      # The measurement a verifier pins is what this job exists to establish, so
+      # print it rather than leaving it to be dug out of an artifact.
+      - name: Publish the agreed measurement
+        run: |
+          node -e '
+            const m = require(process.env.RUNNER_TEMP + "/evidence/enclave-a/manifest.json");
+            const rows = Object.entries(m.pcrs).map(([k, v]) => "| `" + k + "` | `" + v + "` |").join("\n");
+            console.log([
+              "### Agreed measurement",
+              "",
+              "Two independent runners produced identical output. Build evidence, not a release approval.",
+              "",
+              "| Register | Value |", "| --- | --- |", rows,
+              "",
+              "Source `" + m.revision + "`, Enclave `" + m.enclaveRevision + "`, unsigned EIF `" + m.eifSha256 + "`.",
+            ].join("\n"));
+          ' >> "$GITHUB_STEP_SUMMARY"
