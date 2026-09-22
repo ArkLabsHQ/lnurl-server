@@ -1,0 +1,13 @@
+{
+  "ENCLAVE_DEPLOYMENT": "lnurl-research",
+  "ENCLAVE_APP_NAME": "lnurl",
+  "ENCLAVE_FQDN": "lnurl.invalid",
+  "ENCLAVE_APP_PORT": "7074",
+  "ENCLAVE_UPSTREAM": "h1",
+  "ENCLAVE_DEV": "false",
+  "BASE_URL": "https://lnurl.invalid",
+  "PORT": "7074",
+  "PUBLIC_BIND": "127.0.0.1",
+  "ADMIN_BIND": "127.0.0.1",
+  "SHUTDOWN_TIMEOUT_MS": "8000"
+}
