@@ -56,6 +56,8 @@ Boot restores before opening the database: the snapshot is fetched by the exact 
 
 An accepted offline swap is committed and then checkpointed before the payer is handed the invoice. A checkpoint that cannot be written fails that request instead of answering with an invoice whose preimage a restart would forget. Background writers do not yet take that barrier.
 
+Everything else the server writes is covered more bluntly. `persistenceCheckpoint` is a required health check, so a failed checkpoint — or silence, meaning no commit within six intervals floored at 30 seconds — reports the server unready and should take it out of rotation rather than let it keep accepting state it cannot persist. Silence is tracked separately from failure because a store that has stopped attempting would otherwise keep answering with its last success. Storage requests time out after 30 seconds instead of hanging: the store coalesces onto a request already in flight, so one stuck call would stall every later flush and every caller waiting on a barrier.
+
 Nothing in a head reveals a rollback. Every head is internally consistent at every sequence, so a host that retains old snapshots can re-advertise one and the enclave cannot tell from the object alone. Unpinned, that replay is accepted. Two out-of-band pins guard it, and they suit different restarts:
 
 - `ENCLAVE_CHECKPOINT_HEAD` names one exact digest, so it only fits a **controlled** restart: flush on shutdown, record the final digest, boot against it. The digest changes on every flush, so a pin set in advance is stale within seconds and a crash would leave the enclave unable to boot at all.
