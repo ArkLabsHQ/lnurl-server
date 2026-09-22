@@ -315,7 +315,7 @@ async function main(): Promise<void> {
     if (offlineSwapCreator) {
       const { startOfflineSettlementPoller } = await import("./offline-poller.js");
       const { startLockupWatcher } = await import("./lockup-watcher.js");
-      const poller = startOfflineSettlementPoller(settlements, offlineSwapCreator, off.pollIntervalMs, offlineSwaps, logger);
+      const poller = startOfflineSettlementPoller(settlements, offlineSwapCreator, off.pollIntervalMs, offlineSwaps, logger, durability);
       runtime.addStop(poller.stop);
       if (contracts && offlineSwaps) runtime.addStop(startLockupWatcher(contracts, offlineSwaps, poller.trigger, logger));
       const via = `cards:${config.offlineReceive.registryUrls?.[0] ?? config.offlineReceive.cardsFile ?? "network-default"}`;

@@ -56,6 +56,32 @@ describe("settleOfflineSwaps", () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining("ark-tx-1"));
   });
 
+  it("stops the pass when a claim it already made cannot be checkpointed", async () => {
+    const store = new MemorySettlementStore(60_000);
+    store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
+    store.create({ paymentHash: "bb", pr: "lnbc2", sessionId: "offline:2", preimage: "feed", swapId: "swap-2" });
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const claimed: string[] = [];
+
+    const n = await settleOfflineSwaps(
+      store,
+      {
+        ...creatorReporting(["swap-1", "swap-2"]),
+        selfClaim: async (swapId) => { claimed.push(swapId); return { state: "claimed", arkTxid: `ark-${swapId}` }; },
+      },
+      undefined,
+      undefined,
+      { barrier: () => Promise.reject(new Error("checkpoint failed: enclave storage is down")) },
+    );
+
+    // The first claim already moved funds and is unrecorded; the second must not follow.
+    expect(claimed).toEqual(["swap-1"]);
+    expect(n).toBe(0);
+    expect(store.get("bb")!.settled).toBe(false);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_claim_not_durable"'));
+  });
+
   it("settles from its own claim without asking the solver to confirm it", async () => {
     const store = new MemorySettlementStore(60_000);
     store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });

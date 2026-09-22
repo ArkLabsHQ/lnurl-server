@@ -2,6 +2,7 @@ import type { SettlementStore } from "./settlement-store.js";
 import type { OfflineSwapCreator } from "./intent-swap.js";
 import type { OfflineSwapStore } from "./offline-swap-store.js";
 import { createLogger, type Logger } from "./logger.js";
+import type { DurabilityBarrier } from "./enclave/checkpoint.js";
 
 /** One settlement pass: mark any pending offline swap settled once the solver reports
  *  its invoice settled. The server already holds the preimage, so `verify` can then
@@ -13,6 +14,7 @@ export async function settleOfflineSwaps(
   creator: OfflineSwapCreator,
   recovered?: OfflineSwapStore,
   logger: Logger = createLogger(),
+  durability?: DurabilityBarrier,
 ): Promise<number> {
   let settled = 0;
   const pending: Array<{ swapId: string; paymentHash: string; preimage: string; recovery?: import("./intent-swap.js").OfflineSwapRecoveryV1 }> = recovered
@@ -38,6 +40,16 @@ export async function settleOfflineSwaps(
         }
       } catch (err) {
         logger.warn("offline_swap_self_claim_failed", { swapId: p.swapId, error: err });
+      }
+    }
+    if (claimed && durability) {
+      // The claim already moved funds. Stop rather than claim the next one too: a
+      // later pass can redo work, but a claim no checkpoint recorded is not undoable.
+      try {
+        await durability.barrier();
+      } catch (err) {
+        logger.error("offline_swap_claim_not_durable", { swapId: p.swapId, error: err });
+        break;
       }
     }
     try {
@@ -75,6 +87,7 @@ export function startOfflineSettlementPoller(
   catchUpIntervalMs: number,
   recovered?: OfflineSwapStore,
   logger: Logger = createLogger(),
+  durability?: DurabilityBarrier,
 ): OfflineSettlementPoller {
   let inFlight = false;
   let queued = false;
@@ -89,7 +102,7 @@ export function startOfflineSettlementPoller(
   const pass = (): void => {
     if (stopped) return;
     inFlight = true;
-    void settleOfflineSwaps(store, creator, recovered, logger).finally(() => {
+    void settleOfflineSwaps(store, creator, recovered, logger, durability).finally(() => {
       inFlight = false;
       if (queued && !stopped) {
         queued = false;
