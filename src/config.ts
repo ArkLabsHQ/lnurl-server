@@ -153,7 +153,12 @@ export function loadConfig(env: Env = process.env): AppConfig {
 
   const enclaveCheckpoint: EnclaveCheckpointConfig = {
     enabled,
-    storageUrl: httpUrl(env.ENCLAVE_STORAGE_URL || "http://127.0.0.1:7073", "ENCLAVE_STORAGE_URL"),
+    // The runtime hands the app its own loopback listener as ENCLAVE_PROXY_PORT,
+    // so take the default from that rather than naming a port of our own.
+    storageUrl: httpUrl(
+      env.ENCLAVE_STORAGE_URL || `http://127.0.0.1:${integer(env, "ENCLAVE_PROXY_PORT", 8080, { min: 1, max: 65_535 })}`,
+      "ENCLAVE_STORAGE_URL",
+    ),
     storageToken: env.ENCLAVE_RUNTIME_TOKEN || undefined,
     allowGenesis: env.ENCLAVE_CHECKPOINT_ALLOW_GENESIS === "1",
     checkpointIntervalMs: integer(env, "ENCLAVE_CHECKPOINT_INTERVAL_MS", 5_000, { min: 100 }),

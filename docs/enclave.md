@@ -45,7 +45,7 @@ Nitro gives the workload no persistent disk, so SQLite runs on the enclave's RAM
 | --- | --- |
 | `ENCLAVE_CHECKPOINT` | `1` enables checkpointing, and defaults `DB_PATH` to `/run/lnurl/state.sqlite`. |
 | `ENCLAVE_RUNTIME_TOKEN` | Bearer token the runtime hands the application. Required when enabled. |
-| `ENCLAVE_STORAGE_URL` | Runtime storage base URL, default `http://127.0.0.1:7073`. |
+| `ENCLAVE_STORAGE_URL` | Storage base URL. Defaults to loopback on `ENCLAVE_PROXY_PORT`, the runtime's own internal listener, which is `8080` unless the runtime says otherwise. |
 | `ENCLAVE_CHECKPOINT_KEY` | Object prefix for this deployment, default `lnurl/db`. Traversal is rejected at config load. |
 | `ENCLAVE_CHECKPOINT_INTERVAL_MS` | Background cadence, default `5000`, minimum `100`. |
 | `ENCLAVE_CHECKPOINT_ALLOW_GENESIS` | `1` permits a first boot with no prior head. Initial deployment only. |

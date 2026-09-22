@@ -222,7 +222,7 @@ describe("loadConfig", () => {
       expect(cfg.dbPath).toBe("/run/lnurl/state.sqlite");
       expect(cfg.enclaveCheckpoint).toMatchObject({
         enabled: true,
-        storageUrl: "http://127.0.0.1:7073",
+        storageUrl: "http://127.0.0.1:8080",
         storageToken: "token",
         allowGenesis: false,
         checkpointIntervalMs: 5_000,
@@ -252,6 +252,12 @@ describe("loadConfig", () => {
       expect(cfg.enclaveCheckpoint.checkpointKey).toBe("tenant-a/db");
       expect(() => loadConfig({ ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ALLOW_INSECURE_TOKEN_STORAGE: "1", ENCLAVE_CHECKPOINT_INTERVAL_MS: "99" }))
         .toThrow(/ENCLAVE_CHECKPOINT_INTERVAL_MS/);
+    });
+
+    it("takes its storage default from the loopback port the runtime hands the app", () => {
+      const on = { ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ALLOW_INSECURE_TOKEN_STORAGE: "1" };
+      expect(loadConfig({ ...on, ENCLAVE_PROXY_PORT: "9090" }).enclaveCheckpoint.storageUrl).toBe("http://127.0.0.1:9090");
+      expect(() => loadConfig({ ...on, ENCLAVE_PROXY_PORT: "0" })).toThrow(/ENCLAVE_PROXY_PORT/);
     });
 
     it("pins a head, and refuses one that contradicts the genesis opt-in", () => {
