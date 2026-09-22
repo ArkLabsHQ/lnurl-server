@@ -1,8 +1,12 @@
 import { createServer } from "./server.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, type EnclaveCheckpointConfig } from "./config.js";
 import { VERSION } from "./version.js";
 import { SessionManager } from "./session-manager.js";
 import type { Db } from "./db/connection.js";
+import { createCheckpointStore, restoreCheckpoint, type CheckpointHead, type DurabilityBarrier, migrationVersion } from "./enclave/checkpoint.js";
+import { EnclaveStorageClient } from "./enclave/storage.js";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /** Ceiling on the dependency probes boot makes. Generous next to the in-request
@@ -15,15 +19,70 @@ export async function initPersistence(opts: {
   dbPath?: string;
   bootstrapDomain?: string;
   verifyTtlMs?: number;
-}): Promise<Db | null> {
+  checkpoint?: EnclaveCheckpointConfig;
+}): Promise<{ db: Db; checkpointHead?: CheckpointHead } | null> {
   if (!opts.dbPath) return null;
   const { openDb } = await import("./db/connection.js");
   const { runMigrations } = await import("./db/migrations.js");
   const { bootstrap } = await import("./bootstrap.js");
-  const db = openDb(opts.dbPath);
+  const checkpoint = opts.checkpoint;
+  if (!checkpoint?.enabled) {
+    const db = openDb(opts.dbPath);
+    runMigrations(db, { legacySwapTtlMs: opts.verifyTtlMs });
+    bootstrap(db, { bootstrapDomain: opts.bootstrapDomain });
+    return { db };
+  }
+
+  // The enclave boots onto an empty RAM-backed filesystem, so nothing has made the
+  // state directory that DB_PATH sits in.
+  if (opts.dbPath !== ":memory:") mkdirSync(dirname(opts.dbPath), { recursive: true });
+  const storage = new EnclaveStorageClient({
+    baseUrl: checkpoint.storageUrl,
+    token: checkpoint.storageToken!,
+  });
+  let checkpointHead: CheckpointHead | undefined;
+  let db: Db;
+  const restored = await restoreCheckpoint({
+    dbPath: opts.dbPath,
+    storage,
+    prefix: checkpoint.checkpointKey,
+    expectedDigest: checkpoint.expectedHead,
+    minSequence: checkpoint.minSequence,
+  });
+  if (restored) {
+    db = restored.db;
+    checkpointHead = restored.head;
+  } else {
+    if (!checkpoint.allowGenesis) {
+      throw new Error(
+        "authoritative checkpoint head is missing (set ENCLAVE_CHECKPOINT_ALLOW_GENESIS=1 only for initial deployment)",
+      );
+    }
+    db = openDb(opts.dbPath);
+  }
+  const needsCheckpoint = !checkpointHead;
+  // Read the restored schema version before migrating, so an upgrade that moves it
+  // commits a fresh head instead of leaving the authority pointing at the old one.
+  const previousMigrationVersion = checkpointHead ? migrationVersion(db) : undefined;
   runMigrations(db, { legacySwapTtlMs: opts.verifyTtlMs });
   bootstrap(db, { bootstrapDomain: opts.bootstrapDomain });
-  return db;
+  if (needsCheckpoint) {
+    checkpointHead = await createCheckpointStore({
+      db,
+      storage,
+      prefix: checkpoint.checkpointKey,
+      intervalMs: checkpoint.checkpointIntervalMs,
+    }).flush();
+  } else if (previousMigrationVersion !== migrationVersion(db)) {
+    checkpointHead = await createCheckpointStore({
+      db,
+      storage,
+      prefix: checkpoint.checkpointKey,
+      intervalMs: checkpoint.checkpointIntervalMs,
+      head: checkpointHead,
+    }).flush();
+  }
+  return { db, checkpointHead };
 }
 
 async function main(): Promise<void> {
@@ -35,13 +94,37 @@ async function main(): Promise<void> {
   const runtime = createRuntime(health, config.shutdownTimeoutMs);
   const logger = createLogger();
 
-  const db = await initPersistence({ dbPath: config.dbPath, bootstrapDomain: config.bootstrapDomain, verifyTtlMs: config.verifyTtlMs });
+  const persistence = await initPersistence({
+    dbPath: config.dbPath,
+    bootstrapDomain: config.bootstrapDomain,
+    verifyTtlMs: config.verifyTtlMs,
+    checkpoint: config.enclaveCheckpoint,
+  });
+  const db = persistence?.db;
   if (config.offlineReceive.enabled && !db) throw new Error("offline receive requires DB_PATH for durable accepted-swap recovery");
   const sessions = new SessionManager();
   runtime.addStop(() => sessions.shutdown("service shutdown"));
+  let durability: DurabilityBarrier | undefined;
   if (db) {
     runtime.setDatabase(db);
     health.register("persistence", () => ({ ok: runtime.resources().dbOpen, detail: "SQLite open" }));
+    if (config.enclaveCheckpoint.enabled) {
+      const storage = new EnclaveStorageClient({
+        baseUrl: config.enclaveCheckpoint.storageUrl,
+        token: config.enclaveCheckpoint.storageToken!,
+      });
+      const store = createCheckpointStore({
+        db,
+        storage,
+        prefix: config.enclaveCheckpoint.checkpointKey,
+        intervalMs: config.enclaveCheckpoint.checkpointIntervalMs,
+        head: persistence!.checkpointHead,
+      });
+      health.register("persistenceCheckpoint", () => store.status());
+      store.start();
+      durability = store;
+      runtime.addStop(() => store.stop());
+    }
   }
   let deps: import("./server.js").ServerDeps | undefined;
   let solverDiscovery: import("./solver-discovery.js").DiscoveryService | undefined;
@@ -213,6 +296,7 @@ async function main(): Promise<void> {
       settlements,
       offlineSwapCreator,
       offlineSwaps,
+      ...(durability ? { durability } : {}),
       ...(solverDiscovery ? { solverDiscovery } : {}),
       ...(config.offlineReceive.arkServerUrl ? { arkServerUrl: config.offlineReceive.arkServerUrl } : {}),
       ...(arkDustSat ? { arkDustSat } : {}),
@@ -300,7 +384,7 @@ async function main(): Promise<void> {
     deps ? { ...deps, health, logger } : { health, logger } as never,
   );
 
-  const publicServer = app.listen(config.port, () => {
+  const publicServer = app.listen({ port: config.port, host: config.publicBind }, () => {
     console.log(`arkade-lnurl listening on ${config.baseUrl} (v${VERSION})`);
     console.log(`  min: ${config.minSendable} msat, max: ${config.maxSendable} msat`);
     console.log(`  invoice timeout: ${config.invoiceTimeoutMs}ms`);

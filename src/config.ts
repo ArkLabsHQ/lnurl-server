@@ -1,3 +1,6 @@
+import { isIP } from "node:net";
+import { checkpointPrefix } from "./enclave/checkpoint-key.js";
+
 /** Server-orchestrated offline receive over the Arkade intents corridor. */
 export interface OfflineReceiveConfig {
   enabled: boolean;
@@ -40,8 +43,24 @@ export interface OfflineReceiveConfig {
   pollIntervalMs: number;
 }
 
+export interface EnclaveCheckpointConfig {
+  enabled: boolean;
+  storageUrl: string;
+  storageToken?: string;
+  allowGenesis: boolean;
+  checkpointIntervalMs: number;
+  checkpointKey: string;
+  /** Digest the security administrator says is current. Without it the host
+   *  chooses which history the enclave wakes up on. */
+  expectedHead?: string;
+  /** Floor on the head's sequence. Survives a crash, where nobody outside the
+   *  enclave knows which digest the timer wrote last. */
+  minSequence?: number;
+}
+
 export interface AppConfig {
   port: number;
+  publicBind?: string;
   baseUrl: string;
   minSendable: number;
   maxSendable: number;
@@ -53,6 +72,7 @@ export interface AppConfig {
    *  because a hold invoice expires and a destination does not. */
   destinationWatchMs: number;
   dbPath?: string;
+  enclaveCheckpoint: EnclaveCheckpointConfig;
   adminPort: number;
   adminBind: string;
   tokenEncryptionKey?: Buffer;
@@ -107,6 +127,12 @@ function rejectRemovedSolverConfig(env: Env): void {
   }
 }
 
+function expectedHead(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  if (!/^[0-9a-f]{64}$/.test(raw)) throw new Error("ENCLAVE_CHECKPOINT_HEAD must be a 64-character lowercase hex digest");
+  return raw;
+}
+
 function parseKey(raw: string): Buffer {
   const buf = /^[0-9a-fA-F]+$/.test(raw) && raw.length % 2 === 0 ? Buffer.from(raw, "hex") : Buffer.from(raw, "base64");
   if (buf.length !== 32) throw new Error("TOKEN_ENCRYPTION_KEY must decode to 32 bytes (hex or base64)");
@@ -116,10 +142,33 @@ function parseKey(raw: string): Buffer {
 export function loadConfig(env: Env = process.env): AppConfig {
   rejectRemovedSolverConfig(env);
   const port = integer(env, "PORT", 3000, { min: 1, max: 65_535 });
-  const dbPath = env.DB_PATH || undefined;
+  const publicBind = env.PUBLIC_BIND || undefined;
+  if (publicBind && !isIP(publicBind)) throw new Error("PUBLIC_BIND must be an IP address");
+  const enabled = env.ENCLAVE_CHECKPOINT === "1";
+  const checkpointKey = checkpointPrefix(env.ENCLAVE_CHECKPOINT_KEY || "lnurl/db");
+  const dbPath = env.DB_PATH || (enabled ? "/run/lnurl/state.sqlite" : undefined);
   const allowInsecureTokenStorage = env.ALLOW_INSECURE_TOKEN_STORAGE === "1";
   const traceRequests = env.TRACE_REQUESTS === "1";
   const offlineReceive = buildOfflineReceive(env);
+
+  const enclaveCheckpoint: EnclaveCheckpointConfig = {
+    enabled,
+    storageUrl: httpUrl(env.ENCLAVE_STORAGE_URL || "http://127.0.0.1:7073", "ENCLAVE_STORAGE_URL"),
+    storageToken: env.ENCLAVE_RUNTIME_TOKEN || undefined,
+    allowGenesis: env.ENCLAVE_CHECKPOINT_ALLOW_GENESIS === "1",
+    checkpointIntervalMs: integer(env, "ENCLAVE_CHECKPOINT_INTERVAL_MS", 5_000, { min: 100 }),
+    checkpointKey,
+    expectedHead: expectedHead(env.ENCLAVE_CHECKPOINT_HEAD),
+    minSequence: env.ENCLAVE_CHECKPOINT_MIN_SEQUENCE === undefined
+      ? undefined
+      : integer(env, "ENCLAVE_CHECKPOINT_MIN_SEQUENCE", 1, { min: 1 }),
+  };
+  if (enabled && !enclaveCheckpoint.storageToken) {
+    throw new Error("ENCLAVE_RUNTIME_TOKEN is required when ENCLAVE_CHECKPOINT=1");
+  }
+  if (enclaveCheckpoint.expectedHead && enclaveCheckpoint.allowGenesis) {
+    throw new Error("ENCLAVE_CHECKPOINT_HEAD and ENCLAVE_CHECKPOINT_ALLOW_GENESIS contradict each other");
+  }
 
   let tokenEncryptionKey: Buffer | undefined;
   if (env.TOKEN_ENCRYPTION_KEY) {
@@ -149,6 +198,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
 
   return {
     port,
+    publicBind,
     baseUrl,
     minSendable,
     maxSendable,
@@ -157,6 +207,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
     verifyTtlMs: integer(env, "VERIFY_TTL_MS", 86_400_000, { min: 1 }),
     destinationWatchMs: integer(env, "DESTINATION_WATCH_MS", 604_800_000, { min: 1 }),
     dbPath,
+    enclaveCheckpoint,
     adminPort,
     adminBind: env.ADMIN_BIND || "127.0.0.1",
     tokenEncryptionKey,

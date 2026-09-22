@@ -4,6 +4,16 @@ import { loadConfig } from "../src/config.js";
 const base = { PORT: "3000", BASE_URL: "http://localhost:3000" };
 
 describe("loadConfig", () => {
+  it("allows an explicit loopback bind without changing ordinary defaults", () => {
+    expect(loadConfig(base).publicBind).toBeUndefined();
+    expect(loadConfig({ ...base, PUBLIC_BIND: "127.0.0.1" }).publicBind).toBe("127.0.0.1");
+  });
+
+  it("refuses a non-IP public bind so startup cannot depend on host-controlled DNS", () => {
+    expect(() => loadConfig({ ...base, PUBLIC_BIND: "localhost" })).toThrow(/PUBLIC_BIND/);
+    expect(loadConfig({ ...base, PUBLIC_BIND: "::1" }).publicBind).toBe("::1");
+  });
+
   it("defaults to in-memory mode (no dbPath) when DB_PATH is unset", () => {
     const cfg = loadConfig({ ...base });
     expect(cfg.dbPath).toBeUndefined();
@@ -199,6 +209,64 @@ describe("loadConfig", () => {
 
     expect(() => loadConfig({ ...base, OFFLINE_SELF_CLAIM: "true" })).toThrow(/OFFLINE_EMULATOR_URL/);
     expect(() => loadConfig({ ...base, OFFLINE_EMULATOR_URL: "emulator.example" })).toThrow(/http\(s\)/);
+  });
+
+  describe("enclave checkpoints", () => {
+    it("does not change ordinary persistence by default", () => {
+      expect(loadConfig(base).enclaveCheckpoint.enabled).toBe(false);
+      expect(loadConfig(base).dbPath).toBeUndefined();
+    });
+
+    it("enables durable checkpoints with an explicit token and measured loopback defaults", () => {
+      const cfg = loadConfig({ ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ALLOW_INSECURE_TOKEN_STORAGE: "1" });
+      expect(cfg.dbPath).toBe("/run/lnurl/state.sqlite");
+      expect(cfg.enclaveCheckpoint).toMatchObject({
+        enabled: true,
+        storageUrl: "http://127.0.0.1:7073",
+        storageToken: "token",
+        allowGenesis: false,
+        checkpointIntervalMs: 5_000,
+        checkpointKey: "lnurl/db",
+      });
+    });
+
+    it("requires a token and an allowed genesis before a fresh head", () => {
+      expect(() => loadConfig({ ...base, ENCLAVE_CHECKPOINT: "1", ALLOW_INSECURE_TOKEN_STORAGE: "1" })).toThrow(/ENCLAVE_RUNTIME_TOKEN/);
+      expect(loadConfig({ ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ENCLAVE_CHECKPOINT_ALLOW_GENESIS: "1", ALLOW_INSECURE_TOKEN_STORAGE: "1" })
+        .enclaveCheckpoint.allowGenesis).toBe(true);
+      expect(loadConfig({ ...base, ENCLAVE_CHECKPOINT: "true", ENCLAVE_RUNTIME_TOKEN: "token", ALLOW_INSECURE_TOKEN_STORAGE: "1" }).enclaveCheckpoint.enabled).toBe(false);
+    });
+
+    it("supports a deploy-time runtime URL and bounded checkpoint cadence", () => {
+      const cfg = loadConfig({
+        ...base,
+        ENCLAVE_CHECKPOINT: "1",
+        ENCLAVE_RUNTIME_TOKEN: "token",
+        ALLOW_INSECURE_TOKEN_STORAGE: "1",
+        ENCLAVE_STORAGE_URL: "https://127.0.0.1:7073",
+        ENCLAVE_CHECKPOINT_INTERVAL_MS: "250",
+        ENCLAVE_CHECKPOINT_KEY: "tenant-a/db",
+      });
+      expect(cfg.enclaveCheckpoint.storageUrl).toBe("https://127.0.0.1:7073");
+      expect(cfg.enclaveCheckpoint.checkpointIntervalMs).toBe(250);
+      expect(cfg.enclaveCheckpoint.checkpointKey).toBe("tenant-a/db");
+      expect(() => loadConfig({ ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ALLOW_INSECURE_TOKEN_STORAGE: "1", ENCLAVE_CHECKPOINT_INTERVAL_MS: "99" }))
+        .toThrow(/ENCLAVE_CHECKPOINT_INTERVAL_MS/);
+    });
+
+    it("pins a head, and refuses one that contradicts the genesis opt-in", () => {
+      const pinned = "ab".repeat(32);
+      const on = { ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ALLOW_INSECURE_TOKEN_STORAGE: "1" };
+      expect(loadConfig({ ...on, ENCLAVE_CHECKPOINT_HEAD: pinned }).enclaveCheckpoint.expectedHead).toBe(pinned);
+      expect(() => loadConfig({ ...on, ENCLAVE_CHECKPOINT_HEAD: "AB".repeat(32) })).toThrow(/ENCLAVE_CHECKPOINT_HEAD/);
+      expect(() => loadConfig({ ...on, ENCLAVE_CHECKPOINT_HEAD: pinned, ENCLAVE_CHECKPOINT_ALLOW_GENESIS: "1" })).toThrow(/contradict/);
+    });
+
+    it("rejects a malformed runtime URL or checkpoint key", () => {
+      expect(() => loadConfig({ ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ALLOW_INSECURE_TOKEN_STORAGE: "1", ENCLAVE_CHECKPOINT_KEY: "../bad" })).toThrow(/ENCLAVE_CHECKPOINT_KEY/);
+      expect(() => loadConfig({ ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ALLOW_INSECURE_TOKEN_STORAGE: "1", ENCLAVE_STORAGE_URL: "run.invalid" }))
+        .toThrow(/ENCLAVE_STORAGE_URL/);
+    });
   });
 
   it("rejects malformed registry and dependency URLs", () => {
