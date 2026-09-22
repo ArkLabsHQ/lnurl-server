@@ -37,7 +37,9 @@ There is no enclave promotion or approval job. Before any protected release, the
 
 ## Durable State
 
-Nitro gives the workload no persistent disk, so SQLite runs on the enclave's RAM-backed filesystem and durability comes from snapshots held in Enclave's encrypted `/v1/storage` key/value API. `ENCLAVE_CHECKPOINT=1` turns this on. It is off by default, and nothing below changes an ordinary deployment.
+> **This does not run against Enclave today.** It is written against an application-facing key/value API at `/v1/storage` that the pinned runtime does not have. At `3c33a40` — which is also `origin/master` — the internal surface is `GET /health` and `POST /v1/metrics`, `/v1/logs`, `/v1/traces`, and `ENCLAVE_RUNTIME_TOKEN` authenticates telemetry ingest, not storage. With `ENCLAVE_CHECKPOINT=1` the first checkpoint takes a 404 and the server refuses to start, which is fail-closed but not functional. Everything below describes an interface Enclave would need to grow, or an alternative persistence mechanism would need to replace. Tracked as [ArkLabsHQ/enclave#195](https://github.com/ArkLabsHQ/enclave/issues/195).
+
+Nitro gives the workload no persistent disk, so SQLite runs on the enclave's RAM-backed filesystem and durability has to come from snapshots held somewhere outside it. `ENCLAVE_CHECKPOINT=1` turns this on. It is off by default, and nothing below changes an ordinary deployment.
 
 | Variable | Meaning |
 | --- | --- |

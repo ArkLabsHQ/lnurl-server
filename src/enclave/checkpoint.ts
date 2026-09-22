@@ -29,8 +29,10 @@ function compress(snapshot: Uint8Array): Buffer {
   return brotliCompressSync(snapshot, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: BROTLI_QUALITY } });
 }
 
-/** Bounded by the plaintext size the head claims, so a doctored object cannot
- *  expand into memory before its digest is ever checked. */
+/** Bounded by the plaintext size the head claims, which stops a small object
+ *  expanding without limit. It is not a defence against the host itself: the head
+ *  is the host's to write, so it can claim any size. A host that wants to deny
+ *  service can simply not serve. */
 function decompress(stored: Uint8Array, plaintextSize: number): Uint8Array {
   try {
     return brotliDecompressSync(stored, { maxOutputLength: plaintextSize });
