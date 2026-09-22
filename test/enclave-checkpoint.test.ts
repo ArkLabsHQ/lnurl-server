@@ -116,7 +116,7 @@ describe("enclave checkpoint store", () => {
     const second = await store.flush();
     expect(second?.sequence).toBe(2);
     expect(second?.previousDigest).toBe(head?.digest);
-    expect(Array.from(storage.objects.keys()).filter((key) => key.endsWith(".sqlite"))).toHaveLength(2);
+    expect(Array.from(storage.objects.keys()).filter((key) => key.endsWith(".sqlite.br"))).toHaveLength(2);
     await db.close();
 
     const restoredHead = await restoreCheckpoint({
@@ -186,7 +186,7 @@ describe("enclave checkpoint store", () => {
     // And a head that moves underneath a running writer stops that writer too.
     const usurper = {
       schema: "lnurl.enclave.checkpoint.v1", prefix: "lnurl/db", sequence: 9,
-      digest: "cd".repeat(32), size: 4096, key: `lnurl/db/${"cd".repeat(32)}.sqlite`, previousDigest: null,
+      digest: "cd".repeat(32), size: 4096, key: `lnurl/db/${"cd".repeat(32)}.sqlite.br`, previousDigest: null,
     };
     storage.objects.set("lnurl/db/HEAD.json", Buffer.from(JSON.stringify(usurper)));
     db.prepare("UPDATE domains SET updated_at = ? WHERE domain = ?").run(2, "wallet-1.invalid");

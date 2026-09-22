@@ -64,16 +64,18 @@ Everything else the server writes is covered more bluntly. `persistenceCheckpoin
 
 Measured on the pinned Node 22.23.1 under Linux, seeding accepted offline swaps as the dominant row and checkpointing to a loopback HTTP storage endpoint. "Barrier" is the wait for one further accepted swap to become durable — what a payer actually sits behind.
 
-| Accepted swaps | Database | Snapshot | Barrier |
+| Accepted swaps | Database | Stored object | Barrier |
 | --- | --- | --- | --- |
-| 1,000 | 1.3 MB | 1.4 MB | 27 ms |
-| 10,000 | 13.3 MB | 12.9 MB | 196 ms |
-| 50,000 | 66.0 MB | 64.1 MB | 452 ms |
-| 200,000 | 264.3 MB | 256.5 MB | 1.8 s |
+| 1,000 | 1.3 MB | 0.1 MB | 17 ms |
+| 10,000 | 13.3 MB | 0.5 MB | 54 ms |
+| 50,000 | 66.0 MB | 2.7 MB | 298 ms |
+| 200,000 | 264.3 MB | 10.6 MB | 1.1 s |
 
-About 1.3 KB per accepted swap, and roughly 7 ms per MB of database once past 50 MB. Against real storage rather than loopback, add the round trip for an object that size.
+About 1.3 KB of database per accepted swap. Snapshots are brotli-compressed before upload — around 25x on this shape of data, because SQLite pages of hex identifiers compress extremely well. Quality 1 was both the fastest to encode and the smallest of the codecs measured, so nothing is traded for it. Transfer was over half of an uncompressed barrier even on loopback; against real storage the reduction matters more than these figures show.
 
-The property to plan around: **a barrier snapshots the whole database, not the change.** The wait before a payer receives an invoice is proportional to total history, not to current activity. Settlement rows carrying an `address_id` are never reclaimed — they are the owner's history and the only copy of it — so that total only grows. At the volumes above it is comfortable. A deployment expecting sustained traffic needs a retention or archival answer, or checkpoints that ship deltas rather than the whole image, before the barrier becomes the slowest part of a receive.
+The head's `digest` and `size` describe the **plaintext** image, so a snapshot's identity does not depend on the codec, and a stored object is decompressed under a limit taken from that `size` before its digest is checked — a doctored object cannot expand into memory first.
+
+Compression lowers the constant; it does not change the shape. **A barrier still snapshots the whole database, not the change**, so the wait before a payer receives an invoice remains proportional to total history rather than to current activity. Settlement rows carrying an `address_id` are never reclaimed — they are the owner's history and the only copy of it — so that total only grows. At the volumes above it is comfortable. A deployment expecting sustained traffic needs a retention or archival answer, or checkpoints that ship deltas rather than the whole image, before the barrier becomes the slowest part of a receive.
 
 ### Rollback
 
