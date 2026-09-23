@@ -20,6 +20,7 @@
     "start": "node --experimental-sqlite --experimental-eventsource dist/cli.js",
     "test": "cross-env NODE_OPTIONS=--experimental-sqlite vitest run",
     "test:e2e": "cross-env NODE_OPTIONS=--experimental-sqlite vitest run --config vitest.e2e.config.ts",
+    "test:authority": "cross-env NODE_OPTIONS=--experimental-sqlite vitest run --config vitest.authority.config.ts",
     "test:watch": "cross-env NODE_OPTIONS=--experimental-sqlite vitest",
     "type-check": "tsc --noEmit && tsc -p tsconfig.test.json && tsc -p tsconfig.ui.json && tsc -p packages/client/tsconfig.json && tsc -p packages/demo-wallet/tsconfig.json && tsc -p packages/demo-wallet/tsconfig.e2e.json",
     "test:browser": "pnpm --filter @arkade-os/lnurl-demo-wallet test:e2e",

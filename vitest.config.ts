@@ -19,7 +19,8 @@ export default defineConfig({
     execArgv: ["--experimental-sqlite"],
     include: ["test/**/*.test.ts", "packages/*/test/**/*.test.ts"],
     // The e2e suite (vitest.e2e.config.ts, `pnpm test:e2e`) needs the docker regtest
-    // stack — never load it from the unit run.
-    exclude: ["test/e2e/**", "**/node_modules/**"],
+    // stack, and the authority suite (`pnpm test:authority`) a Go toolchain: never
+    // load either from the unit run.
+    exclude: ["test/e2e/**", "test/authority-interop/**", "**/node_modules/**"],
   },
 });

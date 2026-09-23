@@ -82,5 +82,37 @@ func main() {
 	}); err != nil {
 		log.Fatal(err)
 	}
-	log.Fatal(http.Serve(ln, server.Handler()))
+	mux := http.NewServeMux()
+	mux.Handle("/", server.Handler())
+	// Stands a random successor up through the store's own conditional activation, as
+	// a real one would land, so tests can watch the seeded writer be fenced.
+	mux.HandleFunc("POST /dev/fence", func(w http.ResponseWriter, r *http.Request) {
+		if err := fence(r.Context(), store, *deployment); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	log.Fatal(http.Serve(ln, mux))
+}
+
+func fence(ctx context.Context, store *memory.Store, deployment string) error {
+	rec, err := store.Get(ctx, deployment)
+	if err != nil {
+		return err
+	}
+	now := uint64(time.Now().UnixMilli())
+	challenge := state.Challenge{ID: "dev-fence", Nonce: []byte{0}, ExpiresAtMs: now + 60_000}
+	if err := store.PutChallenge(ctx, deployment, challenge, now); err != nil {
+		return err
+	}
+	successor := make([]byte, 32)
+	if _, err := rand.Read(successor); err != nil {
+		return err
+	}
+	_, err = store.Activate(ctx, state.Activation{
+		Deployment: deployment, ExpectedEpoch: rec.Epoch, ChallengeID: challenge.ID, NowMs: now,
+		ReleasePolicyVersion: rec.ReleasePolicyVersion, Restored: rec.Checkpoint, Writer: state.Writer{PublicKey: successor},
+	})
+	return err
 }
