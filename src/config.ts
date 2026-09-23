@@ -1,5 +1,6 @@
 import { createPublicKey } from "node:crypto";
 import { isIP } from "node:net";
+import { NETWORKS, isNetwork, type Network } from "@arkade-os/solver-discovery";
 import { checkpointPrefix } from "./enclave/checkpoint-key.js";
 
 /** Server-orchestrated offline receive over the Arkade intents corridor. */
@@ -78,6 +79,13 @@ export interface EnclaveCheckpointConfig {
   storageKey?: Buffer;
 }
 
+/** Opens enrollment of owner-signed identities. Both fields are measured, so the host
+ *  cannot choose which deployment or network a signed setup is accepted for. */
+export interface ProtectedSetupConfig {
+  deployment: string;
+  network: Network;
+}
+
 export interface AppConfig {
   port: number;
   publicBind?: string;
@@ -93,6 +101,7 @@ export interface AppConfig {
   destinationWatchMs: number;
   dbPath?: string;
   enclaveCheckpoint: EnclaveCheckpointConfig;
+  protectedSetup?: ProtectedSetupConfig;
   adminPort: number;
   adminBind: string;
   tokenEncryptionKey?: Buffer;
@@ -178,6 +187,26 @@ function authorityConfig(env: Env): AuthorityConfig | undefined {
   };
 }
 
+function protectedSetupConfig(env: Env, dbPath: string | undefined): ProtectedSetupConfig | undefined {
+  if (env.ENCLAVE_PROTECTED_SETUP !== "1") return undefined;
+  const deployment = env.ENCLAVE_DEPLOYMENT || "";
+  if (!deployment) throw new Error("ENCLAVE_DEPLOYMENT is required when ENCLAVE_PROTECTED_SETUP=1");
+  const network = env.ENCLAVE_NETWORK;
+  if (!isNetwork(network)) throw new Error(`ENCLAVE_NETWORK must be one of ${NETWORKS.join(", ")} when ENCLAVE_PROTECTED_SETUP=1`);
+  if (!dbPath || dbPath === ":memory:") {
+    throw new Error("ENCLAVE_PROTECTED_SETUP=1 needs a file-backed DB_PATH; an identity must outlive a restart");
+  }
+  return { deployment, network };
+}
+
+/** arkd is reached through the host, so its network is only a cross-check: a
+ *  disagreement stops the boot rather than moving the measured network. */
+export function assertArkNetwork(measured: ProtectedSetupConfig | undefined, reported: unknown): void {
+  if (measured && reported !== measured.network) {
+    throw new Error(`Arkade server reports network ${String(reported)}, but the measured network is ${measured.network}`);
+  }
+}
+
 function parseKey(raw: string, name: string): Buffer {
   const buf = /^[0-9a-fA-F]+$/.test(raw) && raw.length % 2 === 0 ? Buffer.from(raw, "hex") : Buffer.from(raw, "base64");
   if (buf.length !== 32) throw new Error(`${name} must decode to 32 bytes (hex or base64)`);
@@ -233,6 +262,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
   if (enclaveCheckpoint.expectedHead && authority) {
     throw new Error("ENCLAVE_CHECKPOINT_HEAD and ENCLAVE_AUTHORITY_URL contradict each other: the authority names the head");
   }
+  const protectedSetup = protectedSetupConfig(env, dbPath);
 
   let tokenEncryptionKey: Buffer | undefined;
   if (env.TOKEN_ENCRYPTION_KEY) {
@@ -275,6 +305,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
     destinationWatchMs: integer(env, "DESTINATION_WATCH_MS", 604_800_000, { min: 1 }),
     dbPath,
     enclaveCheckpoint,
+    ...(protectedSetup ? { protectedSetup } : {}),
     adminPort,
     adminBind: env.ADMIN_BIND || "127.0.0.1",
     tokenEncryptionKey,

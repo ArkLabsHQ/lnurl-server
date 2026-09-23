@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { generateKeyPairSync } from "node:crypto";
-import { loadConfig } from "../src/config.js";
+import { assertArkNetwork, loadConfig } from "../src/config.js";
 
 const base = { PORT: "3000", BASE_URL: "http://localhost:3000" };
 const SEALED = { ENCLAVE_S3_BUCKET: "lnurl-checkpoints", ENCLAVE_STORAGE_KEY: "11".repeat(32), ENCLAVE_DEPLOYMENT: "lnurl-test" };
@@ -293,6 +293,26 @@ describe("loadConfig", () => {
       expect(() => authority({ ENCLAVE_AUTHORITY_URL: url, ENCLAVE_AUTHORITY_PUBLIC_KEYS: p256, ENCLAVE_CHECKPOINT_HEAD: "ab".repeat(32) }))
         .toThrow(/the authority names the head/);
     });
+  });
+
+  it("takes a protected setup's deployment and network from the measured profile, or refuses to start", () => {
+    const protectedOn = {
+      ...base, DB_PATH: "/data/x.db", ALLOW_INSECURE_TOKEN_STORAGE: "1",
+      ENCLAVE_PROTECTED_SETUP: "1", ENCLAVE_DEPLOYMENT: "lnurl-test", ENCLAVE_NETWORK: "regtest",
+    };
+    expect(loadConfig(protectedOn).protectedSetup).toEqual({ deployment: "lnurl-test", network: "regtest" });
+    expect(loadConfig(base).protectedSetup).toBeUndefined();
+    expect(() => loadConfig({ ...protectedOn, ENCLAVE_DEPLOYMENT: "" })).toThrow(/ENCLAVE_DEPLOYMENT is required/);
+    expect(() => loadConfig({ ...protectedOn, ENCLAVE_NETWORK: "testnet" })).toThrow(/ENCLAVE_NETWORK/);
+    expect(() => loadConfig({ ...protectedOn, ENCLAVE_NETWORK: "" })).toThrow(/ENCLAVE_NETWORK/);
+    expect(() => loadConfig({ ...protectedOn, DB_PATH: "" })).toThrow(/file-backed DB_PATH/);
+  });
+
+  it("refuses an arkd serving another network than the measured one", () => {
+    const measured = { deployment: "lnurl-test", network: "regtest" } as const;
+    expect(() => assertArkNetwork(measured, "bitcoin")).toThrow(/measured network is regtest/);
+    expect(() => assertArkNetwork(measured, "regtest")).not.toThrow();
+    expect(() => assertArkNetwork(undefined, "bitcoin")).not.toThrow();
   });
 
   it("rejects malformed registry and dependency URLs", () => {

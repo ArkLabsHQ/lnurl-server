@@ -1,5 +1,5 @@
 import { createServer } from "./server.js";
-import { loadConfig, type EnclaveCheckpointConfig } from "./config.js";
+import { assertArkNetwork, loadConfig, type EnclaveCheckpointConfig } from "./config.js";
 import { VERSION } from "./version.js";
 import { SessionManager } from "./session-manager.js";
 import type { Db } from "./db/connection.js";
@@ -317,6 +317,7 @@ async function main(): Promise<void> {
       if (!infoResponse.ok) throw new Error(`Arkade info endpoint: HTTP ${infoResponse.status}`);
       const arkInfo = await infoResponse.json() as { network?: unknown; dust?: unknown };
       arkNetwork = arkInfo.network;
+      assertArkNetwork(config.protectedSetup, arkNetwork);
       const dust = Number(arkInfo.dust);
       if (Number.isSafeInteger(dust) && dust > 0) arkDustSat = dust;
     }
