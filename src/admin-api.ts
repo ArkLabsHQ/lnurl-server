@@ -158,15 +158,28 @@ export function createAdminApi(deps: AdminDeps): Router {
   });
   r.patch("/domains/:id", (req, res) => {
     const id = Number(req.params.id);
-    if (!repos.domains.getById(id)) { res.status(404).json({ error: "domain not found" }); return; }
+    const existing = repos.domains.getById(id);
+    if (!existing) { res.status(404).json({ error: "domain not found" }); return; }
     const body = req.body ?? {};
     if (body.allocationModes !== undefined && !isValidAllocationModes(body.allocationModes)) {
       res.status(400).json({ error: "allocationModes entries must each be 'self', 'random', or 'admin'" }); return;
     }
+    if (body.tenant !== undefined && body.tenant !== existing.tenant) {
+      res.status(400).json({ error: "tenant is set at creation only: owner-signed setups are bound to it", code: "tenant_fixed" }); return;
+    }
     repos.domains.update(id, body);
     res.json(repos.domains.getById(id));
   });
-  r.delete("/domains/:id", (req, res) => { repos.domains.delete(Number(req.params.id)); res.json({ ok: true }); });
+  r.delete("/domains/:id", (req, res) => {
+    const domain = repos.domains.getById(Number(req.params.id));
+    const held = domain ? repos.ownerSetups.countForDomain(domain.domain) : 0;
+    if (held > 0) {
+      res.status(409).json({ error: `${held} owner-signed identities live under this domain; deleting it would erase them`, code: "protected_address" });
+      return;
+    }
+    repos.domains.delete(Number(req.params.id));
+    res.json({ ok: true });
+  });
 
   // ── Addresses ─────────────────────────────────────────────
   r.get("/addresses", (req, res) => {
@@ -178,9 +191,11 @@ export function createAdminApi(deps: AdminDeps): Router {
     });
     res.json(rows.map((a) => {
       const domain = repos.domains.getById(a.domainId);
+      const identity = repos.ownerSetups.identityByAddress(a.id);
       return {
         id: a.id, username: a.username, domain: domain?.domain ?? null, status: a.status,
         sessionId: a.sessionId, online: a.sessionId ? online.has(a.sessionId) : false, createdAt: a.createdAt,
+        protected: identity !== undefined, suspended: Boolean(identity?.suspendedAt), suspensionReason: identity?.suspensionReason ?? null,
         disabledRails: a.disabledRails,
         rails: effectiveRails({ arkadeAddress: a.arkadeAddress, claimPublicKey: a.claimPublicKey, boardingAddress: a.boardingAddress, disabledRails: a.disabledRails }, serverCaps()),
       };
@@ -208,8 +223,32 @@ export function createAdminApi(deps: AdminDeps): Router {
   r.patch("/addresses/:id", (req, res) => {
     const status = (req.body ?? {}).status as AddressStatus | undefined;
     if (status !== "active" && status !== "revoked") { res.status(400).json({ error: "status must be active or revoked" }); return; }
+    if (repos.ownerSetups.identityByAddress(Number(req.params.id))) {
+      res.status(409).json({ error: "this address is owner-signed; take it out of service with POST /admin/api/addresses/:id/suspend", code: "protected_address" });
+      return;
+    }
     repos.addresses.updateStatus(Number(req.params.id), status);
     res.json({ ok: true });
+  });
+  // Availability only: the owner's signed head is never touched, so a client can tell a
+  // provider that stopped serving from an owner who changed something.
+  r.post("/addresses/:id/suspend", (req, res) => {
+    const { suspended, reason } = (req.body ?? {}) as { suspended?: unknown; reason?: unknown };
+    if (typeof suspended !== "boolean") { res.status(400).json({ error: "suspended must be a boolean" }); return; }
+    if (suspended && (typeof reason !== "string" || reason.trim() === "")) { res.status(400).json({ error: "a suspension needs a reason" }); return; }
+    const id = Number(req.params.id);
+    if (!repos.addresses.getById(id)) { res.status(404).json({ error: "address not found" }); return; }
+    const identity = repos.ownerSetups.identityByAddress(id);
+    if (!identity) {
+      res.status(409).json({ error: "not an owner-signed address; revoke it with PATCH /admin/api/addresses/:id", code: "not_protected" });
+      return;
+    }
+    repos.ownerSetups.suspend(identity.domain, identity.username, suspended ? (reason as string).trim() : null);
+    const head = repos.ownerSetups.identity(identity.domain, identity.username)!;
+    res.json({
+      id, suspended: head.suspendedAt !== null, suspensionReason: head.suspensionReason,
+      currentRevision: head.currentRevision, currentDigest: head.currentDigest,
+    });
   });
   r.patch("/addresses/:id/rails", (req, res) => {
     const id = Number(req.params.id);
@@ -217,7 +256,7 @@ export function createAdminApi(deps: AdminDeps): Router {
     try {
       addressService.setRailPolicy(id, (req.body ?? {}).disabledRails);
     } catch (err) {
-      if (err instanceof ProvisioningError) { res.status(400).json({ error: err.message, code: err.code }); return; }
+      if (err instanceof ProvisioningError) { res.status(err.code === "protected_address" ? 409 : 400).json({ error: err.message, code: err.code }); return; }
       throw err;
     }
     const updated = repos.addresses.getById(id)!;
@@ -378,7 +417,14 @@ export function createAdminApi(deps: AdminDeps): Router {
     res.json(result);
   });
 
-  r.delete("/addresses/:id", (req, res) => { repos.addresses.delete(Number(req.params.id)); res.json({ ok: true }); });
+  r.delete("/addresses/:id", (req, res) => {
+    if (repos.ownerSetups.identityByAddress(Number(req.params.id))) {
+      res.status(409).json({ error: "this address is owner-signed and cannot be deleted; suspend it instead", code: "protected_address" });
+      return;
+    }
+    repos.addresses.delete(Number(req.params.id));
+    res.json({ ok: true });
+  });
 
   // ── API keys ──────────────────────────────────────────────
   r.get("/api-keys", (_req, res) => res.json(repos.apiKeys.list()));

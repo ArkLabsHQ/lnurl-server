@@ -110,6 +110,9 @@ export class AddressService {
 
   /** Replace the per-address rail policy (operator-controlled, per LNURL). */
   setRailPolicy(id: number, rails: unknown): void {
+    if (this.repos.ownerSetups.identityByAddress(id)) {
+      throw new ProvisioningError("protected_address", "this address is owner-signed; its rails change only through a signed setup (POST /lnurl/setup)");
+    }
     let normalized;
     try {
       normalized = normalizeDisabledRails(rails);

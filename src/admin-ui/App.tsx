@@ -18,7 +18,10 @@ interface Domain {
   minSendable: number | null;
   maxSendable: number | null;
 }
-interface Address { id: number; username: string; domain: string | null; status: string; online: boolean; disabledRails: string[]; rails: AddressRail[] }
+interface Address {
+  id: number; username: string; domain: string | null; status: string; online: boolean; disabledRails: string[]; rails: AddressRail[];
+  protected: boolean; suspended: boolean; suspensionReason: string | null;
+}
 interface AddressRail { id: string; label: string; enabled: boolean; available: boolean; reason?: string }
 interface ServerRail { id: string; label: string; description: string; configured: boolean; ready: boolean; reason?: string }
 interface ApiKey { id: number; label: string | null; status: string; domainId: number | null }
@@ -478,6 +481,12 @@ function Addresses({ onShowSettlements }: { onShowSettlements?: (id: number) => 
   const del = async (id: number) => {
     try { await api.del(`/addresses/${id}`); reload(); } catch (e) { setMutErr(errMsg(e)); }
   };
+  const suspend = async (a: Address) => {
+    const reason = a.suspended ? undefined : prompt(`Why suspend ${a.username}@${a.domain}? The owner's signed setup is kept as is.`);
+    if (!a.suspended && !reason?.trim()) return;
+    try { await api.post(`/addresses/${a.id}/suspend`, { suspended: !a.suspended, reason }); setMutErr(undefined); reload(); }
+    catch (e) { setMutErr(errMsg(e)); }
+  };
   const [railsFor, setRailsFor] = useState<number>();
   const [reconcileFor, setReconcileFor] = useState<number>();
 
@@ -506,17 +515,25 @@ function Addresses({ onShowSettlements }: { onShowSettlements?: (id: number) => 
         <tbody>{items.map((a) => (
           <Fragment key={a.id}>
             <tr>
-              <Td>{a.username}@{a.domain}</Td><Td>{a.status}</Td><Td>{a.online ? "online" : "offline"}</Td>
+              <Td>{a.username}@{a.domain}</Td>
               <Td>
-                <button onClick={() => setRailsFor(railsFor === a.id ? undefined : a.id)}>{railsFor === a.id ? "Close" : "Rails"}</button>{" "}
+                {a.status}
+                {a.protected && <span style={{ color: "#555" }}> · protected — owner-signed</span>}
+                {a.suspended && <span style={{ color: "crimson" }} title={a.suspensionReason ?? ""}> · suspended</span>}
+              </Td>
+              <Td>{a.online ? "online" : "offline"}</Td>
+              <Td>
+                <button onClick={() => setRailsFor(railsFor === a.id ? undefined : a.id)} disabled={a.protected}>{railsFor === a.id ? "Close" : "Rails"}</button>{" "}
                 <button onClick={() => onShowSettlements?.(a.id)}>Payments</button>{" "}
                 <button onClick={() => setReconcileFor(reconcileFor === a.id ? undefined : a.id)}>
                   {reconcileFor === a.id ? "Close" : "Reconcile"}
                 </button>{" "}
-                {a.status === "revoked"
-                  ? <button onClick={() => setStatusOf(a.id, "active")}>Reactivate</button>
-                  : <button onClick={() => setStatusOf(a.id, "revoked")}>Revoke</button>}{" "}
-                <button onClick={() => del(a.id)}>Delete</button>
+                {a.protected
+                  ? <button onClick={() => suspend(a)}>{a.suspended ? "Reinstate" : "Suspend"}</button>
+                  : a.status === "revoked"
+                    ? <button onClick={() => setStatusOf(a.id, "active")}>Reactivate</button>
+                    : <button onClick={() => setStatusOf(a.id, "revoked")}>Revoke</button>}{" "}
+                <button onClick={() => del(a.id)} disabled={a.protected}>Delete</button>
               </Td>
             </tr>
             {railsFor === a.id && <AddressRails address={a} onChanged={reload} />}

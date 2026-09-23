@@ -212,11 +212,16 @@ export const adminOpenApiSpec = {
         requestBody: jsonBody(domainBody),
         responses: {
           "200": { description: "Updated domain", content: { "application/json": { schema: Domain } } },
-          ...errorResponse("400", "Invalid allocationModes"),
+          ...errorResponse("400", "Invalid allocationModes, or a changed tenant (tenant_fixed)"),
           ...errorResponse("404", "Domain not found"),
         },
       },
-      delete: { summary: "Delete a domain", tags: ["Domains"], parameters: [idParam], responses: { ...OK } },
+      delete: {
+        summary: "Delete a domain",
+        tags: ["Domains"],
+        parameters: [idParam],
+        responses: { ...OK, ...errorResponse("409", "Owner-signed identities live under this domain (protected_address)") },
+      },
     },
 
     // ── Addresses ────────────────────────────────────────────
@@ -241,6 +246,9 @@ export const adminOpenApiSpec = {
                 status: { type: "string", enum: ["reserved", "active", "revoked"] },
                 sessionId: { type: "string", nullable: true },
                 online: { type: "boolean", description: "Whether the bound session is currently connected" },
+                protected: { type: "boolean", description: "Owner-signed: routing, rails and existence change only through a signed setup" },
+                suspended: { type: "boolean", description: "Taken out of service by the provider; the signed setup is unchanged" },
+                suspensionReason: { type: "string", nullable: true },
                 disabledRails: { type: "array", items: { type: "string" }, description: "Rail ids the operator disabled for this address" },
                 rails: { type: "array", items: { type: "object", properties: { id: { type: "string" }, label: { type: "string" }, enabled: { type: "boolean" }, available: { type: "boolean" }, reason: { type: "string", description: "Present when disabled or unavailable" } } }, description: "Effective per-address rail states" },
                 createdAt: { type: "integer" },
@@ -282,7 +290,7 @@ export const adminOpenApiSpec = {
           },
           ...errorResponse("400", "Missing username or invalid mode"),
           ...errorResponse("404", "Unknown domain"),
-          ...errorResponse("409", "Username taken or invalid"),
+          ...errorResponse("409", "Username taken, invalid, or held by an owner-signed identity (protected_address)"),
         },
       },
     },
@@ -292,9 +300,51 @@ export const adminOpenApiSpec = {
         tags: ["Addresses"],
         parameters: [idParam],
         requestBody: jsonBody({ type: "object", properties: { status: { type: "string", enum: ["active", "revoked"] } }, required: ["status"] }),
-        responses: { ...OK, ...errorResponse("400", "status must be active or revoked") },
+        responses: {
+          ...OK,
+          ...errorResponse("400", "status must be active or revoked"),
+          ...errorResponse("409", "Owner-signed address; suspend it instead (protected_address)"),
+        },
       },
-      delete: { summary: "Delete an address", tags: ["Addresses"], parameters: [idParam], responses: { ...OK } },
+      delete: {
+        summary: "Delete an address",
+        tags: ["Addresses"],
+        parameters: [idParam],
+        responses: { ...OK, ...errorResponse("409", "Owner-signed address; suspend it instead (protected_address)") },
+      },
+    },
+    "/addresses/{id}/suspend": {
+      post: {
+        summary: "Suspend or reinstate an owner-signed address",
+        description:
+          "Availability only: the payRequest and callback refuse with a provider-suspension reason, while the " +
+          "owner's signed setup, revision and key stay exactly as signed.",
+        tags: ["Addresses"],
+        parameters: [idParam],
+        requestBody: jsonBody({
+          type: "object",
+          properties: { suspended: { type: "boolean" }, reason: { type: "string", description: "Required when suspending" } },
+          required: ["suspended"],
+        }),
+        responses: {
+          "200": {
+            description: "The identity's availability beside its unchanged signed head",
+            content: { "application/json": { schema: {
+              type: "object",
+              properties: {
+                id: { type: "integer" },
+                suspended: { type: "boolean" },
+                suspensionReason: { type: "string", nullable: true },
+                currentRevision: { type: "integer" },
+                currentDigest: { type: "string" },
+              },
+            } } },
+          },
+          ...errorResponse("400", "suspended is not a boolean, or a suspension without a reason"),
+          ...errorResponse("404", "Address not found"),
+          ...errorResponse("409", "Not an owner-signed address (not_protected)"),
+        },
+      },
     },
     "/reconcile": {
       get: {
@@ -403,7 +453,12 @@ export const adminOpenApiSpec = {
         tags: ["Addresses"],
         parameters: [idParam],
         requestBody: jsonBody({ type: "object", properties: { disabledRails: { type: "array", items: { type: "string", enum: ["interactive-lightning", "offline-swap", "arkade", "covenant"] } } }, required: ["disabledRails"] }),
-        responses: { "200": { description: "Stored policy and effective states" }, ...errorResponse("400", "Unknown rail id"), ...errorResponse("404", "Address not found") },
+        responses: {
+          "200": { description: "Stored policy and effective states" },
+          ...errorResponse("400", "Unknown rail id"),
+          ...errorResponse("404", "Address not found"),
+          ...errorResponse("409", "Owner-signed address: its rails are the owner's (protected_address)"),
+        },
       },
     },
 
