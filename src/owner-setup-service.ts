@@ -1,10 +1,10 @@
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import type { Repositories } from "./db/repositories/index.js";
 import type { OwnerIdentity, OwnerSetupRecord, SetupIntent } from "./db/repositories/owner-setups.js";
-import type { DomainRow } from "./db/types.js";
+import type { AddressRow, DomainRow } from "./db/types.js";
 import { ProvisioningError, type AddressService } from "./address-service.js";
 import { decodeOwnerSetup, ownerSetupDigest, verifyOwnerSetup, type OwnerSetup } from "./enclave/owner-setup.js";
-import { RAIL_IDS } from "./rails.js";
+import { RAIL_IDS, type RailAddress } from "./rails.js";
 
 export class OwnerSetupError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -48,17 +48,47 @@ function sameRouting(a: OwnerSetup, b: OwnerSetup): boolean {
     && a.boardingAddress === b.boardingAddress && a.rails.join() === b.rails.join();
 }
 
+/** The committed setup a protected name routes from; undefined for a legacy one. */
+export function committedSetup(repos: Repositories, domain: string, username: string): CommittedSetup | undefined {
+  const identity = repos.ownerSetups.identity(domain, username);
+  if (!identity) return undefined;
+  const record = repos.ownerSetups.current(domain, username)!;
+  return { setup: decodeOwnerSetup(record.payload), identity, record };
+}
+
+export type ReceiveRouting =
+  | { kind: "legacy" | "protected"; railAddress: RailAddress }
+  | { kind: "refused"; reason: string };
+
+/** What a payRequest or callback may route through for this row. Protection is found by
+ *  name, never through the row, so a row the identity does not claim routes nowhere. */
+export function receiveRouting(repos: Repositories, domain: string, address: AddressRow): ReceiveRouting {
+  const committed = committedSetup(repos, domain, address.username);
+  if (!committed) {
+    const { arkadeAddress, claimPublicKey, boardingAddress, disabledRails } = address;
+    return { kind: "legacy", railAddress: { arkadeAddress, claimPublicKey, boardingAddress, disabledRails } };
+  }
+  const { setup, identity } = committed;
+  const name = `${address.username}@${domain}`;
+  if (identity.addressId !== address.id) return { kind: "refused", reason: "Unknown LN address" };
+  if (identity.state === "revoked") return { kind: "refused", reason: `${name} was revoked by its owner` };
+  if (identity.suspendedAt !== null) return { kind: "refused", reason: `${name} is suspended by its provider` };
+  return {
+    kind: "protected",
+    railAddress: {
+      arkadeAddress: setup.arkadeDestination, claimPublicKey: setup.claimPublicKey, boardingAddress: setup.boardingAddress ?? null,
+      disabledRails: RAIL_IDS.filter((r) => !setup.rails.includes(r)),
+    },
+  };
+}
+
 /** The owner-signed setup chain: who may enroll a protected identity, and which signed
  *  revisions may move it. Everything is checked before anything is written. */
 export class OwnerSetupService {
   constructor(private repos: Repositories, private addresses: AddressService, private options: OwnerSetupServiceOptions) {}
 
-  /** The committed setup a protected address routes from; undefined for a legacy one. */
   current(domain: string, username: string): CommittedSetup | undefined {
-    const identity = this.repos.ownerSetups.identity(domain, username);
-    if (!identity) return undefined;
-    const record = this.repos.ownerSetups.current(domain, username)!;
-    return { setup: decodeOwnerSetup(record.payload), identity, record };
+    return committedSetup(this.repos, domain, username);
   }
 
   submit(req: SetupSubmission): CommittedSetup & { applied: boolean } {
