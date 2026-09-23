@@ -4,7 +4,7 @@ This packages LNURL for Nitro. It is **not a host-tamper-resistant deployment** 
 
 The default profile deliberately uses `lnurl.invalid`, an in-memory application database and no managed application secrets. Existing Docker deployments are unchanged.
 
-What is here is the packaging and its reproducibility evidence. **The durable-state half is a design, not a working feature** — it targets an application storage API Enclave does not have, so it cannot run at all today, and its snapshots are not yet encrypted. See Durable State. Signed owner setup, protected payment proofs, client verification and approved key release are likewise not implemented; `src/enclave/owner-setup.ts` is a proposed encoding that no route reads, and it does not yet carry every field the setup must bind — notably the owner key and the Arkade destination.
+What is here is the packaging and its reproducibility evidence. **The durable-state half is a design, not a working feature** — it targets an application storage API Enclave does not have, so it cannot run at all today, and its snapshots are not yet encrypted. See Durable State. Signed owner setup, protected payment proofs, client verification and approved key release are likewise not implemented; `src/enclave/owner-setup.ts` is a proposed encoding that binds the design's full field list, but no route reads it and nothing yet stores or enforces a signed setup.
 
 ## Build
 

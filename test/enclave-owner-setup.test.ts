@@ -1,20 +1,30 @@
 import { describe, expect, it } from "vitest";
 import { schnorr } from "@noble/curves/secp256k1.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
+import { ArkAddress } from "@arkade-os/sdk";
 import { encodeOwnerSetup, ownerSetupDigest, verifyOwnerSetup, type OwnerSetup } from "../src/enclave/owner-setup.js";
+import type { RailId } from "../src/rails.js";
 
 const ownerKey = Uint8Array.from({ length: 32 }, (_, i) => i + 1);
 const ownerPub = schnorr.getPublicKey(ownerKey);
+const otherPub = schnorr.getPublicKey(Uint8Array.from({ length: 32 }, (_, i) => i + 9));
+const DESTINATION = new ArkAddress(new Uint8Array(32).fill(2), new Uint8Array(32).fill(3), "tark").encode();
+const OTHER_DESTINATION = new ArkAddress(new Uint8Array(32).fill(2), new Uint8Array(32).fill(4), "tark").encode();
 
 const SETUP: OwnerSetup = {
   deployment: "lnurl-research",
   tenant: "wallet-co",
   network: "bitcoin",
-  address: "alice@wallet.example",
+  domain: "wallet.example",
+  username: "alice",
+  ownerPublicKey: bytesToHex(ownerPub),
+  arkadeDestination: DESTINATION,
   claimPublicKey: "02" + "ab".repeat(32),
   rails: ["arkade", "offline-swap"],
   revision: 1,
 };
+
+const hexDigest = (setup: OwnerSetup): string => bytesToHex(ownerSetupDigest(setup));
 
 function sign(setup: OwnerSetup): Uint8Array {
   return schnorr.sign(ownerSetupDigest(setup), ownerKey);
@@ -26,60 +36,90 @@ describe("owner-signed setup", () => {
   });
 
   it("refuses a signature from another key, and a record the signature does not cover", () => {
-    const other = schnorr.getPublicKey(Uint8Array.from({ length: 32 }, (_, i) => i + 9));
-    expect(verifyOwnerSetup(SETUP, sign(SETUP), other)).toBe(false);
-    expect(verifyOwnerSetup({ ...SETUP, address: "mallory@wallet.example" }, sign(SETUP), ownerPub)).toBe(false);
+    expect(verifyOwnerSetup(SETUP, sign(SETUP), otherPub)).toBe(false);
+    expect(verifyOwnerSetup({ ...SETUP, arkadeDestination: OTHER_DESTINATION }, sign(SETUP), ownerPub)).toBe(false);
   });
 
   it.each([
     ["deployment", { deployment: "other" }],
     ["tenant", { tenant: "other" }],
     ["network", { network: "signet" }],
-    ["address", { address: "bob@wallet.example" }],
+    ["domain", { domain: "other.example" }],
+    ["username", { username: "bob" }],
+    ["ownerPublicKey", { ownerPublicKey: bytesToHex(otherPub) }],
+    ["arkadeDestination", { arkadeDestination: OTHER_DESTINATION }],
     ["claimPublicKey", { claimPublicKey: "03" + "ab".repeat(32) }],
-    ["rails", { rails: ["arkade"] }],
-    ["revision", { revision: 2 }],
-    ["previousHash", { previousHash: "cd".repeat(32) }],
+    ["boardingAddress", { boardingAddress: "bc1qboarding" }],
+    ["rails", { rails: ["arkade"] as RailId[] }],
   ] as const)("binds %s", (_field, change) => {
     expect(verifyOwnerSetup({ ...SETUP, ...change }, sign(SETUP), ownerPub)).toBe(false);
   });
 
+  it("binds the revision and the hash it chains from", () => {
+    const second: OwnerSetup = { ...SETUP, revision: 2, previousHash: "cd".repeat(32) };
+    expect(hexDigest(second)).not.toBe(hexDigest({ ...second, previousHash: "ce".repeat(32) }));
+    expect(hexDigest(second)).not.toBe(hexDigest({ ...second, revision: 3 }));
+  });
+
   it("does not let a character move across a field boundary", () => {
-    const left = ownerSetupDigest({ ...SETUP, deployment: "ab", tenant: "c" });
-    const right = ownerSetupDigest({ ...SETUP, deployment: "a", tenant: "bc" });
-    expect(bytesToHex(left)).not.toBe(bytesToHex(right));
+    expect(hexDigest({ ...SETUP, domain: "ab", username: "c" })).not.toBe(hexDigest({ ...SETUP, domain: "a", username: "bc" }));
+    expect(hexDigest({ ...SETUP, deployment: "ab", tenant: "c" })).not.toBe(hexDigest({ ...SETUP, deployment: "a", tenant: "bc" }));
   });
 
   it("treats rail order as part of the record", () => {
-    const forward = ownerSetupDigest(SETUP);
-    const reversed = ownerSetupDigest({ ...SETUP, rails: ["offline-swap", "arkade"] });
-    expect(bytesToHex(forward)).not.toBe(bytesToHex(reversed));
+    expect(hexDigest(SETUP)).not.toBe(hexDigest({ ...SETUP, rails: ["offline-swap", "arkade"] }));
   });
 
-  it("separates an absent previous hash from any present one", () => {
-    const first = ownerSetupDigest(SETUP);
-    const chained = ownerSetupDigest({ ...SETUP, previousHash: "00".repeat(32) });
-    expect(bytesToHex(first)).not.toBe(bytesToHex(chained));
+  it("lets the previous owner authorise a rotation to a new key", () => {
+    const nextKey = Uint8Array.from({ length: 32 }, (_, i) => i + 40);
+    const rotation: OwnerSetup = {
+      ...SETUP,
+      ownerPublicKey: bytesToHex(schnorr.getPublicKey(nextKey)),
+      revision: 2,
+      previousHash: hexDigest(SETUP),
+    };
+    const signedByOldOwner = schnorr.sign(ownerSetupDigest(rotation), ownerKey);
+    expect(verifyOwnerSetup(rotation, signedByOldOwner, ownerPub)).toBe(true);
+    // The new key holds no authority over the record that grants it.
+    expect(verifyOwnerSetup(rotation, signedByOldOwner, schnorr.getPublicKey(nextKey))).toBe(false);
   });
 
   it("is domain separated, so the digest is not a bare hash of its payload", () => {
-    expect(bytesToHex(ownerSetupDigest(SETUP))).not.toBe(bytesToHex(encodeOwnerSetup(SETUP)));
-    // A wallet signing this digest cannot be replayed as a signature over the
-    // payload itself, nor over any other tagged message.
+    expect(hexDigest(SETUP)).not.toBe(bytesToHex(encodeOwnerSetup(SETUP)));
     expect(ownerSetupDigest(SETUP)).toHaveLength(32);
   });
 
-  it("refuses to encode a key that is not compressed secp256k1", () => {
+  it("refuses identities that are not in their stored, lowercase form", () => {
+    expect(() => encodeOwnerSetup({ ...SETUP, domain: "Wallet.example" })).toThrow(/domain must be non-empty and lowercase/);
+    expect(() => encodeOwnerSetup({ ...SETUP, username: "Alice" })).toThrow(/username must be non-empty and lowercase/);
+    expect(() => encodeOwnerSetup({ ...SETUP, tenant: "" })).toThrow(/tenant must not be empty/);
+  });
+
+  it("refuses a destination that is not a canonical Arkade address", () => {
+    expect(() => encodeOwnerSetup({ ...SETUP, arkadeDestination: "tark1notanaddress" })).toThrow(/canonical Arkade address/);
+    expect(() => encodeOwnerSetup({ ...SETUP, arkadeDestination: DESTINATION.toUpperCase() })).toThrow(/canonical Arkade address/);
+  });
+
+  it("refuses unknown or repeated rails", () => {
+    expect(() => encodeOwnerSetup({ ...SETUP, rails: ["arkade", "bogus"] as unknown as RailId[] })).toThrow(/known rail ids/);
+    expect(() => encodeOwnerSetup({ ...SETUP, rails: ["arkade", "arkade"] })).toThrow(/must not repeat/);
+  });
+
+  it("makes a first revision with a predecessor, or a later one without, unrepresentable", () => {
+    expect(() => encodeOwnerSetup({ ...SETUP, previousHash: "cd".repeat(32) })).toThrow(/previousHash is required/);
+    expect(() => encodeOwnerSetup({ ...SETUP, revision: 2 })).toThrow(/previousHash is required/);
+    expect(() => encodeOwnerSetup({ ...SETUP, revision: 0 })).toThrow(/at least 1/);
+  });
+
+  it("refuses malformed keys, hashes and an empty boarding address", () => {
     expect(() => encodeOwnerSetup({ ...SETUP, claimPublicKey: "04" + "ab".repeat(32) })).toThrow(/compressed secp256k1/);
-    expect(() => encodeOwnerSetup({ ...SETUP, claimPublicKey: "02" + "ab".repeat(31) })).toThrow(/compressed secp256k1/);
+    expect(() => encodeOwnerSetup({ ...SETUP, ownerPublicKey: "ab".repeat(31) })).toThrow(/ownerPublicKey must be 32 bytes/);
+    expect(() => encodeOwnerSetup({ ...SETUP, revision: 2, previousHash: "nothex" })).toThrow(/previousHash must be 32 bytes/);
+    expect(() => encodeOwnerSetup({ ...SETUP, boardingAddress: "" })).toThrow(/omitted rather than empty/);
   });
 
-  it("refuses a malformed previous hash and an out-of-range revision", () => {
-    expect(() => encodeOwnerSetup({ ...SETUP, previousHash: "nothex" })).toThrow(/previousHash/);
-    expect(() => encodeOwnerSetup({ ...SETUP, revision: -1 })).toThrow(/uint32/);
-  });
-
-  it("refuses a signature of the wrong shape rather than throwing", () => {
+  it("answers false rather than throwing for a malformed record or signature", () => {
+    expect(verifyOwnerSetup({ ...SETUP, domain: "UPPER" }, sign(SETUP), ownerPub)).toBe(false);
     expect(verifyOwnerSetup(SETUP, new Uint8Array(63), ownerPub)).toBe(false);
     expect(verifyOwnerSetup(SETUP, sign(SETUP), new Uint8Array(33))).toBe(false);
   });
