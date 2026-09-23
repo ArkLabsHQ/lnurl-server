@@ -19,6 +19,9 @@ import {
   LnurlTimeoutError,
 } from "../packages/client/src/index.js";
 import type { LnurlSession, PaymentSyncStore, StoredPayment } from "../packages/client/src/index.js";
+import { SingleKey, ArkAddress } from "@arkade-os/sdk";
+import { arkadeLnurl, nextOwnerSetup, ownerPublicKeyOf, signOwnerSetup, verifyFetchedSetup } from "../packages/client/src/arkade.js";
+import { OwnerSetupService } from "../src/owner-setup-service.js";
 
 const CONFIG: LnurlServiceConfig = { port: 0, baseUrl: "", minSendable: 1_000, maxSendable: 100_000_000, invoiceTimeoutMs: 3_000 };
 
@@ -472,5 +475,59 @@ describe("onchain rail contract", () => {
     );
     const payRequest = await payer.resolve(lnurl);
     expect(payRequest.paymentOptions).toContainEqual({ id: "onchain", type: "onchain" });
+  });
+});
+
+describe("owner-signed setup contract", () => {
+  const ARK = new ArkAddress(new Uint8Array(32).fill(2), new Uint8Array(32).fill(3), "tark").encode();
+  let db: Db;
+  let ctx: { baseUrl: string; close: () => Promise<void> };
+
+  beforeEach(async () => {
+    db = openDb(":memory:");
+    runMigrations(db);
+    const repos = createRepositories(db);
+    repos.domains.create({ domain: "127.0.0.1", allocationModes: ["self"] });
+    const addressService = new AddressService(repos, randomBytes(32));
+    const server = http.createServer();
+    ctx = await new Promise<typeof ctx>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        const { port } = server.address() as { port: number };
+        const baseUrl = `http://127.0.0.1:${port}`;
+        server.on("request", createServer({ ...CONFIG, baseUrl }, {
+          repos, addressService, registrationLimiter: new RateLimiter(100, 60_000), settlements: new DbSettlementStore(db, 86_400_000),
+          ownerSetups: new OwnerSetupService(repos, addressService, { deployment: "lnurl-test", network: "regtest", enrollment: true }),
+        }));
+        resolve({ baseUrl, close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }) });
+      });
+    });
+  });
+
+  afterEach(async () => {
+    await ctx.close();
+    db.close();
+  });
+
+  it("enrols and updates through the published client against the real server", async () => {
+    const identity = SingleKey.fromHex("44".repeat(32));
+    const lnurl = arkadeLnurl({
+      identity, arkadeAddress: ARK, baseUrl: ctx.baseUrl, protectedSetup: { deployment: "lnurl-test", network: "regtest" },
+    });
+    expect(await lnurl.claimProtected("Alice", ["arkade"])).toMatchObject({ applied: true, revision: 1, lightningAddress: "alice@127.0.0.1" });
+
+    const client = createLnurlClient({ baseUrl: ctx.baseUrl });
+    const committed = verifyFetchedSetup(await client.fetchOwnerSetup("127.0.0.1", "alice"), { signer: await ownerPublicKeyOf(identity) });
+    const update = await signOwnerSetup(identity, nextOwnerSetup(committed, { rails: ["arkade", "offline-swap"] }));
+    expect(await client.submitOwnerSetup(update)).toMatchObject({ applied: true, revision: 2, rails: { requested: ["arkade", "offline-swap"] } });
+    const history = await client.fetchOwnerSetupHistory("127.0.0.1", "alice");
+    expect(history.revisions.map((r) => r.revision)).toEqual([2, 1]);
+    expect(history.revisions[0]!.previousDigest).toBe(history.revisions[1]!.digest);
+
+    const readToken = await lnurl.protectedToken();
+    await expect(client.listPayments(readToken, "alice", { domain: "127.0.0.1" })).resolves.toMatchObject({ payments: [] });
+    const write = client.registerArkadeIdentity({ token: readToken, username: "alice", arkadeAddress: ARK, claimPublicKey: "02" + "cd".repeat(32) });
+    await expect(write).rejects.toMatchObject({ httpStatus: 409, code: "protected_address" });
+    await expect(client.openSession({ token: readToken }, { onInvoiceRequest: () => undefined })).rejects.toMatchObject({ httpStatus: 409 });
+    await expect(client.listPayments(await lnurl.token(), "alice", { domain: "127.0.0.1" })).rejects.toBeInstanceOf(LnurlError);
   });
 });
