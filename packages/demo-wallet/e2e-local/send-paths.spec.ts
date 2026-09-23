@@ -12,7 +12,7 @@ import { ESPLORA_URL, faucet, mine, nodeSqliteStorage } from "../../../test/e2e/
 import {
   CARDS_FILE,
   STATE_DIR,
-  requestOption,
+  boardingAddressOf,
   WALLET_PORT,
   readLocalStack,
   startLnurlServer,
@@ -105,7 +105,7 @@ async function statusReaches(page: Page, pattern: RegExp, timeoutMs: number): Pr
 }
 
 async function fund(page: Page, base: string, username: string): Promise<void> {
-  const boardingAddress = (await requestOption(base, username, 1000, "onchain")).paymentDestination!;
+  const boardingAddress = await boardingAddressOf(base, username);
   await faucet(boardingAddress, "0.001");
   await mine(1);
   await expect
