@@ -1,4 +1,4 @@
-{ lib, pkgsStatic, writeText, nodejs_22, pnpm_10, fetchPnpmDeps, pnpmConfigHook, writableTmpDirAsHomeHook, profile }:
+{ lib, pkgsStatic, writeText, nodejs_22, pnpm_10, fetchPnpmDeps, pnpmConfigHook, writableTmpDirAsHomeHook, profile, attestor }:
 let
   node = nodejs_22;
   pnpm = pnpm_10.override {
@@ -22,7 +22,9 @@ let
       ../packages/demo-wallet/package.json
     ];
   };
-  environment = profile // { TZ = "UTC"; LANG = "C.UTF-8"; };
+  # The helper's store path in the launcher's baked environment is also what puts it in the image.
+  environment = profile // { TZ = "UTC"; LANG = "C.UTF-8"; }
+    // lib.optionalAttrs (attestor != null) { ENCLAVE_ATTESTOR_PATH = lib.getExe attestor; };
   header = writeText "lnurl-profile.h" ''
     #include <stddef.h>
     static char *app_env[] = {

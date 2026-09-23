@@ -9,15 +9,21 @@
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
       profile = builtins.fromJSON (builtins.readFile ./nix/profile.json);
-      app = pkgs.callPackage ./nix/package.nix { inherit profile; };
+      attestor = pkgs.callPackage ./nix/attestor.nix { };
+      app = pkgs.callPackage ./nix/package.nix { inherit profile; attestor = null; };
+      appAttest = pkgs.callPackage ./nix/package.nix { inherit profile attestor; };
+      eifOf = app: (enclave.lib.buildEif {
+        inherit pkgs app;
+        env = profile;
+      }).overrideAttrs (_: { allowSubstitutes = false; preferLocalBuild = true; });
     in {
       packages.${system} = {
         default = app;
-        inherit app;
-        eif = (enclave.lib.buildEif {
-          inherit pkgs app;
-          env = profile;
-        }).overrideAttrs (_: { allowSubstitutes = false; preferLocalBuild = true; });
+        inherit app attestor;
+        eif = eifOf app;
+        # Opt-in until the helper has quoted on real Nitro: the default image stays as it was.
+        app-attest = appAttest;
+        eif-attest = eifOf appAttest;
       };
       devShells.${system}.default = pkgs.mkShell {
         packages = [ pkgs.nodejs_22 app.pnpm pkgs.jq ];

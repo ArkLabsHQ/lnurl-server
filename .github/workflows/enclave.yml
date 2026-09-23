@@ -38,6 +38,7 @@ jobs:
           mkdir -p "$out"
           app=$(nix build .#app --no-update-lock-file --no-link --print-out-paths -L)
           eif=$(nix build .#eif --no-update-lock-file --no-link --print-out-paths -L)
+          nix build .#attestor --no-update-lock-file --no-link -L
           nix develop --no-update-lock-file --command node scripts/enclave-smoke.mjs "$app"
           nix path-info --recursive --json --json-format 1 "$app" > "$out/closure.json"
           source_hash=$(nix hash path "$(nix eval --raw .#app.source)")
