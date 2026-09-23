@@ -16,6 +16,11 @@ export { LNURL_ARKADE_RAIL, LNURL_LIGHTNING_RAIL, lnurlRails } from "./rail.js";
 export type { LnurlRailDeps } from "./rail.js";
 export { arkadeLnurl, arkadePaymentRouter, encodeLnurl, DEFAULT_RAIL_PRIORITY } from "./wallet.js";
 export type { ArkadeLnurl, ArkadeLnurlConfig, ArkadeLnurlOptions, ArkadeLnurlSource } from "./wallet.js";
+export {
+  OWNER_SETUP_TAG, OWNER_SETUP_VERSION, buildOwnerSetup, decodeOwnerSetup, deriveProtectedToken, encodeOwnerSetup,
+  nextOwnerSetup, ownerPublicKeyOf, ownerSetupDigest, rotateOwnerSetup, signOwnerSetup, verifyFetchedSetup,
+} from "./setup.js";
+export type { OwnerSetup, OwnerSetupIntent, OwnerSetupParams, OwnerSetupRail, SignedOwnerSetup } from "./setup.js";
 
 /** The slice of `@arkade-os/sdk`'s `Identity` these helpers need. */
 export interface ArkadeSigner {

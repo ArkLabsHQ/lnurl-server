@@ -5,9 +5,9 @@ import { ArkAddress } from "@arkade-os/sdk";
 import { isRailId, type RailId } from "../rails.js";
 
 /**
- * Canonical encoding for an owner-signed receive setup. Not wired into any
- * route yet: this is the primitive Task 4 needs, proposed ahead of the rest so
- * the bytes a wallet must sign can be reviewed on their own.
+ * Canonical encoding for an owner-signed receive setup. The client mirrors it
+ * byte for byte (packages/client/src/setup.ts), and
+ * test/client-owner-setup.test.ts holds the two together.
  *
  * Signed with schnorr rather than the ECDSA the session token pins. That pin
  * exists because a token derived from a signature has to be deterministic; a

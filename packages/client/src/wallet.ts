@@ -10,9 +10,11 @@ import {
   type Wallet,
 } from "@arkade-os/sdk";
 import { bech32 } from "@scure/base";
-import { arkadeIdentityRequest, deriveSessionTokenForIdentity, type ArkadeSigner } from "./arkade.js";
+import { arkadeIdentityRequest, claimPublicKeyOf, deriveSessionTokenForIdentity, type ArkadeSigner } from "./arkade.js";
 import { LnurlError } from "./errors.js";
 import { createLnurlClient, type LnurlClient } from "./index.js";
+import type { OwnerSetupResult } from "./owner-setup-api.js";
+import { buildOwnerSetup, deriveProtectedToken, signOwnerSetup, type OwnerSetupRail } from "./setup.js";
 import { lnurlRails } from "./rail.js";
 import { syncPayments, type PaymentSyncStore, type StoredPayment } from "./sync.js";
 import type { PayRequest, PaymentPage } from "./types.js";
@@ -38,6 +40,9 @@ export interface ArkadeLnurlConfig {
   store?: PaymentSyncStore;
   lightningRail?: PaymentRail;
   client?: LnurlClient;
+  /** What `claimProtected` enrolls into: the server's measured deployment and network, and
+   *  the domain's tenant (the domain by default). The server refuses a setup naming others. */
+  protectedSetup?: { deployment: string; network: string; tenant?: string };
 }
 
 export interface ArkadeLnurl {
@@ -47,6 +52,10 @@ export interface ArkadeLnurl {
   /** Both halves matter: until the bind lands the address advertises no
    *  `paymentOptions` at all, so offline receive does not exist. */
   claim(username: string): Promise<{ username: string; lightningAddress: string }>;
+  /** A protected address's read-only credential: payment history, never setup or routing. */
+  protectedToken(): Promise<string>;
+  /** Enrolls `username` as an owner-signed address that routes only to this wallet. */
+  claimProtected(username: string, rails: readonly OwnerSetupRail[]): Promise<OwnerSetupResult>;
   lightningAddress(username: string): string;
   /** Addressed through `baseUrl`, not the LUD-16 domain, which drops the port. */
   payRequest(username: string): Promise<PayRequest>;
@@ -100,6 +109,8 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
 
   let tokenOnce: Promise<string> | undefined;
   const token = (): Promise<string> => (tokenOnce ??= deriveSessionTokenForIdentity(identity, domain));
+  let protectedOnce: Promise<string> | undefined;
+  const protectedToken = (): Promise<string> => (protectedOnce ??= deriveProtectedToken(identity, domain));
 
   let routerOnce: PaymentRouter | undefined;
   const router = (): PaymentRouter => {
@@ -136,6 +147,19 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
         }),
       );
       return { username: registered.username, lightningAddress: registered.lightningAddress };
+    },
+    protectedToken,
+    async claimProtected(username, rails) {
+      if (!opts.protectedSetup) throw new LnurlError("claimProtected needs protectedSetup (deployment and network) in arkadeLnurl's config");
+      const { deployment, network, tenant = domain } = opts.protectedSetup;
+      const { arkadeAddress, boardingAddress } = await addresses();
+      const setup = await buildOwnerSetup(identity, {
+        deployment, tenant, network, domain, username: username.toLowerCase(), rails,
+        arkadeDestination: arkadeAddress, claimPublicKey: await claimPublicKeyOf(identity),
+        ...(boardingAddress ? { boardingAddress } : {}),
+      });
+      const { payload, signature } = await signOwnerSetup(identity, setup);
+      return client.submitOwnerSetup({ payload, signature, token: await protectedToken() });
     },
     lightningAddress: (username) => `${username.toLowerCase()}@${domain}`,
     lnurl: (username) => encodeLnurl(`${baseUrl}/.well-known/lnurlp/${username.toLowerCase()}`),
