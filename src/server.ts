@@ -646,8 +646,8 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       // Per-address rail policy: a disabled rail fails loudly instead of serving.
       const railCaps = currentRailCaps();
       const railStates = railStatesFor(address, railCaps);
-      if (resolved.kind === "destination" && railStates.get("arkade")?.enabled === false) {
-        res.json({ status: "ERROR", reason: "paymentOption arkade is disabled for this address" } satisfies LnurlErrorResponse);
+      if (resolved.kind === "destination" && railStates.get(resolved.paymentOption)?.enabled === false) {
+        res.json({ status: "ERROR", reason: `paymentOption ${resolved.paymentOption} is disabled for this address` } satisfies LnurlErrorResponse);
         return;
       }
 
@@ -676,9 +676,9 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           res.status(429).json({ status: "ERROR", reason: "Too many requests" } satisfies LnurlErrorResponse);
           return;
         }
-        const arkadeBounds = optionBounds("arkade", railAddress, railCaps, base) ?? base;
-        if (amountMsat < arkadeBounds.min || amountMsat > arkadeBounds.max) {
-          res.json({ status: "ERROR", reason: `Amount must be between ${arkadeBounds.min} and ${arkadeBounds.max} millisats` } satisfies LnurlErrorResponse);
+        const destinationBounds = optionBounds(resolved.paymentOption, railAddress, railCaps, base) ?? base;
+        if (amountMsat < destinationBounds.min || amountMsat > destinationBounds.max) {
+          res.json({ status: "ERROR", reason: `Amount must be between ${destinationBounds.min} and ${destinationBounds.max} millisats` } satisfies LnurlErrorResponse);
           return;
         }
         // LUD-XX (lnurl/luds#303): a non-pr option MUST honor the requested amount
