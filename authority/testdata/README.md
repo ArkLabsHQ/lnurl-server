@@ -5,3 +5,6 @@ own timestamp.
 
 `wire-vectors.json` is written by `go test ./internal/wire -update` and read by both the Go and the
 TypeScript encoders.
+
+`statement-signature.json` is a statement signed by a throwaway P-256 key, written by
+`go test ./internal/sign -update`; the TypeScript tests verify it with `node:crypto`.
