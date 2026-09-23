@@ -249,6 +249,51 @@ const MIGRATIONS: Migration[] = [
       );
     },
   },
+  {
+    version: 15,
+    // Owner-signed setups: the append-only chain, and each identity's head, which is also
+    // its tombstone. Keyed by domain and username as text, not by foreign key: deleting a
+    // domain cascades its addresses, and a tombstone has to outlive that.
+    up: `
+      ALTER TABLE domains ADD COLUMN tenant TEXT;
+      UPDATE domains SET tenant = domain WHERE tenant IS NULL;
+
+      CREATE TABLE owner_setups (
+        id                INTEGER PRIMARY KEY,
+        domain            TEXT NOT NULL,
+        username          TEXT NOT NULL,
+        tenant            TEXT NOT NULL,
+        revision          INTEGER NOT NULL,
+        digest            TEXT NOT NULL UNIQUE,
+        previous_digest   TEXT,
+        intent            TEXT NOT NULL,
+        payload           BLOB NOT NULL,
+        signature         BLOB NOT NULL,
+        countersignature  BLOB,
+        signer_public_key BLOB NOT NULL,
+        owner_public_key  BLOB NOT NULL,
+        accepted_at       INTEGER NOT NULL,
+        UNIQUE(domain, username, revision)
+      );
+
+      CREATE TABLE owner_identities (
+        domain            TEXT NOT NULL,
+        username          TEXT NOT NULL,
+        tenant            TEXT NOT NULL,
+        address_id        INTEGER REFERENCES addresses(id) ON DELETE SET NULL,
+        current_revision  INTEGER NOT NULL,
+        current_digest    TEXT NOT NULL,
+        owner_public_key  BLOB NOT NULL,
+        state             TEXT NOT NULL,
+        suspended_at      INTEGER,
+        suspension_reason TEXT,
+        created_at        INTEGER NOT NULL,
+        updated_at        INTEGER NOT NULL,
+        PRIMARY KEY (domain, username)
+      );
+      CREATE INDEX idx_owner_identities_address ON owner_identities(address_id) WHERE address_id IS NOT NULL;
+    `,
+  },
 ];
 
 export const LATEST_MIGRATION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

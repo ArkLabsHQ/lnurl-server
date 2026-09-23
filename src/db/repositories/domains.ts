@@ -4,6 +4,7 @@ import type { AllocationMode, CreateDomainParams, DomainRow } from "../types.js"
 interface DomainRecord {
   id: number;
   domain: string;
+  tenant: string;
   allocation_modes: string;
   require_api_key: number;
   max_per_session: number | null;
@@ -21,6 +22,7 @@ function rowToDomain(r: DomainRecord): DomainRow {
   return {
     id: r.id,
     domain: r.domain,
+    tenant: r.tenant,
     allocationModes: JSON.parse(r.allocation_modes) as AllocationMode[],
     requireApiKey: r.require_api_key === 1,
     maxPerSession: r.max_per_session,
@@ -43,13 +45,14 @@ export class DomainsRepo {
     const info = this.db
       .prepare(
         `INSERT INTO domains
-           (domain, allocation_modes, require_api_key, max_per_session,
+           (domain, tenant, allocation_modes, require_api_key, max_per_session,
             username_min_len, username_max_len, username_pattern,
             min_sendable, max_sendable, enabled, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         p.domain.toLowerCase(),
+        p.tenant ?? p.domain.toLowerCase(),
         JSON.stringify(p.allocationModes),
         p.requireApiKey ? 1 : 0,
         p.maxPerSession ?? null,

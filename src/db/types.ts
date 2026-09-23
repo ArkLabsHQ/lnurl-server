@@ -7,6 +7,8 @@ export type AddressStatus = "reserved" | "active" | "revoked";
 export interface DomainRow {
   id: number;
   domain: string;
+  /** The provider this domain belongs to, bound into every owner-signed setup. */
+  tenant: string;
   allocationModes: AllocationMode[];
   requireApiKey: boolean;
   maxPerSession: number | null;
@@ -22,6 +24,8 @@ export interface DomainRow {
 
 export interface CreateDomainParams {
   domain: string;
+  /** Defaults to the domain itself. */
+  tenant?: string;
   allocationModes: AllocationMode[];
   requireApiKey?: boolean;
   maxPerSession?: number | null;

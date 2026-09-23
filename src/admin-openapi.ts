@@ -28,6 +28,7 @@ const Domain = {
   properties: {
     id: { type: "integer" },
     domain: { type: "string" },
+    tenant: { type: "string", description: "The provider this domain belongs to; bound into owner-signed setups" },
     allocationModes: { type: "array", items: { type: "string", enum: ["self", "random", "admin"] } },
     requireApiKey: { type: "boolean" },
     maxPerSession: { type: "integer", nullable: true },
@@ -46,6 +47,7 @@ const domainBody = {
   type: "object",
   properties: {
     domain: { type: "string", description: "Domain name (lowercased)" },
+    tenant: { type: "string", description: "Set at creation only; defaults to the domain name" },
     allocationModes: { type: "array", items: { type: "string", enum: ["self", "random", "admin"] } },
     requireApiKey: { type: "boolean" },
     enabled: { type: "boolean" },

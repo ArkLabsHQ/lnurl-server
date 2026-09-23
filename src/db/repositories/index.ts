@@ -6,6 +6,7 @@ import { ApiKeysRepo } from "./api-keys.js";
 import { SettingsRepo } from "./settings.js";
 import { SolverCardsRepo } from "./solver-cards.js";
 import { SolverRegistryCacheRepo } from "./solver-registry-cache.js";
+import { OwnerSetupsRepo } from "./owner-setups.js";
 
 export interface Repositories {
   domains: DomainsRepo;
@@ -15,6 +16,7 @@ export interface Repositories {
   settings: SettingsRepo;
   solverCards: SolverCardsRepo;
   solverRegistryCache: SolverRegistryCacheRepo;
+  ownerSetups: OwnerSetupsRepo;
 }
 
 export function createRepositories(db: Db): Repositories {
@@ -26,5 +28,6 @@ export function createRepositories(db: Db): Repositories {
     settings: new SettingsRepo(db),
     solverCards: new SolverCardsRepo(db),
     solverRegistryCache: new SolverRegistryCacheRepo(db),
+    ownerSetups: new OwnerSetupsRepo(db),
   };
 }
