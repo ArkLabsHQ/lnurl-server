@@ -127,6 +127,32 @@ What cannot be claimed yet:
 - **The pinned key inherits #194.** The authority's public keys belong in the measured profile, where the launcher's baked environment is what protects them; #194 is the ability to start something other than the launcher.
 - **No deployment exists**: no table, no KMS key, no network path. That waits for the security account's operator.
 
+## Protected Ownership
+
+**This is owner-signed enforcement without attestation proofs.** A wallet can check an owner's signature before paying, but cannot yet prove it is talking to approved code. It is also only as strong as checkpoint freshness: see the limits below.
+
+An address is protected when an owner identity exists for its name. That is committed state, not configuration: no flag, admin setting or missing document turns protection off, because none of them can delete the row.
+
+| Variable | Meaning |
+| --- | --- |
+| `ENCLAVE_PROTECTED_SETUP` | `1` opens enrollment. It needs `ENCLAVE_DEPLOYMENT`, `ENCLAVE_NETWORK` and a file-backed `DB_PATH`, or the process refuses to start. Enforcement over existing identities never reads it. |
+| `ENCLAVE_NETWORK` | The network setups are accepted for: `bitcoin`, `signet`, `mutinynet` or `regtest`. It is measured, not learned from arkd: arkd is reached through the host, so its `/v1/info` network is only cross-checked at boot, and a mismatch stops the boot. |
+
+**The setup.** The owner signs (BIP340, over a tagged digest) a canonical record naming the deployment, tenant, network, domain, username, Arkade destination, claim key, rails, revision and previous digest. `POST /lnurl/setup` takes the bytes; revision 1 is signed by its own key, every later one by the committed key, and a rotation also carries the new key's countersignature. The bytes are stored verbatim. `GET /lnurl/setup` serves them with the key that signed, for verification before paying, and `/lnurl/setup/history` walks the chain back to a revision a verifier pinned. The client's `@arkade-os/lnurl-client/arkade` builds, signs and verifies them, and `deriveProtectedToken` gives the address a read-only credential for its payment history, separate from the session token.
+
+**Routing.** The payRequest and callback build every routing input from the committed setup: the destination, the claim key, and the rails, as the complement of the owner's list. The address row's payout columns are still written for advertising and the admin views, but the money path does not read them. A live session never routes a protected address. When none of the owner's rails can serve, the callback refuses and says why rather than falling back.
+
+**What the operator loses.** On a protected address these answer `409 protected_address`: the bearer `arkade` and `DELETE` routes, admin rail policy, status and delete, deleting its domain, and reserving, minting or registering a name an identity holds. A changed domain tenant is refused outright. Opening a session with a protected address's token answers 409. `POST /admin/api/addresses/:id/suspend` is the availability tool: it refuses service with a provider-suspension reason while leaving the signed revision, digest and key untouched, so a verifier can tell a provider that stopped serving from an owner who changed something.
+
+**Tombstones.** A name an identity holds is never reassigned, even after its address row is gone. Only a revision its owner signs re-links it. A lost owner key therefore freezes the name for good: v1 has no recovery path, because any recovery path is a reassignment path.
+
+What cannot be claimed yet:
+
+- **A rollback erases enrollments.** Restoring a checkpoint from before an enrollment removes the identity and its protection, after which the name can be reassigned. Closing that needs the checkpoint authority running, which waits on the attestor (above).
+- **The research profile does not enable it.** That profile runs without a database, and a database here needs a token key with a safe source.
+- **A 503 does not undo a setup write.** It lands with the next checkpoint. Re-read the setup and resubmit the same bytes, which is idempotent.
+- **#194 applies** as it does to everything else below.
+
 ## Security Blockers
 
 The pinned runtime allows its SSM overlay to replace `APP_BINARY_NAME` and passes broad environment values to the selected child. A local reproduction against that exact source confirmed the application launcher can be bypassed. Filed upstream as [ArkLabsHQ/enclave#194](https://github.com/ArkLabsHQ/enclave/issues/194). The native LNURL launcher only protects launches that actually reach it. Reproducible PCRs do not cure mutable post-measurement execution. This must be fixed upstream or prevented by independently governed, verified deployment controls before protecting user data.
