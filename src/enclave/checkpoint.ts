@@ -7,6 +7,7 @@ import { openDb, type Db } from "../db/connection.js";
 import { LATEST_MIGRATION, runMigrations } from "../db/migrations.js";
 import { checkpointPrefix } from "./checkpoint-key.js";
 import type { EnclaveStorage } from "./storage.js";
+import type { WireHead } from "./authority-wire.js";
 
 const SCHEMA = "lnurl.enclave.checkpoint.v2";
 
@@ -96,6 +97,14 @@ function openSealed(seal: CheckpointSeal, aad: Buffer, stored: Uint8Array): Buff
   }
 }
 
+/** A head as the checkpoint authority carries it, whose `sealEpoch` is this `epoch`. */
+export function headFromWire(w: WireHead): CheckpointHead {
+  return {
+    schema: w.schema as typeof SCHEMA, prefix: w.prefix, sequence: w.sequence, digest: w.digest, size: w.size,
+    ciphertextDigest: w.ciphertextDigest, key: w.key, schemaVersion: w.schemaVersion, epoch: w.sealEpoch, previousDigest: w.previousDigest,
+  };
+}
+
 function parseHead(value: Uint8Array | undefined, prefix: string): CheckpointHead | undefined {
   if (!value) return undefined;
   let head: CheckpointHead;
@@ -104,6 +113,10 @@ function parseHead(value: Uint8Array | undefined, prefix: string): CheckpointHea
   } catch {
     throw new Error("checkpoint head is not valid JSON");
   }
+  return checkedHead(head, prefix);
+}
+
+function checkedHead(head: CheckpointHead, prefix: string): CheckpointHead {
   const hex64 = (v: unknown): boolean => typeof v === "string" && /^[0-9a-f]{64}$/.test(v);
   if (
     head?.schema !== SCHEMA
@@ -129,14 +142,22 @@ export async function restoreCheckpoint(options: {
   seal: CheckpointSeal;
   expectedDigest?: string;
   minSequence?: number;
+  /** The head a verified authority statement named, or null for none committed. When
+   *  given, HEAD.json is never read. */
+  authorityHead?: CheckpointHead | null;
 }): Promise<{ db: Db; head: CheckpointHead } | undefined> {
   assertSeal(options.seal);
   const prefix = checkpointPrefix(options.prefix);
-  const head = parseHead(await options.storage.load(`${prefix}${headSuffix}`), prefix);
+  const fromAuthority = options.authorityHead !== undefined;
+  const head = fromAuthority
+    ? options.authorityHead && checkedHead(options.authorityHead, prefix)
+    : parseHead(await options.storage.load(`${prefix}${headSuffix}`), prefix);
   if (!head) {
     // The chain in a head is self-consistent at every sequence, so replaying an
     // older one is indistinguishable from the truth without an outside opinion.
-    if (options.expectedDigest || options.minSequence) throw new Error("checkpoint head is pinned but the host served none");
+    if (options.expectedDigest || options.minSequence) {
+      throw new Error(`checkpoint head is pinned but ${fromAuthority ? "the authority names" : "the host served"} none`);
+    }
     return undefined;
   }
   if (options.expectedDigest && head.ciphertextDigest !== options.expectedDigest) {

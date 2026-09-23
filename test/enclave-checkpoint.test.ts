@@ -10,8 +10,9 @@ import { openDb } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { DomainsRepo } from "../src/db/repositories/domains.js";
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
-import { createCheckpointStore, restoreCheckpoint, sha256 } from "../src/enclave/checkpoint.js";
+import { createCheckpointStore, headFromWire, restoreCheckpoint, sha256 } from "../src/enclave/checkpoint.js";
 import type { EnclaveStorage } from "../src/enclave/storage.js";
+import type { WireHead } from "../src/enclave/authority-wire.js";
 
 class MemoryStorage implements EnclaveStorage {
   readonly objects = new Map<string, Uint8Array>();
@@ -244,6 +245,52 @@ describe("enclave checkpoint store", () => {
     const restored = await restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: SEAL });
     expect(restored!.db.prepare("SELECT updated_at AS u FROM domains").get()).toEqual({ u: 2 });
     await restored!.db.close();
+  });
+
+  it("restores the exact object the authority names, whatever HEAD.json says", async () => {
+    const db = seedDb(1);
+    const storage = new MemoryStorage();
+    const store = createCheckpointStore({ db, storage, prefix: "lnurl/db", seal: SEAL, intervalMs: 60_000 });
+    const first = (await store.flush())!;
+    db.prepare("UPDATE domains SET updated_at = ? WHERE domain = ?").run(2, "wallet-1.invalid");
+    await store.flush();
+    storage.objects.set("lnurl/db/HEAD.json", Buffer.from("not even JSON"));
+    db.close();
+
+    const restored = await restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: SEAL, authorityHead: first });
+    expect(restored!.head.ciphertextDigest).toBe(first.ciphertextDigest);
+    expect(restored!.db.prepare("SELECT updated_at AS u FROM domains").get()).toEqual({ u: 1 });
+    restored!.db.close();
+    await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: SEAL, authorityHead: first, minSequence: 2 }))
+      .rejects.toThrow(/behind the pinned floor/);
+  });
+
+  it("opens a head carried on the authority's wire, epoch-0 objects included", async () => {
+    const db = seedDb(1);
+    const storage = new MemoryStorage();
+    const head = (await createCheckpointStore({ db, storage, prefix: "lnurl/db", seal: SEAL, intervalMs: 60_000 }).flush())!;
+    db.close();
+    const wire: WireHead = {
+      schema: head.schema, prefix: head.prefix, schemaVersion: head.schemaVersion, sealEpoch: head.epoch, sequence: head.sequence,
+      previousDigest: head.previousDigest, digest: head.digest, size: head.size, ciphertextDigest: head.ciphertextDigest, key: head.key,
+    };
+    expect(wire.sealEpoch).toBe(0);
+    const restored = await restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: SEAL, authorityHead: headFromWire(wire) });
+    expect(restored!.head).toEqual(head);
+    restored!.db.close();
+    await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: SEAL, authorityHead: headFromWire({ ...wire, sealEpoch: 1 }) }))
+      .rejects.toThrow(/could not be authenticated/);
+  });
+
+  it("boots empty only when the authority names nothing, and never under a floor", async () => {
+    const db = seedDb(1);
+    const storage = new MemoryStorage();
+    await createCheckpointStore({ db, storage, prefix: "lnurl/db", seal: SEAL, intervalMs: 60_000 }).flush();
+    db.close();
+    expect(storage.objects.has("lnurl/db/HEAD.json")).toBe(true);
+    expect(await restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: SEAL, authorityHead: null })).toBeUndefined();
+    await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: SEAL, authorityHead: null, minSequence: 1 }))
+      .rejects.toThrow(/the authority names none/);
   });
 
   it("answers a barrier without a snapshot while nothing is uncommitted", async () => {
