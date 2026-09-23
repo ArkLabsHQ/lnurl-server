@@ -82,6 +82,29 @@ describe("settleOfflineSwaps", () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_claim_not_durable"'));
   });
 
+  it("starts no claim while the checkpoint store cannot commit its result", async () => {
+    const store = new MemorySettlementStore(60_000);
+    store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const claimed: string[] = [];
+
+    const n = await settleOfflineSwaps(
+      store,
+      {
+        ...creatorReporting(["swap-1"]),
+        selfClaim: async (swapId) => { claimed.push(swapId); return { state: "claimed", arkTxid: `ark-${swapId}` }; },
+      },
+      undefined,
+      undefined,
+      { barrier: async () => {}, writable: () => false },
+    );
+
+    expect(claimed).toEqual([]);
+    // What the solver already did is still recorded; that moves no funds.
+    expect(n).toBe(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_claims_paused"'));
+  });
+
   it("settles from its own claim without asking the solver to confirm it", async () => {
     const store = new MemorySettlementStore(60_000);
     store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });

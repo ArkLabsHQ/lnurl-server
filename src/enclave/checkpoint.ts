@@ -220,6 +220,8 @@ function openRestored(dbPath: string, snapshot: Uint8Array): Db {
 /** Held by anything that must not cause an external effect the enclave could forget. */
 export interface DurabilityBarrier {
   barrier(): Promise<void>;
+  /** False while a checkpoint could not be committed now, so no effect should start. */
+  writable?(): boolean;
 }
 
 export interface CheckpointStore extends DurabilityBarrier {
@@ -408,6 +410,7 @@ export function createCheckpointStore(options: {
   return {
     flush,
     barrier,
+    writable: () => !stopped && last.ok,
     start() {
       timer = setInterval(() => void flush().catch(() => {}), options.intervalMs);
       timer.unref();

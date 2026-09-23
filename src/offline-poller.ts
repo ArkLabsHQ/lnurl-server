@@ -21,11 +21,15 @@ export async function settleOfflineSwaps(
     ? recovered.listPending().map((row) => ({ ...row, swapId: row.recovery.rfqId }))
     : store.listPendingSwaps();
   await creator.prune?.(pending.map((row) => row.swapId));
+  // A claim moves funds and its result has to be checkpointed, so none starts while
+  // that cannot happen. Status checks go on: they only record what the solver did.
+  const claims = Boolean(creator.selfClaim) && (durability?.writable?.() ?? true);
+  if (creator.selfClaim && !claims && pending.length > 0) logger.warn("offline_swap_claims_paused", { pending: pending.length });
   for (const p of pending) {
     // Its own try: the claim precedes settlement, so a claim that keeps failing
     // must never stop the status check that would otherwise resolve the swap.
     let claimed = false;
-    if (creator.selfClaim) {
+    if (claims && creator.selfClaim) {
       try {
         const outcome = await creator.selfClaim(p.swapId, p.preimage, p.recovery);
         if (outcome.state === "claimed") {

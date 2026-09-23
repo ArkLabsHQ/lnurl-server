@@ -419,9 +419,11 @@ describe("enclave checkpoint store", () => {
     authority.down = true;
     await expect(store.barrier()).rejects.toBeInstanceOf(AuthorityUnavailable);
     await expect(store.barrier()).rejects.toBeInstanceOf(AuthorityUnavailable);
+    expect(store.writable?.()).toBe(false);
     authority.down = false;
     await store.barrier();
     expect(authority.sequence).toBe(1);
+    expect(store.writable?.()).toBe(true);
     db.close();
   });
 
@@ -445,6 +447,7 @@ describe("enclave checkpoint store", () => {
       expect(authority.commits).toHaveLength(attempts);
       expect(stops).toHaveLength(1);
       expect(store.status()).toMatchObject({ ok: false, detail: expect.stringContaining("writer stopped") });
+      expect(store.writable?.()).toBe(false);
       db.close();
     }
   });
