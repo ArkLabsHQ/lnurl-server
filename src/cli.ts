@@ -1,8 +1,19 @@
 import { createServer } from "./server.js";
-import { loadConfig } from "./config.js";
+import { assertArkNetwork, loadConfig, type EnclaveCheckpointConfig } from "./config.js";
 import { VERSION } from "./version.js";
 import { SessionManager } from "./session-manager.js";
 import type { Db } from "./db/connection.js";
+import {
+  createCheckpointStore, headFromWire, headToWire, restoreCheckpoint, migrationVersion,
+  type CheckpointHead, type CheckpointSeal, type DurabilityBarrier, type WriterGrant,
+} from "./enclave/checkpoint.js";
+import type { EnclaveStorage } from "./enclave/storage.js";
+import type { EnclaveAttestor } from "./enclave/attestor.js";
+import { AuthorityRefusal, createAuthorityClient, type CheckpointAuthority } from "./enclave/authority-client.js";
+import { encodeActivate, type ActivatePayload, type StatementPayload } from "./enclave/authority-wire.js";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /** Ceiling on the dependency probes boot makes. Generous next to the in-request
@@ -15,15 +26,159 @@ export async function initPersistence(opts: {
   dbPath?: string;
   bootstrapDomain?: string;
   verifyTtlMs?: number;
-}): Promise<Db | null> {
+  checkpoint?: EnclaveCheckpointConfig;
+  /** Where sealed checkpoints live; required when checkpointing is enabled. */
+  storage?: EnclaveStorage;
+  /** Quotes the activation a checkpoint authority requires. */
+  attestor?: EnclaveAttestor;
+  /** In place of a client built from the configuration; for tests. */
+  authorityClient?: CheckpointAuthority;
+}): Promise<{ db: Db; checkpointHead?: CheckpointHead; grant?: WriterGrant } | null> {
   if (!opts.dbPath) return null;
   const { openDb } = await import("./db/connection.js");
   const { runMigrations } = await import("./db/migrations.js");
   const { bootstrap } = await import("./bootstrap.js");
-  const db = openDb(opts.dbPath);
+  const checkpoint = opts.checkpoint;
+  if (!checkpoint?.enabled) {
+    const db = openDb(opts.dbPath);
+    runMigrations(db, { legacySwapTtlMs: opts.verifyTtlMs });
+    bootstrap(db, { bootstrapDomain: opts.bootstrapDomain });
+    return { db };
+  }
+
+  // The enclave boots onto an empty RAM-backed filesystem, so nothing has made the
+  // state directory that DB_PATH sits in.
+  if (opts.dbPath !== ":memory:") mkdirSync(dirname(opts.dbPath), { recursive: true });
+  const storage = opts.storage;
+  if (!storage) throw new Error("checkpointing is enabled but no checkpoint storage was supplied");
+  if (checkpoint.authority && !opts.attestor) {
+    throw new Error("ENCLAVE_AUTHORITY_URL is set, but there is no enclave attestor to quote a writer activation; set ENCLAVE_ATTESTOR_PATH");
+  }
+  const seal = { key: checkpoint.storageKey!, deployment: checkpoint.deployment };
+  if (checkpoint.authority) {
+    const client = opts.authorityClient ?? createAuthorityClient({
+      url: checkpoint.authority.url, deployment: checkpoint.deployment, publicKeys: checkpoint.authority.publicKeys,
+      timeoutMs: checkpoint.authority.timeoutMs, maxSkewMs: checkpoint.authority.maxSkewMs,
+    });
+    return bootUnderAuthority({
+      dbPath: opts.dbPath, bootstrapDomain: opts.bootstrapDomain, verifyTtlMs: opts.verifyTtlMs,
+      checkpoint, storage, seal, client, attestor: opts.attestor!,
+    });
+  }
+  let checkpointHead: CheckpointHead | undefined;
+  let db: Db;
+  const restored = await restoreCheckpoint({
+    dbPath: opts.dbPath,
+    storage,
+    prefix: checkpoint.checkpointKey,
+    seal,
+    expectedDigest: checkpoint.expectedHead,
+    minSequence: checkpoint.minSequence,
+  });
+  if (restored) {
+    db = restored.db;
+    checkpointHead = restored.head;
+  } else {
+    if (!checkpoint.allowGenesis) {
+      throw new Error(
+        "authoritative checkpoint head is missing (set ENCLAVE_CHECKPOINT_ALLOW_GENESIS=1 only for initial deployment)",
+      );
+    }
+    db = openDb(opts.dbPath);
+  }
+  const scratchDir = opts.dbPath === ":memory:" ? undefined : dirname(opts.dbPath);
+  const needsCheckpoint = !checkpointHead;
+  // Read the restored schema version before migrating, so an upgrade that moves it
+  // commits a fresh head instead of leaving the authority pointing at the old one.
+  const previousMigrationVersion = checkpointHead ? migrationVersion(db) : undefined;
   runMigrations(db, { legacySwapTtlMs: opts.verifyTtlMs });
   bootstrap(db, { bootstrapDomain: opts.bootstrapDomain });
-  return db;
+  if (needsCheckpoint) {
+    checkpointHead = await createCheckpointStore({
+      db,
+      storage,
+      prefix: checkpoint.checkpointKey,
+      seal,
+      intervalMs: checkpoint.checkpointIntervalMs,
+      scratchDir,
+    }).flush();
+  } else if (previousMigrationVersion !== migrationVersion(db)) {
+    checkpointHead = await createCheckpointStore({
+      db,
+      storage,
+      prefix: checkpoint.checkpointKey,
+      seal,
+      intervalMs: checkpoint.checkpointIntervalMs,
+      head: checkpointHead,
+      scratchDir,
+    }).flush();
+  }
+  return { db, checkpointHead };
+}
+
+const ACTIVATION_ATTEMPTS = 3;
+
+/** Restore exactly what the authority names, then become its writer on that state. The
+ *  database is not migrated, and nothing is served, until the grant exists. */
+async function bootUnderAuthority(o: {
+  dbPath: string;
+  bootstrapDomain?: string;
+  verifyTtlMs?: number;
+  checkpoint: EnclaveCheckpointConfig;
+  storage: EnclaveStorage;
+  seal: CheckpointSeal;
+  client: CheckpointAuthority;
+  attestor: EnclaveAttestor;
+}): Promise<{ db: Db; checkpointHead?: CheckpointHead; grant: WriterGrant }> {
+  const { openDb } = await import("./db/connection.js");
+  const { runMigrations } = await import("./db/migrations.js");
+  const { bootstrap } = await import("./bootstrap.js");
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const writerPublicKey = Buffer.from(publicKey.export({ format: "jwk" }).x!, "base64url");
+  const prefix = o.checkpoint.checkpointKey;
+  for (let attempt = 1; ; attempt++) {
+    const st = await o.client.state(randomBytes(16));
+    const authorityHead = st.head ? headFromWire(st.head) : null;
+    if (!authorityHead && !o.checkpoint.allowGenesis) {
+      throw new Error("the authority holds no checkpoint for this deployment (set ENCLAVE_CHECKPOINT_ALLOW_GENESIS=1 only for initial deployment)");
+    }
+    const restored = await restoreCheckpoint({
+      dbPath: o.dbPath, storage: o.storage, prefix, seal: o.seal, minSequence: o.checkpoint.minSequence, authorityHead,
+    });
+    const db = restored?.db ?? openDb(o.dbPath);
+    const challenge = await o.client.challenge();
+    const activation: ActivatePayload = {
+      deployment: o.checkpoint.deployment, challengeId: challenge.challengeId, challengeNonce: challenge.nonce, writerPublicKey,
+      releasePolicyVersion: o.checkpoint.authority!.releasePolicyVersion, restored: restored ? headToWire(restored.head) : null,
+    };
+    let granted: StatementPayload;
+    try {
+      const quote = await o.attestor.quote({ nonce: challenge.nonce, userData: createHash("sha256").update(encodeActivate(activation)).digest() });
+      granted = await o.client.activate(activation, privateKey, quote);
+    } catch (error) {
+      db.close();
+      // The head moved between reading it and activating on it: restore the new one.
+      if (error instanceof AuthorityRefusal && error.code === "checkpoint_conflict" && attempt < ACTIVATION_ATTEMPTS) continue;
+      throw error;
+    }
+    if (!Buffer.from(granted.activeWriterPublicKey).equals(writerPublicKey)
+      || (granted.head?.ciphertextDigest ?? null) !== (restored?.head.ciphertextDigest ?? null)) {
+      db.close();
+      throw new Error("the authority's grant is not for this writer on this checkpoint");
+    }
+    const grant: WriterGrant = { client: o.client, deployment: o.checkpoint.deployment, epoch: granted.activeEpoch, writer: privateKey, writerPublicKey };
+    let checkpointHead = restored?.head;
+    const previousMigrationVersion = checkpointHead ? migrationVersion(db) : undefined;
+    runMigrations(db, { legacySwapTtlMs: o.verifyTtlMs });
+    bootstrap(db, { bootstrapDomain: o.bootstrapDomain });
+    if (!checkpointHead || previousMigrationVersion !== migrationVersion(db)) {
+      checkpointHead = await createCheckpointStore({
+        db, storage: o.storage, prefix, seal: o.seal, intervalMs: o.checkpoint.checkpointIntervalMs,
+        ...(checkpointHead ? { head: checkpointHead } : {}), scratchDir: dirname(o.dbPath), authority: grant,
+      }).flush();
+    }
+    return { db, checkpointHead, grant };
+  }
 }
 
 async function main(): Promise<void> {
@@ -35,13 +190,54 @@ async function main(): Promise<void> {
   const runtime = createRuntime(health, config.shutdownTimeoutMs);
   const logger = createLogger();
 
-  const db = await initPersistence({ dbPath: config.dbPath, bootstrapDomain: config.bootstrapDomain, verifyTtlMs: config.verifyTtlMs });
+  // Loaded only when checkpointing, so ordinary deployments never pull in the AWS SDK.
+  let checkpointStorage: EnclaveStorage | undefined;
+  if (config.enclaveCheckpoint.enabled) {
+    const { S3Client } = await import("@aws-sdk/client-s3");
+    const { S3Storage } = await import("./enclave/s3-storage.js");
+    checkpointStorage = new S3Storage({
+      client: new S3Client({ region: config.enclaveCheckpoint.awsRegion }),
+      bucket: config.enclaveCheckpoint.s3Bucket!,
+    });
+  }
+
+  const persistence = await initPersistence({
+    dbPath: config.dbPath,
+    bootstrapDomain: config.bootstrapDomain,
+    verifyTtlMs: config.verifyTtlMs,
+    checkpoint: config.enclaveCheckpoint,
+    storage: checkpointStorage,
+    ...(config.attestorPath ? { attestor: (await import("./enclave/nsm-attestor.js")).nsmAttestor(config.attestorPath) } : {}),
+  });
+  const db = persistence?.db;
   if (config.offlineReceive.enabled && !db) throw new Error("offline receive requires DB_PATH for durable accepted-swap recovery");
   const sessions = new SessionManager();
   runtime.addStop(() => sessions.shutdown("service shutdown"));
+  let durability: DurabilityBarrier | undefined;
   if (db) {
     runtime.setDatabase(db);
     health.register("persistence", () => ({ ok: runtime.resources().dbOpen, detail: "SQLite open" }));
+    if (config.enclaveCheckpoint.enabled) {
+      const store = createCheckpointStore({
+        db,
+        storage: checkpointStorage!,
+        prefix: config.enclaveCheckpoint.checkpointKey,
+        seal: { key: config.enclaveCheckpoint.storageKey!, deployment: config.enclaveCheckpoint.deployment },
+        intervalMs: config.enclaveCheckpoint.checkpointIntervalMs,
+        head: persistence!.checkpointHead,
+        scratchDir: config.dbPath === ":memory:" ? undefined : dirname(config.dbPath!),
+        ...(persistence!.grant ? { authority: persistence!.grant } : {}),
+        // Nothing restarts the enclave's child, so stopping is an outage, not a rollback.
+        onTerminal: (error) => {
+          logger.error("checkpoint_writer_stopped", { error });
+          void runtime.shutdown("checkpoint writer stopped").finally(() => process.exit(1));
+        },
+      });
+      health.register("persistenceCheckpoint", () => store.status());
+      store.start();
+      durability = store;
+      runtime.addStop(() => store.stop());
+    }
   }
   let deps: import("./server.js").ServerDeps | undefined;
   let solverDiscovery: import("./solver-discovery.js").DiscoveryService | undefined;
@@ -122,6 +318,7 @@ async function main(): Promise<void> {
       if (!infoResponse.ok) throw new Error(`Arkade info endpoint: HTTP ${infoResponse.status}`);
       const arkInfo = await infoResponse.json() as { network?: unknown; dust?: unknown };
       arkNetwork = arkInfo.network;
+      assertArkNetwork(config.protectedSetup, arkNetwork);
       const dust = Number(arkInfo.dust);
       if (Number.isSafeInteger(dust) && dust > 0) arkDustSat = dust;
     }
@@ -204,6 +401,12 @@ async function main(): Promise<void> {
       console.log(`covenant destinations: enabled (emulator=${off.emulatorUrl}, recovery=${off.covenantRecoveryDelaySeconds}s)`);
     }
     let watchDestination: ((destination: string) => void) | undefined;
+    let ownerSetups: import("./owner-setup-service.js").OwnerSetupService | undefined;
+    if (config.protectedSetup) {
+      const { OwnerSetupService } = await import("./owner-setup-service.js");
+      ownerSetups = new OwnerSetupService(repos, addressService, { ...config.protectedSetup, enrollment: true });
+      console.log(`protected setup: enrollment open (deployment=${config.protectedSetup.deployment}, network=${config.protectedSetup.network})`);
+    }
     deps = {
       repos,
       addressService,
@@ -213,6 +416,7 @@ async function main(): Promise<void> {
       settlements,
       offlineSwapCreator,
       offlineSwaps,
+      ...(durability ? { durability } : {}),
       ...(solverDiscovery ? { solverDiscovery } : {}),
       ...(config.offlineReceive.arkServerUrl ? { arkServerUrl: config.offlineReceive.arkServerUrl } : {}),
       ...(arkDustSat ? { arkDustSat } : {}),
@@ -221,13 +425,14 @@ async function main(): Promise<void> {
       // Late-bound: the watcher is built below, and nothing calls this until the
       // listeners are accepting, which is later still.
       onDestinationIssued: (destination) => watchDestination?.(destination),
+      ...(ownerSetups ? { ownerSetups } : {}),
     };
     // Every background scheduler registers its stop hook before the listeners
     // begin accepting traffic.
     if (offlineSwapCreator) {
       const { startOfflineSettlementPoller } = await import("./offline-poller.js");
       const { startLockupWatcher } = await import("./lockup-watcher.js");
-      const poller = startOfflineSettlementPoller(settlements, offlineSwapCreator, off.pollIntervalMs, offlineSwaps, logger);
+      const poller = startOfflineSettlementPoller(settlements, offlineSwapCreator, off.pollIntervalMs, offlineSwaps, logger, durability);
       runtime.addStop(poller.stop);
       if (contracts && offlineSwaps) runtime.addStop(startLockupWatcher(contracts, offlineSwaps, poller.trigger, logger));
       const via = `cards:${config.offlineReceive.registryUrls?.[0] ?? config.offlineReceive.cardsFile ?? "network-default"}`;
@@ -256,7 +461,7 @@ async function main(): Promise<void> {
     const adminIndexer = off.arkServerUrl
       ? new (await import("@arkade-os/sdk")).RestIndexerProvider(off.arkServerUrl)
       : undefined;
-    const adminServer = createAdminServer({ repos, addressService, sessions, settings, config, settlements, discovery: solverDiscovery, ...(adminIndexer ? { indexer: adminIndexer } : {}), logger }).listen(config.adminPort, config.adminBind, () => {
+    const adminServer = createAdminServer({ repos, addressService, sessions, settings, config, settlements, discovery: solverDiscovery, ...(adminIndexer ? { indexer: adminIndexer } : {}), ...(durability ? { durability } : {}), logger }).listen(config.adminPort, config.adminBind, () => {
       console.log(`admin server on http://${config.adminBind}:${config.adminPort} (front with a proxy)`);
     });
     runtime.addServer(adminServer);
@@ -300,7 +505,7 @@ async function main(): Promise<void> {
     deps ? { ...deps, health, logger } : { health, logger } as never,
   );
 
-  const publicServer = app.listen(config.port, () => {
+  const publicServer = app.listen({ port: config.port, host: config.publicBind }, () => {
     console.log(`arkade-lnurl listening on ${config.baseUrl} (v${VERSION})`);
     console.log(`  min: ${config.minSendable} msat, max: ${config.maxSendable} msat`);
     console.log(`  invoice timeout: ${config.invoiceTimeoutMs}ms`);

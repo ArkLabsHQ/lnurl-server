@@ -3,7 +3,9 @@ import type { FetchImpl } from "./http.js";
 import { resolve, requestInvoice, pollVerify } from "./payer.js";
 import { openSession } from "./session.js";
 import type { InvoiceResponder, LnurlSession, OpenSessionOptions, SessionHandlers } from "./session.js";
-import { deriveSessionToken, deriveSessionTokenWithSigner, deriveSessionId } from "./token.js";
+import { deriveProtectedTokenWithSigner, deriveSessionToken, deriveSessionTokenWithSigner, deriveSessionId } from "./token.js";
+import { fetchOwnerSetup, fetchOwnerSetupHistory, submitOwnerSetup } from "./owner-setup-api.js";
+import type { FetchedOwnerSetup, OwnerSetupResult, OwnerSetupRevision, OwnerSetupSubmission } from "./owner-setup-api.js";
 // Exported because a consumer validates user input before it has a client:
 // the wallet's send form and its tests need isValidLnUrl on its own.
 import { isLnAddress, isLnUrl, isValidLnUrl, toPayRequestUrl } from "./encoding.js";
@@ -137,6 +139,12 @@ export interface LnurlClient {
    * @returns The payment page with rail-discriminated activity entries.
    */
   listPayments(token: string, username: string, opts?: { domain?: string; since?: number; limit?: number }): Promise<PaymentPage>;
+  /** Submits an owner-signed setup (enroll, update, rotate or revoke). Requires `baseUrl`. */
+  submitOwnerSetup(submission: OwnerSetupSubmission): Promise<OwnerSetupResult>;
+  /** A name's committed owner-signed setup, for `verifyFetchedSetup`. Requires `baseUrl`. */
+  fetchOwnerSetup(domain: string, username: string): Promise<FetchedOwnerSetup>;
+  /** A name's signed revisions, newest first. Requires `baseUrl`. */
+  fetchOwnerSetupHistory(domain: string, username: string, opts?: { limit?: number }): Promise<{ domain: string; username: string; revisions: OwnerSetupRevision[] }>;
 }
 
 /**
@@ -178,14 +186,24 @@ export function createLnurlClient(opts?: LnurlClientOptions): LnurlClient {
       registerArkadeIdentity(needBase("registerArkadeIdentity"), req, fetchImpl),
     listPayments: async (token, username, listOpts) =>
       listPayments(needBase("listPayments"), token, username, listOpts, fetchImpl),
+    submitOwnerSetup: async (submission) =>
+      submitOwnerSetup(needBase("submitOwnerSetup"), submission, fetchImpl),
+    fetchOwnerSetup: async (domain, username) =>
+      fetchOwnerSetup(needBase("fetchOwnerSetup"), domain, username, fetchImpl),
+    fetchOwnerSetupHistory: async (domain, username, historyOpts) =>
+      fetchOwnerSetupHistory(needBase("fetchOwnerSetupHistory"), domain, username, historyOpts, fetchImpl),
   };
 }
 
 /** Lower-level functions, also reachable through `createLnurlClient`; documented at their definition sites. */
 export {
+  deriveProtectedTokenWithSigner,
   deriveSessionId,
   deriveSessionToken,
   deriveSessionTokenWithSigner,
+  fetchOwnerSetup,
+  fetchOwnerSetupHistory,
+  submitOwnerSetup,
   isLnAddress,
   isLnUrl,
   isValidLnUrl,
@@ -215,11 +233,15 @@ export type {
   DestinationResult,
   DestinationVerifyStatus,
   FetchImpl,
+  FetchedOwnerSetup,
   InvoiceResponder,
   InvoiceResult,
   LnurlSession,
   LnurlSurface,
   OpenSessionOptions,
+  OwnerSetupResult,
+  OwnerSetupRevision,
+  OwnerSetupSubmission,
   PayRequest,
   PaymentActivity,
   PaymentOption,

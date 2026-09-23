@@ -10,6 +10,7 @@ import { createRepositories, type Repositories } from "../src/db/repositories/in
 import { AddressService } from "../src/address-service.js";
 import { DbSettlementStore, MemorySettlementStore, type SettlementStore } from "../src/settlement-store.js";
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
+import type { DurabilityBarrier } from "../src/enclave/checkpoint.js";
 import { encryptToken } from "../src/crypto.js";
 import { deriveSessionId } from "../src/session-id.js";
 import type { OfflineSwapCreator, OfflineSwapParams, OfflineSwapResult } from "../src/intent-swap.js";
@@ -61,7 +62,7 @@ class FakeCreator implements OfflineSwapCreator {
   }
 }
 
-function start(repos: Repositories, creator?: OfflineSwapCreator, settlements?: SettlementStore, offlineSwaps?: OfflineSwapStore) {
+function start(repos: Repositories, creator?: OfflineSwapCreator, settlements?: SettlementStore, offlineSwaps?: OfflineSwapStore, durability?: DurabilityBarrier) {
   const server = http.createServer();
   const addressService = new AddressService(repos, KEY);
   return new Promise<{ baseUrl: string; close: () => Promise<void> }>((resolve) => {
@@ -72,7 +73,7 @@ function start(repos: Repositories, creator?: OfflineSwapCreator, settlements?: 
         "request",
         createServer(
           { ...CONFIG, baseUrl },
-          { repos, addressService, settlements, offlineSwapCreator: creator, offlineSwaps },
+          { repos, addressService, settlements, offlineSwapCreator: creator, offlineSwaps, durability },
         ),
       );
       resolve({ baseUrl, close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }) });
@@ -116,6 +117,35 @@ describe("offline receive", () => {
     ctx = await start(repos);
     const res = await req(`${ctx.baseUrl}/lnurl/address/off/arkade`, "POST", "domain.com", { arkadeAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY }, "ab".repeat(32));
     expect(res.status).toBe(404);
+  });
+
+  it("withholds the invoice when the accepted swap cannot be made durable", async () => {
+    const hash = "9b" + "00".repeat(31);
+    const settlements = new DbSettlementStore(db, 60_000);
+    const offlineSwaps = new OfflineSwapStore(db, 60_000);
+    repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
+    ctx = await start(repos, new FakeCreator(hash), settlements, offlineSwaps, {
+      barrier: () => Promise.reject(new Error("checkpoint failed: enclave storage is down")),
+    });
+
+    const res = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=50000`, "GET", "domain.com");
+    expect(res.body).toMatchObject({ status: "ERROR" });
+    expect(res.body.pr).toBeUndefined();
+  });
+
+  it("commits the accepted swap before the barrier it answers behind", async () => {
+    const hash = "9c" + "00".repeat(31);
+    const settlements = new DbSettlementStore(db, 60_000);
+    const offlineSwaps = new OfflineSwapStore(db, 60_000);
+    repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
+    let pendingAtBarrier = -1;
+    ctx = await start(repos, new FakeCreator(hash), settlements, offlineSwaps, {
+      barrier: async () => { pendingAtBarrier = offlineSwaps.listPending().length; },
+    });
+
+    const res = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=50000`, "GET", "domain.com");
+    expect(pendingAtBarrier).toBe(1);
+    expect(res.body.pr).toBe(buildInvoice(hash));
   });
 
   it("creates a swap and returns invoice + verify when the wallet is offline", async () => {

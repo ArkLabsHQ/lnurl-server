@@ -37,7 +37,7 @@ describe("runMigrations", () => {
   it("blocks migration 9 while legacy offline swaps remain unsettled", () => {
     const db = openDb(":memory:");
     runMigrations(db);
-    db.exec("DROP TABLE offline_swaps; ALTER TABLE addresses DROP COLUMN disabled_rails; ALTER TABLE addresses DROP COLUMN boarding_address; DROP INDEX IF EXISTS idx_settlements_address; ALTER TABLE settlements DROP COLUMN address_id; ALTER TABLE settlements DROP COLUMN payout_reference; DELETE FROM schema_migrations WHERE version >= 9;");
+    db.exec("DROP TABLE offline_swaps; ALTER TABLE addresses DROP COLUMN disabled_rails; ALTER TABLE addresses DROP COLUMN boarding_address; DROP INDEX IF EXISTS idx_settlements_address; ALTER TABLE settlements DROP COLUMN address_id; ALTER TABLE settlements DROP COLUMN payout_reference; DROP TABLE owner_setups; DROP TABLE owner_identities; ALTER TABLE domains DROP COLUMN tenant; DELETE FROM schema_migrations WHERE version >= 9;");
     db.prepare("INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, created_at) VALUES ('aa', 'lnbc1', 'offline:1', 0, 'bb', 'legacy-rfq', ?)").run(Date.now());
     expect(() => runMigrations(db)).toThrow(/upgrade blocked.*1 unsettled legacy offline swap/i);
     db.close();
@@ -46,7 +46,7 @@ describe("runMigrations", () => {
   it("allows migration 9 after legacy offline swaps expire", () => {
     const db = openDb(":memory:");
     runMigrations(db);
-    db.exec("DROP TABLE offline_swaps; ALTER TABLE addresses DROP COLUMN disabled_rails; ALTER TABLE addresses DROP COLUMN boarding_address; DROP INDEX IF EXISTS idx_settlements_address; ALTER TABLE settlements DROP COLUMN address_id; ALTER TABLE settlements DROP COLUMN payout_reference; DELETE FROM schema_migrations WHERE version >= 9;");
+    db.exec("DROP TABLE offline_swaps; ALTER TABLE addresses DROP COLUMN disabled_rails; ALTER TABLE addresses DROP COLUMN boarding_address; DROP INDEX IF EXISTS idx_settlements_address; ALTER TABLE settlements DROP COLUMN address_id; ALTER TABLE settlements DROP COLUMN payout_reference; DROP TABLE owner_setups; DROP TABLE owner_identities; ALTER TABLE domains DROP COLUMN tenant; DELETE FROM schema_migrations WHERE version >= 9;");
     db.prepare("INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, created_at) VALUES ('aa', 'lnbc1', 'offline:1', 0, 'bb', 'legacy-rfq', 8000)").run();
 
     expect(() => runMigrations(db, { legacySwapTtlMs: 1000, now: () => 10_000 })).not.toThrow();

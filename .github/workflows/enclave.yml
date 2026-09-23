@@ -1,0 +1,90 @@
+name: enclave-reproducibility
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: enclave-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        builder: [a, b]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
+        with:
+          install_url: https://releases.nixos.org/nix/nix-2.34.7/install
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            sandbox = true
+      - name: Build from a clean checkout
+        env:
+          BUILDER: ${{ matrix.builder }}
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain)"
+          out="$RUNNER_TEMP/lnurl-eif-$BUILDER"
+          mkdir -p "$out"
+          app=$(nix build .#app --no-update-lock-file --no-link --print-out-paths -L)
+          eif=$(nix build .#eif --no-update-lock-file --no-link --print-out-paths -L)
+          nix build .#attestor --no-update-lock-file --no-link -L
+          nix develop --no-update-lock-file --command node scripts/enclave-smoke.mjs "$app"
+          nix path-info --recursive --json --json-format 1 "$app" > "$out/closure.json"
+          source_hash=$(nix hash path "$(nix eval --raw .#app.source)")
+          nix develop --no-update-lock-file --command node scripts/enclave-artifacts.mjs create \
+            --root . --eif "$eif" --closure "$out/closure.json" --profile nix/profile.json \
+            --revision "$(git rev-parse HEAD)" --source-hash "$source_hash" \
+            --builder "$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/$BUILDER" --output "$out/manifest.json"
+          cp "$eif/image.eif" "$eif/pcr.json" nix/profile.json flake.lock pnpm-lock.yaml "$out/"
+          test -z "$(git status --porcelain)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: enclave-${{ matrix.builder }}
+          path: ${{ runner.temp }}/lnurl-eif-${{ matrix.builder }}
+          if-no-files-found: error
+
+  compare:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22.23.1"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: enclave-*
+          path: ${{ runner.temp }}/evidence
+      - name: Require matching independent build evidence
+        run: |
+          node scripts/enclave-artifacts.mjs compare "$RUNNER_TEMP/evidence/enclave-a/manifest.json" "$RUNNER_TEMP/evidence/enclave-b/manifest.json"
+          cmp "$RUNNER_TEMP/evidence/enclave-a/image.eif" "$RUNNER_TEMP/evidence/enclave-b/image.eif"
+
+      # The measurement a verifier pins is what this job exists to establish, so
+      # print it rather than leaving it to be dug out of an artifact.
+      - name: Publish the agreed measurement
+        run: |
+          node -e '
+            const m = require(process.env.RUNNER_TEMP + "/evidence/enclave-a/manifest.json");
+            const rows = Object.entries(m.pcrs).map(([k, v]) => "| `" + k + "` | `" + v + "` |").join("\n");
+            console.log([
+              "### Agreed measurement",
+              "",
+              "Two independent runners produced identical output. Build evidence, not a release approval.",
+              "",
+              "| Register | Value |", "| --- | --- |", rows,
+              "",
+              "Source `" + m.revision + "`, Enclave `" + m.enclaveRevision + "`, unsigned EIF `" + m.eifSha256 + "`.",
+            ].join("\n"));
+          ' >> "$GITHUB_STEP_SUMMARY"

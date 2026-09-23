@@ -1,9 +1,21 @@
 import { describe, it, expect } from "vitest";
-import { loadConfig } from "../src/config.js";
+import { generateKeyPairSync } from "node:crypto";
+import { assertArkNetwork, loadConfig } from "../src/config.js";
 
 const base = { PORT: "3000", BASE_URL: "http://localhost:3000" };
+const SEALED = { ENCLAVE_S3_BUCKET: "lnurl-checkpoints", ENCLAVE_STORAGE_KEY: "11".repeat(32), ENCLAVE_DEPLOYMENT: "lnurl-test" };
 
 describe("loadConfig", () => {
+  it("allows an explicit loopback bind without changing ordinary defaults", () => {
+    expect(loadConfig(base).publicBind).toBeUndefined();
+    expect(loadConfig({ ...base, PUBLIC_BIND: "127.0.0.1" }).publicBind).toBe("127.0.0.1");
+  });
+
+  it("refuses a non-IP public bind so startup cannot depend on host-controlled DNS", () => {
+    expect(() => loadConfig({ ...base, PUBLIC_BIND: "localhost" })).toThrow(/PUBLIC_BIND/);
+    expect(loadConfig({ ...base, PUBLIC_BIND: "::1" }).publicBind).toBe("::1");
+  });
+
   it("defaults to in-memory mode (no dbPath) when DB_PATH is unset", () => {
     const cfg = loadConfig({ ...base });
     expect(cfg.dbPath).toBeUndefined();
@@ -199,6 +211,117 @@ describe("loadConfig", () => {
 
     expect(() => loadConfig({ ...base, OFFLINE_SELF_CLAIM: "true" })).toThrow(/OFFLINE_EMULATOR_URL/);
     expect(() => loadConfig({ ...base, OFFLINE_EMULATOR_URL: "emulator.example" })).toThrow(/http\(s\)/);
+  });
+
+  describe("enclave checkpoints", () => {
+    it("does not change ordinary persistence by default", () => {
+      expect(loadConfig(base).enclaveCheckpoint.enabled).toBe(false);
+      expect(loadConfig(base).dbPath).toBeUndefined();
+    });
+
+    const on = { ...base, ENCLAVE_CHECKPOINT: "1", ...SEALED, ALLOW_INSECURE_TOKEN_STORAGE: "1" };
+
+    it("enables durable checkpoints against the configured bucket, in the runtime's region", () => {
+      const cfg = loadConfig(on);
+      expect(cfg.dbPath).toBe("/run/lnurl/state.sqlite");
+      expect(cfg.enclaveCheckpoint).toMatchObject({
+        enabled: true,
+        s3Bucket: "lnurl-checkpoints",
+        awsRegion: "us-east-1",
+        allowGenesis: false,
+        checkpointIntervalMs: 5_000,
+        checkpointKey: "lnurl/db",
+      });
+      expect(loadConfig({ ...on, ENCLAVE_AWS_REGION: "eu-west-1" }).enclaveCheckpoint.awsRegion).toBe("eu-west-1");
+    });
+
+    it("requires a bucket and an allowed genesis before a fresh head", () => {
+      expect(() => loadConfig({ ...on, ENCLAVE_S3_BUCKET: "" })).toThrow(/ENCLAVE_S3_BUCKET is required/);
+      expect(loadConfig({ ...on, ENCLAVE_CHECKPOINT_ALLOW_GENESIS: "1" }).enclaveCheckpoint.allowGenesis).toBe(true);
+      expect(loadConfig({ ...on, ENCLAVE_CHECKPOINT: "true" }).enclaveCheckpoint.enabled).toBe(false);
+    });
+
+    it("supports a bounded checkpoint cadence and a per-deployment key", () => {
+      const cfg = loadConfig({ ...on, ENCLAVE_CHECKPOINT_INTERVAL_MS: "250", ENCLAVE_CHECKPOINT_KEY: "tenant-a/db" });
+      expect(cfg.enclaveCheckpoint.checkpointIntervalMs).toBe(250);
+      expect(cfg.enclaveCheckpoint.checkpointKey).toBe("tenant-a/db");
+      expect(() => loadConfig({ ...on, ENCLAVE_CHECKPOINT_INTERVAL_MS: "99" })).toThrow(/ENCLAVE_CHECKPOINT_INTERVAL_MS/);
+    });
+
+    it("requires a storage key and deployment, and keeps the storage key apart from the token key", () => {
+      expect(() => loadConfig({ ...on, ENCLAVE_STORAGE_KEY: "" })).toThrow(/ENCLAVE_STORAGE_KEY is required/);
+      expect(() => loadConfig({ ...on, ENCLAVE_DEPLOYMENT: "" })).toThrow(/ENCLAVE_DEPLOYMENT is required/);
+      expect(() => loadConfig({ ...on, ENCLAVE_STORAGE_KEY: "abcd" })).toThrow(/ENCLAVE_STORAGE_KEY must decode to 32 bytes/);
+      expect(() => loadConfig({ ...on, TOKEN_ENCRYPTION_KEY: SEALED.ENCLAVE_STORAGE_KEY })).toThrow(/must differ from TOKEN_ENCRYPTION_KEY/);
+      const cfg = loadConfig(on);
+      expect(cfg.enclaveCheckpoint.deployment).toBe("lnurl-test");
+      expect(cfg.enclaveCheckpoint.storageKey).toEqual(Buffer.from("11".repeat(32), "hex"));
+    });
+
+    it("refuses an in-memory database it could never restore into", () => {
+      expect(() => loadConfig({ ...on, DB_PATH: ":memory:" })).toThrow(/file-backed DB_PATH/);
+      expect(loadConfig({ ...on, DB_PATH: "/run/lnurl/state.sqlite" }).enclaveCheckpoint.enabled).toBe(true);
+    });
+
+    it("pins a head, and refuses one that contradicts the genesis opt-in", () => {
+      const pinned = "ab".repeat(32);
+      expect(loadConfig({ ...on, ENCLAVE_CHECKPOINT_HEAD: pinned }).enclaveCheckpoint.expectedHead).toBe(pinned);
+      expect(() => loadConfig({ ...on, ENCLAVE_CHECKPOINT_HEAD: "AB".repeat(32) })).toThrow(/ENCLAVE_CHECKPOINT_HEAD/);
+      expect(() => loadConfig({ ...on, ENCLAVE_CHECKPOINT_HEAD: pinned, ENCLAVE_CHECKPOINT_ALLOW_GENESIS: "1" })).toThrow(/contradict/);
+    });
+
+    it("rejects a malformed checkpoint key", () => {
+      expect(() => loadConfig({ ...on, ENCLAVE_CHECKPOINT_KEY: "../bad" })).toThrow(/ENCLAVE_CHECKPOINT_KEY/);
+    });
+
+    it("pins the checkpoint authority's keys, and refuses what it could not trust", () => {
+      const spki = (namedCurve: string) =>
+        generateKeyPairSync("ec", { namedCurve }).publicKey.export({ type: "spki", format: "der" }).toString("base64");
+      const p256 = spki("P-256");
+      const url = "https://authority.example";
+      const authority = (extra: Record<string, string>) => loadConfig({ ...on, ENCLAVE_ATTESTOR_PATH: "/nix/store/x-lnurl-attest/bin/lnurl-attest", ...extra });
+
+      const cfg = authority({ ENCLAVE_AUTHORITY_URL: url, ENCLAVE_AUTHORITY_PUBLIC_KEYS: `${p256},${spki("P-256")}` }).enclaveCheckpoint.authority!;
+      expect(cfg).toMatchObject({ url, timeoutMs: 10_000, maxSkewMs: 300_000, releasePolicyVersion: 1 });
+      expect(cfg.publicKeys.map((k) => k.toString("base64"))[0]).toBe(p256);
+      expect(() => authority({ ENCLAVE_AUTHORITY_URL: url })).toThrow(/go together/);
+      expect(() => authority({ ENCLAVE_AUTHORITY_PUBLIC_KEYS: p256 })).toThrow(/go together/);
+      expect(() => authority({ ENCLAVE_AUTHORITY_URL: url, ENCLAVE_AUTHORITY_PUBLIC_KEYS: [p256, p256, p256].join(",") })).toThrow(/two during a rotation/);
+      expect(() => authority({ ENCLAVE_AUTHORITY_URL: url, ENCLAVE_AUTHORITY_PUBLIC_KEYS: spki("P-384") })).toThrow(/P-256/);
+      expect(() => authority({ ENCLAVE_AUTHORITY_URL: url, ENCLAVE_AUTHORITY_PUBLIC_KEYS: "bm90IGEga2V5" })).toThrow(/P-256/);
+      expect(() => authority({ ENCLAVE_AUTHORITY_URL: "ftp://authority.example", ENCLAVE_AUTHORITY_PUBLIC_KEYS: p256 })).toThrow(/http\(s\)/);
+      expect(() => authority({ ENCLAVE_AUTHORITY_URL: url, ENCLAVE_AUTHORITY_PUBLIC_KEYS: p256, ENCLAVE_CHECKPOINT_HEAD: "ab".repeat(32) }))
+        .toThrow(/the authority names the head/);
+      expect(() => authority({ ENCLAVE_AUTHORITY_URL: url, ENCLAVE_AUTHORITY_PUBLIC_KEYS: p256, ENCLAVE_ATTESTOR_PATH: "" }))
+        .toThrow(/needs ENCLAVE_ATTESTOR_PATH/);
+    });
+
+    it("names the NSM helper by absolute path", () => {
+      expect(loadConfig({ ...base, ENCLAVE_ATTESTOR_PATH: "/nix/store/x-lnurl-attest/bin/lnurl-attest" }).attestorPath)
+        .toBe("/nix/store/x-lnurl-attest/bin/lnurl-attest");
+      expect(loadConfig(base).attestorPath).toBeUndefined();
+      expect(() => loadConfig({ ...base, ENCLAVE_ATTESTOR_PATH: "lnurl-attest" })).toThrow(/absolute path/);
+    });
+  });
+
+  it("takes a protected setup's deployment and network from the measured profile, or refuses to start", () => {
+    const protectedOn = {
+      ...base, DB_PATH: "/data/x.db", ALLOW_INSECURE_TOKEN_STORAGE: "1",
+      ENCLAVE_PROTECTED_SETUP: "1", ENCLAVE_DEPLOYMENT: "lnurl-test", ENCLAVE_NETWORK: "regtest",
+    };
+    expect(loadConfig(protectedOn).protectedSetup).toEqual({ deployment: "lnurl-test", network: "regtest" });
+    expect(loadConfig(base).protectedSetup).toBeUndefined();
+    expect(() => loadConfig({ ...protectedOn, ENCLAVE_DEPLOYMENT: "" })).toThrow(/ENCLAVE_DEPLOYMENT is required/);
+    expect(() => loadConfig({ ...protectedOn, ENCLAVE_NETWORK: "testnet" })).toThrow(/ENCLAVE_NETWORK/);
+    expect(() => loadConfig({ ...protectedOn, ENCLAVE_NETWORK: "" })).toThrow(/ENCLAVE_NETWORK/);
+    expect(() => loadConfig({ ...protectedOn, DB_PATH: "" })).toThrow(/file-backed DB_PATH/);
+  });
+
+  it("refuses an arkd serving another network than the measured one", () => {
+    const measured = { deployment: "lnurl-test", network: "regtest" } as const;
+    expect(() => assertArkNetwork(measured, "bitcoin")).toThrow(/measured network is regtest/);
+    expect(() => assertArkNetwork(measured, "regtest")).not.toThrow();
+    expect(() => assertArkNetwork(undefined, "bitcoin")).not.toThrow();
   });
 
   it("rejects malformed registry and dependency URLs", () => {

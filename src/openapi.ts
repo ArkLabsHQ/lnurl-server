@@ -788,3 +788,139 @@ export const openApiSpec = {
     },
   },
 };
+
+const errorBody = (description: string) => ({
+  description,
+  content: { "application/json": { schema: { type: "object", properties: { error: { type: "string" }, code: { type: "string" } } } } },
+});
+
+const nameParams = [
+  { name: "domain", in: "query", required: true, schema: { type: "string" } },
+  { name: "username", in: "query", required: true, schema: { type: "string" } },
+];
+
+const setupRecord = {
+  revision: { type: "integer" },
+  digest: { type: "string", description: "Tagged digest of the payload, 64 hex" },
+  previousDigest: { type: "string", nullable: true },
+  intent: { type: "string", enum: ["enroll", "update", "rotate", "revoke"] },
+  payload: { type: "string", description: "The canonical bytes the owner signed, base64url" },
+  signature: { type: "string", description: "BIP340 signature over the digest, base64url" },
+  countersignature: { type: "string", nullable: true, description: "The new owner key's signature, on a rotation" },
+  signerPublicKey: { type: "string", description: "x-only key the signature verifies under: the owner before this revision" },
+  ownerPublicKey: { type: "string", description: "x-only key this revision grants" },
+  acceptedAt: { type: "integer" },
+};
+
+/** Served only where the measured profile opens enrollment (ENCLAVE_PROTECTED_SETUP=1). */
+const ownerSetupPaths = {
+  "/lnurl/setup": {
+    post: {
+      summary: "Enroll, update, rotate or revoke an owner-signed address",
+      description:
+        "The domain and username come from the signed payload alone. A repeat of the committed payload answers " +
+        "`applied: false`. Once enrolled, the address routes only from its committed setup; its bearer writes, its " +
+        "session and the operator's rail and status controls answer `409 protected_address`.",
+      tags: ["Owner Setup"],
+      requestBody: {
+        required: true,
+        content: { "application/json": { schema: {
+          type: "object",
+          properties: {
+            payload: { type: "string", description: "Canonical setup bytes, base64url" },
+            signature: { type: "string", description: "64-byte BIP340 signature, base64url: the payload's key at revision 1, the committed key after" },
+            countersignature: { type: "string", description: "The new owner key's signature; required when the owner key changes" },
+            token: { type: "string", description: "A fresh hex credential; required when the revision creates the address" },
+          },
+          required: ["payload", "signature"],
+        } } },
+      },
+      responses: {
+        "200": {
+          description: "The identity's head after the submission",
+          content: { "application/json": { schema: {
+            type: "object",
+            properties: {
+              ok: { type: "boolean" },
+              applied: { type: "boolean", description: "False when the payload was already the committed head" },
+              domain: { type: "string" },
+              username: { type: "string" },
+              revision: { type: "integer" },
+              digest: { type: "string" },
+              state: { type: "string", enum: ["active", "revoked"] },
+              lightningAddress: { type: "string" },
+              lnurl: { type: "string" },
+              rails: {
+                type: "object",
+                properties: {
+                  requested: { type: "array", items: { type: "string" } },
+                  effective: { type: "array", items: { type: "object", properties: {
+                    id: { type: "string" }, available: { type: "boolean" }, reason: { type: "string" },
+                  } } },
+                },
+              },
+            },
+          } } },
+        },
+        "400": errorBody("invalid_request, invalid_payload, invalid_token or unsupported_rail"),
+        "401": errorBody("bad_signature"),
+        "403": errorBody("wrong_deployment, wrong_tenant, wrong_network, enrollment_disabled or forbidden_mode"),
+        "404": errorBody("unknown_domain"),
+        "409": errorBody("revision_conflict, username_taken, stale_credential, countersignature_required, already_revoked or limit_reached"),
+        "429": errorBody("rate_limited"),
+        "503": { description: "The write could not be made durable; re-read the setup and resubmit the same bytes" },
+      },
+    },
+    get: {
+      summary: "The committed owner-signed setup, for offline verification",
+      tags: ["Owner Setup"],
+      parameters: nameParams,
+      responses: {
+        "200": {
+          description: "The signed head, with the provider's availability beside it",
+          content: { "application/json": { schema: {
+            type: "object",
+            properties: {
+              domain: { type: "string" },
+              username: { type: "string" },
+              ...setupRecord,
+              state: { type: "string", enum: ["active", "revoked"] },
+              suspended: { type: "boolean", description: "Taken out of service by the provider; the signed head is unchanged" },
+              suspensionReason: { type: "string", nullable: true },
+              deployment: { type: "string" },
+              tenant: { type: "string" },
+            },
+          } } },
+        },
+        "400": errorBody("invalid_request"),
+        "404": errorBody("unknown_identity"),
+      },
+    },
+  },
+  "/lnurl/setup/history": {
+    get: {
+      summary: "The identity's signed revisions, newest first",
+      tags: ["Owner Setup"],
+      parameters: [...nameParams, { name: "limit", in: "query", required: false, schema: { type: "integer", minimum: 1, maximum: 100, default: 20 } }],
+      responses: {
+        "200": {
+          description: "Each revision's signed bytes; previousDigest links it to the one below",
+          content: { "application/json": { schema: {
+            type: "object",
+            properties: {
+              domain: { type: "string" },
+              username: { type: "string" },
+              revisions: { type: "array", items: { type: "object", properties: setupRecord } },
+            },
+          } } },
+        },
+        "400": errorBody("invalid_request"),
+        "404": errorBody("unknown_identity"),
+      },
+    },
+  },
+};
+
+export function publicOpenApiSpec(enrollment: boolean) {
+  return enrollment ? { ...openApiSpec, paths: { ...openApiSpec.paths, ...ownerSetupPaths } } : openApiSpec;
+}

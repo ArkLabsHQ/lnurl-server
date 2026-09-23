@@ -3,6 +3,13 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { hex } from "@scure/base";
 
 const MESSAGE_PREFIX = "lnurl-session:";
+const PROTECTED_PREFIX = "lnurl-protected:";
+
+function domainMessage(prefix: string, kind: string, domain: string): Uint8Array {
+  const normalised = domain.trim().toLowerCase();
+  if (!normalised) throw new Error(`a ${kind} token must be bound to a domain`);
+  return sha256(new TextEncoder().encode(prefix + normalised));
+}
 
 /**
  * The 32-byte digest both derivations sign.
@@ -23,9 +30,14 @@ const MESSAGE_PREFIX = "lnurl-session:";
  * @returns The 32-byte digest to sign.
  */
 export function sessionTokenMessage(domain: string): Uint8Array {
-  const normalised = domain.trim().toLowerCase();
-  if (!normalised) throw new Error("a session token must be bound to a domain");
-  return sha256(new TextEncoder().encode(MESSAGE_PREFIX + normalised));
+  return domainMessage(MESSAGE_PREFIX, "session", domain);
+}
+
+/** The digest a protected address's read credential signs. Separate from the session
+ *  token's, since the server refuses a session for a protected address's token: sharing
+ *  one would cost the same wallet its legacy receive at that domain. */
+export function protectedTokenMessage(domain: string): Uint8Array {
+  return domainMessage(PROTECTED_PREFIX, "protected", domain);
 }
 
 function tokenFromSignature(signature: Uint8Array): string {
@@ -81,7 +93,21 @@ export async function deriveSessionTokenWithSigner(
   signMessage: (message: Uint8Array, signatureType: "ecdsa") => Promise<Uint8Array>,
   domain: string,
 ): Promise<string> {
-  const message = sessionTokenMessage(domain);
+  return tokenWithSigner(signMessage, sessionTokenMessage(domain));
+}
+
+/** {@link deriveSessionTokenWithSigner} for a protected address's read credential. */
+export async function deriveProtectedTokenWithSigner(
+  signMessage: (message: Uint8Array, signatureType: "ecdsa") => Promise<Uint8Array>,
+  domain: string,
+): Promise<string> {
+  return tokenWithSigner(signMessage, protectedTokenMessage(domain));
+}
+
+async function tokenWithSigner(
+  signMessage: (message: Uint8Array, signatureType: "ecdsa") => Promise<Uint8Array>,
+  message: Uint8Array,
+): Promise<string> {
   const first = await signMessage(message, "ecdsa");
   const second = await signMessage(message, "ecdsa");
   if (first.length !== second.length || !first.every((b, i) => b === second[i])) {

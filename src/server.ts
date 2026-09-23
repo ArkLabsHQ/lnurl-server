@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { SessionManager } from "./session-manager.js";
-import { openApiSpec } from "./openapi.js";
+import { publicOpenApiSpec } from "./openapi.js";
 import type { Repositories } from "./db/repositories/index.js";
 import { domainFromHost } from "./http-origin.js";
 import { encodeLnurl } from "./lnurl.js";
@@ -15,10 +15,14 @@ import { isValidToken } from "./usernames.js";
 import { MemorySettlementStore, type SettlementStore } from "./settlement-store.js";
 import type { OfflineSwapCreator } from "./intent-swap.js";
 import type { OfflineSwapStore } from "./offline-swap-store.js";
+import type { DurabilityBarrier } from "./enclave/checkpoint.js";
+import { durableResponses } from "./enclave/durable-responses.js";
 import { HealthRegistry } from "./health.js";
 import { createLogger, type Logger } from "./logger.js";
 import { ArkAddress, BIP21 } from "@arkade-os/sdk";
 import { resolvePaymentOption } from "./payment-options.js";
+import { isProtectedSession, receiveRouting, type OwnerSetupService } from "./owner-setup-service.js";
+import { mountOwnerSetupRoutes } from "./owner-setup-routes.js";
 import {
   advertisedBounds,
   advertisedRailOptions,
@@ -60,7 +64,7 @@ const METADATA_DESCRIPTION = "Arkade LNURL Receive";
 
 const PROVISIONING_STATUS: Record<string, number> = {
   invalid_token: 400, invalid_username: 400, forbidden_mode: 403,
-  blacklisted: 409, taken: 409, limit_reached: 429, invalid_claim: 401,
+  blacklisted: 409, taken: 409, limit_reached: 429, invalid_claim: 401, protected_address: 409,
 };
 
 /** Express types query values as string | string[] | ...; an array (`?a=1&a=2`)
@@ -78,6 +82,9 @@ export interface ServerDeps {
    *  server-orchestrated corridor swap instead of an "offline" error. */
   offlineSwapCreator?: OfflineSwapCreator;
   offlineSwaps?: OfflineSwapStore;
+  /** When set, an accepted swap must reach durable storage before the payer is
+   *  handed the invoice; absent leaves ordinary deployments unchanged. */
+  durability?: DurabilityBarrier;
   /** When set, the arkade rail hands out a per-payment covenant address instead of the
    *  user's static one, so concurrent payments are told apart by script. */
   covenantDestinations?: CovenantDestinationProvider;
@@ -100,6 +107,9 @@ export interface ServerDeps {
   /** Called with a static-rail destination as it is handed out, so a watcher can
    *  register it before the payer pays rather than on its next resync. */
   onDestinationIssued?: (destination: string) => void;
+  /** Opens enrollment of owner-signed identities (/lnurl/setup). Enforcement over the
+   *  identities already committed never depends on it. */
+  ownerSetups?: OwnerSetupService;
   health?: HealthRegistry;
   logger?: Logger;
 }
@@ -113,6 +123,7 @@ async function createOfflineSwapAndRespond(args: {
   creator: OfflineSwapCreator;
   store: SettlementStore;
   offlineSwaps?: OfflineSwapStore;
+  durability?: DurabilityBarrier;
   baseUrl: string;
   amountMsat: number;
   receiveAddress: string;
@@ -125,15 +136,19 @@ async function createOfflineSwapAndRespond(args: {
   logger: Logger;
   requestId: string;
 }): Promise<void> {
-  const { creator, store, offlineSwaps, baseUrl, amountMsat, receiveAddress, claimPublicKey, addressId, paymentQuote, echoLightningOption, res, logger, requestId } = args;
+  const { creator, store, offlineSwaps, durability, baseUrl, amountMsat, receiveAddress, claimPublicKey, addressId, paymentQuote, echoLightningOption, res, logger, requestId } = args;
   try {
     // Caller guarantees whole satoshis (rejected at the route otherwise).
     const swap = await creator.create({ amountSat: amountMsat / 1000, receiveAddress, claimPublicKey });
     const accepted = { paymentHash: swap.preimageHash, pr: swap.invoice, sessionId: `offline:${addressId}`, preimage: swap.preimage, amountMsat, addressId };
     // With DB_PATH, OfflineSwapStore is the single atomic persistence boundary:
     // it writes both settlement and restart recovery rows in one transaction.
-    if (offlineSwaps) offlineSwaps.createAccepted({ ...accepted, recovery: swap.recovery });
-    else store.create({ ...accepted, swapId: swap.swapId });
+    if (offlineSwaps) {
+      offlineSwaps.createAccepted({ ...accepted, recovery: swap.recovery });
+      // Answering with the invoice is what lets a payer act. Under checkpoints the
+      // row has to outlive this enclave first, or a restart forgets the preimage.
+      await durability?.barrier();
+    } else store.create({ ...accepted, swapId: swap.swapId });
     res.json({
       pr: swap.invoice,
       routes: [],
@@ -294,6 +309,8 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     res.setHeader("X-Request-Id", requestId);
     next();
   });
+  // Health is exempt: it has to answer while checkpoints fail, and reports that itself.
+  if (deps?.durability) app.use(durableResponses(deps.durability, logger, ["/livez", "/readyz"]));
 
   app.get("/livez", (_req, res) => res.json({ status: "live" }));
   app.get("/readyz", (_req, res) => {
@@ -302,6 +319,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
   });
 
   // ─── GET / ─────────────────────────────────────────────────────────
+  const openApiSpec = publicOpenApiSpec(Boolean(deps?.ownerSetups));
   // Serves Redocly API docs as the home page.
   app.get("/", (_req, res) => {
     res.send(`<!DOCTYPE html>
@@ -340,6 +358,11 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     const HEX_RE = /^[0-9a-f]+$/i;
     if (providedToken != null && (typeof providedToken !== "string" || providedToken.length < 32 || !HEX_RE.test(providedToken))) {
       res.status(400).json({ error: "token must be a hex string of at least 32 characters" });
+      return;
+    }
+    // Whoever else holds a protected address's token, it opens nothing that can answer for it.
+    if (providedToken && deps?.repos && isProtectedSession(deps.repos, deriveSessionId(providedToken))) {
+      res.status(409).json({ error: "this token belongs to a protected address and cannot open a session" });
       return;
     }
     if (!sessions.canAccept(req.ip, config.maxSessions ?? 5_000, config.maxSessionsPerIp ?? 50, providedToken)) {
@@ -398,6 +421,14 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     });
     res.json(list);
   });
+
+  // Also before /lnurl/:id, which would otherwise take "setup" for a session id.
+  if (deps?.ownerSetups) {
+    mountOwnerSetupRoutes(app, {
+      service: deps.ownerSetups, repos: deps.repos, railCaps: currentRailCaps,
+      ...(deps.registrationLimiter ? { ipLimiter: deps.registrationLimiter } : {}),
+    });
+  }
 
   // ─── GET /lnurl/verify/:paymentHash ──────────────────────────────────
   // LUD-21: the payer polls this to learn whether their invoice settled.
@@ -565,8 +596,13 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         res.json({ status: "ERROR", reason: "Unknown LN address" } satisfies LnurlErrorResponse);
         return;
       }
+      const routing = receiveRouting(repos, domain.domain, address);
+      if (routing.kind === "refused") {
+        res.json({ status: "ERROR", reason: routing.reason } satisfies LnurlErrorResponse);
+        return;
+      }
+      const { railAddress } = routing;
       const origin = `${req.protocol}://${domain.domain}`;
-      const railAddress = { arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, boardingAddress: address.boardingAddress, disabledRails: address.disabledRails };
       const base: Bounds = {
         min: domain.minSendable ?? settings.minSendable(),
         max: domain.maxSendable ?? settings.maxSendable(),
@@ -601,6 +637,14 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         res.json({ status: "ERROR", reason: "Unknown LN address" } satisfies LnurlErrorResponse);
         return;
       }
+      // A protected address routes only from its owner's committed setup: the row's payout
+      // columns, its session and the operator's rail policy are all out of the money path.
+      const routing = receiveRouting(repos, domain.domain, address);
+      if (routing.kind === "refused") {
+        res.json({ status: "ERROR", reason: routing.reason } satisfies LnurlErrorResponse);
+        return;
+      }
+      const { railAddress } = routing;
       const amountStr = strParam(req.query.amount);
       const comment = strParam(req.query.comment);
       if (!amountStr || isNaN(Number(amountStr))) {
@@ -615,7 +659,6 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         max: domain.maxSendable ?? settings.maxSendable(),
       };
       const { min, max } = base;
-      const railAddress = { arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, boardingAddress: address.boardingAddress, disabledRails: address.disabledRails };
       const paymentOptionId = strParam(req.query.paymentOption);
       // Non-positive amounts are refused before the quote/provider path.
       if (amountMsat <= 0) {
@@ -626,16 +669,16 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       // LUD-XX paymentOptions: resolve the wallet's selected rail. "lightning" (or absent)
       // falls through to the BOLT11 flow below; a destination rail (arkade) returns the
       // registered address + a non-`pr` verify record.
-      const resolved = resolvePaymentOption(paymentOptionId, address);
+      const resolved = resolvePaymentOption(paymentOptionId, railAddress);
       if (resolved.kind === "error") {
         res.json({ status: "ERROR", reason: resolved.reason } satisfies LnurlErrorResponse);
         return;
       }
       // Per-address rail policy: a disabled rail fails loudly instead of serving.
       const railCaps = currentRailCaps();
-      const railStates = railStatesFor(address, railCaps);
-      if (resolved.kind === "destination" && railStates.get("arkade")?.enabled === false) {
-        res.json({ status: "ERROR", reason: "paymentOption arkade is disabled for this address" } satisfies LnurlErrorResponse);
+      const railStates = railStatesFor(railAddress, railCaps);
+      if (resolved.kind === "destination" && railStates.get(resolved.paymentOption)?.enabled === false) {
+        res.json({ status: "ERROR", reason: `paymentOption ${resolved.paymentOption} is disabled for this address` } satisfies LnurlErrorResponse);
         return;
       }
 
@@ -664,9 +707,9 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           res.status(429).json({ status: "ERROR", reason: "Too many requests" } satisfies LnurlErrorResponse);
           return;
         }
-        const arkadeBounds = optionBounds("arkade", railAddress, railCaps, base) ?? base;
-        if (amountMsat < arkadeBounds.min || amountMsat > arkadeBounds.max) {
-          res.json({ status: "ERROR", reason: `Amount must be between ${arkadeBounds.min} and ${arkadeBounds.max} millisats` } satisfies LnurlErrorResponse);
+        const destinationBounds = optionBounds(resolved.paymentOption, railAddress, railCaps, base) ?? base;
+        if (amountMsat < destinationBounds.min || amountMsat > destinationBounds.max) {
+          res.json({ status: "ERROR", reason: `Amount must be between ${destinationBounds.min} and ${destinationBounds.max} millisats` } satisfies LnurlErrorResponse);
           return;
         }
         // LUD-XX (lnurl/luds#303): a non-pr option MUST honor the requested amount
@@ -690,12 +733,12 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         // address and must keep it.
         if (
           resolved.paymentOption === "arkade" &&
-          covenantDestinations && railStates.get("covenant")?.available && address.arkadeAddress && address.claimPublicKey
+          covenantDestinations && railStates.get("covenant")?.available && railAddress.arkadeAddress && railAddress.claimPublicKey
         ) {
           try {
             derived = await covenantDestinations.derive({
-              arkadeAddress: address.arkadeAddress,
-              claimPublicKey: address.claimPublicKey,
+              arkadeAddress: railAddress.arkadeAddress,
+              claimPublicKey: railAddress.claimPublicKey,
             });
           } catch (err) {
             console.warn(`covenant destination: derivation failed, using the static address:`, err);
@@ -704,7 +747,8 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         store.create({
           paymentHash: verifyId,
           pr: "",
-          sessionId: address.sessionId ?? `addr:${address.id}`,
+          // Never a protected address's session id, which POST /lnurl/session/:id/settled matches on.
+          sessionId: (routing.kind === "legacy" ? address.sessionId : null) ?? `addr:${address.id}`,
           addressId: address.id,
           paymentOption: resolved.paymentOption,
           paymentDestination: derived?.address ?? resolved.paymentDestination,
@@ -713,6 +757,17 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           // at derivation owns the preimage, the taptree and the payout script.
           ...(derived ? { covenantScript: derived.script } : {}),
         });
+        // Only the contract derive() registered can rebuild this address's tree, so
+        // it has to outlive this enclave before a payer is told where to send.
+        if (derived && deps?.durability) {
+          try {
+            await deps.durability.barrier();
+          } catch (err) {
+            logger.warn("covenant_destination_not_durable", { requestId: res.locals.requestId, error: err });
+            res.json({ status: "ERROR", reason: "Unable to create payment destination" } satisfies LnurlErrorResponse);
+            return;
+          }
+        }
         // Only the static rail: a covenant destination is watched as a contract.
         if (resolved.paymentOption === "arkade" && !derived) {
           deps?.onDestinationIssued?.(resolved.paymentDestination);
@@ -743,7 +798,8 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       // Offline receive: no live SSE session for this address, but it opted in with an
       // Arkade identity, so the server quotes a corridor swap paying it (covclaimd claims it).
       // The corridor never touches the session, so a sessionless address is served too.
-      if (creator && address.arkadeAddress && address.claimPublicKey && (!address.sessionId || !sessions.isActive(address.sessionId))) {
+      const liveSession = routing.kind === "legacy" && address.sessionId !== null && sessions.isActive(address.sessionId);
+      if (creator && railAddress.arkadeAddress && railAddress.claimPublicKey && !liveSession) {
         // Sessionless receive is the offline-swap rail: a disabled policy or an
         // unready discovery fails loudly per request while the process keeps
         // serving interactive sessions (never a silent stall).
@@ -776,14 +832,20 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         offlineQuotes++;
         try {
           await createOfflineSwapAndRespond({
-            creator, store, offlineSwaps: deps.offlineSwaps, baseUrl: settings.baseUrl(), amountMsat,
-            receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, paymentQuote,
+            creator, store, offlineSwaps: deps.offlineSwaps, durability: deps.durability, baseUrl: settings.baseUrl(), amountMsat,
+            receiveAddress: railAddress.arkadeAddress, claimPublicKey: railAddress.claimPublicKey, addressId: address.id, paymentQuote,
             echoLightningOption: Boolean(paymentOptionId), res,
             logger, requestId: res.locals.requestId as string,
           });
         } finally {
           offlineQuotes--;
         }
+        return;
+      }
+
+      if (routing.kind === "protected") {
+        const reason = railStates.get("offline-swap")?.reason ?? "offline receive is not configured";
+        res.json({ status: "ERROR", reason: `lightning receive is unavailable for this address: ${reason}` } satisfies LnurlErrorResponse);
         return;
       }
 
@@ -845,7 +907,13 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         const auth = req.headers.authorization;
         const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
         if (!isValidToken(token)) { res.status(401).json({ error: "Unauthorized" }); return; }
-        const ok = addressService.revokeOwn(domain, req.params.username, token);
+        let ok: boolean;
+        try {
+          ok = addressService.revokeOwn(domain, req.params.username, token);
+        } catch (err) {
+          if (err instanceof ProvisioningError) { res.status(PROVISIONING_STATUS[err.code] ?? 400).json({ error: err.message, code: err.code }); return; }
+          throw err;
+        }
         if (!ok) { res.status(404).json({ error: "Address not found or not owned by this token" }); return; }
         res.json({ ok: true });
       });
@@ -879,11 +947,17 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           res.status(400).json({ error: "boardingAddress must be a non-empty string when provided" });
           return;
         }
-        const ok = addressService.setOfflineReceive(domain, req.params.username, token, {
-          arkadeAddress,
-          claimPublicKey,
-          ...(boardingAddress !== undefined ? { boardingAddress } : {}),
-        });
+        let ok: boolean;
+        try {
+          ok = addressService.setOfflineReceive(domain, req.params.username, token, {
+            arkadeAddress,
+            claimPublicKey,
+            ...(boardingAddress !== undefined ? { boardingAddress } : {}),
+          });
+        } catch (err) {
+          if (err instanceof ProvisioningError) { res.status(PROVISIONING_STATUS[err.code] ?? 400).json({ error: err.message, code: err.code }); return; }
+          throw err;
+        }
         if (!ok) { res.status(404).json({ error: "Address not found or not owned by this token" }); return; }
         res.json({ ok: true });
       });

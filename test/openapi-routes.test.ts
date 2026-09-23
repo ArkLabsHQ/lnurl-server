@@ -11,8 +11,9 @@ import { loadConfig } from "../src/config.js";
 import { DbSettlementStore } from "../src/settlement-store.js";
 import { createServer } from "../src/server.js";
 import { createAdminServer } from "../src/admin-server.js";
-import { openApiSpec } from "../src/openapi.js";
+import { openApiSpec, publicOpenApiSpec } from "../src/openapi.js";
 import { adminOpenApiSpec } from "../src/admin-openapi.js";
+import { OwnerSetupService } from "../src/owner-setup-service.js";
 
 /**
  * Endpoints that serve the specs/docs themselves and are deliberately absent from them:
@@ -75,7 +76,7 @@ interface Fixture {
   adminApp: ReturnType<typeof createAdminServer>;
 }
 
-function buildFixture(): Fixture {
+function buildFixture(opts: { enrollment?: boolean } = {}): Fixture {
   const db = openDb(":memory:");
   runMigrations(db);
   const repos = createRepositories(db);
@@ -89,7 +90,12 @@ function buildFixture(): Fixture {
   const settlements = new DbSettlementStore(db, 86_400_000);
   const publicApp = createServer(
     { port: 0, baseUrl: "http://localhost:3000", minSendable: 1000, maxSendable: 100_000_000, invoiceTimeoutMs: 3000 },
-    { repos, addressService, sessions, settlements },
+    {
+      repos, addressService, sessions, settlements,
+      ...(opts.enrollment
+        ? { ownerSetups: new OwnerSetupService(repos, addressService, { deployment: "lnurl-test", network: "regtest", enrollment: true }) }
+        : {}),
+    },
   );
   const adminApp = createAdminServer({ repos, addressService, sessions, settings, config, settlements });
   return { db, repos, publicApp, adminApp };
@@ -99,6 +105,13 @@ describe("OpenAPI specs vs registered routes", () => {
   it("documents every route createServer registers", () => {
     const { publicApp } = buildFixture();
     expectNoDrift("public", publicApp, openApiSpec, PUBLIC_META);
+  });
+
+  it("documents every route with enrollment open, and serves that document", async () => {
+    const { publicApp } = buildFixture({ enrollment: true });
+    expectNoDrift("public+enrollment", publicApp, publicOpenApiSpec(true), PUBLIC_META);
+    expect(Object.keys((await request(publicApp).get("/openapi.json")).body.paths)).toContain("/lnurl/setup/history");
+    expect(publicOpenApiSpec(false)).toBe(openApiSpec);
   });
 
   it("documents every route createAdminServer registers", () => {

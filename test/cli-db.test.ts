@@ -15,10 +15,10 @@ describe("initPersistence", () => {
   it("opens, migrates, and bootstraps a DB at DB_PATH", async () => {
     dir = mkdtempSync(join(tmpdir(), "lnurl-"));
     const dbPath = join(dir, "lnurl.db");
-    const db = await initPersistence({ dbPath, bootstrapDomain: "domain.com" });
-    expect(db).not.toBeNull();
-    expect(new DomainsRepo(db!).getByDomain("domain.com")?.domain).toBe("domain.com");
-    db!.close();
+    const result = await initPersistence({ dbPath, bootstrapDomain: "domain.com" });
+    expect(result).not.toBeNull();
+    expect(new DomainsRepo(result!.db).getByDomain("domain.com")?.domain).toBe("domain.com");
+    result!.db.close();
   });
 
   it("returns null when no dbPath is configured (in-memory mode)", async () => {

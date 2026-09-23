@@ -1,0 +1,132 @@
+[
+  {
+    "name": "activate-genesis",
+    "kind": "activate",
+    "message": {
+      "deployment": "lnurl-prod",
+      "challengeId": "ch-01",
+      "challengeNonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "writerPublicKey": "e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7",
+      "releasePolicyVersion": 1,
+      "restored": null
+    },
+    "hex": "00236c6e75726c2e656e636c6176652e617574686f726974792e61637469766174652e763101000a6c6e75726c2d70726f64000563682d30310014a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10020e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e70000000100"
+  },
+  {
+    "name": "activate-restored",
+    "kind": "activate",
+    "message": {
+      "deployment": "lnurl-prod",
+      "challengeId": "ch-02",
+      "challengeNonce": "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2",
+      "writerPublicKey": "e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7",
+      "releasePolicyVersion": 2,
+      "restored": {
+        "schema": "lnurl.enclave.checkpoint.v2",
+        "prefix": "lnurl/db",
+        "schemaVersion": 12,
+        "sealEpoch": 3,
+        "sequence": 8,
+        "previousDigest": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "digest": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+        "size": 1310720,
+        "ciphertextDigest": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "key": "lnurl/db/c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3.sqlite.br.enc"
+      }
+    },
+    "hex": "00236c6e75726c2e656e636c6176652e617574686f726974792e61637469766174652e763101000a6c6e75726c2d70726f64000563682d30320014a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a20020e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e70000000201001b6c6e75726c2e656e636c6176652e636865636b706f696e742e763200086c6e75726c2f64620000000c0000000000000003000000000000000801b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d40000000000140000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c300576c6e75726c2f64622f633363336333633363336333633363336333633363336333633363336333633363336333633363336333633363336333633363336333633363336333633363332e73716c6974652e62722e656e63"
+  },
+  {
+    "name": "commit-first",
+    "kind": "commit",
+    "message": {
+      "deployment": "lnurl-prod",
+      "epoch": 1,
+      "operationId": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+      "expectedSequence": 0,
+      "priorDigest": null,
+      "head": {
+        "schema": "lnurl.enclave.checkpoint.v2",
+        "prefix": "lnurl/db",
+        "schemaVersion": 12,
+        "sealEpoch": 1,
+        "sequence": 1,
+        "previousDigest": null,
+        "digest": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+        "size": 1310720,
+        "ciphertextDigest": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "key": "lnurl/db/c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3.sqlite.br.enc"
+      }
+    },
+    "hex": "00216c6e75726c2e656e636c6176652e617574686f726974792e636f6d6d69742e763101000a6c6e75726c2d70726f64000000000000000100203066306630663066306630663066306630663066306630663066306630663066000000000000000000001b6c6e75726c2e656e636c6176652e636865636b706f696e742e763200086c6e75726c2f64620000000c0000000000000001000000000000000100d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d40000000000140000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c300576c6e75726c2f64622f633363336333633363336333633363336333633363336333633363336333633363336333633363336333633363336333633363336333633363336333633363332e73716c6974652e62722e656e63"
+  },
+  {
+    "name": "commit-next",
+    "kind": "commit",
+    "message": {
+      "deployment": "lnurl-prod",
+      "epoch": 3,
+      "operationId": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+      "expectedSequence": 7,
+      "priorDigest": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "head": {
+        "schema": "lnurl.enclave.checkpoint.v2",
+        "prefix": "lnurl/db",
+        "schemaVersion": 12,
+        "sealEpoch": 3,
+        "sequence": 8,
+        "previousDigest": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "digest": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+        "size": 1310720,
+        "ciphertextDigest": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "key": "lnurl/db/c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3.sqlite.br.enc"
+      }
+    },
+    "hex": "00216c6e75726c2e656e636c6176652e617574686f726974792e636f6d6d69742e763101000a6c6e75726c2d70726f64000000000000000300203066306630663066306630663066306630663066306630663066306630663066000000000000000701b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2001b6c6e75726c2e656e636c6176652e636865636b706f696e742e763200086c6e75726c2f64620000000c0000000000000003000000000000000801b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d40000000000140000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c300576c6e75726c2f64622f633363336333633363336333633363336333633363336333633363336333633363336333633363336333633363336333633363336333633363336333633363332e73716c6974652e62722e656e63"
+  },
+  {
+    "name": "statement-empty",
+    "kind": "statement",
+    "message": {
+      "authorityKeyId": "kms-1",
+      "deployment": "lnurl-prod",
+      "callerNonce": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+      "issuedAtUnixMs": 1790000000000,
+      "activeEpoch": 0,
+      "activeWriterPublicKey": "",
+      "releasePolicyVersion": 1,
+      "sequence": 0,
+      "head": null,
+      "currentOperationId": null
+    },
+    "hex": "00246c6e75726c2e656e636c6176652e617574686f726974792e73746174656d656e742e76310100056b6d732d31000a6c6e75726c2d70726f6400105e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e000001a0c4506c00000000000000000000000000000100000000000000000000"
+  },
+  {
+    "name": "statement-full",
+    "kind": "statement",
+    "message": {
+      "authorityKeyId": "kms-1",
+      "deployment": "lnurl-prod",
+      "callerNonce": "5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f",
+      "issuedAtUnixMs": 1790000000001,
+      "activeEpoch": 3,
+      "activeWriterPublicKey": "e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7",
+      "releasePolicyVersion": 2,
+      "sequence": 8,
+      "head": {
+        "schema": "lnurl.enclave.checkpoint.v2",
+        "prefix": "lnurl/db",
+        "schemaVersion": 12,
+        "sealEpoch": 3,
+        "sequence": 8,
+        "previousDigest": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "digest": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+        "size": 1310720,
+        "ciphertextDigest": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "key": "lnurl/db/c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3.sqlite.br.enc"
+      },
+      "currentOperationId": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+    },
+    "hex": "00246c6e75726c2e656e636c6176652e617574686f726974792e73746174656d656e742e76310100056b6d732d31000a6c6e75726c2d70726f6400105f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f000001a0c4506c0100000000000000030020e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e700000002000000000000000801001b6c6e75726c2e656e636c6176652e636865636b706f696e742e763200086c6e75726c2f64620000000c0000000000000003000000000000000801b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d40000000000140000c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c300576c6e75726c2f64622f633363336333633363336333633363336333633363336333633363336333633363336333633363336333633363336333633363336333633363336333633363332e73716c6974652e62722e656e630100203066306630663066306630663066306630663066306630663066306630663066"
+  }
+]

@@ -82,6 +82,27 @@ describe("per-address rail policy", () => {
     expect(live.tag).toBe("payRequest");
   });
 
+  it("rejects paymentOption=onchain when the rail is disabled for the address", async () => {
+    const a = sessionlessIdentity("alice");
+    repos.addresses.setBoardingAddress(a.id, "tb1qboarding");
+    repos.addresses.setDisabledRails(a.id, ["onchain"]);
+    await withServer();
+    const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000&paymentOption=onchain`, "domain.com");
+    expect(cb).toMatchObject({ status: "ERROR", reason: "paymentOption onchain is disabled for this address" });
+  });
+
+  it("holds an onchain callback to the onchain floor it advertised, not the arkade rail's", async () => {
+    const a = sessionlessIdentity("alice");
+    repos.addresses.setBoardingAddress(a.id, "tb1qboarding");
+    await withServer({ onchainMinSat: 10_000 });
+    const meta = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com");
+    expect(meta.paymentOptions).toContainEqual(expect.objectContaining({ id: "onchain", minSendable: 10_000_000 }));
+    const below = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000&paymentOption=onchain`, "domain.com");
+    expect(below).toMatchObject({ status: "ERROR", reason: "Amount must be between 10000000 and 100000000 millisats" });
+    const above = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=20000000&paymentOption=onchain`, "domain.com");
+    expect(above).toMatchObject({ status: "OK", paymentDestination: "tb1qboarding" });
+  });
+
   it("reports a disabled offline rail instead of quoting", async () => {
     const a = sessionlessIdentity("carol");
     repos.addresses.setDisabledRails(a.id, ["offline-swap"]);

@@ -180,9 +180,13 @@ export async function requestOption(
   return body;
 }
 
-/** The boarding address the `onchain` rail hands out — this wallet's funding path. */
-export async function boardingAddressOf(base: string, username: string, sats = 1000): Promise<string> {
-  const { paymentDestination } = await requestOption(base, username, sats, "onchain");
+/** The boarding address the `onchain` rail hands out — this wallet's funding path. Asked at
+ *  the rail's advertised minimum, which the callback enforces like any other bound. */
+export async function boardingAddressOf(base: string, username: string): Promise<string> {
+  const payRequest = await (await fetch(`${base}/.well-known/lnurlp/${username}`)).json();
+  const onchain = (payRequest.paymentOptions ?? []).find((o: { id: string }) => o.id === "onchain");
+  const minSat = Math.ceil(Number(onchain?.minSendable ?? payRequest.minSendable) / 1000);
+  const { paymentDestination } = await requestOption(base, username, minSat, "onchain");
   if (!paymentDestination) throw new Error("onchain rail returned no destination");
   return paymentDestination;
 }

@@ -1,3 +1,9 @@
+import { createPublicKey } from "node:crypto";
+import { isIP } from "node:net";
+import { isAbsolute } from "node:path";
+import { NETWORKS, isNetwork, type Network } from "@arkade-os/solver-discovery";
+import { checkpointPrefix } from "./enclave/checkpoint-key.js";
+
 /** Server-orchestrated offline receive over the Arkade intents corridor. */
 export interface OfflineReceiveConfig {
   enabled: boolean;
@@ -40,8 +46,50 @@ export interface OfflineReceiveConfig {
   pollIntervalMs: number;
 }
 
+export interface AuthorityConfig {
+  url: string;
+  /** SPKI DER of the P-256 keys the authority may sign with; two only during a rotation. */
+  publicKeys: Buffer[];
+  timeoutMs: number;
+  maxSkewMs: number;
+  /** The release this image belongs to, fixed before the build so the operator approves
+   *  exactly these measurements at exactly this version. */
+  releasePolicyVersion: number;
+}
+
+export interface EnclaveCheckpointConfig {
+  enabled: boolean;
+  /** Present: the checkpoint authority, not HEAD.json, names the current snapshot. */
+  authority?: AuthorityConfig;
+  /** Bucket holding this deployment's sealed snapshots and head. */
+  s3Bucket?: string;
+  /** Same variable and default the runtime uses, so the two agree by construction. */
+  awsRegion: string;
+  allowGenesis: boolean;
+  checkpointIntervalMs: number;
+  checkpointKey: string;
+  /** Digest the security administrator says is current. Without it the host
+   *  chooses which history the enclave wakes up on. */
+  expectedHead?: string;
+  /** Floor on the head's sequence. Survives a crash, where nobody outside the
+   *  enclave knows which digest the timer wrote last. */
+  minSequence?: number;
+  /** Bound into every sealed snapshot. Measured, and not SSM-overridable, inside Enclave. */
+  deployment: string;
+  /** Seals snapshots; kept apart from the token key. */
+  storageKey?: Buffer;
+}
+
+/** Opens enrollment of owner-signed identities. Both fields are measured, so the host
+ *  cannot choose which deployment or network a signed setup is accepted for. */
+export interface ProtectedSetupConfig {
+  deployment: string;
+  network: Network;
+}
+
 export interface AppConfig {
   port: number;
+  publicBind?: string;
   baseUrl: string;
   minSendable: number;
   maxSendable: number;
@@ -53,6 +101,10 @@ export interface AppConfig {
    *  because a hold invoice expires and a destination does not. */
   destinationWatchMs: number;
   dbPath?: string;
+  enclaveCheckpoint: EnclaveCheckpointConfig;
+  protectedSetup?: ProtectedSetupConfig;
+  /** The NSM helper (attestor/) that quotes attestation documents. */
+  attestorPath?: string;
   adminPort: number;
   adminBind: string;
   tokenEncryptionKey?: Buffer;
@@ -107,23 +159,125 @@ function rejectRemovedSolverConfig(env: Env): void {
   }
 }
 
-function parseKey(raw: string): Buffer {
+function expectedHead(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  if (!/^[0-9a-f]{64}$/.test(raw)) throw new Error("ENCLAVE_CHECKPOINT_HEAD must be a 64-character lowercase hex digest");
+  return raw;
+}
+
+function authorityConfig(env: Env): AuthorityConfig | undefined {
+  const url = env.ENCLAVE_AUTHORITY_URL || undefined;
+  const keys = env.ENCLAVE_AUTHORITY_PUBLIC_KEYS || undefined;
+  if (!url && !keys) return undefined;
+  if (!url || !keys) throw new Error("ENCLAVE_AUTHORITY_URL and ENCLAVE_AUTHORITY_PUBLIC_KEYS go together: a statement is trusted only under a pinned key");
+  if (!/^https?:$/.test(new URL(url).protocol)) throw new Error("ENCLAVE_AUTHORITY_URL must be an http(s) URL");
+  const publicKeys = keys.split(",").map((k) => Buffer.from(k.trim(), "base64"));
+  if (publicKeys.length > 2) throw new Error("ENCLAVE_AUTHORITY_PUBLIC_KEYS takes one key, or two during a rotation");
+  for (const spki of publicKeys) {
+    let curve: string | undefined;
+    try {
+      curve = createPublicKey({ key: spki, format: "der", type: "spki" }).asymmetricKeyDetails?.namedCurve;
+    } catch {
+      curve = undefined;
+    }
+    if (curve !== "prime256v1") throw new Error("ENCLAVE_AUTHORITY_PUBLIC_KEYS must be base64 SPKI P-256 keys");
+  }
+  return {
+    url, publicKeys,
+    timeoutMs: integer(env, "ENCLAVE_AUTHORITY_TIMEOUT_MS", 10_000, { min: 100 }),
+    maxSkewMs: integer(env, "ENCLAVE_AUTHORITY_SKEW_MS", 300_000, { min: 1_000 }),
+    releasePolicyVersion: integer(env, "ENCLAVE_RELEASE_POLICY_VERSION", 1, { min: 1 }),
+  };
+}
+
+function protectedSetupConfig(env: Env, dbPath: string | undefined): ProtectedSetupConfig | undefined {
+  if (env.ENCLAVE_PROTECTED_SETUP !== "1") return undefined;
+  const deployment = env.ENCLAVE_DEPLOYMENT || "";
+  if (!deployment) throw new Error("ENCLAVE_DEPLOYMENT is required when ENCLAVE_PROTECTED_SETUP=1");
+  const network = env.ENCLAVE_NETWORK;
+  if (!isNetwork(network)) throw new Error(`ENCLAVE_NETWORK must be one of ${NETWORKS.join(", ")} when ENCLAVE_PROTECTED_SETUP=1`);
+  if (!dbPath || dbPath === ":memory:") {
+    throw new Error("ENCLAVE_PROTECTED_SETUP=1 needs a file-backed DB_PATH; an identity must outlive a restart");
+  }
+  return { deployment, network };
+}
+
+/** arkd is reached through the host, so its network is only a cross-check: a
+ *  disagreement stops the boot rather than moving the measured network. */
+export function assertArkNetwork(measured: ProtectedSetupConfig | undefined, reported: unknown): void {
+  if (measured && reported !== measured.network) {
+    throw new Error(`Arkade server reports network ${String(reported)}, but the measured network is ${measured.network}`);
+  }
+}
+
+function parseKey(raw: string, name: string): Buffer {
   const buf = /^[0-9a-fA-F]+$/.test(raw) && raw.length % 2 === 0 ? Buffer.from(raw, "hex") : Buffer.from(raw, "base64");
-  if (buf.length !== 32) throw new Error("TOKEN_ENCRYPTION_KEY must decode to 32 bytes (hex or base64)");
+  if (buf.length !== 32) throw new Error(`${name} must decode to 32 bytes (hex or base64)`);
   return buf;
 }
 
 export function loadConfig(env: Env = process.env): AppConfig {
   rejectRemovedSolverConfig(env);
   const port = integer(env, "PORT", 3000, { min: 1, max: 65_535 });
-  const dbPath = env.DB_PATH || undefined;
+  const publicBind = env.PUBLIC_BIND || undefined;
+  if (publicBind && !isIP(publicBind)) throw new Error("PUBLIC_BIND must be an IP address");
+  const enabled = env.ENCLAVE_CHECKPOINT === "1";
+  const checkpointKey = checkpointPrefix(env.ENCLAVE_CHECKPOINT_KEY || "lnurl/db");
+  const dbPath = env.DB_PATH || (enabled ? "/run/lnurl/state.sqlite" : undefined);
   const allowInsecureTokenStorage = env.ALLOW_INSECURE_TOKEN_STORAGE === "1";
   const traceRequests = env.TRACE_REQUESTS === "1";
   const offlineReceive = buildOfflineReceive(env);
 
+  const authority = authorityConfig(env);
+  const enclaveCheckpoint: EnclaveCheckpointConfig = {
+    enabled,
+    ...(authority ? { authority } : {}),
+    s3Bucket: env.ENCLAVE_S3_BUCKET || undefined,
+    awsRegion: env.ENCLAVE_AWS_REGION || "us-east-1",
+    allowGenesis: env.ENCLAVE_CHECKPOINT_ALLOW_GENESIS === "1",
+    checkpointIntervalMs: integer(env, "ENCLAVE_CHECKPOINT_INTERVAL_MS", 5_000, { min: 100 }),
+    checkpointKey,
+    expectedHead: expectedHead(env.ENCLAVE_CHECKPOINT_HEAD),
+    minSequence: env.ENCLAVE_CHECKPOINT_MIN_SEQUENCE === undefined
+      ? undefined
+      : integer(env, "ENCLAVE_CHECKPOINT_MIN_SEQUENCE", 1, { min: 1 }),
+    deployment: env.ENCLAVE_DEPLOYMENT || "",
+    storageKey: env.ENCLAVE_STORAGE_KEY ? parseKey(env.ENCLAVE_STORAGE_KEY, "ENCLAVE_STORAGE_KEY") : undefined,
+  };
+  if (enabled && !enclaveCheckpoint.s3Bucket) {
+    throw new Error("ENCLAVE_S3_BUCKET is required when ENCLAVE_CHECKPOINT=1");
+  }
+  if (enabled && !enclaveCheckpoint.storageKey) {
+    throw new Error("ENCLAVE_STORAGE_KEY is required when ENCLAVE_CHECKPOINT=1");
+  }
+  if (enabled && !enclaveCheckpoint.deployment) {
+    throw new Error("ENCLAVE_DEPLOYMENT is required when ENCLAVE_CHECKPOINT=1");
+  }
+  // Genesis would accept this and checkpoint away, and only the restore after the
+  // first restart would discover there is nowhere to put the snapshot.
+  if (enabled && dbPath === ":memory:") {
+    throw new Error("ENCLAVE_CHECKPOINT=1 needs a file-backed DB_PATH; a restored snapshot cannot be opened in memory");
+  }
+  if (enclaveCheckpoint.expectedHead && enclaveCheckpoint.allowGenesis) {
+    throw new Error("ENCLAVE_CHECKPOINT_HEAD and ENCLAVE_CHECKPOINT_ALLOW_GENESIS contradict each other");
+  }
+  // Once the authority names the head, a digest pinned by hand can only be stale.
+  if (enclaveCheckpoint.expectedHead && authority) {
+    throw new Error("ENCLAVE_CHECKPOINT_HEAD and ENCLAVE_AUTHORITY_URL contradict each other: the authority names the head");
+  }
+  const protectedSetup = protectedSetupConfig(env, dbPath);
+  const attestorPath = env.ENCLAVE_ATTESTOR_PATH || undefined;
+  if (attestorPath && !isAbsolute(attestorPath)) throw new Error("ENCLAVE_ATTESTOR_PATH must be an absolute path to the NSM helper");
+  if (authority && !attestorPath) {
+    throw new Error("ENCLAVE_AUTHORITY_URL needs ENCLAVE_ATTESTOR_PATH: a writer's activation is quoted by the NSM helper");
+  }
+
   let tokenEncryptionKey: Buffer | undefined;
   if (env.TOKEN_ENCRYPTION_KEY) {
-    tokenEncryptionKey = parseKey(env.TOKEN_ENCRYPTION_KEY);
+    tokenEncryptionKey = parseKey(env.TOKEN_ENCRYPTION_KEY, "TOKEN_ENCRYPTION_KEY");
+  }
+  if (enclaveCheckpoint.storageKey && tokenEncryptionKey?.equals(enclaveCheckpoint.storageKey)) {
+    throw new Error("ENCLAVE_STORAGE_KEY must differ from TOKEN_ENCRYPTION_KEY");
   }
   if (dbPath && !tokenEncryptionKey && !allowInsecureTokenStorage) {
     throw new Error(
@@ -149,6 +303,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
 
   return {
     port,
+    publicBind,
     baseUrl,
     minSendable,
     maxSendable,
@@ -157,6 +312,9 @@ export function loadConfig(env: Env = process.env): AppConfig {
     verifyTtlMs: integer(env, "VERIFY_TTL_MS", 86_400_000, { min: 1 }),
     destinationWatchMs: integer(env, "DESTINATION_WATCH_MS", 604_800_000, { min: 1 }),
     dbPath,
+    enclaveCheckpoint,
+    ...(protectedSetup ? { protectedSetup } : {}),
+    ...(attestorPath ? { attestorPath } : {}),
     adminPort,
     adminBind: env.ADMIN_BIND || "127.0.0.1",
     tokenEncryptionKey,
