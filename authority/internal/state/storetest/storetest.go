@@ -398,6 +398,15 @@ func Run(t *testing.T, open func(t *testing.T) state.Store) {
 		}
 	})
 
+	t.Run("a deployment is created once, and never over an existing record", func(t *testing.T) {
+		h, _ := committed(t)
+		err := h.store.Create(context.Background(), state.Record{Deployment: deployment, Prefix: "lnurl/db"})
+		refused(t, err, state.ErrExists)
+		if r := h.record(); r.Sequence != 2 || r.Epoch != 1 {
+			t.Fatalf("a second create touched the record: %+v", r)
+		}
+	})
+
 	t.Run("an adopted chain continues under the first granted epoch", func(t *testing.T) {
 		adopted := head(5, 0, ptr(digest(0x9f)), 0xa5)
 		h := newHarness(t, open(t), state.Record{Sequence: 5, Checkpoint: &adopted})

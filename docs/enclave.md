@@ -4,7 +4,7 @@ This packages LNURL for Nitro. It is **not a host-tamper-resistant deployment** 
 
 The default profile deliberately uses `lnurl.invalid`, an in-memory application database and no managed application secrets. Existing Docker deployments are unchanged.
 
-What is here is the packaging and its reproducibility evidence, plus durable state that seals SQLite snapshots into S3. **The durable-state half has not yet run against real S3 or on Nitro**, it cannot yet stop a host replaying an older snapshot, and the key that seals its snapshots has no safe source inside an enclave. See Durable State. Signed owner setup, protected payment proofs, client verification and approved key release are likewise not implemented; `src/enclave/owner-setup.ts` is a proposed encoding that binds the design's full field list, but no route reads it and nothing yet stores or enforces a signed setup.
+What is here is the packaging and its reproducibility evidence, plus durable state that seals SQLite snapshots into S3. **The durable-state half has not yet run against real S3 or on Nitro.** The checkpoint authority that stops a host replaying an older snapshot is built but cannot run yet, because activating a writer needs an attestation helper that must first be validated on Nitro. And the key that seals its snapshots has no safe source inside an enclave. See Durable State. Signed owner setup, protected payment proofs, client verification and approved key release are likewise not implemented; `src/enclave/owner-setup.ts` is a proposed encoding that binds the design's full field list, but no route reads it and nothing yet stores or enforces a signed setup.
 
 ## Build
 
@@ -43,9 +43,9 @@ There is no enclave promotion or approval job. Before any protected release, the
 
 > **Not yet exercised against real S3 or on Nitro.** Snapshots go to an S3 bucket through the AWS SDK, reached with the instance role through Enclave's IMDS forwarder: the runtime advertises it as `AWS_EC2_METADATA_SERVICE_ENDPOINT`, and the application inherits that. Tests run the real SDK against a local S3 stand-in, and the packaged image was checked to load the SDK on its own Node. This is the design's LNURL-owned adapter. An earlier version targeted a `/v1/storage` runtime API that Enclave never had; [ArkLabsHQ/enclave#195](https://github.com/ArkLabsHQ/enclave/issues/195) asks for one as an optional convenience, not a prerequisite.
 >
-> Snapshots are sealed with AES-256-GCM under `ENCLAVE_STORAGE_KEY`, with every head field bound as associated data. So a host holding storage cannot read a snapshot, edit one, or fabricate a database behind a head that agrees with it — each fails authentication on restore. What it can still do is **replay an older snapshot that was genuinely sealed**, since every one of those authenticates. That is the rollback problem, and it is what the checkpoint authority exists to close; until then only the manual pins below stand in its way.
+> Snapshots are sealed with AES-256-GCM under `ENCLAVE_STORAGE_KEY`, with every head field bound as associated data. So a host holding storage cannot read a snapshot, edit one, or fabricate a database behind a head that agrees with it — each fails authentication on restore. What it can still do is **replay an older snapshot that was genuinely sealed**, since every one of those authenticates. That is the rollback problem, and it is what the checkpoint authority closes (see Checkpoint Authority below); without one, only the manual pins stand in its way.
 >
-> Two gaps remain. **The key has no safe source yet.** Read from the environment, it is exactly as trustworthy as the environment, which inside Enclave the host can write through the SSM overlay (#194) — so a host that supplies or reads the key defeats all of the above. The seal is only as good as a key released solely to the attested enclave. And **restore still trusts the stored `HEAD.json`** to say which snapshot is current; the design has the authority name it.
+> Two gaps remain. **The key has no safe source yet.** Read from the environment, it is exactly as trustworthy as the environment, which inside Enclave the host can write through the SSM overlay (#194) — so a host that supplies or reads the key defeats all of the above. The seal is only as good as a key released solely to the attested enclave. And without an authority, **restore still trusts the stored `HEAD.json`** to say which snapshot is current; under one, the authority names it and `HEAD.json` is never read.
 
 Nitro gives the workload no persistent disk, so SQLite runs on the enclave's RAM-backed filesystem and durability has to come from snapshots held somewhere outside it. `ENCLAVE_CHECKPOINT=1` turns this on. It is off by default, and nothing below changes an ordinary deployment.
 
@@ -57,10 +57,15 @@ Nitro gives the workload no persistent disk, so SQLite runs on the enclave's RAM
 | `ENCLAVE_CHECKPOINT_KEY` | Object prefix for this deployment, default `lnurl/db`. Traversal is rejected at config load. |
 | `ENCLAVE_CHECKPOINT_INTERVAL_MS` | Background cadence, default `5000`, minimum `100`. |
 | `ENCLAVE_CHECKPOINT_ALLOW_GENESIS` | `1` permits a first boot with no prior head. Initial deployment only. |
-| `ENCLAVE_CHECKPOINT_HEAD` | The ciphertext digest of the snapshot the security administrator says is current. |
+| `ENCLAVE_CHECKPOINT_HEAD` | The ciphertext digest of the snapshot the security administrator says is current. Refused alongside an authority, which names the head itself. |
 | `ENCLAVE_CHECKPOINT_MIN_SEQUENCE` | Lowest head sequence this deployment will restore from. |
 | `ENCLAVE_STORAGE_KEY` | 32-byte key sealing every snapshot, hex or base64. Required when enabled, and must differ from `TOKEN_ENCRYPTION_KEY`. See the key-source caveat above. |
 | `ENCLAVE_DEPLOYMENT` | Deployment identity bound into every seal, so a snapshot cannot be restored into another deployment. Required when enabled. Inside Enclave it comes from the measured profile and the SSM overlay cannot override it. |
+| `ENCLAVE_AUTHORITY_URL` | The checkpoint authority. With the keys below, it becomes the only source of the current head. |
+| `ENCLAVE_AUTHORITY_PUBLIC_KEYS` | Base64 SPKI P-256 keys the authority may sign statements with: one, or two during a rotation. Required with the URL, and refused without it. |
+| `ENCLAVE_AUTHORITY_TIMEOUT_MS` | Per request, default `10000`. |
+| `ENCLAVE_AUTHORITY_SKEW_MS` | How far a statement's timestamp may sit from the enclave's clock, default `300000`. The nonce, not the clock, is what carries freshness. |
+| `ENCLAVE_RELEASE_POLICY_VERSION` | The release this image belongs to, default `1`. Fixed before the build, so the operator approves exactly these measurements at exactly this version. |
 
 Snapshots are taken with `VACUUM INTO`, not `DatabaseSync.serialize`: the pinned Node 22.23.1 has neither `serialize` nor `deserialize` nor `backup` on `node:sqlite`, so anything built on those works only on a newer Node than this image ships. `VACUUM INTO` is byte-stable for unchanged content, so an idle deployment re-advertises its existing head instead of uploading the database again. It stages a full copy in `scratchDir` — the directory holding `DB_PATH` — so budget the database size twice over in enclave memory at checkpoint time.
 
@@ -102,9 +107,25 @@ Nothing in a head reveals a rollback. Every head is internally consistent at eve
 - `ENCLAVE_CHECKPOINT_HEAD` names one exact ciphertext digest, so it only fits a **controlled** restart: flush on shutdown, record the final digest, boot against it. The digest changes on every flush, so a pin set in advance is stale within seconds and a crash would leave the enclave unable to boot at all.
 - `ENCLAVE_CHECKPOINT_MIN_SEQUENCE` names a floor instead, which is what survives a **crash**, where nobody outside the enclave knows which digest the timer wrote last. It blocks any replay below the floor while accepting whatever the enclave legitimately reached above it.
 
-Both are manual stand-ins. The independent checkpoint authority in the approved design — tracking the current head and the active writer — is not built, so an operator advances these by hand and a replay between the floor and the true head is still accepted.
+Both are manual stand-ins for the checkpoint authority below, which names the head itself. Without one, an operator advances these by hand, and a replay between the floor and the true head is still accepted.
 
-Two enclaves sharing one `ENCLAVE_CHECKPOINT_KEY` would each extend their own chain, and whichever wrote `HEAD.json` last would erase the other's history. Before committing a head, a writer re-reads the stored one and refuses if it is not the head it last wrote — so a second enclave started on a live prefix stops at its first checkpoint, and a writer whose head moved underneath it stops too. Both then read unready. This is detection, not mutual exclusion: the window between that read and the write is still open, and closing it needs the authority's compare-and-set.
+Two enclaves sharing one `ENCLAVE_CHECKPOINT_KEY` would each extend their own chain, and whichever wrote `HEAD.json` last would erase the other's history. Without an authority, a writer re-reads the stored head before committing and refuses if it is not the head it last wrote. So a second enclave started on a live prefix stops at its first checkpoint, a writer whose head moved underneath it stops too, and both then read unready. That is detection, with the window between the read and the write still open. Under an authority it is exclusion: a successor's activation increments the epoch, and every commit is conditional on it.
+
+### Checkpoint Authority
+
+`authority/` is the design's independent checkpoint authority: a small Go service over one DynamoDB table, meant for a separate security account. It keeps one bounded record per deployment: the committed checkpoint, the active writer's epoch and per-boot key, and the release policy. Every transition is one conditional write, and every read is strongly consistent. Setting `ENCLAVE_AUTHORITY_URL` and `ENCLAVE_AUTHORITY_PUBLIC_KEYS` makes it the only source of the current head:
+
+- **Boot** generates a per-boot Ed25519 writer key and reads a statement signed by a pinned key and echoing a fresh nonce. It restores exactly the checkpoint that statement names, never reading `HEAD.json`, then activates on that checkpoint with a Nitro quote over the activation. Activation is conditional on the exact checkpoint restored and increments the writer epoch, which fences any predecessor atomically. If the head moves in between, the boot restores the new one and tries again.
+- **Every checkpoint** is sealed under the granted epoch and committed conditionally on the epoch, the writer key, the expected sequence and the prior digest. A lost answer is reconciled through the commit's operation identifier. A refusal, or finding another writer, stops the writer for good: the process exits, and a restart restores what the authority committed.
+- **An authority outage** blocks commits, so buffered responses answer 503, health reads unready and no claim starts until it returns. An unknown deployment is fatal and never read as genesis.
+
+The operator runs `authority-admin` with the security account's credentials. `create` makes a deployment's record, and `-adopt HEAD.json` makes an existing pre-authority chain's head its first committed checkpoint. That asserts, once, what `ENCLAVE_CHECKPOINT_HEAD` asserts on every boot. `approve` records which PCR0, PCR1 and PCR2 may write, and at which release-policy version; an image carries its version in `ENCLAVE_RELEASE_POLICY_VERSION`, and activation never moves the version backwards.
+
+What cannot be claimed yet:
+
+- **Nothing produces the quote.** Activation needs a Nitro attestation over the activation payload, from a helper that must first be validated on real Nitro. Until it exists, authority mode refuses to boot with a named error rather than fall back to `HEAD.json`. The authority's check of our binding has only met documents minted under a test root, though its chain verification passes a genuine AWS document end to end.
+- **The pinned key inherits #194.** The authority's public keys belong in the measured profile, where the launcher's baked environment is what protects them; #194 is the ability to start something other than the launcher.
+- **No deployment exists**: no table, no KMS key, no network path. That waits for the security account's operator.
 
 ## Security Blockers
 
