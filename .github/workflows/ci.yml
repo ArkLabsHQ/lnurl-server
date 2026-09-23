@@ -61,8 +61,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: authority/go.mod
-          # Caching keys on go.sum, which the module will not have until it takes a dependency.
-          cache: false
+          cache-dependency-path: authority/go.sum
 
       - name: Format
         run: |
