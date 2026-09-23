@@ -3,9 +3,15 @@ import { loadConfig, type EnclaveCheckpointConfig } from "./config.js";
 import { VERSION } from "./version.js";
 import { SessionManager } from "./session-manager.js";
 import type { Db } from "./db/connection.js";
-import { createCheckpointStore, restoreCheckpoint, type CheckpointHead, type DurabilityBarrier, migrationVersion } from "./enclave/checkpoint.js";
+import {
+  createCheckpointStore, headFromWire, headToWire, restoreCheckpoint, migrationVersion,
+  type CheckpointHead, type CheckpointSeal, type DurabilityBarrier, type WriterGrant,
+} from "./enclave/checkpoint.js";
 import type { EnclaveStorage } from "./enclave/storage.js";
 import type { EnclaveAttestor } from "./enclave/attestor.js";
+import { AuthorityRefusal, createAuthorityClient, type CheckpointAuthority } from "./enclave/authority-client.js";
+import { encodeActivate, type ActivatePayload, type StatementPayload } from "./enclave/authority-wire.js";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -25,7 +31,9 @@ export async function initPersistence(opts: {
   storage?: EnclaveStorage;
   /** Quotes the activation a checkpoint authority requires. */
   attestor?: EnclaveAttestor;
-}): Promise<{ db: Db; checkpointHead?: CheckpointHead } | null> {
+  /** In place of a client built from the configuration; for tests. */
+  authorityClient?: CheckpointAuthority;
+}): Promise<{ db: Db; checkpointHead?: CheckpointHead; grant?: WriterGrant } | null> {
   if (!opts.dbPath) return null;
   const { openDb } = await import("./db/connection.js");
   const { runMigrations } = await import("./db/migrations.js");
@@ -47,6 +55,16 @@ export async function initPersistence(opts: {
     throw new Error("ENCLAVE_AUTHORITY_URL is set, but there is no enclave attestor to quote a writer activation; the NSM helper is not built");
   }
   const seal = { key: checkpoint.storageKey!, deployment: checkpoint.deployment };
+  if (checkpoint.authority) {
+    const client = opts.authorityClient ?? createAuthorityClient({
+      url: checkpoint.authority.url, deployment: checkpoint.deployment, publicKeys: checkpoint.authority.publicKeys,
+      timeoutMs: checkpoint.authority.timeoutMs, maxSkewMs: checkpoint.authority.maxSkewMs,
+    });
+    return bootUnderAuthority({
+      dbPath: opts.dbPath, bootstrapDomain: opts.bootstrapDomain, verifyTtlMs: opts.verifyTtlMs,
+      checkpoint, storage, seal, client, attestor: opts.attestor!,
+    });
+  }
   let checkpointHead: CheckpointHead | undefined;
   let db: Db;
   const restored = await restoreCheckpoint({
@@ -98,6 +116,71 @@ export async function initPersistence(opts: {
   return { db, checkpointHead };
 }
 
+const ACTIVATION_ATTEMPTS = 3;
+
+/** Restore exactly what the authority names, then become its writer on that state. The
+ *  database is not migrated, and nothing is served, until the grant exists. */
+async function bootUnderAuthority(o: {
+  dbPath: string;
+  bootstrapDomain?: string;
+  verifyTtlMs?: number;
+  checkpoint: EnclaveCheckpointConfig;
+  storage: EnclaveStorage;
+  seal: CheckpointSeal;
+  client: CheckpointAuthority;
+  attestor: EnclaveAttestor;
+}): Promise<{ db: Db; checkpointHead?: CheckpointHead; grant: WriterGrant }> {
+  const { openDb } = await import("./db/connection.js");
+  const { runMigrations } = await import("./db/migrations.js");
+  const { bootstrap } = await import("./bootstrap.js");
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const writerPublicKey = Buffer.from(publicKey.export({ format: "jwk" }).x!, "base64url");
+  const prefix = o.checkpoint.checkpointKey;
+  for (let attempt = 1; ; attempt++) {
+    const st = await o.client.state(randomBytes(16));
+    const authorityHead = st.head ? headFromWire(st.head) : null;
+    if (!authorityHead && !o.checkpoint.allowGenesis) {
+      throw new Error("the authority holds no checkpoint for this deployment (set ENCLAVE_CHECKPOINT_ALLOW_GENESIS=1 only for initial deployment)");
+    }
+    const restored = await restoreCheckpoint({
+      dbPath: o.dbPath, storage: o.storage, prefix, seal: o.seal, minSequence: o.checkpoint.minSequence, authorityHead,
+    });
+    const db = restored?.db ?? openDb(o.dbPath);
+    const challenge = await o.client.challenge();
+    const activation: ActivatePayload = {
+      deployment: o.checkpoint.deployment, challengeId: challenge.challengeId, challengeNonce: challenge.nonce, writerPublicKey,
+      releasePolicyVersion: o.checkpoint.authority!.releasePolicyVersion, restored: restored ? headToWire(restored.head) : null,
+    };
+    let granted: StatementPayload;
+    try {
+      const quote = await o.attestor.quote({ nonce: challenge.nonce, userData: createHash("sha256").update(encodeActivate(activation)).digest() });
+      granted = await o.client.activate(activation, privateKey, quote);
+    } catch (error) {
+      db.close();
+      // The head moved between reading it and activating on it: restore the new one.
+      if (error instanceof AuthorityRefusal && error.code === "checkpoint_conflict" && attempt < ACTIVATION_ATTEMPTS) continue;
+      throw error;
+    }
+    if (!Buffer.from(granted.activeWriterPublicKey).equals(writerPublicKey)
+      || (granted.head?.ciphertextDigest ?? null) !== (restored?.head.ciphertextDigest ?? null)) {
+      db.close();
+      throw new Error("the authority's grant is not for this writer on this checkpoint");
+    }
+    const grant: WriterGrant = { client: o.client, deployment: o.checkpoint.deployment, epoch: granted.activeEpoch, writer: privateKey, writerPublicKey };
+    let checkpointHead = restored?.head;
+    const previousMigrationVersion = checkpointHead ? migrationVersion(db) : undefined;
+    runMigrations(db, { legacySwapTtlMs: o.verifyTtlMs });
+    bootstrap(db, { bootstrapDomain: o.bootstrapDomain });
+    if (!checkpointHead || previousMigrationVersion !== migrationVersion(db)) {
+      checkpointHead = await createCheckpointStore({
+        db, storage: o.storage, prefix, seal: o.seal, intervalMs: o.checkpoint.checkpointIntervalMs,
+        ...(checkpointHead ? { head: checkpointHead } : {}), scratchDir: dirname(o.dbPath), authority: grant,
+      }).flush();
+    }
+    return { db, checkpointHead, grant };
+  }
+}
+
 async function main(): Promise<void> {
   const config = loadConfig();
   const { HealthRegistry } = await import("./health.js");
@@ -142,6 +225,12 @@ async function main(): Promise<void> {
         intervalMs: config.enclaveCheckpoint.checkpointIntervalMs,
         head: persistence!.checkpointHead,
         scratchDir: config.dbPath === ":memory:" ? undefined : dirname(config.dbPath!),
+        ...(persistence!.grant ? { authority: persistence!.grant } : {}),
+        // Nothing restarts the enclave's child, so stopping is an outage, not a rollback.
+        onTerminal: (error) => {
+          logger.error("checkpoint_writer_stopped", { error });
+          void runtime.shutdown("checkpoint writer stopped").finally(() => process.exit(1));
+        },
       });
       health.register("persistenceCheckpoint", () => store.status());
       store.start();

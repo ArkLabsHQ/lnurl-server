@@ -12,9 +12,10 @@ import { DomainsRepo } from "../src/db/repositories/domains.js";
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
 import { createCheckpointStore, headFromWire, restoreCheckpoint, sha256 } from "../src/enclave/checkpoint.js";
 import type { EnclaveStorage } from "../src/enclave/storage.js";
-import type { CommitPayload, StatementPayload, WireHead } from "../src/enclave/authority-wire.js";
+import { encodeActivate, type ActivatePayload, type CommitPayload, type StatementPayload, type WireHead } from "../src/enclave/authority-wire.js";
 import { AuthorityRefusal, AuthorityUnavailable, type CheckpointAuthority } from "../src/enclave/authority-client.js";
-import { generateKeyPairSync } from "node:crypto";
+import type { EnclaveAttestor } from "../src/enclave/attestor.js";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 
 class MemoryStorage implements EnclaveStorage {
   readonly objects = new Map<string, Uint8Array>();
@@ -113,8 +114,12 @@ class FakeAuthority implements CheckpointAuthority {
   currentOperationId: string | null = null;
   down = false;
   loseNextAnswer = false;
+  refuseState: AuthorityRefusal | undefined;
+  beforeActivate: (() => Promise<void>) | undefined;
+  lastChallengeNonce: Uint8Array | undefined;
   readonly commits: CommitPayload[] = [];
-  constructor(readonly writerKey: Uint8Array) {}
+  readonly activations: ActivatePayload[] = [];
+  constructor(public writerKey: Uint8Array) {}
 
   statement(): StatementPayload {
     return {
@@ -125,6 +130,7 @@ class FakeAuthority implements CheckpointAuthority {
   }
 
   async state(): Promise<StatementPayload> {
+    if (this.refuseState) throw this.refuseState;
     if (this.down) throw new AuthorityUnavailable("authority unreachable");
     return this.statement();
   }
@@ -147,12 +153,30 @@ class FakeAuthority implements CheckpointAuthority {
     return this.statement();
   }
 
-  async challenge(): Promise<never> {
-    throw new Error("not used by the store");
+  async challenge() {
+    this.lastChallengeNonce = randomBytes(20);
+    return { challengeId: `challenge-${this.activations.length}`, nonce: this.lastChallengeNonce, expiresAtMs: Date.now() + 60_000 };
   }
 
-  async activate(): Promise<never> {
-    throw new Error("not used by the store");
+  async activate(m: ActivatePayload): Promise<StatementPayload> {
+    this.activations.push(m);
+    const intrude = this.beforeActivate;
+    this.beforeActivate = undefined;
+    await intrude?.();
+    if ((m.restored?.ciphertextDigest ?? null) !== (this.head?.ciphertextDigest ?? null)) {
+      throw new AuthorityRefusal("checkpoint_conflict", "the head moved", this.statement());
+    }
+    this.epoch += 1;
+    this.writerKey = m.writerPublicKey;
+    return this.statement();
+  }
+}
+
+class FakeAttestor implements EnclaveAttestor {
+  readonly quoted: { nonce: Uint8Array; userData: Uint8Array }[] = [];
+  async quote(input: { nonce: Uint8Array; userData: Uint8Array }): Promise<Uint8Array> {
+    this.quoted.push(input);
+    return Buffer.from("a document only a real authority would read");
   }
 }
 
@@ -626,11 +650,89 @@ describe("initPersistence under enclave checkpoints", () => {
       .rejects.toThrow(/no checkpoint storage was supplied/);
   });
 
+  const AUTHORITY = { url: "https://authority.invalid", publicKeys: [], timeoutMs: 1_000, maxSkewMs: 1_000, releasePolicyVersion: 3 };
+
+  /** A checkpoint an earlier writer committed through the authority, its store still open. */
+  async function earlierWriter(storage: MemoryStorage) {
+    const db = seedDb(1);
+    const { authority, grant } = writerGrant();
+    const store = createCheckpointStore({ db, storage, prefix: "lnurl/db", seal: SEAL, intervalMs: 60_000, authority: grant });
+    await store.flush();
+    return { db, store, authority };
+  }
+
+  it("boots from the checkpoint the authority names, and only then becomes its writer", async () => {
+    dir = mkdtempSync(join(tmpdir(), "lnurl-enclave-"));
+    const storage = new MemoryStorage();
+    const earlier = await earlierWriter(storage);
+    earlier.db.close();
+    storage.objects.set("lnurl/db/HEAD.json", Buffer.from("not even JSON"));
+    const attestor = new FakeAttestor();
+
+    const booted = await initPersistence({
+      dbPath: join(dir, "boot", "lnurl.db"), checkpoint: checkpointConfig({ authority: AUTHORITY }), storage, attestor, authorityClient: earlier.authority,
+    });
+
+    expect(booted!.db.prepare("SELECT domain FROM domains").all()).toContainEqual({ domain: "wallet-1.invalid" });
+    expect(booted!.grant).toMatchObject({ epoch: 5 });
+    const [activation] = earlier.authority.activations;
+    expect(activation).toMatchObject({ releasePolicyVersion: 3, restored: { ciphertextDigest: earlier.authority.head!.ciphertextDigest } });
+    expect(attestor.quoted[0]!.nonce).toEqual(earlier.authority.lastChallengeNonce);
+    expect(Buffer.from(attestor.quoted[0]!.userData)).toEqual(createHash("sha256").update(encodeActivate(activation!)).digest());
+    booted!.db.close();
+  });
+
+  it("restores again when the head moves between reading it and activating on it", async () => {
+    dir = mkdtempSync(join(tmpdir(), "lnurl-enclave-"));
+    const storage = new MemoryStorage();
+    const earlier = await earlierWriter(storage);
+    earlier.authority.beforeActivate = async () => {
+      earlier.db.prepare("UPDATE domains SET updated_at = ? WHERE domain = ?").run(2, "wallet-1.invalid");
+      await earlier.store.flush();
+    };
+
+    const booted = await initPersistence({
+      dbPath: join(dir, "boot", "lnurl.db"), checkpoint: checkpointConfig({ authority: AUTHORITY }), storage,
+      attestor: new FakeAttestor(), authorityClient: earlier.authority,
+    });
+
+    expect(earlier.authority.activations).toHaveLength(2);
+    expect(booted!.db.prepare("SELECT updated_at AS u FROM domains").get()).toEqual({ u: 2 });
+    earlier.db.close();
+    booted!.db.close();
+  });
+
+  it("treats an unknown deployment as fatal, never as genesis", async () => {
+    dir = mkdtempSync(join(tmpdir(), "lnurl-enclave-"));
+    const authority = new FakeAuthority(new Uint8Array(32));
+    authority.refuseState = new AuthorityRefusal("unknown_deployment", "unknown deployment");
+    await expect(initPersistence({
+      dbPath: join(dir, "boot", "lnurl.db"), checkpoint: checkpointConfig({ authority: AUTHORITY, allowGenesis: true }),
+      storage: new MemoryStorage(), attestor: new FakeAttestor(), authorityClient: authority,
+    })).rejects.toThrow(/unknown_deployment/);
+    expect(authority.activations).toHaveLength(0);
+  });
+
+  it("takes its first checkpoint under the grant on an explicit genesis, and refuses one otherwise", async () => {
+    dir = mkdtempSync(join(tmpdir(), "lnurl-enclave-"));
+    const storage = new MemoryStorage();
+    const authority = new FakeAuthority(new Uint8Array(32));
+    const boot = (allowGenesis: boolean) => initPersistence({
+      dbPath: join(dir!, "boot", "lnurl.db"), checkpoint: checkpointConfig({ authority: AUTHORITY, allowGenesis }), storage,
+      attestor: new FakeAttestor(), authorityClient: authority,
+    });
+    await expect(boot(false)).rejects.toThrow(/holds no checkpoint/);
+
+    const booted = await boot(true);
+    expect(authority.head).toMatchObject({ sequence: 1, sealEpoch: 5 });
+    expect(booted!.checkpointHead).toMatchObject({ sequence: 1, epoch: 5 });
+    booted!.db.close();
+  });
+
   it("refuses to boot under an authority it has no way to be activated by", async () => {
     dir = mkdtempSync(join(tmpdir(), "lnurl-enclave-"));
     const storage = new MemoryStorage();
-    const authority = { url: "https://authority.example", publicKeys: [], timeoutMs: 1_000, maxSkewMs: 1_000 };
-    await expect(initPersistence({ dbPath: join(dir, "state", "lnurl.db"), checkpoint: checkpointConfig({ allowGenesis: true, authority }), storage }))
+    await expect(initPersistence({ dbPath: join(dir, "state", "lnurl.db"), checkpoint: checkpointConfig({ allowGenesis: true, authority: AUTHORITY }), storage }))
       .rejects.toThrow(/no enclave attestor/);
     expect(storage.objects.size).toBe(0);
   });

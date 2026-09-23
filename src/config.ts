@@ -50,6 +50,9 @@ export interface AuthorityConfig {
   publicKeys: Buffer[];
   timeoutMs: number;
   maxSkewMs: number;
+  /** The release this image belongs to, fixed before the build so the operator approves
+   *  exactly these measurements at exactly this version. */
+  releasePolicyVersion: number;
 }
 
 export interface EnclaveCheckpointConfig {
@@ -171,6 +174,7 @@ function authorityConfig(env: Env): AuthorityConfig | undefined {
     url, publicKeys,
     timeoutMs: integer(env, "ENCLAVE_AUTHORITY_TIMEOUT_MS", 10_000, { min: 100 }),
     maxSkewMs: integer(env, "ENCLAVE_AUTHORITY_SKEW_MS", 300_000, { min: 1_000 }),
+    releasePolicyVersion: integer(env, "ENCLAVE_RELEASE_POLICY_VERSION", 1, { min: 1 }),
   };
 }
 

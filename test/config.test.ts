@@ -282,7 +282,7 @@ describe("loadConfig", () => {
       const authority = (extra: Record<string, string>) => loadConfig({ ...on, ...extra });
 
       const cfg = authority({ ENCLAVE_AUTHORITY_URL: url, ENCLAVE_AUTHORITY_PUBLIC_KEYS: `${p256},${spki("P-256")}` }).enclaveCheckpoint.authority!;
-      expect(cfg).toMatchObject({ url, timeoutMs: 10_000, maxSkewMs: 300_000 });
+      expect(cfg).toMatchObject({ url, timeoutMs: 10_000, maxSkewMs: 300_000, releasePolicyVersion: 1 });
       expect(cfg.publicKeys.map((k) => k.toString("base64"))[0]).toBe(p256);
       expect(() => authority({ ENCLAVE_AUTHORITY_URL: url })).toThrow(/go together/);
       expect(() => authority({ ENCLAVE_AUTHORITY_PUBLIC_KEYS: p256 })).toThrow(/go together/);
