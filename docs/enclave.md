@@ -4,7 +4,7 @@ This packages LNURL for Nitro. It is **not a host-tamper-resistant deployment** 
 
 The default profile deliberately uses `lnurl.invalid`, an in-memory application database and no managed application secrets. Existing Docker deployments are unchanged.
 
-What is here is the packaging and its reproducibility evidence. **The durable-state half is a design, not a working feature** — it targets an application storage API Enclave does not have, so it cannot run at all today. See Durable State. Signed owner setup, protected payment proofs, client verification and approved key release are likewise not implemented; `src/enclave/owner-setup.ts` is a proposed encoding that no route reads.
+What is here is the packaging and its reproducibility evidence. **The durable-state half is a design, not a working feature** — it targets an application storage API Enclave does not have, so it cannot run at all today, and its snapshots are not yet encrypted. See Durable State. Signed owner setup, protected payment proofs, client verification and approved key release are likewise not implemented; `src/enclave/owner-setup.ts` is a proposed encoding that no route reads, and it does not yet carry every field the setup must bind — notably the owner key and the Arkade destination.
 
 ## Build
 
@@ -41,7 +41,11 @@ There is no enclave promotion or approval job. Before any protected release, the
 
 ## Durable State
 
-> **This does not run against Enclave today.** It is written against an application-facing key/value API at `/v1/storage` that the pinned runtime does not have. At `3c33a40` — which is also `origin/master` — the internal surface is `GET /health` and `POST /v1/metrics`, `/v1/logs`, `/v1/traces`, and `ENCLAVE_RUNTIME_TOKEN` authenticates telemetry ingest, not storage. With `ENCLAVE_CHECKPOINT=1` the first checkpoint takes a 404 and the server refuses to start, which is fail-closed but not functional. Everything below describes an interface Enclave would need to grow, or an alternative persistence mechanism would need to replace. Tracked as [ArkLabsHQ/enclave#195](https://github.com/ArkLabsHQ/enclave/issues/195).
+> **This does not run against Enclave today.** It is written against an application-facing key/value API at `/v1/storage` that the pinned runtime does not have. At `3c33a40` — which is also `origin/master` — the internal surface is `GET /health` and `POST /v1/metrics`, `/v1/logs`, `/v1/traces`, and `ENCLAVE_RUNTIME_TOKEN` authenticates telemetry ingest, not storage. With `ENCLAVE_CHECKPOINT=1` the first checkpoint takes a 404 and the server refuses to start, which is fail-closed but not functional.
+>
+> The intended path does not depend on Enclave growing that API. The design this implements calls for an **LNURL-owned S3 adapter**, in-enclave authenticated encryption of each snapshot under a separate storage key, and an independent checkpoint authority that pins which object is current. [ArkLabsHQ/enclave#195](https://github.com/ArkLabsHQ/enclave/issues/195) asks for a runtime convenience API; it is optional, not a prerequisite. The `EnclaveStorage` interface is the seam an S3 adapter replaces.
+>
+> Two gaps against that design remain in this code. **Snapshots are not encrypted** — they are compressed, not sealed, so nothing here should be pointed at real storage yet. And **restore trusts the stored `HEAD.json`**, a head the host can choose, mitigated only by the manual pins below; the design has the authority, not the host, name the exact object to restore.
 
 Nitro gives the workload no persistent disk, so SQLite runs on the enclave's RAM-backed filesystem and durability has to come from snapshots held somewhere outside it. `ENCLAVE_CHECKPOINT=1` turns this on. It is off by default, and nothing below changes an ordinary deployment.
 
@@ -68,7 +72,7 @@ Everything else the server writes is covered more bluntly. `persistenceCheckpoin
 
 ### Tested capacity
 
-Measured on the pinned Node 22.23.1 under Linux, seeding accepted offline swaps as the dominant row and checkpointing to a loopback HTTP storage endpoint. "Barrier" is the wait for one further accepted swap to become durable — what a payer actually sits behind.
+Measured on the pinned Node 22.23.1 under Linux, seeding accepted offline swaps as the dominant row and checkpointing to a loopback HTTP storage endpoint. "Barrier" is the wait for one further accepted swap to become durable — what a payer actually sits behind. These figures are for **unencrypted** snapshots; authenticated encryption will add to every barrier, so treat them as a floor.
 
 | Accepted swaps | Database | Stored object | Barrier |
 | --- | --- | --- | --- |
