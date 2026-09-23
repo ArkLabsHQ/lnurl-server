@@ -12,7 +12,9 @@ import { DomainsRepo } from "../src/db/repositories/domains.js";
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
 import { createCheckpointStore, headFromWire, restoreCheckpoint, sha256 } from "../src/enclave/checkpoint.js";
 import type { EnclaveStorage } from "../src/enclave/storage.js";
-import type { WireHead } from "../src/enclave/authority-wire.js";
+import type { CommitPayload, StatementPayload, WireHead } from "../src/enclave/authority-wire.js";
+import { AuthorityRefusal, AuthorityUnavailable, type CheckpointAuthority } from "../src/enclave/authority-client.js";
+import { generateKeyPairSync } from "node:crypto";
 
 class MemoryStorage implements EnclaveStorage {
   readonly objects = new Map<string, Uint8Array>();
@@ -101,6 +103,64 @@ class FailingStorage implements EnclaveStorage {
   async load(): Promise<Uint8Array | undefined> {
     return undefined;
   }
+}
+
+/** The authority's commit rules in miniature; the Go service is the real one. */
+class FakeAuthority implements CheckpointAuthority {
+  epoch = 4;
+  sequence = 0;
+  head: WireHead | null = null;
+  currentOperationId: string | null = null;
+  down = false;
+  loseNextAnswer = false;
+  readonly commits: CommitPayload[] = [];
+  constructor(readonly writerKey: Uint8Array) {}
+
+  statement(): StatementPayload {
+    return {
+      authorityKeyId: "test", deployment: SEAL.deployment, callerNonce: new Uint8Array(), issuedAtUnixMs: Date.now(),
+      activeEpoch: this.epoch, activeWriterPublicKey: this.writerKey, releasePolicyVersion: 1, sequence: this.sequence,
+      head: this.head, currentOperationId: this.currentOperationId,
+    };
+  }
+
+  async state(): Promise<StatementPayload> {
+    if (this.down) throw new AuthorityUnavailable("authority unreachable");
+    return this.statement();
+  }
+
+  async commit(m: CommitPayload): Promise<StatementPayload> {
+    if (this.down) throw new AuthorityUnavailable("authority unreachable");
+    this.commits.push(m);
+    if (m.operationId === this.currentOperationId && this.head?.ciphertextDigest === m.head.ciphertextDigest) return this.statement();
+    if (m.epoch !== this.epoch) throw new AuthorityRefusal("writer_fenced", "fenced by a successor", this.statement());
+    if (m.expectedSequence !== this.sequence || m.priorDigest !== (this.head?.ciphertextDigest ?? null)) {
+      throw new AuthorityRefusal("checkpoint_conflict", "the chain moved", this.statement());
+    }
+    this.sequence = m.head.sequence;
+    this.head = m.head;
+    this.currentOperationId = m.operationId;
+    if (this.loseNextAnswer) {
+      this.loseNextAnswer = false;
+      throw new AuthorityUnavailable("the answer was lost");
+    }
+    return this.statement();
+  }
+
+  async challenge(): Promise<never> {
+    throw new Error("not used by the store");
+  }
+
+  async activate(): Promise<never> {
+    throw new Error("not used by the store");
+  }
+}
+
+function writerGrant(fake?: FakeAuthority) {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const writerPublicKey = Buffer.from(publicKey.export({ format: "jwk" }).x!, "base64url");
+  const authority = fake ?? new FakeAuthority(writerPublicKey);
+  return { authority, grant: { client: authority, deployment: SEAL.deployment, epoch: authority.epoch, writer: privateKey, writerPublicKey } };
 }
 
 function countSnapshots(db: DatabaseSync): () => number {
@@ -291,6 +351,78 @@ describe("enclave checkpoint store", () => {
     expect(await restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: SEAL, authorityHead: null })).toBeUndefined();
     await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: SEAL, authorityHead: null, minSequence: 1 }))
       .rejects.toThrow(/the authority names none/);
+  });
+
+  it("commits through the authority, sealed under the epoch it granted", async () => {
+    const db = seedDb(1);
+    const storage = new MemoryStorage();
+    const { authority, grant } = writerGrant();
+    const store = createCheckpointStore({ db, storage, prefix: "lnurl/db", seal: SEAL, intervalMs: 60_000, authority: grant });
+    const first = (await store.flush())!;
+    db.prepare("UPDATE domains SET updated_at = ? WHERE domain = ?").run(2, "wallet-1.invalid");
+    const second = (await store.flush())!;
+    db.close();
+
+    expect(authority.commits.map((c) => [c.epoch, c.head.sealEpoch, c.expectedSequence, c.priorDigest])).toEqual([
+      [4, 4, 0, null],
+      [4, 4, 1, first.ciphertextDigest],
+    ]);
+    expect(authority.head?.ciphertextDigest).toBe(second.ciphertextDigest);
+    const restored = await restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: SEAL, authorityHead: headFromWire(authority.head!) });
+    expect(restored!.db.prepare("SELECT updated_at AS u FROM domains").get()).toEqual({ u: 2 });
+    restored!.db.close();
+    expect(JSON.parse(Buffer.from(storage.objects.get("lnurl/db/HEAD.json")!).toString())).toMatchObject({ authoritative: false });
+  });
+
+  it("reconciles a commit whose answer was lost instead of committing it twice", async () => {
+    const db = seedDb(1);
+    const { authority, grant } = writerGrant();
+    const store = createCheckpointStore({ db, storage: new MemoryStorage(), prefix: "lnurl/db", seal: SEAL, intervalMs: 60_000, authority: grant });
+    authority.loseNextAnswer = true;
+    await expect(store.barrier()).rejects.toThrow(/answer was lost/);
+    expect(store.status().ok).toBe(false);
+
+    await store.barrier();
+    expect(authority.commits).toHaveLength(1);
+    expect(store.status().ok).toBe(true);
+    db.close();
+  });
+
+  it("stays retryable through an authority outage", async () => {
+    const db = seedDb(1);
+    const { authority, grant } = writerGrant();
+    const store = createCheckpointStore({ db, storage: new MemoryStorage(), prefix: "lnurl/db", seal: SEAL, intervalMs: 60_000, authority: grant });
+    authority.down = true;
+    await expect(store.barrier()).rejects.toBeInstanceOf(AuthorityUnavailable);
+    await expect(store.barrier()).rejects.toBeInstanceOf(AuthorityUnavailable);
+    authority.down = false;
+    await store.barrier();
+    expect(authority.sequence).toBe(1);
+    db.close();
+  });
+
+  it("stops for good once fenced, or once the chain moves without it", async () => {
+    for (const intrude of [
+      (a: FakeAuthority) => { a.epoch = 5; },
+      (a: FakeAuthority) => { a.sequence = 2; a.currentOperationId = "another writer"; },
+    ]) {
+      const db = seedDb(1);
+      const { authority, grant } = writerGrant();
+      const stops: Error[] = [];
+      const store = createCheckpointStore({
+        db, storage: new MemoryStorage(), prefix: "lnurl/db", seal: SEAL, intervalMs: 60_000, authority: grant, onTerminal: (e) => stops.push(e),
+      });
+      await store.barrier();
+      intrude(authority);
+      db.prepare("UPDATE domains SET updated_at = ? WHERE domain = ?").run(2, "wallet-1.invalid");
+      await expect(store.barrier()).rejects.toBeInstanceOf(AuthorityRefusal);
+      const attempts = authority.commits.length;
+      await expect(store.barrier()).rejects.toBeInstanceOf(AuthorityRefusal);
+      expect(authority.commits).toHaveLength(attempts);
+      expect(stops).toHaveLength(1);
+      expect(store.status()).toMatchObject({ ok: false, detail: expect.stringContaining("writer stopped") });
+      db.close();
+    }
   });
 
   it("answers a barrier without a snapshot while nothing is uncommitted", async () => {

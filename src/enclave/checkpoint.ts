@@ -1,5 +1,5 @@
 import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from "node:zlib";
-import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID, type KeyObject } from "node:crypto";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +7,8 @@ import { openDb, type Db } from "../db/connection.js";
 import { LATEST_MIGRATION, runMigrations } from "../db/migrations.js";
 import { checkpointPrefix } from "./checkpoint-key.js";
 import type { EnclaveStorage } from "./storage.js";
-import type { WireHead } from "./authority-wire.js";
+import type { StatementPayload, WireHead } from "./authority-wire.js";
+import { AuthorityRefusal, type CheckpointAuthority } from "./authority-client.js";
 
 const SCHEMA = "lnurl.enclave.checkpoint.v2";
 
@@ -23,7 +24,7 @@ export interface CheckpointHead {
   ciphertextDigest: string;
   key: string;
   schemaVersion: number;
-  /** Always 0 until the checkpoint authority grants writer epochs. */
+  /** The writer epoch the object was sealed under: granted by the authority, 0 without one. */
   epoch: number;
   /** The previous head's `ciphertextDigest`. */
   previousDigest: string | null;
@@ -228,6 +229,23 @@ export interface CheckpointStore extends DurabilityBarrier {
   status(): { ok: boolean; detail?: string };
 }
 
+/** What activation granted this boot: the epoch it writes under, and its key. */
+export interface WriterGrant {
+  client: CheckpointAuthority;
+  deployment: string;
+  epoch: number;
+  /** Ed25519 private key, generated this boot. */
+  writer: KeyObject;
+  writerPublicKey: Uint8Array;
+}
+
+export function headToWire(h: CheckpointHead): WireHead {
+  return {
+    schema: h.schema, prefix: h.prefix, schemaVersion: h.schemaVersion, sealEpoch: h.epoch, sequence: h.sequence,
+    previousDigest: h.previousDigest, digest: h.digest, size: h.size, ciphertextDigest: h.ciphertextDigest, key: h.key,
+  };
+}
+
 export function createCheckpointStore(options: {
   db: Db;
   storage: EnclaveStorage;
@@ -239,6 +257,10 @@ export function createCheckpointStore(options: {
   /** Where the snapshot is staged. Keep it on the same RAM-backed filesystem as
    *  the database, so no plaintext copy lands on a mount the caller did not choose. */
   scratchDir?: string;
+  /** Present: every commit goes through the authority, and HEAD.json is only a hint. */
+  authority?: WriterGrant;
+  /** Called once, when the authority has refused this writer for good. */
+  onTerminal?: (error: Error) => void;
 }): CheckpointStore {
   assertSeal(options.seal);
   const prefix = checkpointPrefix(options.prefix);
@@ -256,17 +278,75 @@ export function createCheckpointStore(options: {
   let committed = -1;
   const totalChanges = options.db.prepare("SELECT total_changes() AS n");
   const changes = () => (totalChanges.get() as { n: number }).n;
+  // A commit whose answer never came: it may have landed, so the next flush asks first.
+  let pending: { operationId: string; head: CheckpointHead; mark: number } | undefined;
+  let stopped: Error | undefined;
+
+  // The local database now holds writes the authority will never accept, so this
+  // writer cannot continue; only a restart restores what the authority committed.
+  function halt(error: Error): never {
+    if (!stopped) {
+      stopped = error;
+      options.onTerminal?.(error);
+    }
+    throw error;
+  }
+
+  async function reconcile(grant: WriterGrant, p: NonNullable<typeof pending>): Promise<void> {
+    let st: StatementPayload;
+    try {
+      st = await grant.client.state(randomBytes(16));
+    } catch (error) {
+      if (error instanceof AuthorityRefusal) halt(error);
+      throw error;
+    }
+    if (st.activeEpoch !== grant.epoch || !Buffer.from(st.activeWriterPublicKey).equals(Buffer.from(grant.writerPublicKey))) {
+      halt(new Error(`writer fenced: the authority's active epoch is ${st.activeEpoch}`));
+    }
+    if (st.currentOperationId === p.operationId && st.head?.ciphertextDigest === p.head.ciphertextDigest) {
+      head = p.head;
+      committed = p.mark;
+    } else if (st.sequence !== (head?.sequence ?? 0) || (st.head?.ciphertextDigest ?? null) !== (head?.ciphertextDigest ?? null)) {
+      halt(new Error(`the authority's head moved to ${st.head?.ciphertextDigest ?? "none"} without this writer`));
+    }
+    pending = undefined;
+  }
+
+  async function commit(grant: WriterGrant, previous: CheckpointHead | undefined, next: CheckpointHead, mark: number): Promise<void> {
+    const operationId = randomBytes(16).toString("hex");
+    pending = { operationId, head: next, mark };
+    let st: StatementPayload;
+    try {
+      st = await grant.client.commit({
+        deployment: grant.deployment, epoch: grant.epoch, operationId, expectedSequence: previous?.sequence ?? 0,
+        priorDigest: previous?.ciphertextDigest ?? null, head: headToWire(next),
+      }, grant.writer);
+    } catch (error) {
+      if (error instanceof AuthorityRefusal) halt(error);
+      throw error;
+    }
+    pending = undefined;
+    if (st.currentOperationId !== operationId || st.head?.ciphertextDigest !== next.ciphertextDigest) {
+      halt(new Error("the authority acknowledged a commit that is not this one"));
+    }
+    if (st.activeEpoch !== grant.epoch) halt(new Error(`writer fenced: the authority's active epoch is ${st.activeEpoch}`));
+    void options.storage.put(`${prefix}${headSuffix}`, Buffer.from(JSON.stringify({ ...next, authoritative: false }))).catch(() => {});
+  }
 
   async function flush(): Promise<CheckpointHead | undefined> {
     if (running) return running;
     running = (async () => {
       try {
+        if (stopped) throw stopped;
+        const grant = options.authority;
+        if (grant && pending) await reconcile(grant, pending);
         // Same synchronous step as the snapshot, so no write can land between them.
         const mark = changes();
         const snapshot = snapshotBytes(options.db, scratchDir);
         const digest = sha256(snapshot);
         if (head?.digest === digest) {
           // Nothing changed, so what is stored is still exactly this state.
+          last = { ok: true, detail: `checkpoint ${head.sequence} committed` };
           durableAt = now();
           committed = mark;
           return head;
@@ -279,29 +359,33 @@ export function createCheckpointStore(options: {
           digest,
           size: snapshot.byteLength,
           schemaVersion: migrationVersion(options.db),
-          epoch: 0,
+          epoch: grant?.epoch ?? 0,
           previousDigest: previousHead?.ciphertextDigest ?? null,
         } as const;
         const stored = sealSnapshot(options.seal, associatedData(options.seal, meta), compress(snapshot));
         const ciphertextDigest = sha256(stored);
         const key = `${prefix}/${ciphertextDigest}${snapshotSuffix}`;
         await options.storage.put(key, stored);
-        // Two enclaves on one prefix each extend their own chain, and whichever writes
-        // HEAD last erases the other's history. Detection only: closing the window
-        // between this read and the write below needs the authority's compare-and-set.
-        const remote = parseHead(await options.storage.load(`${prefix}${headSuffix}`), prefix);
-        if (remote?.ciphertextDigest !== previousHead?.ciphertextDigest) {
-          throw new Error(`another writer advanced the checkpoint head to ${remote?.ciphertextDigest ?? "none"}`);
-        }
         const next: CheckpointHead = { ...meta, ciphertextDigest, key };
-        await options.storage.put(`${prefix}${headSuffix}`, Buffer.from(JSON.stringify(next)));
+        if (grant) {
+          await commit(grant, previousHead, next, mark);
+        } else {
+          // Two enclaves on one prefix each extend their own chain, and whichever writes
+          // HEAD last erases the other's history. Detection only: closing the window
+          // between this read and the write below needs the authority's compare-and-set.
+          const remote = parseHead(await options.storage.load(`${prefix}${headSuffix}`), prefix);
+          if (remote?.ciphertextDigest !== previousHead?.ciphertextDigest) {
+            throw new Error(`another writer advanced the checkpoint head to ${remote?.ciphertextDigest ?? "none"}`);
+          }
+          await options.storage.put(`${prefix}${headSuffix}`, Buffer.from(JSON.stringify(next)));
+        }
         head = next;
         committed = mark;
         last = { ok: true, detail: `checkpoint ${next.sequence} committed` };
         durableAt = now();
         return next;
       } catch (error) {
-        last = { ok: false, detail: `checkpoint failed: ${(error as Error).message}` };
+        last = { ok: false, detail: stopped ? `checkpoint writer stopped: ${stopped.message}` : `checkpoint failed: ${(error as Error).message}` };
         throw error;
       } finally {
         running = undefined;
