@@ -447,6 +447,15 @@ describe("initPersistence under enclave checkpoints", () => {
       .rejects.toThrow(/no checkpoint storage was supplied/);
   });
 
+  it("refuses to boot under an authority it has no way to be activated by", async () => {
+    dir = mkdtempSync(join(tmpdir(), "lnurl-enclave-"));
+    const storage = new MemoryStorage();
+    const authority = { url: "https://authority.example", publicKeys: [], timeoutMs: 1_000, maxSkewMs: 1_000 };
+    await expect(initPersistence({ dbPath: join(dir, "state", "lnurl.db"), checkpoint: checkpointConfig({ allowGenesis: true, authority }), storage }))
+      .rejects.toThrow(/no enclave attestor/);
+    expect(storage.objects.size).toBe(0);
+  });
+
   it("recovers an accepted swap when the enclave is destroyed and only the checkpoint survives", async () => {
     dir = mkdtempSync(join(tmpdir(), "lnurl-enclave-"));
     const storage = new MemoryStorage();

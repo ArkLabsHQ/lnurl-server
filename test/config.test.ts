@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { generateKeyPairSync } from "node:crypto";
 import { loadConfig } from "../src/config.js";
 
 const base = { PORT: "3000", BASE_URL: "http://localhost:3000" };
@@ -271,6 +272,26 @@ describe("loadConfig", () => {
 
     it("rejects a malformed checkpoint key", () => {
       expect(() => loadConfig({ ...on, ENCLAVE_CHECKPOINT_KEY: "../bad" })).toThrow(/ENCLAVE_CHECKPOINT_KEY/);
+    });
+
+    it("pins the checkpoint authority's keys, and refuses what it could not trust", () => {
+      const spki = (namedCurve: string) =>
+        generateKeyPairSync("ec", { namedCurve }).publicKey.export({ type: "spki", format: "der" }).toString("base64");
+      const p256 = spki("P-256");
+      const url = "https://authority.example";
+      const authority = (extra: Record<string, string>) => loadConfig({ ...on, ...extra });
+
+      const cfg = authority({ ENCLAVE_AUTHORITY_URL: url, ENCLAVE_AUTHORITY_PUBLIC_KEYS: `${p256},${spki("P-256")}` }).enclaveCheckpoint.authority!;
+      expect(cfg).toMatchObject({ url, timeoutMs: 10_000, maxSkewMs: 300_000 });
+      expect(cfg.publicKeys.map((k) => k.toString("base64"))[0]).toBe(p256);
+      expect(() => authority({ ENCLAVE_AUTHORITY_URL: url })).toThrow(/go together/);
+      expect(() => authority({ ENCLAVE_AUTHORITY_PUBLIC_KEYS: p256 })).toThrow(/go together/);
+      expect(() => authority({ ENCLAVE_AUTHORITY_URL: url, ENCLAVE_AUTHORITY_PUBLIC_KEYS: [p256, p256, p256].join(",") })).toThrow(/two during a rotation/);
+      expect(() => authority({ ENCLAVE_AUTHORITY_URL: url, ENCLAVE_AUTHORITY_PUBLIC_KEYS: spki("P-384") })).toThrow(/P-256/);
+      expect(() => authority({ ENCLAVE_AUTHORITY_URL: url, ENCLAVE_AUTHORITY_PUBLIC_KEYS: "bm90IGEga2V5" })).toThrow(/P-256/);
+      expect(() => authority({ ENCLAVE_AUTHORITY_URL: "ftp://authority.example", ENCLAVE_AUTHORITY_PUBLIC_KEYS: p256 })).toThrow(/http\(s\)/);
+      expect(() => authority({ ENCLAVE_AUTHORITY_URL: url, ENCLAVE_AUTHORITY_PUBLIC_KEYS: p256, ENCLAVE_CHECKPOINT_HEAD: "ab".repeat(32) }))
+        .toThrow(/the authority names the head/);
     });
   });
 

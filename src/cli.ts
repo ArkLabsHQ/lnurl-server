@@ -5,6 +5,7 @@ import { SessionManager } from "./session-manager.js";
 import type { Db } from "./db/connection.js";
 import { createCheckpointStore, restoreCheckpoint, type CheckpointHead, type DurabilityBarrier, migrationVersion } from "./enclave/checkpoint.js";
 import type { EnclaveStorage } from "./enclave/storage.js";
+import type { EnclaveAttestor } from "./enclave/attestor.js";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -22,6 +23,8 @@ export async function initPersistence(opts: {
   checkpoint?: EnclaveCheckpointConfig;
   /** Where sealed checkpoints live; required when checkpointing is enabled. */
   storage?: EnclaveStorage;
+  /** Quotes the activation a checkpoint authority requires. */
+  attestor?: EnclaveAttestor;
 }): Promise<{ db: Db; checkpointHead?: CheckpointHead } | null> {
   if (!opts.dbPath) return null;
   const { openDb } = await import("./db/connection.js");
@@ -40,6 +43,9 @@ export async function initPersistence(opts: {
   if (opts.dbPath !== ":memory:") mkdirSync(dirname(opts.dbPath), { recursive: true });
   const storage = opts.storage;
   if (!storage) throw new Error("checkpointing is enabled but no checkpoint storage was supplied");
+  if (checkpoint.authority && !opts.attestor) {
+    throw new Error("ENCLAVE_AUTHORITY_URL is set, but there is no enclave attestor to quote a writer activation; the NSM helper is not built");
+  }
   const seal = { key: checkpoint.storageKey!, deployment: checkpoint.deployment };
   let checkpointHead: CheckpointHead | undefined;
   let db: Db;

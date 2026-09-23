@@ -1,3 +1,4 @@
+import { createPublicKey } from "node:crypto";
 import { isIP } from "node:net";
 import { checkpointPrefix } from "./enclave/checkpoint-key.js";
 
@@ -43,8 +44,18 @@ export interface OfflineReceiveConfig {
   pollIntervalMs: number;
 }
 
+export interface AuthorityConfig {
+  url: string;
+  /** SPKI DER of the P-256 keys the authority may sign with; two only during a rotation. */
+  publicKeys: Buffer[];
+  timeoutMs: number;
+  maxSkewMs: number;
+}
+
 export interface EnclaveCheckpointConfig {
   enabled: boolean;
+  /** Present: the checkpoint authority, not HEAD.json, names the current snapshot. */
+  authority?: AuthorityConfig;
   /** Bucket holding this deployment's sealed snapshots and head. */
   s3Bucket?: string;
   /** Same variable and default the runtime uses, so the two agree by construction. */
@@ -139,6 +150,30 @@ function expectedHead(raw: string | undefined): string | undefined {
   return raw;
 }
 
+function authorityConfig(env: Env): AuthorityConfig | undefined {
+  const url = env.ENCLAVE_AUTHORITY_URL || undefined;
+  const keys = env.ENCLAVE_AUTHORITY_PUBLIC_KEYS || undefined;
+  if (!url && !keys) return undefined;
+  if (!url || !keys) throw new Error("ENCLAVE_AUTHORITY_URL and ENCLAVE_AUTHORITY_PUBLIC_KEYS go together: a statement is trusted only under a pinned key");
+  if (!/^https?:$/.test(new URL(url).protocol)) throw new Error("ENCLAVE_AUTHORITY_URL must be an http(s) URL");
+  const publicKeys = keys.split(",").map((k) => Buffer.from(k.trim(), "base64"));
+  if (publicKeys.length > 2) throw new Error("ENCLAVE_AUTHORITY_PUBLIC_KEYS takes one key, or two during a rotation");
+  for (const spki of publicKeys) {
+    let curve: string | undefined;
+    try {
+      curve = createPublicKey({ key: spki, format: "der", type: "spki" }).asymmetricKeyDetails?.namedCurve;
+    } catch {
+      curve = undefined;
+    }
+    if (curve !== "prime256v1") throw new Error("ENCLAVE_AUTHORITY_PUBLIC_KEYS must be base64 SPKI P-256 keys");
+  }
+  return {
+    url, publicKeys,
+    timeoutMs: integer(env, "ENCLAVE_AUTHORITY_TIMEOUT_MS", 10_000, { min: 100 }),
+    maxSkewMs: integer(env, "ENCLAVE_AUTHORITY_SKEW_MS", 300_000, { min: 1_000 }),
+  };
+}
+
 function parseKey(raw: string, name: string): Buffer {
   const buf = /^[0-9a-fA-F]+$/.test(raw) && raw.length % 2 === 0 ? Buffer.from(raw, "hex") : Buffer.from(raw, "base64");
   if (buf.length !== 32) throw new Error(`${name} must decode to 32 bytes (hex or base64)`);
@@ -157,8 +192,10 @@ export function loadConfig(env: Env = process.env): AppConfig {
   const traceRequests = env.TRACE_REQUESTS === "1";
   const offlineReceive = buildOfflineReceive(env);
 
+  const authority = authorityConfig(env);
   const enclaveCheckpoint: EnclaveCheckpointConfig = {
     enabled,
+    ...(authority ? { authority } : {}),
     s3Bucket: env.ENCLAVE_S3_BUCKET || undefined,
     awsRegion: env.ENCLAVE_AWS_REGION || "us-east-1",
     allowGenesis: env.ENCLAVE_CHECKPOINT_ALLOW_GENESIS === "1",
@@ -187,6 +224,10 @@ export function loadConfig(env: Env = process.env): AppConfig {
   }
   if (enclaveCheckpoint.expectedHead && enclaveCheckpoint.allowGenesis) {
     throw new Error("ENCLAVE_CHECKPOINT_HEAD and ENCLAVE_CHECKPOINT_ALLOW_GENESIS contradict each other");
+  }
+  // Once the authority names the head, a digest pinned by hand can only be stale.
+  if (enclaveCheckpoint.expectedHead && authority) {
+    throw new Error("ENCLAVE_CHECKPOINT_HEAD and ENCLAVE_AUTHORITY_URL contradict each other: the authority names the head");
   }
 
   let tokenEncryptionKey: Buffer | undefined;
