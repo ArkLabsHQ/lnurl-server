@@ -52,7 +52,7 @@ export async function initPersistence(opts: {
   const storage = opts.storage;
   if (!storage) throw new Error("checkpointing is enabled but no checkpoint storage was supplied");
   if (checkpoint.authority && !opts.attestor) {
-    throw new Error("ENCLAVE_AUTHORITY_URL is set, but there is no enclave attestor to quote a writer activation; the NSM helper is not built");
+    throw new Error("ENCLAVE_AUTHORITY_URL is set, but there is no enclave attestor to quote a writer activation; set ENCLAVE_ATTESTOR_PATH");
   }
   const seal = { key: checkpoint.storageKey!, deployment: checkpoint.deployment };
   if (checkpoint.authority) {
@@ -207,6 +207,7 @@ async function main(): Promise<void> {
     verifyTtlMs: config.verifyTtlMs,
     checkpoint: config.enclaveCheckpoint,
     storage: checkpointStorage,
+    ...(config.attestorPath ? { attestor: (await import("./enclave/nsm-attestor.js")).nsmAttestor(config.attestorPath) } : {}),
   });
   const db = persistence?.db;
   if (config.offlineReceive.enabled && !db) throw new Error("offline receive requires DB_PATH for durable accepted-swap recovery");

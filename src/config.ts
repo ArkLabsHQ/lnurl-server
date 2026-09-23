@@ -1,5 +1,6 @@
 import { createPublicKey } from "node:crypto";
 import { isIP } from "node:net";
+import { isAbsolute } from "node:path";
 import { NETWORKS, isNetwork, type Network } from "@arkade-os/solver-discovery";
 import { checkpointPrefix } from "./enclave/checkpoint-key.js";
 
@@ -102,6 +103,8 @@ export interface AppConfig {
   dbPath?: string;
   enclaveCheckpoint: EnclaveCheckpointConfig;
   protectedSetup?: ProtectedSetupConfig;
+  /** The NSM helper (attestor/) that quotes attestation documents. */
+  attestorPath?: string;
   adminPort: number;
   adminBind: string;
   tokenEncryptionKey?: Buffer;
@@ -263,6 +266,11 @@ export function loadConfig(env: Env = process.env): AppConfig {
     throw new Error("ENCLAVE_CHECKPOINT_HEAD and ENCLAVE_AUTHORITY_URL contradict each other: the authority names the head");
   }
   const protectedSetup = protectedSetupConfig(env, dbPath);
+  const attestorPath = env.ENCLAVE_ATTESTOR_PATH || undefined;
+  if (attestorPath && !isAbsolute(attestorPath)) throw new Error("ENCLAVE_ATTESTOR_PATH must be an absolute path to the NSM helper");
+  if (authority && !attestorPath) {
+    throw new Error("ENCLAVE_AUTHORITY_URL needs ENCLAVE_ATTESTOR_PATH: a writer's activation is quoted by the NSM helper");
+  }
 
   let tokenEncryptionKey: Buffer | undefined;
   if (env.TOKEN_ENCRYPTION_KEY) {
@@ -306,6 +314,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
     dbPath,
     enclaveCheckpoint,
     ...(protectedSetup ? { protectedSetup } : {}),
+    ...(attestorPath ? { attestorPath } : {}),
     adminPort,
     adminBind: env.ADMIN_BIND || "127.0.0.1",
     tokenEncryptionKey,

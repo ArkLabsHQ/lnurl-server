@@ -279,7 +279,7 @@ describe("loadConfig", () => {
         generateKeyPairSync("ec", { namedCurve }).publicKey.export({ type: "spki", format: "der" }).toString("base64");
       const p256 = spki("P-256");
       const url = "https://authority.example";
-      const authority = (extra: Record<string, string>) => loadConfig({ ...on, ...extra });
+      const authority = (extra: Record<string, string>) => loadConfig({ ...on, ENCLAVE_ATTESTOR_PATH: "/nix/store/x-lnurl-attest/bin/lnurl-attest", ...extra });
 
       const cfg = authority({ ENCLAVE_AUTHORITY_URL: url, ENCLAVE_AUTHORITY_PUBLIC_KEYS: `${p256},${spki("P-256")}` }).enclaveCheckpoint.authority!;
       expect(cfg).toMatchObject({ url, timeoutMs: 10_000, maxSkewMs: 300_000, releasePolicyVersion: 1 });
@@ -292,6 +292,15 @@ describe("loadConfig", () => {
       expect(() => authority({ ENCLAVE_AUTHORITY_URL: "ftp://authority.example", ENCLAVE_AUTHORITY_PUBLIC_KEYS: p256 })).toThrow(/http\(s\)/);
       expect(() => authority({ ENCLAVE_AUTHORITY_URL: url, ENCLAVE_AUTHORITY_PUBLIC_KEYS: p256, ENCLAVE_CHECKPOINT_HEAD: "ab".repeat(32) }))
         .toThrow(/the authority names the head/);
+      expect(() => authority({ ENCLAVE_AUTHORITY_URL: url, ENCLAVE_AUTHORITY_PUBLIC_KEYS: p256, ENCLAVE_ATTESTOR_PATH: "" }))
+        .toThrow(/needs ENCLAVE_ATTESTOR_PATH/);
+    });
+
+    it("names the NSM helper by absolute path", () => {
+      expect(loadConfig({ ...base, ENCLAVE_ATTESTOR_PATH: "/nix/store/x-lnurl-attest/bin/lnurl-attest" }).attestorPath)
+        .toBe("/nix/store/x-lnurl-attest/bin/lnurl-attest");
+      expect(loadConfig(base).attestorPath).toBeUndefined();
+      expect(() => loadConfig({ ...base, ENCLAVE_ATTESTOR_PATH: "lnurl-attest" })).toThrow(/absolute path/);
     });
   });
 
