@@ -8,7 +8,7 @@ import { normalizeDisabledRails } from "./rails.js";
 
 export type ProvisioningCode =
   | "invalid_token" | "invalid_username" | "forbidden_mode"
-  | "blacklisted" | "taken" | "limit_reached" | "invalid_claim" | "invalid_rails";
+  | "blacklisted" | "taken" | "limit_reached" | "invalid_claim" | "invalid_rails" | "stale_credential";
 
 export class ProvisioningError extends Error {
   constructor(public code: ProvisioningCode, message: string) {
@@ -75,6 +75,20 @@ export class AddressService {
       sessionId: deriveSessionId(secret), encryptedToken: encryptToken(secret, this.key),
     });
     return { address, secret };
+  }
+
+  /** The address a newly enrolled protected identity claims. It never adopts an existing
+   *  row, nor a token already bound to one: importing an old credential confers nothing. */
+  createProtected(domain: DomainRow, username: string, token: string): AddressRow {
+    if (!isValidToken(token)) throw new ProvisioningError("invalid_token", "token must be hex of length >= 32");
+    const sessionId = deriveSessionId(token);
+    if (this.repos.addresses.listBySessionId(sessionId).length > 0) {
+      throw new ProvisioningError("stale_credential", "this token is already bound to an address; enroll with a fresh one");
+    }
+    if (this.repos.addresses.getByDomainAndUsername(domain.id, username)) throw new ProvisioningError("taken", "username already taken");
+    if (!domain.allocationModes.includes("self")) throw new ProvisioningError("forbidden_mode", "self-registration disabled");
+    this.assertUsername(domain, username);
+    return this.repos.addresses.create({ domainId: domain.id, username, status: "active", sessionId, encryptedToken: encryptToken(token, this.key) });
   }
 
   listByToken(token: string): AddressRow[] {

@@ -117,11 +117,25 @@ export class OwnerSetupsRepo {
     return (this.db.prepare("SELECT COUNT(*) AS n FROM owner_identities WHERE domain = ?").get(domain) as { n: number }).n;
   }
 
+  /** Runs fn atomically. Savepoints nest, so a caller can commit an address row and the
+   *  identity that claims it as one unit. */
+  transaction<T>(fn: () => T): T {
+    this.db.exec("SAVEPOINT owner_setups");
+    try {
+      const out = fn();
+      this.db.exec("RELEASE owner_setups");
+      return out;
+    } catch (error) {
+      this.db.exec("ROLLBACK TO owner_setups");
+      this.db.exec("RELEASE owner_setups");
+      throw error;
+    }
+  }
+
   /** Makes a verified revision the identity's head, atomically. A revision that does not
    *  chain from the committed head is refused here too, not only by the caller. */
   append(record: OwnerSetupRecord, head: { addressId: number | null; state: IdentityState }): void {
-    this.db.exec("BEGIN");
-    try {
+    this.transaction(() => {
       this.db.prepare(
         `INSERT INTO owner_setups (domain, username, tenant, revision, digest, previous_digest, intent, payload,
            signature, countersignature, signer_public_key, owner_public_key, accepted_at)
@@ -147,11 +161,7 @@ export class OwnerSetupsRepo {
         );
         if (moved.changes !== 1) throw new Error("owner setup revision does not chain from the committed head");
       }
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+    });
   }
 
   /** Availability only: the signed head is untouched. `null` lifts a suspension. */
