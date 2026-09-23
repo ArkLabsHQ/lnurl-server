@@ -30,6 +30,7 @@
     "@arkade-os/sdk": "0.4.74",
     "@arkade-os/solver-discovery": "0.2.7",
     "@arkade-os/swap": "0.0.20",
+    "@aws-sdk/client-s3": "^3.1138.0",
     "@noble/ciphers": "2.1.1",
     "@noble/curves": "2.0.1",
     "@noble/hashes": "2.0.1",

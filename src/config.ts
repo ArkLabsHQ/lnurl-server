@@ -45,8 +45,10 @@ export interface OfflineReceiveConfig {
 
 export interface EnclaveCheckpointConfig {
   enabled: boolean;
-  storageUrl: string;
-  storageToken?: string;
+  /** Bucket holding this deployment's sealed snapshots and head. */
+  s3Bucket?: string;
+  /** Same variable and default the runtime uses, so the two agree by construction. */
+  awsRegion: string;
   allowGenesis: boolean;
   checkpointIntervalMs: number;
   checkpointKey: string;
@@ -157,13 +159,8 @@ export function loadConfig(env: Env = process.env): AppConfig {
 
   const enclaveCheckpoint: EnclaveCheckpointConfig = {
     enabled,
-    // The runtime hands the app its own loopback listener as ENCLAVE_PROXY_PORT,
-    // so take the default from that rather than naming a port of our own.
-    storageUrl: httpUrl(
-      env.ENCLAVE_STORAGE_URL || `http://127.0.0.1:${integer(env, "ENCLAVE_PROXY_PORT", 8080, { min: 1, max: 65_535 })}`,
-      "ENCLAVE_STORAGE_URL",
-    ),
-    storageToken: env.ENCLAVE_RUNTIME_TOKEN || undefined,
+    s3Bucket: env.ENCLAVE_S3_BUCKET || undefined,
+    awsRegion: env.ENCLAVE_AWS_REGION || "us-east-1",
     allowGenesis: env.ENCLAVE_CHECKPOINT_ALLOW_GENESIS === "1",
     checkpointIntervalMs: integer(env, "ENCLAVE_CHECKPOINT_INTERVAL_MS", 5_000, { min: 100 }),
     checkpointKey,
@@ -174,8 +171,8 @@ export function loadConfig(env: Env = process.env): AppConfig {
     deployment: env.ENCLAVE_DEPLOYMENT || "",
     storageKey: env.ENCLAVE_STORAGE_KEY ? parseKey(env.ENCLAVE_STORAGE_KEY, "ENCLAVE_STORAGE_KEY") : undefined,
   };
-  if (enabled && !enclaveCheckpoint.storageToken) {
-    throw new Error("ENCLAVE_RUNTIME_TOKEN is required when ENCLAVE_CHECKPOINT=1");
+  if (enabled && !enclaveCheckpoint.s3Bucket) {
+    throw new Error("ENCLAVE_S3_BUCKET is required when ENCLAVE_CHECKPOINT=1");
   }
   if (enabled && !enclaveCheckpoint.storageKey) {
     throw new Error("ENCLAVE_STORAGE_KEY is required when ENCLAVE_CHECKPOINT=1");

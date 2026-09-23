@@ -4,7 +4,7 @@ This packages LNURL for Nitro. It is **not a host-tamper-resistant deployment** 
 
 The default profile deliberately uses `lnurl.invalid`, an in-memory application database and no managed application secrets. Existing Docker deployments are unchanged.
 
-What is here is the packaging and its reproducibility evidence. **The durable-state half is a design, not a working feature** — it targets an application storage API Enclave does not have, so it cannot run at all today, and the key that seals its snapshots has no safe source inside an enclave yet. See Durable State. Signed owner setup, protected payment proofs, client verification and approved key release are likewise not implemented; `src/enclave/owner-setup.ts` is a proposed encoding that binds the design's full field list, but no route reads it and nothing yet stores or enforces a signed setup.
+What is here is the packaging and its reproducibility evidence, plus durable state that seals SQLite snapshots into S3. **The durable-state half has not yet run against real S3 or on Nitro**, it cannot yet stop a host replaying an older snapshot, and the key that seals its snapshots has no safe source inside an enclave. See Durable State. Signed owner setup, protected payment proofs, client verification and approved key release are likewise not implemented; `src/enclave/owner-setup.ts` is a proposed encoding that binds the design's full field list, but no route reads it and nothing yet stores or enforces a signed setup.
 
 ## Build
 
@@ -41,9 +41,7 @@ There is no enclave promotion or approval job. Before any protected release, the
 
 ## Durable State
 
-> **This does not run against Enclave today.** It is written against an application-facing key/value API at `/v1/storage` that the pinned runtime does not have. At `3c33a40` — which is also `origin/master` — the internal surface is `GET /health` and `POST /v1/metrics`, `/v1/logs`, `/v1/traces`, and `ENCLAVE_RUNTIME_TOKEN` authenticates telemetry ingest, not storage. With `ENCLAVE_CHECKPOINT=1` the first checkpoint takes a 404 and the server refuses to start, which is fail-closed but not functional.
->
-> The intended path does not depend on Enclave growing that API. The design this implements calls for an **LNURL-owned S3 adapter**, in-enclave authenticated encryption of each snapshot under a separate storage key, and an independent checkpoint authority that pins which object is current. [ArkLabsHQ/enclave#195](https://github.com/ArkLabsHQ/enclave/issues/195) asks for a runtime convenience API; it is optional, not a prerequisite. The `EnclaveStorage` interface is the seam an S3 adapter replaces.
+> **Not yet exercised against real S3 or on Nitro.** Snapshots go to an S3 bucket through the AWS SDK, reached with the instance role through Enclave's IMDS forwarder: the runtime advertises it as `AWS_EC2_METADATA_SERVICE_ENDPOINT`, and the application inherits that. Tests run the real SDK against a local S3 stand-in, and the packaged image was checked to load the SDK on its own Node. This is the design's LNURL-owned adapter. An earlier version targeted a `/v1/storage` runtime API that Enclave never had; [ArkLabsHQ/enclave#195](https://github.com/ArkLabsHQ/enclave/issues/195) asks for one as an optional convenience, not a prerequisite.
 >
 > Snapshots are sealed with AES-256-GCM under `ENCLAVE_STORAGE_KEY`, with every head field bound as associated data. So a host holding storage cannot read a snapshot, edit one, or fabricate a database behind a head that agrees with it — each fails authentication on restore. What it can still do is **replay an older snapshot that was genuinely sealed**, since every one of those authenticates. That is the rollback problem, and it is what the checkpoint authority exists to close; until then only the manual pins below stand in its way.
 >
@@ -54,8 +52,8 @@ Nitro gives the workload no persistent disk, so SQLite runs on the enclave's RAM
 | Variable | Meaning |
 | --- | --- |
 | `ENCLAVE_CHECKPOINT` | `1` enables checkpointing, and defaults `DB_PATH` to `/run/lnurl/state.sqlite`. |
-| `ENCLAVE_RUNTIME_TOKEN` | Bearer token the runtime hands the application. Required when enabled. |
-| `ENCLAVE_STORAGE_URL` | Storage base URL. Defaults to loopback on `ENCLAVE_PROXY_PORT`, the runtime's own internal listener, which is `8080` unless the runtime says otherwise. |
+| `ENCLAVE_S3_BUCKET` | Bucket holding this deployment's sealed snapshots and head. Required when enabled. Access comes from the instance role, which the host controls — so the host can withhold or delete objects, but not read or forge them. |
+| `ENCLAVE_AWS_REGION` | The bucket's region, default `us-east-1`. The same variable and default the runtime uses, so the two agree. |
 | `ENCLAVE_CHECKPOINT_KEY` | Object prefix for this deployment, default `lnurl/db`. Traversal is rejected at config load. |
 | `ENCLAVE_CHECKPOINT_INTERVAL_MS` | Background cadence, default `5000`, minimum `100`. |
 | `ENCLAVE_CHECKPOINT_ALLOW_GENESIS` | `1` permits a first boot with no prior head. Initial deployment only. |
@@ -76,7 +74,7 @@ Everything else the server writes is covered more bluntly. `persistenceCheckpoin
 
 ### Tested capacity
 
-Measured on the pinned Node 22.23.1 under Linux, seeding accepted offline swaps as the dominant row and checkpointing to a loopback HTTP storage endpoint. "Barrier" is the wait for one further accepted swap to become durable — what a payer actually sits behind. These are single runs, and the small-database figures in particular vary several-fold between runs. Encryption was measured on its own for that reason: AES-256-GCM over the compressed object has a median cost of 0.09 ms at 1k swaps and 5.8 ms at 200k across 25 runs, so it sits well inside that variance. It is cheap because it runs after compression, on the small object.
+Measured on the pinned Node 22.23.1 under Linux, seeding accepted offline swaps as the dominant row and checkpointing to a loopback HTTP endpoint rather than real S3, so real storage adds its network round trips on top. "Barrier" is the wait for one further accepted swap to become durable — what a payer actually sits behind. These are single runs, and the small-database figures in particular vary several-fold between runs. Encryption was measured on its own for that reason: AES-256-GCM over the compressed object has a median cost of 0.09 ms at 1k swaps and 5.8 ms at 200k across 25 runs, so it sits well inside that variance. It is cheap because it runs after compression, on the small object.
 
 | Accepted swaps | Database | Stored object | Barrier |
 | --- | --- | --- | --- |

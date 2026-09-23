@@ -1,6 +1,4 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { createServer, type Server } from "node:http";
-import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +11,7 @@ import { runMigrations } from "../src/db/migrations.js";
 import { DomainsRepo } from "../src/db/repositories/domains.js";
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
 import { createCheckpointStore, restoreCheckpoint, sha256 } from "../src/enclave/checkpoint.js";
-import { EnclaveStorageClient, type EnclaveStorage } from "../src/enclave/storage.js";
+import type { EnclaveStorage } from "../src/enclave/storage.js";
 
 class MemoryStorage implements EnclaveStorage {
   readonly objects = new Map<string, Uint8Array>();
@@ -376,43 +374,18 @@ describe("enclave checkpoint store", () => {
 
 describe("initPersistence under enclave checkpoints", () => {
   let dir: string | undefined;
-  let server: Server | undefined;
 
   afterEach(() => {
-    server?.close();
-    server = undefined;
     // A failing case leaves the database open, and Windows will not unlink under that.
     if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 2 });
     dir = undefined;
   });
 
-  async function startStorage(): Promise<{ baseUrl: string; objects: Map<string, Uint8Array> }> {
-    const objects = new Map<string, Uint8Array>();
-    server = createServer((req, res) => {
-      if (req.headers.authorization !== "Bearer token") { res.writeHead(401).end(); return; }
-      const key = (req.url ?? "").replace(/^\/v1\/storage\//, "").split("/").map(decodeURIComponent).join("/");
-      if (req.method === "PUT") {
-        const chunks: Uint8Array[] = [];
-        req.on("data", (chunk: Buffer) => chunks.push(new Uint8Array(chunk)));
-        req.on("end", () => { objects.set(key, Buffer.concat(chunks)); res.writeHead(201).end(); });
-        return;
-      }
-      const value = objects.get(key);
-      if (!value) { res.writeHead(404).end(); return; }
-      res.writeHead(200, { "content-type": "application/octet-stream" }).end(value);
-    });
-    server.listen(0, "127.0.0.1");
-    await once(server, "listening");
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("no local address");
-    return { baseUrl: `http://127.0.0.1:${address.port}`, objects };
-  }
-
-  function checkpointConfig(baseUrl: string, overrides: Partial<EnclaveCheckpointConfig> = {}): EnclaveCheckpointConfig {
+  function checkpointConfig(overrides: Partial<EnclaveCheckpointConfig> = {}): EnclaveCheckpointConfig {
     return {
       enabled: true,
-      storageUrl: baseUrl,
-      storageToken: "token",
+      s3Bucket: "lnurl-checkpoints",
+      awsRegion: "us-east-1",
       allowGenesis: false,
       checkpointIntervalMs: 1_000,
       checkpointKey: "lnurl/db",
@@ -424,21 +397,27 @@ describe("initPersistence under enclave checkpoints", () => {
 
   it("refuses to boot without an authoritative head unless genesis is allowed", async () => {
     dir = mkdtempSync(join(tmpdir(), "lnurl-enclave-"));
-    const { baseUrl } = await startStorage();
-    await expect(initPersistence({ dbPath: join(dir, "state", "lnurl.db"), checkpoint: checkpointConfig(baseUrl) }))
+    await expect(initPersistence({ dbPath: join(dir, "state", "lnurl.db"), checkpoint: checkpointConfig(), storage: new MemoryStorage() }))
       .rejects.toThrow(/authoritative checkpoint head is missing/);
+  });
+
+  it("refuses to checkpoint without anywhere to put the checkpoints", async () => {
+    dir = mkdtempSync(join(tmpdir(), "lnurl-enclave-"));
+    await expect(initPersistence({ dbPath: join(dir, "state", "lnurl.db"), checkpoint: checkpointConfig({ allowGenesis: true }) }))
+      .rejects.toThrow(/no checkpoint storage was supplied/);
   });
 
   it("recovers an accepted swap when the enclave is destroyed and only the checkpoint survives", async () => {
     dir = mkdtempSync(join(tmpdir(), "lnurl-enclave-"));
-    const { baseUrl } = await startStorage();
+    const storage = new MemoryStorage();
     const first = await initPersistence({
       dbPath: join(dir, "boot-a", "lnurl.db"),
-      checkpoint: checkpointConfig(baseUrl, { allowGenesis: true }),
+      checkpoint: checkpointConfig({ allowGenesis: true }),
+      storage,
     });
     const store = createCheckpointStore({
       db: first!.db,
-      storage: new EnclaveStorageClient({ baseUrl, token: "token" }),
+      storage,
       prefix: "lnurl/db",
       seal: SEAL,
       intervalMs: 60_000,
@@ -453,7 +432,8 @@ describe("initPersistence under enclave checkpoints", () => {
 
     const restarted = await initPersistence({
       dbPath: join(dir, "boot-b", "lnurl.db"),
-      checkpoint: checkpointConfig(baseUrl),
+      checkpoint: checkpointConfig(),
+      storage,
     });
     expect(new OfflineSwapStore(restarted!.db, 3_600_000).listPending()).toEqual([
       expect.objectContaining({ paymentHash: ACCEPTED_SWAP.paymentHash, preimage: ACCEPTED_SWAP.preimage }),
@@ -463,84 +443,27 @@ describe("initPersistence under enclave checkpoints", () => {
 
   it("commits a first head on an explicit genesis, then boots the next enclave from it", async () => {
     dir = mkdtempSync(join(tmpdir(), "lnurl-enclave-"));
-    const { baseUrl, objects } = await startStorage();
+    const storage = new MemoryStorage();
 
     // Nested paths that no test fixture creates: the enclave makes its own state directory.
     const genesis = await initPersistence({
       dbPath: join(dir, "state", "lnurl.db"),
       bootstrapDomain: "domain.com",
-      checkpoint: checkpointConfig(baseUrl, { allowGenesis: true }),
+      checkpoint: checkpointConfig({ allowGenesis: true }),
+      storage,
     });
     expect(genesis?.checkpointHead).toMatchObject({ sequence: 1, previousDigest: null });
-    expect(objects.has("lnurl/db/HEAD.json")).toBe(true);
+    expect(storage.objects.has("lnurl/db/HEAD.json")).toBe(true);
     genesis!.db.close();
 
     // A restarted enclave gets a fresh RAM-backed path and no genesis permission.
     const restored = await initPersistence({
       dbPath: join(dir, "restarted", "lnurl.db"),
-      checkpoint: checkpointConfig(baseUrl),
+      checkpoint: checkpointConfig(),
+      storage,
     });
     expect(restored?.checkpointHead).toEqual(genesis?.checkpointHead);
     expect(new DomainsRepo(restored!.db).getByDomain("domain.com")?.domain).toBe("domain.com");
     restored!.db.close();
-  });
-});
-
-describe("enclave storage client", () => {
-  it("gives up on a runtime that accepts the connection and never answers", async () => {
-    const server = createServer(() => { /* deliberately never responds */ });
-    server.listen(0, "127.0.0.1");
-    await once(server, "listening");
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("no local address");
-
-    const client = new EnclaveStorageClient({
-      baseUrl: `http://127.0.0.1:${address.port}`,
-      token: "token",
-      timeoutMs: 150,
-    });
-    await expect(client.load("lnurl/db/HEAD.json")).rejects.toThrow(/timed out after 150ms/);
-
-    server.closeAllConnections();
-    server.close();
-  });
-
-  it("uses the authenticated runtime API", async () => {
-    const server = createServer((req, res) => {
-      if (req.headers.authorization !== "Bearer token") {
-        res.writeHead(401).end();
-        return;
-      }
-      if (req.method === "PUT" && req.url === "/v1/storage/lnurl/db/HEAD.json") {
-        const chunks: Uint8Array[] = [];
-        req.on("data", (chunk: Buffer) => chunks.push(new Uint8Array(chunk)));
-        req.on("end", () => {
-          storage.objects.set("lnurl/db/HEAD.json", Buffer.concat(chunks));
-          res.writeHead(201).end(JSON.stringify({ status: "stored" }));
-        });
-        return;
-      }
-      if (req.method === "GET" && req.url === "/v1/storage/lnurl/db/HEAD.json") {
-        const value = storage.objects.get("lnurl/db/HEAD.json");
-        if (!value) { res.writeHead(404).end(); return; }
-        res.writeHead(200, { "content-type": "application/octet-stream" }).end(value);
-        return;
-      }
-      res.writeHead(404).end();
-    });
-    const storage = new MemoryStorage();
-    server.listen(0, "127.0.0.1");
-    await once(server, "listening");
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("no local address");
-    const client = new EnclaveStorageClient({
-      baseUrl: `http://127.0.0.1:${address.port}`,
-      token: "token",
-    });
-    const data = Buffer.from("snapshot", "utf8");
-    await client.put("lnurl/db/HEAD.json", data);
-    await expect(client.load("lnurl/db/HEAD.json")).resolves.toEqual(new Uint8Array(data));
-    await expect(client.load("missing/key")).resolves.toBeUndefined();
-    server.close();
   });
 });

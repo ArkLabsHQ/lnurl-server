@@ -4,7 +4,7 @@ import { VERSION } from "./version.js";
 import { SessionManager } from "./session-manager.js";
 import type { Db } from "./db/connection.js";
 import { createCheckpointStore, restoreCheckpoint, type CheckpointHead, type DurabilityBarrier, migrationVersion } from "./enclave/checkpoint.js";
-import { EnclaveStorageClient } from "./enclave/storage.js";
+import type { EnclaveStorage } from "./enclave/storage.js";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -20,6 +20,8 @@ export async function initPersistence(opts: {
   bootstrapDomain?: string;
   verifyTtlMs?: number;
   checkpoint?: EnclaveCheckpointConfig;
+  /** Where sealed checkpoints live; required when checkpointing is enabled. */
+  storage?: EnclaveStorage;
 }): Promise<{ db: Db; checkpointHead?: CheckpointHead } | null> {
   if (!opts.dbPath) return null;
   const { openDb } = await import("./db/connection.js");
@@ -36,10 +38,8 @@ export async function initPersistence(opts: {
   // The enclave boots onto an empty RAM-backed filesystem, so nothing has made the
   // state directory that DB_PATH sits in.
   if (opts.dbPath !== ":memory:") mkdirSync(dirname(opts.dbPath), { recursive: true });
-  const storage = new EnclaveStorageClient({
-    baseUrl: checkpoint.storageUrl,
-    token: checkpoint.storageToken!,
-  });
+  const storage = opts.storage;
+  if (!storage) throw new Error("checkpointing is enabled but no checkpoint storage was supplied");
   const seal = { key: checkpoint.storageKey!, deployment: checkpoint.deployment };
   let checkpointHead: CheckpointHead | undefined;
   let db: Db;
@@ -101,11 +101,23 @@ async function main(): Promise<void> {
   const runtime = createRuntime(health, config.shutdownTimeoutMs);
   const logger = createLogger();
 
+  // Loaded only when checkpointing, so ordinary deployments never pull in the AWS SDK.
+  let checkpointStorage: EnclaveStorage | undefined;
+  if (config.enclaveCheckpoint.enabled) {
+    const { S3Client } = await import("@aws-sdk/client-s3");
+    const { S3Storage } = await import("./enclave/s3-storage.js");
+    checkpointStorage = new S3Storage({
+      client: new S3Client({ region: config.enclaveCheckpoint.awsRegion }),
+      bucket: config.enclaveCheckpoint.s3Bucket!,
+    });
+  }
+
   const persistence = await initPersistence({
     dbPath: config.dbPath,
     bootstrapDomain: config.bootstrapDomain,
     verifyTtlMs: config.verifyTtlMs,
     checkpoint: config.enclaveCheckpoint,
+    storage: checkpointStorage,
   });
   const db = persistence?.db;
   if (config.offlineReceive.enabled && !db) throw new Error("offline receive requires DB_PATH for durable accepted-swap recovery");
@@ -116,13 +128,9 @@ async function main(): Promise<void> {
     runtime.setDatabase(db);
     health.register("persistence", () => ({ ok: runtime.resources().dbOpen, detail: "SQLite open" }));
     if (config.enclaveCheckpoint.enabled) {
-      const storage = new EnclaveStorageClient({
-        baseUrl: config.enclaveCheckpoint.storageUrl,
-        token: config.enclaveCheckpoint.storageToken!,
-      });
       const store = createCheckpointStore({
         db,
-        storage,
+        storage: checkpointStorage!,
         prefix: config.enclaveCheckpoint.checkpointKey,
         seal: { key: config.enclaveCheckpoint.storageKey!, deployment: config.enclaveCheckpoint.deployment },
         intervalMs: config.enclaveCheckpoint.checkpointIntervalMs,

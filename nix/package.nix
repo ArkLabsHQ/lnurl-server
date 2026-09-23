@@ -41,7 +41,7 @@ pkgsStatic.stdenv.mkDerivation (final: {
     inherit (final) pname src;
     inherit pnpm;
     fetcherVersion = 3;
-    hash = "sha256-8WnAlbpFh0TgKsqecLT9bvp0QO9fdY14S4xH+KHV49w=";
+    hash = "sha256-ws0iSX++VUifNrwzECtsPe/yKfdqlLReCb3GGC/8krg=";
   };
   env = { TZ = "UTC"; LANG = "C.UTF-8"; SOURCE_DATE_EPOCH = "1"; };
   buildPhase = ''
