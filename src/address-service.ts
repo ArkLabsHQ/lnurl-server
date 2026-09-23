@@ -8,7 +8,7 @@ import { normalizeDisabledRails } from "./rails.js";
 
 export type ProvisioningCode =
   | "invalid_token" | "invalid_username" | "forbidden_mode"
-  | "blacklisted" | "taken" | "limit_reached" | "invalid_claim" | "invalid_rails" | "stale_credential";
+  | "blacklisted" | "taken" | "limit_reached" | "invalid_claim" | "invalid_rails" | "stale_credential" | "protected_address";
 
 export class ProvisioningError extends Error {
   constructor(public code: ProvisioningCode, message: string) {
@@ -32,6 +32,7 @@ export class AddressService {
 
     if (p.username) {
       const username = p.username.toLowerCase();
+      this.assertUnprotected(domain, username);
       const existing = this.repos.addresses.getByDomainAndUsername(domain.id, username);
       if (existing && existing.status === "reserved") {
         if (!p.claimCode || !existing.claimCodeHash || !hashSecret(p.claimCode).equals(existing.claimCodeHash)) {
@@ -58,6 +59,7 @@ export class AddressService {
 
   reserve(domain: DomainRow, username: string): { address: AddressRow; claimCode: string } {
     const u = username.toLowerCase();
+    this.assertUnprotected(domain, u);
     if (this.repos.addresses.getByDomainAndUsername(domain.id, u)) throw new ProvisioningError("taken", "username already taken");
     this.assertUsername(domain, u);
     const claimCode = randomBytes(16).toString("hex");
@@ -67,6 +69,7 @@ export class AddressService {
 
   mint(domain: DomainRow, username: string): { address: AddressRow; secret: string } {
     const u = username.toLowerCase();
+    this.assertUnprotected(domain, u);
     if (this.repos.addresses.getByDomainAndUsername(domain.id, u)) throw new ProvisioningError("taken", "username already taken");
     this.assertUsername(domain, u);
     const secret = randomBytes(32).toString("hex");
@@ -100,6 +103,7 @@ export class AddressService {
     if (!isValidToken(token)) return false;
     const a = this.repos.addresses.getByDomainAndUsername(domain.id, username.toLowerCase());
     if (!a || a.sessionId !== deriveSessionId(token)) return false;
+    this.assertUnprotected(domain, a.username);
     this.repos.addresses.updateStatus(a.id, "revoked");
     return true;
   }
@@ -125,6 +129,7 @@ export class AddressService {
     if (!isValidToken(token)) return false;
     const a = this.repos.addresses.getByDomainAndUsername(domain.id, username.toLowerCase());
     if (!a || a.sessionId !== deriveSessionId(token) || a.status !== "active") return false;
+    this.assertUnprotected(domain, a.username);
     this.repos.addresses.setOfflineReceive(a.id, cfg.arkadeAddress, cfg.claimPublicKey);
     // Only when named: a caller re-registering its identity without one should
     // not silently withdraw an onchain rail it registered earlier.
@@ -136,6 +141,19 @@ export class AddressService {
 
   private result(domain: DomainRow, username: string) {
     return { address: this.repos.addresses.getByDomainAndUsername(domain.id, username)!, lightningAddress: `${username}@${domain.domain}` };
+  }
+
+  /** A name an owner identity holds, tombstone included, moves only through a signed setup:
+   *  neither its bearer token nor an operator may rewrite, retire or reassign it. */
+  private assertUnprotected(domain: DomainRow, username: string): void {
+    if (this.repos.ownerSetups.identity(domain.domain, username)) {
+      throw new ProvisioningError("protected_address", `${username}@${domain.domain} is owner-signed; only a signed setup (POST /lnurl/setup) changes it`);
+    }
+  }
+
+  private isFree(domain: DomainRow, username: string): boolean {
+    return validateUsername(username, domain) && !this.repos.blacklist.isBlocked(domain.id, username)
+      && !this.repos.addresses.getByDomainAndUsername(domain.id, username) && !this.repos.ownerSetups.identity(domain.domain, username);
   }
 
   private assertUsername(domain: DomainRow, username: string): void {
@@ -152,17 +170,13 @@ export class AddressService {
   private pickRandomUsername(domain: DomainRow): string {
     for (let i = 0; i < MAX_RANDOM_ATTEMPTS; i++) {
       const u = randomUsername();
-      if (validateUsername(u, domain) && !this.repos.blacklist.isBlocked(domain.id, u) && !this.repos.addresses.getByDomainAndUsername(domain.id, u)) {
-        return u;
-      }
+      if (this.isFree(domain, u)) return u;
     }
     // Fall back to a word-combo with a short random hex suffix to break contention.
     // The suffix keeps the name within the default 32-char max (longest combo is 12 chars + 5 = 17).
     for (let i = 0; i < MAX_RANDOM_ATTEMPTS; i++) {
       const u = `${randomUsername()}-${randomBytes(2).toString("hex")}`;
-      if (validateUsername(u, domain) && !this.repos.blacklist.isBlocked(domain.id, u) && !this.repos.addresses.getByDomainAndUsername(domain.id, u)) {
-        return u;
-      }
+      if (this.isFree(domain, u)) return u;
     }
     throw new ProvisioningError("taken", "could not allocate a free random username");
   }

@@ -63,7 +63,7 @@ const METADATA_DESCRIPTION = "Arkade LNURL Receive";
 
 const PROVISIONING_STATUS: Record<string, number> = {
   invalid_token: 400, invalid_username: 400, forbidden_mode: 403,
-  blacklisted: 409, taken: 409, limit_reached: 429, invalid_claim: 401,
+  blacklisted: 409, taken: 409, limit_reached: 429, invalid_claim: 401, protected_address: 409,
 };
 
 /** Express types query values as string | string[] | ...; an array (`?a=1&a=2`)
@@ -894,7 +894,13 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         const auth = req.headers.authorization;
         const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
         if (!isValidToken(token)) { res.status(401).json({ error: "Unauthorized" }); return; }
-        const ok = addressService.revokeOwn(domain, req.params.username, token);
+        let ok: boolean;
+        try {
+          ok = addressService.revokeOwn(domain, req.params.username, token);
+        } catch (err) {
+          if (err instanceof ProvisioningError) { res.status(PROVISIONING_STATUS[err.code] ?? 400).json({ error: err.message, code: err.code }); return; }
+          throw err;
+        }
         if (!ok) { res.status(404).json({ error: "Address not found or not owned by this token" }); return; }
         res.json({ ok: true });
       });
@@ -928,11 +934,17 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           res.status(400).json({ error: "boardingAddress must be a non-empty string when provided" });
           return;
         }
-        const ok = addressService.setOfflineReceive(domain, req.params.username, token, {
-          arkadeAddress,
-          claimPublicKey,
-          ...(boardingAddress !== undefined ? { boardingAddress } : {}),
-        });
+        let ok: boolean;
+        try {
+          ok = addressService.setOfflineReceive(domain, req.params.username, token, {
+            arkadeAddress,
+            claimPublicKey,
+            ...(boardingAddress !== undefined ? { boardingAddress } : {}),
+          });
+        } catch (err) {
+          if (err instanceof ProvisioningError) { res.status(PROVISIONING_STATUS[err.code] ?? 400).json({ error: err.message, code: err.code }); return; }
+          throw err;
+        }
         if (!ok) { res.status(404).json({ error: "Address not found or not owned by this token" }); return; }
         res.json({ ok: true });
       });
