@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { SessionManager } from "./session-manager.js";
-import { openApiSpec } from "./openapi.js";
+import { publicOpenApiSpec } from "./openapi.js";
 import type { Repositories } from "./db/repositories/index.js";
 import { domainFromHost } from "./http-origin.js";
 import { encodeLnurl } from "./lnurl.js";
@@ -21,7 +21,8 @@ import { HealthRegistry } from "./health.js";
 import { createLogger, type Logger } from "./logger.js";
 import { ArkAddress, BIP21 } from "@arkade-os/sdk";
 import { resolvePaymentOption } from "./payment-options.js";
-import { isProtectedSession, receiveRouting } from "./owner-setup-service.js";
+import { isProtectedSession, receiveRouting, type OwnerSetupService } from "./owner-setup-service.js";
+import { mountOwnerSetupRoutes } from "./owner-setup-routes.js";
 import {
   advertisedBounds,
   advertisedRailOptions,
@@ -106,6 +107,9 @@ export interface ServerDeps {
   /** Called with a static-rail destination as it is handed out, so a watcher can
    *  register it before the payer pays rather than on its next resync. */
   onDestinationIssued?: (destination: string) => void;
+  /** Opens enrollment of owner-signed identities (/lnurl/setup). Enforcement over the
+   *  identities already committed never depends on it. */
+  ownerSetups?: OwnerSetupService;
   health?: HealthRegistry;
   logger?: Logger;
 }
@@ -315,6 +319,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
   });
 
   // ─── GET / ─────────────────────────────────────────────────────────
+  const openApiSpec = publicOpenApiSpec(Boolean(deps?.ownerSetups));
   // Serves Redocly API docs as the home page.
   app.get("/", (_req, res) => {
     res.send(`<!DOCTYPE html>
@@ -416,6 +421,14 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     });
     res.json(list);
   });
+
+  // Also before /lnurl/:id, which would otherwise take "setup" for a session id.
+  if (deps?.ownerSetups) {
+    mountOwnerSetupRoutes(app, {
+      service: deps.ownerSetups, repos: deps.repos, railCaps: currentRailCaps,
+      ...(deps.registrationLimiter ? { ipLimiter: deps.registrationLimiter } : {}),
+    });
+  }
 
   // ─── GET /lnurl/verify/:paymentHash ──────────────────────────────────
   // LUD-21: the payer polls this to learn whether their invoice settled.

@@ -400,6 +400,12 @@ async function main(): Promise<void> {
       console.log(`covenant destinations: enabled (emulator=${off.emulatorUrl}, recovery=${off.covenantRecoveryDelaySeconds}s)`);
     }
     let watchDestination: ((destination: string) => void) | undefined;
+    let ownerSetups: import("./owner-setup-service.js").OwnerSetupService | undefined;
+    if (config.protectedSetup) {
+      const { OwnerSetupService } = await import("./owner-setup-service.js");
+      ownerSetups = new OwnerSetupService(repos, addressService, { ...config.protectedSetup, enrollment: true });
+      console.log(`protected setup: enrollment open (deployment=${config.protectedSetup.deployment}, network=${config.protectedSetup.network})`);
+    }
     deps = {
       repos,
       addressService,
@@ -418,6 +424,7 @@ async function main(): Promise<void> {
       // Late-bound: the watcher is built below, and nothing calls this until the
       // listeners are accepting, which is later still.
       onDestinationIssued: (destination) => watchDestination?.(destination),
+      ...(ownerSetups ? { ownerSetups } : {}),
     };
     // Every background scheduler registers its stop hook before the listeners
     // begin accepting traffic.

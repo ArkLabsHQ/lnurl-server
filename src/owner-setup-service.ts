@@ -56,6 +56,14 @@ export function committedSetup(repos: Repositories, domain: string, username: st
   return { setup: decodeOwnerSetup(record.payload), identity, record };
 }
 
+/** The owner's preferences in the operator-policy slot: every rail they did not list is disabled. */
+export function setupRailAddress(setup: OwnerSetup): RailAddress {
+  return {
+    arkadeAddress: setup.arkadeDestination, claimPublicKey: setup.claimPublicKey, boardingAddress: setup.boardingAddress ?? null,
+    disabledRails: RAIL_IDS.filter((r) => !setup.rails.includes(r)),
+  };
+}
+
 export function isProtectedSession(repos: Repositories, sessionId: string): boolean {
   return repos.addresses.listBySessionId(sessionId).some((a) => repos.ownerSetups.identityByAddress(a.id) !== undefined);
 }
@@ -77,13 +85,7 @@ export function receiveRouting(repos: Repositories, domain: string, address: Add
   if (identity.addressId !== address.id) return { kind: "refused", reason: "Unknown LN address" };
   if (identity.state === "revoked") return { kind: "refused", reason: `${name} was revoked by its owner` };
   if (identity.suspendedAt !== null) return { kind: "refused", reason: `${name} is suspended by its provider` };
-  return {
-    kind: "protected",
-    railAddress: {
-      arkadeAddress: setup.arkadeDestination, claimPublicKey: setup.claimPublicKey, boardingAddress: setup.boardingAddress ?? null,
-      disabledRails: RAIL_IDS.filter((r) => !setup.rails.includes(r)),
-    },
-  };
+  return { kind: "protected", railAddress: setupRailAddress(setup) };
 }
 
 /** The owner-signed setup chain: who may enroll a protected identity, and which signed
