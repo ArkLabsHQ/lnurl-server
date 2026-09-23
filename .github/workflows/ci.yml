@@ -82,6 +82,34 @@ jobs:
         env:
           DYNAMODB_ENDPOINT: http://localhost:8000
 
+  attestor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: attestor
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: attestor/go.mod
+          cache-dependency-path: attestor/go.sum
+
+      - name: Format
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then echo "$unformatted"; exit 1; fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build the static binary the image carries
+        run: CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/lnurl-attest" ./cmd/lnurl-attest
+
   authority-interop:
     runs-on: ubuntu-latest
     timeout-minutes: 20
