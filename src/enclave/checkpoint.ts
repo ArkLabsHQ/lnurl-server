@@ -230,16 +230,24 @@ export function createCheckpointStore(options: {
   let running: Promise<CheckpointHead | undefined> | undefined;
   let last = { ok: true, detail: "checkpoint storage ready" };
   let durableAt = now();
+  // This connection's row-change count when the last committed snapshot was taken.
+  // Unknown until the first flush, so the first barrier always takes one.
+  let committed = -1;
+  const totalChanges = options.db.prepare("SELECT total_changes() AS n");
+  const changes = () => (totalChanges.get() as { n: number }).n;
 
   async function flush(): Promise<CheckpointHead | undefined> {
     if (running) return running;
     running = (async () => {
       try {
+        // Same synchronous step as the snapshot, so no write can land between them.
+        const mark = changes();
         const snapshot = snapshotBytes(options.db, scratchDir);
         const digest = sha256(snapshot);
         if (head?.digest === digest) {
           // Nothing changed, so what is stored is still exactly this state.
           durableAt = now();
+          committed = mark;
           return head;
         }
         const previousHead = head;
@@ -267,6 +275,7 @@ export function createCheckpointStore(options: {
         const next: CheckpointHead = { ...meta, ciphertextDigest, key };
         await options.storage.put(`${prefix}${headSuffix}`, Buffer.from(JSON.stringify(next)));
         head = next;
+        committed = mark;
         last = { ok: true, detail: `checkpoint ${next.sequence} committed` };
         durableAt = now();
         return next;
@@ -280,11 +289,14 @@ export function createCheckpointStore(options: {
     return running;
   }
 
-  // Joining a flush that began before the caller's write would acknowledge state the
-  // snapshot does not contain, so wait that one out before starting the one we need.
+  // A flush in flight may have snapshotted before the caller's write, so it is waited
+  // out and trusted only if the mark it committed reaches that write.
   async function barrier(): Promise<void> {
+    const target = changes();
+    if (committed >= target) return;
     const inFlight = running;
     if (inFlight) await inFlight.catch(() => {});
+    if (committed >= target) return;
     await flush();
   }
 

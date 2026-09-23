@@ -357,7 +357,7 @@ async function main(): Promise<void> {
     const adminIndexer = off.arkServerUrl
       ? new (await import("@arkade-os/sdk")).RestIndexerProvider(off.arkServerUrl)
       : undefined;
-    const adminServer = createAdminServer({ repos, addressService, sessions, settings, config, settlements, discovery: solverDiscovery, ...(adminIndexer ? { indexer: adminIndexer } : {}), logger }).listen(config.adminPort, config.adminBind, () => {
+    const adminServer = createAdminServer({ repos, addressService, sessions, settings, config, settlements, discovery: solverDiscovery, ...(adminIndexer ? { indexer: adminIndexer } : {}), ...(durability ? { durability } : {}), logger }).listen(config.adminPort, config.adminBind, () => {
       console.log(`admin server on http://${config.adminBind}:${config.adminPort} (front with a proxy)`);
     });
     runtime.addServer(adminServer);

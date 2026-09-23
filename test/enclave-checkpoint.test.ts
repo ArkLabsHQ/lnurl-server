@@ -102,6 +102,16 @@ class FailingStorage implements EnclaveStorage {
   }
 }
 
+function countSnapshots(db: DatabaseSync): () => number {
+  let n = 0;
+  const exec = db.exec.bind(db);
+  db.exec = (sql: string) => {
+    if (sql.startsWith("VACUUM INTO")) n += 1;
+    return exec(sql);
+  };
+  return () => n;
+}
+
 function seedDb(value: number): DatabaseSync {
   const db = openDb(":memory:");
   runMigrations(db);
@@ -234,6 +244,36 @@ describe("enclave checkpoint store", () => {
     const restored = await restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: SEAL });
     expect(restored!.db.prepare("SELECT updated_at AS u FROM domains").get()).toEqual({ u: 2 });
     await restored!.db.close();
+  });
+
+  it("answers a barrier without a snapshot while nothing is uncommitted", async () => {
+    const db = seedDb(1);
+    const store = createCheckpointStore({ db, storage: new MemoryStorage(), prefix: "lnurl/db", seal: SEAL, intervalMs: 60_000 });
+    const snapshots = countSnapshots(db);
+    await store.barrier();
+    await store.barrier();
+    expect(snapshots()).toBe(1);
+
+    db.prepare("UPDATE domains SET updated_at = ? WHERE domain = ?").run(2, "wallet-1.invalid");
+    await store.barrier();
+    expect(snapshots()).toBe(2);
+    await db.close();
+  });
+
+  it("joins a flush in flight when its snapshot already covers the caller", async () => {
+    const db = seedDb(1);
+    const storage = new GatedStorage();
+    const store = createCheckpointStore({ db, storage, prefix: "lnurl/db", seal: SEAL, intervalMs: 60_000 });
+    const snapshots = countSnapshots(db);
+
+    storage.hold();
+    const inFlight = store.flush();
+    const durable = store.barrier();
+    storage.release();
+    await inFlight;
+    await durable;
+    expect(snapshots()).toBe(1);
+    await db.close();
   });
 
   it("refuses to erase a head another enclave advanced", async () => {

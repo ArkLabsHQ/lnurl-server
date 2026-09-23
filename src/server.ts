@@ -16,6 +16,7 @@ import { MemorySettlementStore, type SettlementStore } from "./settlement-store.
 import type { OfflineSwapCreator } from "./intent-swap.js";
 import type { OfflineSwapStore } from "./offline-swap-store.js";
 import type { DurabilityBarrier } from "./enclave/checkpoint.js";
+import { durableResponses } from "./enclave/durable-responses.js";
 import { HealthRegistry } from "./health.js";
 import { createLogger, type Logger } from "./logger.js";
 import { ArkAddress, BIP21 } from "@arkade-os/sdk";
@@ -303,6 +304,8 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     res.setHeader("X-Request-Id", requestId);
     next();
   });
+  // Health is exempt: it has to answer while checkpoints fail, and reports that itself.
+  if (deps?.durability) app.use(durableResponses(deps.durability, logger, ["/livez", "/readyz"]));
 
   app.get("/livez", (_req, res) => res.json({ status: "live" }));
   app.get("/readyz", (_req, res) => {

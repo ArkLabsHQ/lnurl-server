@@ -14,6 +14,7 @@ import { hex } from "@scure/base";
 import { ArkAddress, type IndexerProvider } from "@arkade-os/sdk";
 import type { DiscoveryService } from "./solver-discovery.js";
 import type { Logger } from "./logger.js";
+import type { DurabilityBarrier } from "./enclave/checkpoint.js";
 import { describeServerRails, effectiveRails, type ServerRailCaps } from "./rails.js";
 
 const ADMIN_DOCS_HTML = `<!DOCTYPE html>
@@ -49,6 +50,7 @@ export interface AdminDeps {
    *  rather than failing it, since every other admin read works without one. */
   indexer?: Pick<IndexerProvider, "getVtxos">;
   logger?: Logger;
+  durability?: DurabilityBarrier;
 }
 
 const VALID_ALLOCATION_MODES = new Set(["self", "random", "admin"]);
