@@ -1,5 +1,6 @@
-import { schnorr } from "@noble/curves/secp256k1.js";
+import { schnorr, secp256k1 } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { ArkAddress } from "@arkade-os/sdk";
 import { isRailId, type RailId } from "../rails.js";
 
@@ -13,6 +14,8 @@ import { isRailId, type RailId } from "../rails.js";
  * stored signature does not, so the SDK's default applies.
  */
 export interface OwnerSetup {
+  /** A revocation is a signed revision like any other, so it needs its own meaning. */
+  intent: OwnerSetupIntent;
   deployment: string;
   tenant: string;
   network: string;
@@ -31,10 +34,14 @@ export interface OwnerSetup {
   rails: readonly RailId[];
   /** 1 for the first setup, which alone has no previous hash. */
   revision: number;
+  /** ownerSetupDigest of the previous revision, hex. */
   previousHash?: string;
 }
 
-const TAG = "lnurl.enclave.setup.v1";
+export const OWNER_SETUP_TAG = "lnurl.enclave.setup.v1";
+export const OWNER_SETUP_VERSION = 1;
+const INTENTS = { set: 1, revoke: 2 } as const;
+export type OwnerSetupIntent = keyof typeof INTENTS;
 const MAX_FIELD = 65_535;
 
 function lengthPrefixed(value: string): Uint8Array {
@@ -77,7 +84,17 @@ function isCanonicalArkAddress(value: string): boolean {
   }
 }
 
+function isCurvePoint(compressedHex: string): boolean {
+  try {
+    secp256k1.Point.fromHex(compressedHex);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function assertValid(setup: OwnerSetup): void {
+  if (!Object.hasOwn(INTENTS, setup.intent)) throw new Error("owner setup intent must be set or revoke");
   for (const [name, value] of [["deployment", setup.deployment], ["tenant", setup.tenant], ["network", setup.network]] as const) {
     if (!value) throw new Error(`owner setup ${name} must not be empty`);
   }
@@ -89,6 +106,12 @@ function assertValid(setup: OwnerSetup): void {
   }
   if (!/^0[23][0-9a-f]{64}$/.test(setup.claimPublicKey)) {
     throw new Error("owner setup claimPublicKey must be a compressed secp256k1 key");
+  }
+  // A shape-valid key off the curve could still be rotated to, bricking an identity
+  // that nobody may reassign.
+  if (!isCurvePoint(setup.claimPublicKey)) throw new Error("owner setup claimPublicKey must be a point on secp256k1");
+  if (/^[0-9a-f]{64}$/.test(setup.ownerPublicKey) && !isCurvePoint(`02${setup.ownerPublicKey}`)) {
+    throw new Error("owner setup ownerPublicKey must be the x coordinate of a point on secp256k1");
   }
   if (setup.boardingAddress === "") throw new Error("owner setup boardingAddress must be omitted rather than empty");
   if (!setup.rails.every(isRailId)) throw new Error("owner setup rails must be known rail ids");
@@ -109,7 +132,7 @@ function assertValid(setup: OwnerSetup): void {
 export function encodeOwnerSetup(setup: OwnerSetup): Uint8Array {
   assertValid(setup);
   const parts: Uint8Array[] = [
-    Uint8Array.of(1),
+    Uint8Array.of(OWNER_SETUP_VERSION, INTENTS[setup.intent]),
     lengthPrefixed(setup.deployment),
     lengthPrefixed(setup.tenant),
     lengthPrefixed(setup.network),
@@ -131,10 +154,59 @@ export function encodeOwnerSetup(setup: OwnerSetup): Uint8Array {
   return out;
 }
 
+/** The record in exactly these bytes, or a throw. What is stored is what the owner
+ *  signed, so anything the encoder would not produce byte for byte is refused. */
+export function decodeOwnerSetup(bytes: Uint8Array): OwnerSetup {
+  let at = 0;
+  const take = (n: number): Uint8Array => {
+    if (bytes.length - at < n) throw new Error("owner setup payload is truncated");
+    const out = bytes.subarray(at, at + n);
+    at += n;
+    return out;
+  };
+  const u8 = (): number => take(1)[0]!;
+  const u16 = (): number => { const b = take(2); return (b[0]! << 8) | b[1]!; };
+  const u32 = (): number => { const b = take(4); return new DataView(b.buffer, b.byteOffset, 4).getUint32(0); };
+  const utf8 = new TextDecoder("utf-8", { fatal: true });
+  const text = (): string => utf8.decode(take(u16()));
+  const optional = <T>(read: () => T): T | undefined => {
+    const flag = u8();
+    if (flag > 1) throw new Error("owner setup payload has an invalid presence byte");
+    return flag === 1 ? read() : undefined;
+  };
+
+  const version = u8();
+  if (version !== OWNER_SETUP_VERSION) throw new Error(`owner setup version ${version} is not ${OWNER_SETUP_VERSION}`);
+  const intentByte = u8();
+  const intent = (Object.keys(INTENTS) as OwnerSetupIntent[]).find((k) => INTENTS[k] === intentByte);
+  if (!intent) throw new Error(`owner setup intent ${intentByte} is unknown`);
+  const setup: OwnerSetup = {
+    intent,
+    deployment: text(),
+    tenant: text(),
+    network: text(),
+    domain: text(),
+    username: text(),
+    ownerPublicKey: bytesToHex(take(32)),
+    arkadeDestination: text(),
+    claimPublicKey: bytesToHex(take(33)),
+    boardingAddress: optional(text),
+    rails: Array.from({ length: u16() }, () => text()) as RailId[],
+    revision: u32(),
+    previousHash: optional(() => bytesToHex(take(32))),
+  };
+  if (at !== bytes.length) throw new Error("owner setup payload has trailing bytes");
+  const canonical = encodeOwnerSetup(setup);
+  if (canonical.length !== bytes.length || canonical.some((b, i) => b !== bytes[i])) {
+    throw new Error("owner setup payload is not canonical");
+  }
+  return setup;
+}
+
 /** BIP340-style tagged hash, so this digest cannot be a valid signature over
  *  anything else the owner's key is ever asked to sign. */
 export function ownerSetupDigest(setup: OwnerSetup): Uint8Array {
-  const tag = sha256(new TextEncoder().encode(TAG));
+  const tag = sha256(new TextEncoder().encode(OWNER_SETUP_TAG));
   const payload = encodeOwnerSetup(setup);
   const preimage = new Uint8Array(tag.length * 2 + payload.length);
   preimage.set(tag, 0);

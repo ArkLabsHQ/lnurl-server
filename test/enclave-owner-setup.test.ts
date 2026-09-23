@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { schnorr } from "@noble/curves/secp256k1.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { ArkAddress } from "@arkade-os/sdk";
-import { encodeOwnerSetup, ownerSetupDigest, verifyOwnerSetup, type OwnerSetup } from "../src/enclave/owner-setup.js";
+import { decodeOwnerSetup, encodeOwnerSetup, ownerSetupDigest, verifyOwnerSetup, type OwnerSetup } from "../src/enclave/owner-setup.js";
 import type { RailId } from "../src/rails.js";
 
 const ownerKey = Uint8Array.from({ length: 32 }, (_, i) => i + 1);
@@ -12,6 +12,7 @@ const DESTINATION = new ArkAddress(new Uint8Array(32).fill(2), new Uint8Array(32
 const OTHER_DESTINATION = new ArkAddress(new Uint8Array(32).fill(2), new Uint8Array(32).fill(4), "tark").encode();
 
 const SETUP: OwnerSetup = {
+  intent: "set",
   deployment: "lnurl-research",
   tenant: "wallet-co",
   network: "bitcoin",
@@ -116,6 +117,31 @@ describe("owner-signed setup", () => {
     expect(() => encodeOwnerSetup({ ...SETUP, ownerPublicKey: "ab".repeat(31) })).toThrow(/ownerPublicKey must be 32 bytes/);
     expect(() => encodeOwnerSetup({ ...SETUP, revision: 2, previousHash: "nothex" })).toThrow(/previousHash must be 32 bytes/);
     expect(() => encodeOwnerSetup({ ...SETUP, boardingAddress: "" })).toThrow(/omitted rather than empty/);
+  });
+
+  it("binds the intent, so a revocation can never pass as an update", () => {
+    expect(hexDigest({ ...SETUP, intent: "revoke" })).not.toBe(hexDigest(SETUP));
+  });
+
+  it("decodes exactly what it encoded, and refuses anything else", () => {
+    const later: OwnerSetup = { ...SETUP, boardingAddress: "tb1qboarding", revision: 2, previousHash: "cd".repeat(32) };
+    for (const setup of [SETUP, later, { ...SETUP, intent: "revoke" } satisfies OwnerSetup]) {
+      expect(decodeOwnerSetup(encodeOwnerSetup(setup))).toEqual(setup);
+    }
+    const bytes = encodeOwnerSetup(SETUP);
+    expect(() => decodeOwnerSetup(Uint8Array.of(...bytes, 0))).toThrow(/trailing/);
+    expect(() => decodeOwnerSetup(bytes.subarray(0, bytes.length - 1))).toThrow(/truncated/);
+    expect(() => decodeOwnerSetup(Uint8Array.of(2, ...bytes.subarray(1)))).toThrow(/version/);
+    expect(() => decodeOwnerSetup(Uint8Array.of(1, 3, ...bytes.subarray(2)))).toThrow(/intent/);
+    const upper = Buffer.from(bytes);
+    upper.write("W", upper.indexOf("wallet.example"), "latin1");
+    expect(() => decodeOwnerSetup(upper)).toThrow(/lowercase/);
+  });
+
+  it("refuses keys that are not points on the curve", () => {
+    const noPoint = "00".repeat(31) + "05";
+    expect(() => encodeOwnerSetup({ ...SETUP, claimPublicKey: "02" + noPoint })).toThrow(/point on secp256k1/);
+    expect(() => encodeOwnerSetup({ ...SETUP, ownerPublicKey: noPoint })).toThrow(/point on secp256k1/);
   });
 
   it("answers false rather than throwing for a malformed record or signature", () => {
