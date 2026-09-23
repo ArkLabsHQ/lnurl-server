@@ -21,7 +21,7 @@ import { HealthRegistry } from "./health.js";
 import { createLogger, type Logger } from "./logger.js";
 import { ArkAddress, BIP21 } from "@arkade-os/sdk";
 import { resolvePaymentOption } from "./payment-options.js";
-import { receiveRouting } from "./owner-setup-service.js";
+import { isProtectedSession, receiveRouting } from "./owner-setup-service.js";
 import {
   advertisedBounds,
   advertisedRailOptions,
@@ -353,6 +353,11 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     const HEX_RE = /^[0-9a-f]+$/i;
     if (providedToken != null && (typeof providedToken !== "string" || providedToken.length < 32 || !HEX_RE.test(providedToken))) {
       res.status(400).json({ error: "token must be a hex string of at least 32 characters" });
+      return;
+    }
+    // Whoever else holds a protected address's token, it opens nothing that can answer for it.
+    if (providedToken && deps?.repos && isProtectedSession(deps.repos, deriveSessionId(providedToken))) {
+      res.status(409).json({ error: "this token belongs to a protected address and cannot open a session" });
       return;
     }
     if (!sessions.canAccept(req.ip, config.maxSessions ?? 5_000, config.maxSessionsPerIp ?? 50, providedToken)) {

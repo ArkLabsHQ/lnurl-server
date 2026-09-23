@@ -12,6 +12,7 @@ import { createRepositories, type Repositories } from "../src/db/repositories/in
 import { AddressService } from "../src/address-service.js";
 import { OwnerSetupService } from "../src/owner-setup-service.js";
 import { SessionManager } from "../src/session-manager.js";
+import { deriveSessionId } from "../src/session-id.js";
 import { MemorySettlementStore } from "../src/settlement-store.js";
 import { encodeOwnerSetup, ownerSetupDigest, type OwnerSetup } from "../src/enclave/owner-setup.js";
 import type { OfflineSwapCreator } from "../src/intent-swap.js";
@@ -82,6 +83,16 @@ function get(path: string): Promise<Record<string, unknown>> {
   });
 }
 
+function post(path: string, body: unknown, bearer?: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(`${baseUrl}${path}`, {
+      method: "POST", headers: { Host: HOST, "Content-Type": "application/json", ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}) },
+    }, (res) => { resolve(res.statusCode!); res.destroy(); });
+    req.on("error", reject);
+    req.end(JSON.stringify(body));
+  });
+}
+
 function enroll(setup = SETUP): { token: string; addressId: number } {
   const token = randomBytes(32).toString("hex");
   const out = owners.submit({ ...signed(setup), token });
@@ -111,6 +122,19 @@ describe("receiving on a protected address", () => {
 
     expect(await get("/.well-known/lnurlp/alice/callback?amount=50000")).toMatchObject({ pr: "lnbc1offline" });
     expect(invoiceRequests).toBe(0);
+  });
+
+  it("refuses a legacy token opening a session for a protected address", async () => {
+    const { token } = enroll();
+    const legacyToken = randomBytes(32).toString("hex");
+    new AddressService(repos, randomBytes(32)).register({ domain: repos.domains.getByDomain(HOST)!, username: "carol", token: legacyToken });
+    await serve();
+
+    expect(await post("/lnurl/session", { token })).toBe(409);
+    expect(sessions.isActive(deriveSessionId(token))).toBe(false);
+    expect(await post(`/lnurl/session/${deriveSessionId(token)}/invoice`, { pr: "lnbc1substituted" }, token)).toBe(401);
+    expect(await get("/.well-known/lnurlp/alice/callback?amount=50000")).toMatchObject({ pr: "lnbc1offline" });
+    expect(await post("/lnurl/session", { token: legacyToken })).toBe(200);
   });
 
   it("refuses explicitly when a protected rail is unavailable, never falling back to a session", async () => {

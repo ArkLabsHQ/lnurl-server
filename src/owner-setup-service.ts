@@ -56,6 +56,10 @@ export function committedSetup(repos: Repositories, domain: string, username: st
   return { setup: decodeOwnerSetup(record.payload), identity, record };
 }
 
+export function isProtectedSession(repos: Repositories, sessionId: string): boolean {
+  return repos.addresses.listBySessionId(sessionId).some((a) => repos.ownerSetups.identityByAddress(a.id) !== undefined);
+}
+
 export type ReceiveRouting =
   | { kind: "legacy" | "protected"; railAddress: RailAddress }
   | { kind: "refused"; reason: string };
