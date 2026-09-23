@@ -123,9 +123,22 @@ The operator runs `authority-admin` with the security account's credentials. `cr
 
 What cannot be claimed yet:
 
-- **Nothing produces the quote.** Activation needs a Nitro attestation over the activation payload, from a helper that must first be validated on real Nitro. Until it exists, authority mode refuses to boot with a named error rather than fall back to `HEAD.json`. The authority's check of our binding has only met documents minted under a test root, though its chain verification passes a genuine AWS document end to end.
+- **The quote has never been produced on Nitro.** Activation needs a Nitro attestation over the activation payload. The helper that makes one exists (see Attestation Helper below) but has only run where there is no NSM device. Without `ENCLAVE_ATTESTOR_PATH`, authority mode refuses to start rather than fall back to `HEAD.json`. The authority's check of our binding has only met documents minted under a test root, though its chain verification passes a genuine AWS document end to end.
 - **The pinned key inherits #194.** The authority's public keys belong in the measured profile, where the launcher's baked environment is what protects them; #194 is the ability to start something other than the launcher.
 - **No deployment exists**: no table, no KMS key, no network path. That waits for the security account's operator.
+
+### Attestation Helper
+
+Enclave's own attestation endpoint binds its 39-byte TLS payload and stays that way. The application quotes its own commitments through `attestor/`: `lnurl-attest`, a small static Go binary over `hf/nsm` at the version the pinned runtime uses. It reads `{"nonce","userData"}` (base64) on stdin, sends one attestation request to `/dev/nsm`, and prints the base64 document. Anything else exits non-zero with the reason on stderr. `ENCLAVE_ATTESTOR_PATH` names it, and the server runs one helper per quote with an empty environment and a 10 s bound.
+
+It is not in the research image yet. `nix build .#eif-attest` is that image plus the helper, with `ENCLAVE_ATTESTOR_PATH` baked into the launcher. Its PCR0 and PCR2 differ from `.#eif`'s and its PCR1 does not. `.#eif` itself is unchanged, down to the store path, until the helper has quoted on real Nitro. Both `.#attestor` and `.#eif-attest` reproduce under `nix build --rebuild`.
+
+What only a Nitro run can confirm, in this order:
+
+1. **The application can open `/dev/nsm`** while the runtime uses it too. Run `.#eif-attest` and have the helper quote once. A device or permission error ends this approach and makes the upstream runtime API the path.
+2. **NSM accepts our input**: a 32-byte nonce and a 32-byte `user_data`, well within its 512-byte bounds.
+3. **The document verifies under production roots** in the authority (`authority/internal/attest`), with `.#eif-attest`'s PCRs approved through `authority-admin approve`.
+4. **A writer activates end to end**: boot with the authority configured, and the activation it grants names the checkpoint the enclave restored.
 
 ## Protected Ownership
 
