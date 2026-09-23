@@ -56,6 +56,10 @@ export interface EnclaveCheckpointConfig {
   /** Floor on the head's sequence. Survives a crash, where nobody outside the
    *  enclave knows which digest the timer wrote last. */
   minSequence?: number;
+  /** Bound into every sealed snapshot. Measured, and not SSM-overridable, inside Enclave. */
+  deployment: string;
+  /** Seals snapshots; kept apart from the token key. */
+  storageKey?: Buffer;
 }
 
 export interface AppConfig {
@@ -133,9 +137,9 @@ function expectedHead(raw: string | undefined): string | undefined {
   return raw;
 }
 
-function parseKey(raw: string): Buffer {
+function parseKey(raw: string, name: string): Buffer {
   const buf = /^[0-9a-fA-F]+$/.test(raw) && raw.length % 2 === 0 ? Buffer.from(raw, "hex") : Buffer.from(raw, "base64");
-  if (buf.length !== 32) throw new Error("TOKEN_ENCRYPTION_KEY must decode to 32 bytes (hex or base64)");
+  if (buf.length !== 32) throw new Error(`${name} must decode to 32 bytes (hex or base64)`);
   return buf;
 }
 
@@ -167,9 +171,17 @@ export function loadConfig(env: Env = process.env): AppConfig {
     minSequence: env.ENCLAVE_CHECKPOINT_MIN_SEQUENCE === undefined
       ? undefined
       : integer(env, "ENCLAVE_CHECKPOINT_MIN_SEQUENCE", 1, { min: 1 }),
+    deployment: env.ENCLAVE_DEPLOYMENT || "",
+    storageKey: env.ENCLAVE_STORAGE_KEY ? parseKey(env.ENCLAVE_STORAGE_KEY, "ENCLAVE_STORAGE_KEY") : undefined,
   };
   if (enabled && !enclaveCheckpoint.storageToken) {
     throw new Error("ENCLAVE_RUNTIME_TOKEN is required when ENCLAVE_CHECKPOINT=1");
+  }
+  if (enabled && !enclaveCheckpoint.storageKey) {
+    throw new Error("ENCLAVE_STORAGE_KEY is required when ENCLAVE_CHECKPOINT=1");
+  }
+  if (enabled && !enclaveCheckpoint.deployment) {
+    throw new Error("ENCLAVE_DEPLOYMENT is required when ENCLAVE_CHECKPOINT=1");
   }
   // Genesis would accept this and checkpoint away, and only the restore after the
   // first restart would discover there is nowhere to put the snapshot.
@@ -182,7 +194,10 @@ export function loadConfig(env: Env = process.env): AppConfig {
 
   let tokenEncryptionKey: Buffer | undefined;
   if (env.TOKEN_ENCRYPTION_KEY) {
-    tokenEncryptionKey = parseKey(env.TOKEN_ENCRYPTION_KEY);
+    tokenEncryptionKey = parseKey(env.TOKEN_ENCRYPTION_KEY, "TOKEN_ENCRYPTION_KEY");
+  }
+  if (enclaveCheckpoint.storageKey && tokenEncryptionKey?.equals(enclaveCheckpoint.storageKey)) {
+    throw new Error("ENCLAVE_STORAGE_KEY must differ from TOKEN_ENCRYPTION_KEY");
   }
   if (dbPath && !tokenEncryptionKey && !allowInsecureTokenStorage) {
     throw new Error(

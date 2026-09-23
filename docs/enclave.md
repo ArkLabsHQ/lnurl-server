@@ -4,7 +4,7 @@ This packages LNURL for Nitro. It is **not a host-tamper-resistant deployment** 
 
 The default profile deliberately uses `lnurl.invalid`, an in-memory application database and no managed application secrets. Existing Docker deployments are unchanged.
 
-What is here is the packaging and its reproducibility evidence. **The durable-state half is a design, not a working feature** — it targets an application storage API Enclave does not have, so it cannot run at all today, and its snapshots are not yet encrypted. See Durable State. Signed owner setup, protected payment proofs, client verification and approved key release are likewise not implemented; `src/enclave/owner-setup.ts` is a proposed encoding that binds the design's full field list, but no route reads it and nothing yet stores or enforces a signed setup.
+What is here is the packaging and its reproducibility evidence. **The durable-state half is a design, not a working feature** — it targets an application storage API Enclave does not have, so it cannot run at all today, and the key that seals its snapshots has no safe source inside an enclave yet. See Durable State. Signed owner setup, protected payment proofs, client verification and approved key release are likewise not implemented; `src/enclave/owner-setup.ts` is a proposed encoding that binds the design's full field list, but no route reads it and nothing yet stores or enforces a signed setup.
 
 ## Build
 
@@ -45,7 +45,9 @@ There is no enclave promotion or approval job. Before any protected release, the
 >
 > The intended path does not depend on Enclave growing that API. The design this implements calls for an **LNURL-owned S3 adapter**, in-enclave authenticated encryption of each snapshot under a separate storage key, and an independent checkpoint authority that pins which object is current. [ArkLabsHQ/enclave#195](https://github.com/ArkLabsHQ/enclave/issues/195) asks for a runtime convenience API; it is optional, not a prerequisite. The `EnclaveStorage` interface is the seam an S3 adapter replaces.
 >
-> Two gaps against that design remain in this code. **Snapshots are not encrypted** — they are compressed, not sealed, so nothing here should be pointed at real storage yet. And **restore trusts the stored `HEAD.json`**, a head the host can choose, mitigated only by the manual pins below; the design has the authority, not the host, name the exact object to restore.
+> Snapshots are sealed with AES-256-GCM under `ENCLAVE_STORAGE_KEY`, with every head field bound as associated data. So a host holding storage cannot read a snapshot, edit one, or fabricate a database behind a head that agrees with it — each fails authentication on restore. What it can still do is **replay an older snapshot that was genuinely sealed**, since every one of those authenticates. That is the rollback problem, and it is what the checkpoint authority exists to close; until then only the manual pins below stand in its way.
+>
+> Two gaps remain. **The key has no safe source yet.** Read from the environment, it is exactly as trustworthy as the environment, which inside Enclave the host can write through the SSM overlay (#194) — so a host that supplies or reads the key defeats all of the above. The seal is only as good as a key released solely to the attested enclave. And **restore still trusts the stored `HEAD.json`** to say which snapshot is current; the design has the authority name it.
 
 Nitro gives the workload no persistent disk, so SQLite runs on the enclave's RAM-backed filesystem and durability has to come from snapshots held somewhere outside it. `ENCLAVE_CHECKPOINT=1` turns this on. It is off by default, and nothing below changes an ordinary deployment.
 
@@ -57,8 +59,10 @@ Nitro gives the workload no persistent disk, so SQLite runs on the enclave's RAM
 | `ENCLAVE_CHECKPOINT_KEY` | Object prefix for this deployment, default `lnurl/db`. Traversal is rejected at config load. |
 | `ENCLAVE_CHECKPOINT_INTERVAL_MS` | Background cadence, default `5000`, minimum `100`. |
 | `ENCLAVE_CHECKPOINT_ALLOW_GENESIS` | `1` permits a first boot with no prior head. Initial deployment only. |
-| `ENCLAVE_CHECKPOINT_HEAD` | The snapshot digest the security administrator says is current. |
+| `ENCLAVE_CHECKPOINT_HEAD` | The ciphertext digest of the snapshot the security administrator says is current. |
 | `ENCLAVE_CHECKPOINT_MIN_SEQUENCE` | Lowest head sequence this deployment will restore from. |
+| `ENCLAVE_STORAGE_KEY` | 32-byte key sealing every snapshot, hex or base64. Required when enabled, and must differ from `TOKEN_ENCRYPTION_KEY`. See the key-source caveat above. |
+| `ENCLAVE_DEPLOYMENT` | Deployment identity bound into every seal, so a snapshot cannot be restored into another deployment. Required when enabled. Inside Enclave it comes from the measured profile and the SSM overlay cannot override it. |
 
 Snapshots are taken with `VACUUM INTO`, not `DatabaseSync.serialize`: the pinned Node 22.23.1 has neither `serialize` nor `deserialize` nor `backup` on `node:sqlite`, so anything built on those works only on a newer Node than this image ships. `VACUUM INTO` is byte-stable for unchanged content, so an idle deployment re-advertises its existing head instead of uploading the database again. It stages a full copy in `scratchDir` — the directory holding `DB_PATH` — so budget the database size twice over in enclave memory at checkpoint time.
 
@@ -72,7 +76,7 @@ Everything else the server writes is covered more bluntly. `persistenceCheckpoin
 
 ### Tested capacity
 
-Measured on the pinned Node 22.23.1 under Linux, seeding accepted offline swaps as the dominant row and checkpointing to a loopback HTTP storage endpoint. "Barrier" is the wait for one further accepted swap to become durable — what a payer actually sits behind. These figures are for **unencrypted** snapshots; authenticated encryption will add to every barrier, so treat them as a floor.
+Measured on the pinned Node 22.23.1 under Linux, seeding accepted offline swaps as the dominant row and checkpointing to a loopback HTTP storage endpoint. "Barrier" is the wait for one further accepted swap to become durable — what a payer actually sits behind. These are single runs, and the small-database figures in particular vary several-fold between runs. Encryption was measured on its own for that reason: AES-256-GCM over the compressed object has a median cost of 0.09 ms at 1k swaps and 5.8 ms at 200k across 25 runs, so it sits well inside that variance. It is cheap because it runs after compression, on the small object.
 
 | Accepted swaps | Database | Stored object | Barrier |
 | --- | --- | --- | --- |
@@ -83,7 +87,7 @@ Measured on the pinned Node 22.23.1 under Linux, seeding accepted offline swaps 
 
 About 1.3 KB of database per accepted swap. Snapshots are brotli-compressed before upload — around 25x on this shape of data, because SQLite pages of hex identifiers compress extremely well. Quality 1 was both the fastest to encode and the smallest of the codecs measured, so nothing is traded for it. Transfer was over half of an uncompressed barrier even on loopback; against real storage the reduction matters more than these figures show.
 
-The head's `digest` and `size` describe the **plaintext** image, so a snapshot's identity does not depend on the codec. A stored object is decompressed under a limit taken from that `size`, which stops a small object expanding without bound — but the head is the host's to write, so it can claim any size. That bound is not a defence against the host, and a host intent on denying service can simply not serve.
+The head's `digest` and `size` describe the **plaintext** image, so a snapshot's identity does not depend on the codec. A stored object is decompressed under a limit taken from that `size`, which stops a small object expanding without bound. Because `size` is part of the associated data, it is authenticated before decompression runs, so the host cannot choose it either.
 
 Compression lowers the constant; it does not change the shape. **A barrier still snapshots the whole database, not the change**, so the wait before a payer receives an invoice remains proportional to total history rather than to current activity. Settlement rows carrying an `address_id` are never reclaimed — they are the owner's history and the only copy of it — so that total only grows. At the volumes above it is comfortable. A deployment expecting sustained traffic needs a retention or archival answer, or checkpoints that ship deltas rather than the whole image, before the barrier becomes the slowest part of a receive.
 
@@ -91,7 +95,7 @@ Compression lowers the constant; it does not change the shape. **A barrier still
 
 Nothing in a head reveals a rollback. Every head is internally consistent at every sequence, so a host that retains old snapshots can re-advertise one and the enclave cannot tell from the object alone. Unpinned, that replay is accepted. Two out-of-band pins guard it, and they suit different restarts:
 
-- `ENCLAVE_CHECKPOINT_HEAD` names one exact digest, so it only fits a **controlled** restart: flush on shutdown, record the final digest, boot against it. The digest changes on every flush, so a pin set in advance is stale within seconds and a crash would leave the enclave unable to boot at all.
+- `ENCLAVE_CHECKPOINT_HEAD` names one exact ciphertext digest, so it only fits a **controlled** restart: flush on shutdown, record the final digest, boot against it. The digest changes on every flush, so a pin set in advance is stale within seconds and a crash would leave the enclave unable to boot at all.
 - `ENCLAVE_CHECKPOINT_MIN_SEQUENCE` names a floor instead, which is what survives a **crash**, where nobody outside the enclave knows which digest the timer wrote last. It blocks any replay below the floor while accepting whatever the enclave legitimately reached above it.
 
 Both are manual stand-ins. The independent checkpoint authority in the approved design — tracking the current head and the active writer — is not built, so an operator advances these by hand and a replay between the floor and the true head is still accepted.

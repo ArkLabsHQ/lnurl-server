@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { loadConfig } from "../src/config.js";
 
 const base = { PORT: "3000", BASE_URL: "http://localhost:3000" };
+const SEALED = { ENCLAVE_STORAGE_KEY: "11".repeat(32), ENCLAVE_DEPLOYMENT: "lnurl-test" };
 
 describe("loadConfig", () => {
   it("allows an explicit loopback bind without changing ordinary defaults", () => {
@@ -218,7 +219,7 @@ describe("loadConfig", () => {
     });
 
     it("enables durable checkpoints with an explicit token and measured loopback defaults", () => {
-      const cfg = loadConfig({ ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ALLOW_INSECURE_TOKEN_STORAGE: "1" });
+      const cfg = loadConfig({ ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ...SEALED, ALLOW_INSECURE_TOKEN_STORAGE: "1" });
       expect(cfg.dbPath).toBe("/run/lnurl/state.sqlite");
       expect(cfg.enclaveCheckpoint).toMatchObject({
         enabled: true,
@@ -232,16 +233,16 @@ describe("loadConfig", () => {
 
     it("requires a token and an allowed genesis before a fresh head", () => {
       expect(() => loadConfig({ ...base, ENCLAVE_CHECKPOINT: "1", ALLOW_INSECURE_TOKEN_STORAGE: "1" })).toThrow(/ENCLAVE_RUNTIME_TOKEN/);
-      expect(loadConfig({ ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ENCLAVE_CHECKPOINT_ALLOW_GENESIS: "1", ALLOW_INSECURE_TOKEN_STORAGE: "1" })
+      expect(loadConfig({ ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ...SEALED, ENCLAVE_CHECKPOINT_ALLOW_GENESIS: "1", ALLOW_INSECURE_TOKEN_STORAGE: "1" })
         .enclaveCheckpoint.allowGenesis).toBe(true);
-      expect(loadConfig({ ...base, ENCLAVE_CHECKPOINT: "true", ENCLAVE_RUNTIME_TOKEN: "token", ALLOW_INSECURE_TOKEN_STORAGE: "1" }).enclaveCheckpoint.enabled).toBe(false);
+      expect(loadConfig({ ...base, ENCLAVE_CHECKPOINT: "true", ENCLAVE_RUNTIME_TOKEN: "token", ...SEALED, ALLOW_INSECURE_TOKEN_STORAGE: "1" }).enclaveCheckpoint.enabled).toBe(false);
     });
 
     it("supports a deploy-time runtime URL and bounded checkpoint cadence", () => {
       const cfg = loadConfig({
         ...base,
         ENCLAVE_CHECKPOINT: "1",
-        ENCLAVE_RUNTIME_TOKEN: "token",
+        ENCLAVE_RUNTIME_TOKEN: "token", ...SEALED,
         ALLOW_INSECURE_TOKEN_STORAGE: "1",
         ENCLAVE_STORAGE_URL: "https://127.0.0.1:7073",
         ENCLAVE_CHECKPOINT_INTERVAL_MS: "250",
@@ -250,33 +251,45 @@ describe("loadConfig", () => {
       expect(cfg.enclaveCheckpoint.storageUrl).toBe("https://127.0.0.1:7073");
       expect(cfg.enclaveCheckpoint.checkpointIntervalMs).toBe(250);
       expect(cfg.enclaveCheckpoint.checkpointKey).toBe("tenant-a/db");
-      expect(() => loadConfig({ ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ALLOW_INSECURE_TOKEN_STORAGE: "1", ENCLAVE_CHECKPOINT_INTERVAL_MS: "99" }))
+      expect(() => loadConfig({ ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ...SEALED, ALLOW_INSECURE_TOKEN_STORAGE: "1", ENCLAVE_CHECKPOINT_INTERVAL_MS: "99" }))
         .toThrow(/ENCLAVE_CHECKPOINT_INTERVAL_MS/);
     });
 
-    it("refuses an in-memory database it could never restore into", () => {
+    it("requires a storage key and deployment, and keeps the storage key apart from the token key", () => {
       const on = { ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ALLOW_INSECURE_TOKEN_STORAGE: "1" };
+      expect(() => loadConfig({ ...on, ENCLAVE_DEPLOYMENT: "lnurl-test" })).toThrow(/ENCLAVE_STORAGE_KEY is required/);
+      expect(() => loadConfig({ ...on, ENCLAVE_STORAGE_KEY: "11".repeat(32) })).toThrow(/ENCLAVE_DEPLOYMENT is required/);
+      expect(() => loadConfig({ ...on, ...SEALED, ENCLAVE_STORAGE_KEY: "abcd" })).toThrow(/ENCLAVE_STORAGE_KEY must decode to 32 bytes/);
+      expect(() => loadConfig({ ...on, ...SEALED, TOKEN_ENCRYPTION_KEY: SEALED.ENCLAVE_STORAGE_KEY }))
+        .toThrow(/must differ from TOKEN_ENCRYPTION_KEY/);
+      const cfg = loadConfig({ ...on, ...SEALED });
+      expect(cfg.enclaveCheckpoint.deployment).toBe("lnurl-test");
+      expect(cfg.enclaveCheckpoint.storageKey).toEqual(Buffer.from("11".repeat(32), "hex"));
+    });
+
+    it("refuses an in-memory database it could never restore into", () => {
+      const on = { ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ...SEALED, ALLOW_INSECURE_TOKEN_STORAGE: "1" };
       expect(() => loadConfig({ ...on, DB_PATH: ":memory:" })).toThrow(/file-backed DB_PATH/);
       expect(loadConfig({ ...on, DB_PATH: "/run/lnurl/state.sqlite" }).enclaveCheckpoint.enabled).toBe(true);
     });
 
     it("takes its storage default from the loopback port the runtime hands the app", () => {
-      const on = { ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ALLOW_INSECURE_TOKEN_STORAGE: "1" };
+      const on = { ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ...SEALED, ALLOW_INSECURE_TOKEN_STORAGE: "1" };
       expect(loadConfig({ ...on, ENCLAVE_PROXY_PORT: "9090" }).enclaveCheckpoint.storageUrl).toBe("http://127.0.0.1:9090");
       expect(() => loadConfig({ ...on, ENCLAVE_PROXY_PORT: "0" })).toThrow(/ENCLAVE_PROXY_PORT/);
     });
 
     it("pins a head, and refuses one that contradicts the genesis opt-in", () => {
       const pinned = "ab".repeat(32);
-      const on = { ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ALLOW_INSECURE_TOKEN_STORAGE: "1" };
+      const on = { ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ...SEALED, ALLOW_INSECURE_TOKEN_STORAGE: "1" };
       expect(loadConfig({ ...on, ENCLAVE_CHECKPOINT_HEAD: pinned }).enclaveCheckpoint.expectedHead).toBe(pinned);
       expect(() => loadConfig({ ...on, ENCLAVE_CHECKPOINT_HEAD: "AB".repeat(32) })).toThrow(/ENCLAVE_CHECKPOINT_HEAD/);
       expect(() => loadConfig({ ...on, ENCLAVE_CHECKPOINT_HEAD: pinned, ENCLAVE_CHECKPOINT_ALLOW_GENESIS: "1" })).toThrow(/contradict/);
     });
 
     it("rejects a malformed runtime URL or checkpoint key", () => {
-      expect(() => loadConfig({ ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ALLOW_INSECURE_TOKEN_STORAGE: "1", ENCLAVE_CHECKPOINT_KEY: "../bad" })).toThrow(/ENCLAVE_CHECKPOINT_KEY/);
-      expect(() => loadConfig({ ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ALLOW_INSECURE_TOKEN_STORAGE: "1", ENCLAVE_STORAGE_URL: "run.invalid" }))
+      expect(() => loadConfig({ ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ...SEALED, ALLOW_INSECURE_TOKEN_STORAGE: "1", ENCLAVE_CHECKPOINT_KEY: "../bad" })).toThrow(/ENCLAVE_CHECKPOINT_KEY/);
+      expect(() => loadConfig({ ...base, ENCLAVE_CHECKPOINT: "1", ENCLAVE_RUNTIME_TOKEN: "token", ...SEALED, ALLOW_INSECURE_TOKEN_STORAGE: "1", ENCLAVE_STORAGE_URL: "run.invalid" }))
         .toThrow(/ENCLAVE_STORAGE_URL/);
     });
   });

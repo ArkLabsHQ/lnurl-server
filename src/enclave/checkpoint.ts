@@ -1,5 +1,5 @@
 import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from "node:zlib";
-import { createHash, randomUUID } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,18 +8,36 @@ import { LATEST_MIGRATION, runMigrations } from "../db/migrations.js";
 import { checkpointPrefix } from "./checkpoint-key.js";
 import type { EnclaveStorage } from "./storage.js";
 
+const SCHEMA = "lnurl.enclave.checkpoint.v2";
+
 export interface CheckpointHead {
-  schema: "lnurl.enclave.checkpoint.v1";
+  schema: typeof SCHEMA;
   prefix: string;
   sequence: number;
+  /** SHA-256 of the plaintext database image; what dedupe and restore check against. */
   digest: string;
+  /** Plaintext size in bytes. */
   size: number;
+  /** SHA-256 of the sealed object as stored. It names the object, and is what a pin names. */
+  ciphertextDigest: string;
   key: string;
-  previousDigest?: string | null;
+  schemaVersion: number;
+  /** Always 0 until the checkpoint authority grants writer epochs. */
+  epoch: number;
+  /** The previous head's `ciphertextDigest`. */
+  previousDigest: string | null;
+}
+
+/** Which deployment a snapshot belongs to, and the key that seals it. */
+export interface CheckpointSeal {
+  key: Uint8Array;
+  deployment: string;
 }
 
 const headSuffix = "/HEAD.json";
-const snapshotSuffix = ".sqlite.br";
+const snapshotSuffix = ".sqlite.br.enc";
+const NONCE_BYTES = 12;
+const TAG_BYTES = 16;
 /** Measured on a real 256 MB snapshot: fastest to encode of the codecs tried and
  *  also the smallest, so the ~24x reduction costs nothing to trade. Transfer was
  *  over half of a barrier's time even on loopback. */
@@ -30,14 +48,51 @@ function compress(snapshot: Uint8Array): Buffer {
 }
 
 /** Bounded by the plaintext size the head claims, which stops a small object
- *  expanding without limit. It is not a defence against the host itself: the head
- *  is the host's to write, so it can claim any size. A host that wants to deny
- *  service can simply not serve. */
+ *  expanding without limit. Every field of the head is authenticated before this
+ *  runs, so the host cannot choose that size either. */
 function decompress(stored: Uint8Array, plaintextSize: number): Uint8Array {
   try {
     return brotliDecompressSync(stored, { maxOutputLength: plaintextSize });
   } catch (error) {
     throw new Error(`checkpoint snapshot does not match its authoritative metadata: ${(error as Error).message}`);
+  }
+}
+
+function assertSeal(seal: CheckpointSeal): void {
+  if (seal.key.length !== 32) throw new Error("checkpoint storage key must be 32 bytes");
+  if (!seal.deployment) throw new Error("checkpoint seal needs a deployment identity");
+}
+
+/**
+ * Binds every head field except the two derived from the ciphertext itself, so a
+ * host that edits the metadata it serves makes the snapshot fail to open. A JSON
+ * array is canonical here: fixed order, and string fields are delimited by quoting.
+ */
+function associatedData(seal: CheckpointSeal, head: Omit<CheckpointHead, "key" | "ciphertextDigest">): Buffer {
+  return Buffer.from(JSON.stringify([
+    head.schema, seal.deployment, head.prefix, head.schemaVersion, head.epoch,
+    head.sequence, head.previousDigest, head.digest, head.size,
+  ]));
+}
+
+function sealSnapshot(seal: CheckpointSeal, aad: Buffer, plaintext: Uint8Array): Buffer {
+  const nonce = randomBytes(NONCE_BYTES);
+  const cipher = createCipheriv("aes-256-gcm", seal.key, nonce);
+  cipher.setAAD(aad);
+  const body = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  return Buffer.concat([nonce, body, cipher.getAuthTag()]);
+}
+
+function openSealed(seal: CheckpointSeal, aad: Buffer, stored: Uint8Array): Buffer {
+  const bytes = Buffer.from(stored);
+  if (bytes.length < NONCE_BYTES + TAG_BYTES) throw new Error("checkpoint snapshot could not be authenticated");
+  try {
+    const decipher = createDecipheriv("aes-256-gcm", seal.key, bytes.subarray(0, NONCE_BYTES));
+    decipher.setAAD(aad);
+    decipher.setAuthTag(bytes.subarray(bytes.length - TAG_BYTES));
+    return Buffer.concat([decipher.update(bytes.subarray(NONCE_BYTES, bytes.length - TAG_BYTES)), decipher.final()]);
+  } catch {
+    throw new Error("checkpoint snapshot could not be authenticated");
   }
 }
 
@@ -49,17 +104,18 @@ function parseHead(value: Uint8Array | undefined, prefix: string): CheckpointHea
   } catch {
     throw new Error("checkpoint head is not valid JSON");
   }
-  const expectedKey = `${prefix}/${head.digest}${snapshotSuffix}`;
+  const hex64 = (v: unknown): boolean => typeof v === "string" && /^[0-9a-f]{64}$/.test(v);
   if (
-    head?.schema !== "lnurl.enclave.checkpoint.v1"
+    head?.schema !== SCHEMA
     || head.prefix !== prefix
-    || !Number.isInteger(head.sequence)
-    || head.sequence < 1
-    || !/^[0-9a-f]{64}$/.test(head.digest)
-    || !Number.isSafeInteger(head.size)
-    || head.size < 1
-    || head.key !== expectedKey
-    || head.previousDigest !== null && !(typeof head.previousDigest === "string" && /^[0-9a-f]{64}$/.test(head.previousDigest))
+    || !Number.isSafeInteger(head.sequence) || head.sequence < 1
+    || !hex64(head.digest)
+    || !Number.isSafeInteger(head.size) || head.size < 1
+    || !hex64(head.ciphertextDigest)
+    || head.key !== `${prefix}/${head.ciphertextDigest}${snapshotSuffix}`
+    || !Number.isSafeInteger(head.schemaVersion) || head.schemaVersion < 0
+    || !Number.isSafeInteger(head.epoch) || head.epoch < 0
+    || head.previousDigest !== null && !hex64(head.previousDigest)
   ) {
     throw new Error("checkpoint head metadata is invalid");
   }
@@ -70,9 +126,11 @@ export async function restoreCheckpoint(options: {
   dbPath: string;
   storage: EnclaveStorage;
   prefix: string;
+  seal: CheckpointSeal;
   expectedDigest?: string;
   minSequence?: number;
 }): Promise<{ db: Db; head: CheckpointHead } | undefined> {
+  assertSeal(options.seal);
   const prefix = checkpointPrefix(options.prefix);
   const head = parseHead(await options.storage.load(`${prefix}${headSuffix}`), prefix);
   if (!head) {
@@ -81,8 +139,8 @@ export async function restoreCheckpoint(options: {
     if (options.expectedDigest || options.minSequence) throw new Error("checkpoint head is pinned but the host served none");
     return undefined;
   }
-  if (options.expectedDigest && head.digest !== options.expectedDigest) {
-    throw new Error(`checkpoint head ${head.digest} is not the pinned head ${options.expectedDigest}`);
+  if (options.expectedDigest && head.ciphertextDigest !== options.expectedDigest) {
+    throw new Error(`checkpoint head ${head.ciphertextDigest} is not the pinned head ${options.expectedDigest}`);
   }
   if (options.minSequence && head.sequence < options.minSequence) {
     throw new Error(`checkpoint head is at sequence ${head.sequence}, behind the pinned floor ${options.minSequence}`);
@@ -90,9 +148,11 @@ export async function restoreCheckpoint(options: {
 
   const stored = await options.storage.load(head.key);
   if (!stored) throw new Error("authoritative checkpoint snapshot is missing");
-  const snapshot = decompress(stored, head.size);
-  const digest = sha256(snapshot);
-  if (digest !== head.digest || BigInt(snapshot.byteLength) !== BigInt(head.size)) {
+  if (sha256(stored) !== head.ciphertextDigest) {
+    throw new Error("checkpoint snapshot does not match its authoritative metadata");
+  }
+  const snapshot = decompress(openSealed(options.seal, associatedData(options.seal, head), stored), head.size);
+  if (sha256(snapshot) !== head.digest || BigInt(snapshot.byteLength) !== BigInt(head.size)) {
     throw new Error("checkpoint snapshot does not match its authoritative metadata");
   }
 
@@ -151,6 +211,7 @@ export function createCheckpointStore(options: {
   db: Db;
   storage: EnclaveStorage;
   prefix: string;
+  seal: CheckpointSeal;
   intervalMs: number;
   head?: CheckpointHead;
   now?: () => number;
@@ -158,6 +219,7 @@ export function createCheckpointStore(options: {
    *  the database, so no plaintext copy lands on a mount the caller did not choose. */
   scratchDir?: string;
 }): CheckpointStore {
+  assertSeal(options.seal);
   const prefix = checkpointPrefix(options.prefix);
   const scratchDir = options.scratchDir ?? tmpdir();
   const now = options.now ?? Date.now;
@@ -180,25 +242,29 @@ export function createCheckpointStore(options: {
           durableAt = now();
           return head;
         }
-        const key = `${prefix}/${digest}${snapshotSuffix}`;
         const previousHead = head;
-        await options.storage.put(key, compress(snapshot));
-        // Two enclaves on one prefix each extend their own chain, and whichever writes
-        // HEAD last erases the other's history. Detection only: closing the window
-        // between this read and the write below needs the authority's compare-and-set.
-        const remote = parseHead(await options.storage.load(`${prefix}${headSuffix}`), prefix);
-        if (remote?.digest !== previousHead?.digest) {
-          throw new Error(`another writer advanced the checkpoint head to ${remote?.digest ?? "none"}`);
-        }
-        const next: CheckpointHead = {
-          schema: "lnurl.enclave.checkpoint.v1",
+        const meta = {
+          schema: SCHEMA,
           prefix,
           sequence: (previousHead?.sequence ?? 0) + 1,
           digest,
           size: snapshot.byteLength,
-          key,
-          previousDigest: previousHead?.digest ?? null,
-        };
+          schemaVersion: migrationVersion(options.db),
+          epoch: 0,
+          previousDigest: previousHead?.ciphertextDigest ?? null,
+        } as const;
+        const stored = sealSnapshot(options.seal, associatedData(options.seal, meta), compress(snapshot));
+        const ciphertextDigest = sha256(stored);
+        const key = `${prefix}/${ciphertextDigest}${snapshotSuffix}`;
+        await options.storage.put(key, stored);
+        // Two enclaves on one prefix each extend their own chain, and whichever writes
+        // HEAD last erases the other's history. Detection only: closing the window
+        // between this read and the write below needs the authority's compare-and-set.
+        const remote = parseHead(await options.storage.load(`${prefix}${headSuffix}`), prefix);
+        if (remote?.ciphertextDigest !== previousHead?.ciphertextDigest) {
+          throw new Error(`another writer advanced the checkpoint head to ${remote?.ciphertextDigest ?? "none"}`);
+        }
+        const next: CheckpointHead = { ...meta, ciphertextDigest, key };
         await options.storage.put(`${prefix}${headSuffix}`, Buffer.from(JSON.stringify(next)));
         head = next;
         last = { ok: true, detail: `checkpoint ${next.sequence} committed` };

@@ -40,12 +40,14 @@ export async function initPersistence(opts: {
     baseUrl: checkpoint.storageUrl,
     token: checkpoint.storageToken!,
   });
+  const seal = { key: checkpoint.storageKey!, deployment: checkpoint.deployment };
   let checkpointHead: CheckpointHead | undefined;
   let db: Db;
   const restored = await restoreCheckpoint({
     dbPath: opts.dbPath,
     storage,
     prefix: checkpoint.checkpointKey,
+    seal,
     expectedDigest: checkpoint.expectedHead,
     minSequence: checkpoint.minSequence,
   });
@@ -72,6 +74,7 @@ export async function initPersistence(opts: {
       db,
       storage,
       prefix: checkpoint.checkpointKey,
+      seal,
       intervalMs: checkpoint.checkpointIntervalMs,
       scratchDir,
     }).flush();
@@ -80,6 +83,7 @@ export async function initPersistence(opts: {
       db,
       storage,
       prefix: checkpoint.checkpointKey,
+      seal,
       intervalMs: checkpoint.checkpointIntervalMs,
       head: checkpointHead,
       scratchDir,
@@ -120,6 +124,7 @@ async function main(): Promise<void> {
         db,
         storage,
         prefix: config.enclaveCheckpoint.checkpointKey,
+        seal: { key: config.enclaveCheckpoint.storageKey!, deployment: config.enclaveCheckpoint.deployment },
         intervalMs: config.enclaveCheckpoint.checkpointIntervalMs,
         head: persistence!.checkpointHead,
         scratchDir: config.dbPath === ":memory:" ? undefined : dirname(config.dbPath!),

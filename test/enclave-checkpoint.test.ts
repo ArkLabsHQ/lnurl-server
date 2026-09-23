@@ -1,17 +1,18 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
 import { once } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { brotliCompressSync, brotliDecompressSync } from "node:zlib";
 import { initPersistence } from "../src/cli.js";
 import type { EnclaveCheckpointConfig } from "../src/config.js";
 import { openDb } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { DomainsRepo } from "../src/db/repositories/domains.js";
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
-import { createCheckpointStore, restoreCheckpoint } from "../src/enclave/checkpoint.js";
+import { createCheckpointStore, restoreCheckpoint, sha256 } from "../src/enclave/checkpoint.js";
 import { EnclaveStorageClient, type EnclaveStorage } from "../src/enclave/storage.js";
 
 class MemoryStorage implements EnclaveStorage {
@@ -26,6 +27,8 @@ class MemoryStorage implements EnclaveStorage {
   }
 }
 
+const SEAL = { key: Buffer.alloc(32, 7), deployment: "lnurl-test" };
+
 const scratchDirs: string[] = [];
 afterEach(() => {
   for (const scratch of scratchDirs.splice(0)) rmSync(scratch, { recursive: true, force: true, maxRetries: 2 });
@@ -37,6 +40,12 @@ function restorePath(): string {
   const scratch = mkdtempSync(join(tmpdir(), "lnurl-restore-"));
   scratchDirs.push(scratch);
   return join(scratch, "restored.db");
+}
+
+function imageOf(db: DatabaseSync): Buffer {
+  const target = restorePath();
+  db.exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`);
+  return readFileSync(target);
 }
 
 const ACCEPTED_SWAP = {
@@ -108,21 +117,22 @@ describe("enclave checkpoint store", () => {
   it("snapshots a consistent SQLite image and restores it into the configured database path", async () => {
     const db = seedDb(1);
     const storage = new MemoryStorage();
-    const store = createCheckpointStore({ db, storage, prefix: "lnurl/db", intervalMs: 1000 });
+    const store = createCheckpointStore({ db, storage, prefix: "lnurl/db", seal: SEAL, intervalMs: 1000 });
     const head = await store.flush();
     expect(head).toMatchObject({ digest: expect.stringMatching(/^[0-9a-f]{64}$/), sequence: 1 });
 
     db.prepare("UPDATE domains SET updated_at = ? WHERE domain = ?").run(2, "wallet-1.invalid");
     const second = await store.flush();
     expect(second?.sequence).toBe(2);
-    expect(second?.previousDigest).toBe(head?.digest);
-    expect(Array.from(storage.objects.keys()).filter((key) => key.endsWith(".sqlite.br"))).toHaveLength(2);
+    expect(second?.previousDigest).toBe(head?.ciphertextDigest);
+    expect(Array.from(storage.objects.keys()).filter((key) => key.endsWith(".sqlite.br.enc"))).toHaveLength(2);
     await db.close();
 
     const restoredHead = await restoreCheckpoint({
       dbPath: restorePath(),
       storage,
       prefix: "lnurl/db",
+      seal: SEAL,
     });
     expect(restoredHead?.head).toEqual(second);
     expect(restoredHead!.db.prepare("SELECT COUNT(*) AS count FROM domains").get()).toEqual({ count: 1 });
@@ -133,27 +143,86 @@ describe("enclave checkpoint store", () => {
     const db = openDb(":memory:");
     runMigrations(db);
     const storage = new MemoryStorage();
-    const store = createCheckpointStore({ db, storage, prefix: "lnurl/db", intervalMs: 1000 });
+    const store = createCheckpointStore({ db, storage, prefix: "lnurl/db", seal: SEAL, intervalMs: 1000 });
     const head = await store.flush();
     await db.close();
 
-    const good = await restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db" });
+    const good = await restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: SEAL });
     expect(good).toEqual({ db: expect.anything(), head });
     good!.db.close();
 
     storage.objects.delete(head!.key);
-    await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db" })).rejects
+    await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: SEAL })).rejects
       .toThrow(/authoritative checkpoint snapshot is missing/);
 
     storage.objects.set(head!.key, new Uint8Array(64).fill(7));
-    await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db" })).rejects
+    await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: SEAL })).rejects
       .toThrow(/does not match/);
+  });
+
+  it("stores nothing a host could open without the storage key", async () => {
+    const db = seedDb(1);
+    const storage = new MemoryStorage();
+    const store = createCheckpointStore({ db, storage, prefix: "lnurl/db", seal: SEAL, intervalMs: 60_000 });
+    const head = await store.flush();
+    await db.close();
+
+    const stored = storage.objects.get(head!.key)!;
+    let opened = "unreadable";
+    try { opened = Buffer.from(brotliDecompressSync(stored)).subarray(0, 15).toString("latin1"); } catch { /* sealed */ }
+    expect(opened).not.toBe("SQLite format 3");
+  });
+
+  it("refuses a snapshot sealed under another key, or for another deployment", async () => {
+    const db = seedDb(1);
+    const storage = new MemoryStorage();
+    await createCheckpointStore({ db, storage, prefix: "lnurl/db", seal: SEAL, intervalMs: 60_000 }).flush();
+    await db.close();
+
+    await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: { ...SEAL, key: Buffer.alloc(32, 8) } }))
+      .rejects.toThrow(/could not be authenticated/);
+    await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: { ...SEAL, deployment: "lnurl-other" } }))
+      .rejects.toThrow(/could not be authenticated/);
+  });
+
+  it("refuses a head whose metadata the host has altered", async () => {
+    const db = seedDb(1);
+    const storage = new MemoryStorage();
+    const head = await createCheckpointStore({ db, storage, prefix: "lnurl/db", seal: SEAL, intervalMs: 60_000 }).flush();
+    await db.close();
+
+    const edits = [{ sequence: 7 }, { schemaVersion: 0 }, { epoch: 3 }, { previousDigest: "ab".repeat(32) }, { size: head!.size + 1 }, { digest: "ab".repeat(32) }];
+    for (const edit of edits) {
+      storage.objects.set("lnurl/db/HEAD.json", Buffer.from(JSON.stringify({ ...head, ...edit })));
+      await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: SEAL }))
+        .rejects.toThrow(/could not be authenticated/);
+    }
+  });
+
+  it("refuses a database the host fabricated, even behind a consistent head", async () => {
+    // Without the key, the best a host can store is a database of its own, packed as
+    // an unsealed snapshot would be, under a head that agrees with every byte of it.
+    const forged = seedDb(666);
+    const image = imageOf(forged);
+    await forged.close();
+    const stored = brotliCompressSync(image);
+    const ciphertextDigest = sha256(stored);
+    const head = {
+      schema: "lnurl.enclave.checkpoint.v2", prefix: "lnurl/db", sequence: 1, digest: sha256(image), size: image.byteLength,
+      ciphertextDigest, key: `lnurl/db/${ciphertextDigest}.sqlite.br.enc`, schemaVersion: 1, epoch: 0, previousDigest: null,
+    };
+    const storage = new MemoryStorage();
+    storage.objects.set(head.key, stored);
+    storage.objects.set("lnurl/db/HEAD.json", Buffer.from(JSON.stringify(head)));
+
+    await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: SEAL }))
+      .rejects.toThrow(/could not be authenticated/);
   });
 
   it("will not acknowledge a write against a snapshot taken before it", async () => {
     const db = seedDb(1);
     const storage = new GatedStorage();
-    const store = createCheckpointStore({ db, storage, prefix: "lnurl/db", intervalMs: 60_000 });
+    const store = createCheckpointStore({ db, storage, prefix: "lnurl/db", seal: SEAL, intervalMs: 60_000 });
 
     storage.hold();
     const early = store.flush();
@@ -164,7 +233,7 @@ describe("enclave checkpoint store", () => {
     await durable;
     await db.close();
 
-    const restored = await restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db" });
+    const restored = await restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: SEAL });
     expect(restored!.db.prepare("SELECT updated_at AS u FROM domains").get()).toEqual({ u: 2 });
     await restored!.db.close();
   });
@@ -172,21 +241,22 @@ describe("enclave checkpoint store", () => {
   it("refuses to erase a head another enclave advanced", async () => {
     const db = seedDb(1);
     const storage = new MemoryStorage();
-    const mine = createCheckpointStore({ db, storage, prefix: "lnurl/db", intervalMs: 60_000 });
+    const mine = createCheckpointStore({ db, storage, prefix: "lnurl/db", seal: SEAL, intervalMs: 60_000 });
     const first = await mine.flush();
 
     // A second enclave the host started on the same prefix, believing it is starting
     // fresh, does not get to overwrite the head this one committed.
     const theirDb = seedDb(7);
-    const theirs = createCheckpointStore({ db: theirDb, storage, prefix: "lnurl/db", intervalMs: 60_000 });
+    const theirs = createCheckpointStore({ db: theirDb, storage, prefix: "lnurl/db", seal: SEAL, intervalMs: 60_000 });
     await expect(theirs.flush()).rejects.toThrow(/another writer advanced the checkpoint head/);
     await theirDb.close();
     expect(JSON.parse(Buffer.from(storage.objects.get("lnurl/db/HEAD.json")!).toString()).digest).toBe(first!.digest);
 
     // And a head that moves underneath a running writer stops that writer too.
     const usurper = {
-      schema: "lnurl.enclave.checkpoint.v1", prefix: "lnurl/db", sequence: 9,
-      digest: "cd".repeat(32), size: 4096, key: `lnurl/db/${"cd".repeat(32)}.sqlite.br`, previousDigest: null,
+      schema: "lnurl.enclave.checkpoint.v2", prefix: "lnurl/db", sequence: 9, digest: "cd".repeat(32), size: 4096,
+      ciphertextDigest: "ce".repeat(32), key: `lnurl/db/${"ce".repeat(32)}.sqlite.br.enc`,
+      schemaVersion: 1, epoch: 0, previousDigest: null,
     };
     storage.objects.set("lnurl/db/HEAD.json", Buffer.from(JSON.stringify(usurper)));
     db.prepare("UPDATE domains SET updated_at = ? WHERE domain = ?").run(2, "wallet-1.invalid");
@@ -199,7 +269,7 @@ describe("enclave checkpoint store", () => {
   it("recovers its head once a storage outage clears", async () => {
     const db = seedDb(1);
     const storage = new FlakyStorage(2);
-    const store = createCheckpointStore({ db, storage, prefix: "lnurl/db", intervalMs: 60_000 });
+    const store = createCheckpointStore({ db, storage, prefix: "lnurl/db", seal: SEAL, intervalMs: 60_000 });
 
     await expect(store.flush()).rejects.toThrow(/storage is down/);
     expect(store.status()).toMatchObject({ ok: false });
@@ -215,7 +285,7 @@ describe("enclave checkpoint store", () => {
     const db = seedDb(1);
     let clock = 1_000_000;
     const store = createCheckpointStore({
-      db, storage: new MemoryStorage(), prefix: "lnurl/db", intervalMs: 5_000, now: () => clock,
+      db, storage: new MemoryStorage(), prefix: "lnurl/db", seal: SEAL, intervalMs: 5_000, now: () => clock,
     });
     await store.flush();
     expect(store.status().ok).toBe(true);
@@ -232,7 +302,7 @@ describe("enclave checkpoint store", () => {
 
   it("refuses a checkpoint rather than capturing a database mid-transaction", async () => {
     const db = seedDb(1);
-    const store = createCheckpointStore({ db, storage: new MemoryStorage(), prefix: "lnurl/db", intervalMs: 60_000 });
+    const store = createCheckpointStore({ db, storage: new MemoryStorage(), prefix: "lnurl/db", seal: SEAL, intervalMs: 60_000 });
     db.exec("BEGIN");
     db.prepare("UPDATE domains SET updated_at = ? WHERE domain = ?").run(2, "wallet-1.invalid");
 
@@ -245,7 +315,7 @@ describe("enclave checkpoint store", () => {
 
   it("refuses to call state durable when the authority cannot be written", async () => {
     const db = seedDb(1);
-    const store = createCheckpointStore({ db, storage: new FailingStorage(), prefix: "lnurl/db", intervalMs: 60_000 });
+    const store = createCheckpointStore({ db, storage: new FailingStorage(), prefix: "lnurl/db", seal: SEAL, intervalMs: 60_000 });
     await expect(store.barrier()).rejects.toThrow(/storage is down/);
     expect(store.status()).toMatchObject({ ok: false, detail: expect.stringContaining("checkpoint failed") });
     await db.close();
@@ -254,7 +324,7 @@ describe("enclave checkpoint store", () => {
   it("refuses a replayed older head when the administrator pinned the current one", async () => {
     const db = seedDb(1);
     const storage = new MemoryStorage();
-    const store = createCheckpointStore({ db, storage, prefix: "lnurl/db", intervalMs: 60_000 });
+    const store = createCheckpointStore({ db, storage, prefix: "lnurl/db", seal: SEAL, intervalMs: 60_000 });
     const first = await store.flush();
     db.prepare("UPDATE domains SET updated_at = ? WHERE domain = ?").run(2, "wallet-1.invalid");
     const second = await store.flush();
@@ -263,11 +333,11 @@ describe("enclave checkpoint store", () => {
     // The host keeps every snapshot, so it can re-advertise a head it prefers.
     storage.objects.set("lnurl/db/HEAD.json", Buffer.from(JSON.stringify(first)));
 
-    await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", expectedDigest: second!.digest }))
+    await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: SEAL, expectedDigest: second!.ciphertextDigest }))
       .rejects.toThrow(/is not the pinned head/);
 
     // Unpinned, the same replay is accepted — which is the exposure the pin closes.
-    const rolledBack = await restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db" });
+    const rolledBack = await restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: SEAL });
     expect(rolledBack!.db.prepare("SELECT updated_at AS u FROM domains").get()).toEqual({ u: 1 });
     await rolledBack!.db.close();
   });
@@ -275,31 +345,31 @@ describe("enclave checkpoint store", () => {
   it("holds a sequence floor across a crash, where no digest is known in advance", async () => {
     const db = seedDb(1);
     const storage = new MemoryStorage();
-    const store = createCheckpointStore({ db, storage, prefix: "lnurl/db", intervalMs: 60_000 });
+    const store = createCheckpointStore({ db, storage, prefix: "lnurl/db", seal: SEAL, intervalMs: 60_000 });
     const first = await store.flush();
     db.prepare("UPDATE domains SET updated_at = ? WHERE domain = ?").run(2, "wallet-1.invalid");
     await store.flush();
     await db.close();
 
-    const restored = await restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", minSequence: 2 });
+    const restored = await restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: SEAL, minSequence: 2 });
     expect(restored!.head.sequence).toBe(2);
     await restored!.db.close();
 
     storage.objects.set("lnurl/db/HEAD.json", Buffer.from(JSON.stringify(first)));
-    await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", minSequence: 2 }))
+    await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: SEAL, minSequence: 2 }))
       .rejects.toThrow(/behind the pinned floor/);
   });
 
   it("refuses to boot on a pinned head the host does not serve", async () => {
     await expect(restoreCheckpoint({
-      dbPath: restorePath(), storage: new MemoryStorage(), prefix: "lnurl/db", expectedDigest: "ab".repeat(32),
+      dbPath: restorePath(), storage: new MemoryStorage(), prefix: "lnurl/db", seal: SEAL, expectedDigest: "ab".repeat(32),
     })).rejects.toThrow(/pinned but the host served none/);
   });
 
   it("refuses genesis and a bad prefix", async () => {
     const storage = new MemoryStorage();
-    await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db" })).resolves.toBeUndefined();
-    expect(() => createCheckpointStore({ db: openDb(":memory:"), storage, prefix: "../bad", intervalMs: 1000 }))
+    await expect(restoreCheckpoint({ dbPath: restorePath(), storage, prefix: "lnurl/db", seal: SEAL })).resolves.toBeUndefined();
+    expect(() => createCheckpointStore({ db: openDb(":memory:"), storage, prefix: "../bad", seal: SEAL, intervalMs: 1000 }))
       .toThrow(/invalid ENCLAVE_CHECKPOINT_KEY/);
   });
 });
@@ -346,6 +416,8 @@ describe("initPersistence under enclave checkpoints", () => {
       allowGenesis: false,
       checkpointIntervalMs: 1_000,
       checkpointKey: "lnurl/db",
+      deployment: SEAL.deployment,
+      storageKey: SEAL.key,
       ...overrides,
     };
   }
@@ -368,6 +440,7 @@ describe("initPersistence under enclave checkpoints", () => {
       db: first!.db,
       storage: new EnclaveStorageClient({ baseUrl, token: "token" }),
       prefix: "lnurl/db",
+      seal: SEAL,
       intervalMs: 60_000,
       head: first!.checkpointHead,
     });
