@@ -11,3 +11,8 @@ test-results/
 playwright-report/
 blob-report/
 .playwright-mcp/
+
+/authority/authority
+/authority/authority.exe
+/authority/devserver
+/authority/devserver.exe
