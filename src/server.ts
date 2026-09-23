@@ -722,6 +722,17 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           // at derivation owns the preimage, the taptree and the payout script.
           ...(derived ? { covenantScript: derived.script } : {}),
         });
+        // Only the contract derive() registered can rebuild this address's tree, so
+        // it has to outlive this enclave before a payer is told where to send.
+        if (derived && deps?.durability) {
+          try {
+            await deps.durability.barrier();
+          } catch (err) {
+            logger.warn("covenant_destination_not_durable", { requestId: res.locals.requestId, error: err });
+            res.json({ status: "ERROR", reason: "Unable to create payment destination" } satisfies LnurlErrorResponse);
+            return;
+          }
+        }
         // Only the static rail: a covenant destination is watched as a contract.
         if (resolved.paymentOption === "arkade" && !derived) {
           deps?.onDestinationIssued?.(resolved.paymentDestination);

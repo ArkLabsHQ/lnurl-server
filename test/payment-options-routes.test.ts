@@ -8,6 +8,7 @@ import { MemorySettlementStore } from "../src/settlement-store.js";
 import type { OfflineSwapCreator } from "../src/intent-swap.js";
 import type { LnurlServiceConfig } from "../src/types.js";
 import type { CovenantDestinationProvider } from "../src/covenant-destination.js";
+import type { DurabilityBarrier } from "../src/enclave/checkpoint.js";
 
 const CONFIG: LnurlServiceConfig = { port: 0, baseUrl: "", minSendable: 1000, maxSendable: 100_000_000, invoiceTimeoutMs: 3000 };
 const ARK = "ark1qexampledestination";
@@ -23,6 +24,7 @@ function start(
   settlements?: MemorySettlementStore,
   offlineSwapCreator?: OfflineSwapCreator,
   covenantDestinations?: CovenantDestinationProvider,
+  durability?: DurabilityBarrier,
 ) {
   const server = http.createServer();
   return new Promise<{ baseUrl: string; close: () => Promise<void> }>((resolve) => {
@@ -32,7 +34,7 @@ function start(
         "request",
         createServer(
           { ...CONFIG, baseUrl: `http://127.0.0.1:${port}` },
-          { repos, ...(settlements ? { settlements } : {}), ...(offlineSwapCreator ? { offlineSwapCreator } : {}), ...(covenantDestinations ? { covenantDestinations } : {}) },
+          { repos, ...(settlements ? { settlements } : {}), ...(offlineSwapCreator ? { offlineSwapCreator } : {}), ...(covenantDestinations ? { covenantDestinations } : {}), ...(durability ? { durability } : {}) },
         ),
       );
       resolve({ baseUrl: `http://127.0.0.1:${port}`, close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }) });
@@ -148,6 +150,36 @@ describe("LUD-XX paymentOptions", () => {
     expect(cb.verify).toBeUndefined();
     const fallbackId = settlements.listRecent(10, { option: "arkade" })[0]!.paymentHash;
     expect(settlements.get(fallbackId)?.covenantScript).toBeNull();
+  });
+
+  it("withholds the covenant address when it cannot be made durable", async () => {
+    const provider: CovenantDestinationProvider = { derive: async () => ({ address: "tark1covenant", script: "51201" }) };
+    await ctx.close();
+    ctx = await start(repos, new MemorySettlementStore(60_000), undefined, provider, {
+      barrier: () => Promise.reject(new Error("checkpoint failed: enclave storage is down")),
+    });
+    addr("alice", true);
+
+    const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000&paymentOption=arkade`, "domain.com");
+
+    expect(cb.status).toBe("ERROR");
+    expect(cb.paymentDestination).toBeUndefined();
+  });
+
+  it("records the covenant payment before the barrier it answers behind", async () => {
+    const settlements = new MemorySettlementStore(60_000);
+    const provider: CovenantDestinationProvider = { derive: async () => ({ address: "tark1covenant", script: "51201" }) };
+    let atBarrier: (string | null)[] | undefined;
+    await ctx.close();
+    ctx = await start(repos, settlements, undefined, provider, {
+      barrier: async () => { atBarrier = settlements.listRecent(10, { option: "arkade" }).map((r) => r.covenantScript); },
+    });
+    addr("alice", true);
+
+    const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000&paymentOption=arkade`, "domain.com");
+
+    expect(atBarrier).toEqual(["51201"]);
+    expect(cb).toMatchObject({ status: "OK", paymentDestination: "tark1covenant" });
   });
 
   it("advertises onchain and pays the boarding address, without a verify URL", async () => {
