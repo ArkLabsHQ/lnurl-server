@@ -13,7 +13,7 @@ import {
 import { solverLightningRendezvous } from "@arkade-os/swap";
 import type { SolverCardsRepo } from "../db/repositories/solver-cards.js";
 import type { SolverRegistryCacheRepo } from "../db/repositories/solver-registry-cache.js";
-import { UpstreamError } from "../errors.js";
+import { ConfigError, UpstreamError } from "../errors.js";
 
 const DEFAULT_REFRESH_MS = 10 * 60_000;
 const MAX_CACHE_AGE_MS = DEFAULT_MAX_AGE_SECONDS * 1000;
@@ -212,12 +212,12 @@ export class DiscoveryService {
     try {
       parsed = JSON.parse(await this.readFile(this.options.cardsFile));
     } catch (error) {
-      throw new Error(`${this.options.cardsFile}: ${error instanceof Error ? error.message : "cannot read card file"}`);
+      throw new ConfigError(`${this.options.cardsFile}: ${error instanceof Error ? error.message : "cannot read card file"}`);
     }
-    if (!Array.isArray(parsed)) throw new Error(`${this.options.cardsFile}: expected a JSON array of solver cards`);
+    if (!Array.isArray(parsed)) throw new ConfigError(`${this.options.cardsFile}: expected a JSON array of solver cards`);
     parsed.forEach((card, index) => {
       const result = validateCard(card);
-      if (!result.ok) throw new Error(`${this.options.cardsFile}: invalid card ${index}: ${result.errors.join("; ")}`);
+      if (!result.ok) throw new ConfigError(`${this.options.cardsFile}: invalid card ${index}: ${result.errors.join("; ")}`);
     });
     return parsed;
   }
@@ -291,7 +291,7 @@ export class DiscoveryService {
   private cacheAwareFetch: FetchLike = async (input, init) => {
     try {
       const response = await this.upstreamFetch(input, init);
-      if (!response.ok) throw new UpstreamError(String(input), response.status);
+      if (!response.ok) throw new UpstreamError("solver registry", response.status);
       const body = await response.text();
       this.fetchedBodies.set(input, body);
       return { ok: true, status: response.status, text: async () => body };
