@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { NotFound } from "../../http-responses.js";
+import { NotFound } from "../../http-errors.js";
 import type { AdminDeps } from "../../admin-context.js";
 
 /** Live read of the in-memory SessionManager, joined to the addresses table so each

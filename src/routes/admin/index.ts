@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { createLogger } from "../../logger.js";
-import { httpErrorHandler } from "../../http-responses.js";
+import { httpErrorHandler } from "../../http-errors.js";
 import type { AdminDeps } from "../../admin-context.js";
 import { adminDiscoveryRoutes } from "./discovery.js";
 import { adminDomainRoutes } from "./domains.js";

@@ -61,9 +61,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/):
 
 - `src/server.ts` — Composes the public Express app: middleware, `ServerContext` (`src/server-context.ts`), routers, error handlers
 - `src/routes/` — Routers only, one file per URL group: `lnurl-session` (wallet SSE), `lnurl-pay` (LUD-06/21 for a session), `well-known` (LUD-16), `lnurl-address` (owner REST), `health`, `docs`, and `admin/` (mounted by `src/admin-server.ts`). Shared logic lives outside: `src/pay-flow.ts`, `src/reconcile.ts`, `src/http-params.ts`
-- `src/http-responses.ts` — Thrown errors (`LnurlError` → LUD-06 body; `BadRequest`/`NotFound`/… → `{ error }`) and the handlers that answer them
+- `src/errors.ts` — Domain errors, each with a `kind`; none knows HTTP
+- `src/http-errors.ts` — HTTP errors (`LnurlError` → LUD-06 body; `BadRequest`/`NotFound`/… → `{ error }`), the exhaustive domain `kind` → status map, and the handlers that answer both
 - `src/session-manager.ts` — Session lifecycle, SSE streaming, invoice request/response flow
-- `src/types.ts` — Shared TypeScript types
+- `src/types/` — Shared TypeScript types by topic (config, session, lnurl, db) behind `index.ts`
 - `src/cli.ts` — CLI entrypoint reading config from env vars
 - `src/intent-swap.ts` — Offline receive: card-discovered `lightning:BTC -> arkade:BTC` corridor swaps via the published `@arkade-os/swap` package (`SOLVER_REGISTRY_URLS` / `SOLVER_CARDS_FILE`, plus `COVCLAIMD_URL` + `ARK_SERVER_URL`)
 - `src/self-claim.ts` — Optional server-side lockup claim (`OFFLINE_SELF_CLAIM` + `OFFLINE_EMULATOR_URL`): pushes the covenant's `nonInteractiveClaim` leaf — operator + emulator signatures, gated on the preimage we hold — so covclaimd isn't a single point of failure. Needs no key; the covenant pins the payout to the user. Never the collaborative `claim` leaf, which has no output constraint

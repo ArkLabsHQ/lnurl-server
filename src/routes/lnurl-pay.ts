@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { RateLimiter } from "../rate-limit.js";
 import type { LnurlPayMetadata } from "../types/index.js";
-import { LnurlError } from "../http-responses.js";
+import { LnurlError } from "../http-errors.js";
 import { strParam } from "../http-params.js";
 import { buildMetadata, requestSessionInvoice } from "../pay-flow.js";
 import type { ServerContext } from "../server-context.js";

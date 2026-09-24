@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { encodeLnurl } from "../lnurl.js";
 import { isValidToken } from "../usernames.js";
 import type { InvoiceResponse } from "../types/index.js";
-import { BadRequest, Conflict, NotFound, TooManyRequests, Unauthorized } from "../http-responses.js";
+import { BadRequest, Conflict, NotFound, TooManyRequests, Unauthorized } from "../http-errors.js";
 import { bearerToken } from "../http-params.js";
 import type { ServerContext } from "../server-context.js";
 

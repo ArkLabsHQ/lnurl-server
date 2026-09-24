@@ -74,28 +74,30 @@ function statusFor(err: DomainError): number {
   }
 }
 
+/** A failure the client caused: its status and a body safe to show. Null for anything else. */
+function clientAnswer(err: unknown): { status: number; body: Record<string, unknown> } | null {
+  if (err instanceof HttpError) return { status: err.status, body: { error: err.message, ...err.extra } };
+  if (isDomainError(err)) {
+    const status = statusFor(err);
+    if (status >= 500) return null;
+    return { status, body: { error: err.message, ...(err.kind === "provisioning" ? { code: err.code } : {}) } };
+  }
+  // body-parser's errors (malformed JSON, 413) carry a client status and say whether the message is safe.
+  const { status, expose, message } = err as { status?: unknown; expose?: boolean; message?: string };
+  if (typeof status === "number" && status >= 400 && status < 500) return { status, body: { error: expose ? message : "Bad request" } };
+  return null;
+}
+
 /** Last in the chain. A client-side failure is answered with its message; anything else is logged and hidden. */
 export function httpErrorHandler(logger: Logger): ErrorRequestHandler {
   return (err, _req, res, next) => {
     if (res.headersSent) return next(err);
-    if (err instanceof HttpError) {
-      res.status(err.status).json({ error: err.message, ...err.extra });
-      return;
-    }
-    if (isDomainError(err)) {
-      const status = statusFor(err);
-      if (status < 500) {
-        res.status(status).json({ error: err.message, ...(err.kind === "provisioning" ? { code: err.code } : {}) });
-        return;
-      }
-    }
-    // body-parser's errors (malformed JSON, 413) carry a client status and say whether the message is safe.
-    const status = isDomainError(err) ? undefined : (err as { status?: unknown }).status;
-    if (typeof status === "number" && status >= 400 && status < 500) {
-      res.status(status).json({ error: (err as { expose?: boolean }).expose ? (err as Error).message : "Bad request" });
+    const answer = clientAnswer(err);
+    if (answer) {
+      res.status(answer.status).json(answer.body);
       return;
     }
     logger.error("unhandled_request_error", { requestId: res.getHeader("x-request-id"), error: err });
-    res.status(500).json({ error: "Internal server error" });
+    res.status(isDomainError(err) ? statusFor(err) : 500).json({ error: "Internal server error" });
   };
 }

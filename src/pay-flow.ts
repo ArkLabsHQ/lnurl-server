@@ -8,7 +8,7 @@ import type { PaymentQuote } from "./quote-provider.js";
 import { InvoiceRequestError, RailRefusedError } from "./errors.js";
 import { paymentHashFromBolt11 } from "./bolt11.js";
 import type { LnurlPayCallbackResponse } from "./types/index.js";
-import { LnurlError } from "./http-responses.js";
+import { LnurlError } from "./http-errors.js";
 import { BATCH_PATH } from "./verify-batch.js";
 
 const METADATA_DESCRIPTION = "Arkade LNURL Receive";

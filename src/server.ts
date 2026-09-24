@@ -9,7 +9,7 @@ import { currentRailCaps } from "./rails.js";
 import { staticSettings, type RuntimeSettings } from "./settings.js";
 import { requestTraceMiddleware } from "./request-trace.js";
 import type { LnurlServiceConfig } from "./types/index.js";
-import { httpErrorHandler, lnurlErrorHandler } from "./http-responses.js";
+import { httpErrorHandler, lnurlErrorHandler } from "./http-errors.js";
 import type { ServerContext, ServerDeps } from "./server-context.js";
 import { healthRoutes } from "./routes/health.js";
 import { docsRoutes } from "./routes/docs.js";

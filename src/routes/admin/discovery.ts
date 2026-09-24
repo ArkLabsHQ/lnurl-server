@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { validateCard } from "@arkade-os/solver-discovery";
 import { describeServerRails } from "../../rails.js";
-import { BadRequest, NotFound, ServiceUnavailable } from "../../http-responses.js";
+import { BadRequest, NotFound, ServiceUnavailable } from "../../http-errors.js";
 import { adminRailCaps, type AdminDeps } from "../../admin-context.js";
 
 /** Rails, solver discovery, and the solver cards discovery reads. */

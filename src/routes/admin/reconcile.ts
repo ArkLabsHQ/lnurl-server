@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { BadRequest, HttpError, NotFound, NotImplemented } from "../../http-responses.js";
+import { BadRequest, HttpError, NotFound, NotImplemented } from "../../http-errors.js";
 import { RECONCILE_MAX, reconcileAddresses } from "../../reconcile.js";
 import type { AdminDeps } from "../../admin-context.js";
 

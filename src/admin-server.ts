@@ -6,7 +6,7 @@ import { createAdminApi, type AdminDeps } from "./routes/admin/index.js";
 import { randomUUID } from "node:crypto";
 import { createLogger } from "./logger.js";
 import { requestTraceMiddleware } from "./request-trace.js";
-import { httpErrorHandler } from "./http-responses.js";
+import { httpErrorHandler } from "./http-errors.js";
 
 /** Admin app: JSON API under /admin/api, plus the built SPA (when present) with SPA fallback.
  *  No built-in auth — bind to loopback and front with a proxy. */

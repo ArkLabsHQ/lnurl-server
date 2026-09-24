@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { ServiceUnavailable } from "../../http-responses.js";
+import { ServiceUnavailable } from "../../http-errors.js";
 import type { AdminDeps } from "../../admin-context.js";
 
 /** Read-only audit view over the settlements table. The preimage is never exposed
