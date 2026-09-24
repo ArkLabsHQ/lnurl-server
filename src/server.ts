@@ -321,7 +321,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     const offlineReason = isNameless(address) ? "This LNURL is currently offline" : `${address.username}@${domain.domain} is currently offline`;
     const amountStr = strParam(req.query.amount);
     const comment = strParam(req.query.comment);
-    if (!amountStr || isNaN(Number(amountStr))) {
+    if (!amountStr || !Number.isSafeInteger(Number(amountStr))) {
       res.json({ status: "ERROR", reason: "Missing or invalid amount parameter" } satisfies LnurlErrorResponse);
       return;
     }
@@ -758,12 +758,11 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     const amountStr = strParam(req.query.amount);
     const comment = strParam(req.query.comment);
 
-    if (!amountStr || isNaN(Number(amountStr))) {
+    if (!amountStr || !Number.isSafeInteger(Number(amountStr))) {
       res.json({ status: "ERROR", reason: "Missing or invalid amount parameter" } satisfies LnurlErrorResponse);
       return;
     }
-    // Non-positive amounts are refused before anything downstream (a provider must
-    // never see them) — with the same bounds phrasing the relay has always used.
+
     if (Number(amountStr) <= 0) {
       res.json({ status: "ERROR", reason: `Amount must be between ${settings.minSendable()} and ${settings.maxSendable()} millisats` } satisfies LnurlErrorResponse);
       return;
