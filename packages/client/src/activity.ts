@@ -28,6 +28,10 @@ export interface SentPayment {
   createdAt: number;
   swapId?: string;
   preimage?: string;
+  /** The LUD-21 verify URL and LUD-XX verifyBatch endpoint the quote carried, kept so a
+   *  confirmation still pending when the app closes can be resumed. */
+  verify?: string;
+  verifyBatch?: string;
   /** Set once the receiver's LUD-21 verify answers, where a rail hands one out. */
   receiverConfirmed?: boolean;
 }

@@ -28,7 +28,7 @@ function fakeRail(id: string): PaymentRail & { seen: { raw: string; amount?: num
   return {
     id,
     seen,
-    match: () => true,
+    match: (req) => !req.raw.startsWith("unpayable"),
     quote: async (req) => {
       seen.push({ raw: req.raw, amount: req.amount });
       return { railId: id, amount: 500, fee: 7, total: 507, send: async () => ({}) } as unknown as RouteQuote;
@@ -106,6 +106,17 @@ describe("lnurl rails", () => {
     expect(arkade.seen).toEqual([{ raw: "tark1qdest", amount: 500 }]);
     expect(quote.railId).toBe(LNURL_ARKADE_RAIL);
     expect(quote.total).toBe(507);
+  });
+
+  it("refuses at quote time a destination the inner rail cannot pay", async () => {
+    const { by, arkade } = railsFor(async (url) =>
+      String(url).includes("callback")
+        ? json({ paymentOption: "arkade", paymentDestination: "unpayable-destination" })
+        : json(payRequest()));
+
+    await expect(by(LNURL_ARKADE_RAIL).quote({ raw: "alice@arkadeos.com", amount: 500 }, ctx))
+      .rejects.toThrow(/cannot pay/);
+    expect(arkade.seen).toEqual([]);
   });
 
   it("names what it paid in meta a consumer can read without a cast", async () => {

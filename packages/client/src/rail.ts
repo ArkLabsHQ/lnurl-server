@@ -142,6 +142,11 @@ function makeRail(
         ? { raw: result.pr }
         : { raw: destinationOf(result.paymentDestination, id), amount: req.amount };
 
+      // arkRail.quote() does not re-check its target, so an unparseable one would fail only at
+      // send; refusing here lets the caller fall back to the next rail instead.
+      if (!inner.match(delegated, ctx)) {
+        throw new LnurlError(`${id}: ${inner.id} cannot pay the destination the callback returned`);
+      }
       const quote = await inner.quote(delegated, ctx);
       const lnurl: LnurlQuoteMeta = { target: req.raw, via: inner.id, verify: result.verify, verifyBatch: result.verifyBatch };
       return { ...quote, railId: id, meta: { ...quote.meta, lnurl } };
