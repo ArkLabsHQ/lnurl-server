@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { createHash } from "node:crypto";
 import { encodeLnurl } from "../lnurl.js";
-import { isValidToken } from "../usernames.js";
+import { isValidToken } from "../session-id.js";
 import type { InvoiceResponse } from "../types/index.js";
 import { BadRequest, Conflict, NotFound, TooManyRequests, Unauthorized } from "../http-errors.js";
 import { bearerToken } from "../http-params.js";

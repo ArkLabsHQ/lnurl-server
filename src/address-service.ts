@@ -2,8 +2,8 @@ import { randomBytes } from "node:crypto";
 import type { Repositories } from "./db/repositories";
 import type { AddressRow, DomainRow } from "./types/index.js";
 import { encryptToken, hashSecret } from "./crypto.js";
-import { deriveSessionId } from "./session-id.js";
-import { validateUsername, randomUsername, isValidToken } from "./usernames.js";
+import { deriveSessionId, isValidToken } from "./session-id.js";
+import { validateUsername, randomUsername } from "./usernames.js";
 import { normalizeDisabledRails } from "./rails.js";
 import { InvalidRailPolicyError, ProvisioningError } from "./errors.js";
 

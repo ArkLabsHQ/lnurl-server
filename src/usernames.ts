@@ -24,7 +24,3 @@ const NOUNS = ["otter", "finch", "cedar", "comet", "willow", "badger", "marlin",
 export function randomUsername(): string {
   return `${ADJECTIVES[randomInt(ADJECTIVES.length)]}-${NOUNS[randomInt(NOUNS.length)]}`;
 }
-
-export function isValidToken(token: string): boolean {
-  return /^(?:[0-9a-f]{2})+$/i.test(token) && token.length >= 32;
-}
