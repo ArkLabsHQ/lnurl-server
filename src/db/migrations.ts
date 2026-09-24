@@ -249,6 +249,15 @@ const MIGRATIONS: Migration[] = [
       );
     },
   },
+  {
+    version: 15,
+    // Active rows only: a revoked nameless row must not block its owner from starting over.
+    up: `
+      ALTER TABLE addresses ADD COLUMN session_lnurl INTEGER NOT NULL DEFAULT 0;
+      CREATE UNIQUE INDEX uq_addresses_session_lnurl ON addresses(domain_id, session_id)
+        WHERE session_lnurl = 1 AND status = 'active';
+    `,
+  },
 ];
 
 export const LATEST_MIGRATION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

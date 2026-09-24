@@ -69,7 +69,7 @@ export function lnurlActivityResolver(payments: () => StoredPayment[]): Activity
       if (!payment) return undefined;
       return [{
         groupId: `${LNURL_GROUP_PREFIX}${payment.key}`,
-        label: `${railOf(payment)} · ${payment.lightningAddress}`,
+        label: `${railOf(payment)} · ${payment.lightningAddress ?? "LNURL"}`,
         kind: "lnurl",
         metadata: {
           rail: railOf(payment),

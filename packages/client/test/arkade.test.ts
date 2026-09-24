@@ -71,12 +71,12 @@ describe("claimPublicKeyOf", () => {
 describe("arkadeIdentityRequest", () => {
   it("rejects a malformed Arkade address before the wire", async () => {
     await expect(
-      arkadeIdentityRequest({ identity, arkadeAddress: "nope", token: "tok", username: "alice" }),
+      arkadeIdentityRequest({ identity, arkadeAddress: "nope", token: "tok", handle: "alice" }),
     ).rejects.toThrow(/not a valid Arkade address/);
   });
 
   it("passes a boarding address through, and omits the key without one", async () => {
-    const base = { identity, arkadeAddress: ARKADE_ADDRESS, token: "tok", username: "alice" };
+    const base = { identity, arkadeAddress: ARKADE_ADDRESS, token: "tok", handle: "alice" };
     await expect(arkadeIdentityRequest({ ...base, boardingAddress: "bcrt1qboarding" })).resolves.toMatchObject({
       boardingAddress: "bcrt1qboarding",
     });

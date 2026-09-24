@@ -14,7 +14,9 @@ import { arkadeIdentityRequest, deriveSessionTokenForIdentity, type ArkadeSigner
 import { LnurlError } from "./errors.js";
 import { createLnurlClient, type LnurlClient } from "./index.js";
 import { lnurlRails } from "./rail.js";
+import { deriveSessionId } from "./token.js";
 import { syncPayments, type PaymentSyncStore, type StoredPayment } from "./sync.js";
+import type { DomainCapabilities } from "./addresses.js";
 import type { PayRequest, PaymentPage } from "./types.js";
 
 /** The 1023 limit is LUD-01's, not bech32's default 90. */
@@ -40,20 +42,42 @@ export interface ArkadeLnurlConfig {
   client?: LnurlClient;
 }
 
+/** A claim code is checked only against the reserved name it unlocks, so it never travels alone. */
+export type NameOptions =
+  | { username?: string; claimCode?: never }
+  | { username: string; claimCode: string };
+
+/** `nameless` is mutually exclusive with `username`/`claimCode` at the type
+ *  level, matching the server's 400 `invalid_username` on combining them. */
+export type ClaimOptions =
+  | (NameOptions & { nameless?: never })
+  | { nameless: true; username?: never; claimCode?: never };
+
+/** One claimed or listed address, holding everything scoped to it. */
+export interface Receiver {
+  readonly handle: string;
+  /** `user@domain`; undefined for a nameless receiver. */
+  readonly lightningAddress: string | undefined;
+  /** For a QR. The session LNURL when flagged (survives {@link upgrade}), else `.well-known`. */
+  readonly lnurl: string;
+  /** Addressed through `baseUrl`, not the LUD-16 domain, which drops the port. */
+  payRequest(): Promise<PayRequest>;
+  payments(opts?: { since?: number; limit?: number }): Promise<PaymentPage>;
+  sync(): Promise<{ synced: number; failures: unknown[] }>;
+  /** Names a nameless receiver in place; everything handed out while nameless
+   *  keeps working. Does not re-bind the Arkade identity, already on the row. */
+  upgrade(opts?: NameOptions): Promise<Receiver>;
+}
+
 export interface ArkadeLnurl {
   /** Derived once; signs twice on the first call, nothing on later ones. */
   token(): Promise<string>;
-  owned(): Promise<string | undefined>;
-  /** Both halves matter: until the bind lands the address advertises no
+  capabilities(): Promise<DomainCapabilities>;
+  /** Registers an address — named, random or nameless per `opts` — and binds
+   *  the identity. Until the bind lands the address advertises no
    *  `paymentOptions` at all, so offline receive does not exist. */
-  claim(username: string): Promise<{ username: string; lightningAddress: string }>;
-  lightningAddress(username: string): string;
-  /** Addressed through `baseUrl`, not the LUD-16 domain, which drops the port. */
-  payRequest(username: string): Promise<PayRequest>;
-  /** For a QR. */
-  lnurl(username: string): string;
-  payments(username: string, opts?: { since?: number; limit?: number }): Promise<PaymentPage>;
-  sync(username: string): Promise<{ synced: number; failures: unknown[] }>;
+  claim(opts?: ClaimOptions): Promise<Receiver>;
+  owned(): Promise<Receiver | undefined>;
   router(): PaymentRouter;
   options(target: string, amountSat: number, prefs?: RouterPreferences): Promise<PaymentOption[]>;
 }
@@ -117,40 +141,69 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
     return opts.store;
   };
 
+  // `flagged` means served at `/lnurl/<sessionId>`; it survives an upgrade,
+  // so `upgrade` below carries it through rather than recomputing it. The session
+  // id comes from `held`, never from the server's own `sessionLnurl`/`lnurl` bech32:
+  // those are built from the LUD-16 domain and would drop `baseUrl`'s port.
+  const receiverFrom = (held: string, handle: string, lightningAddress: string | null, flagged: boolean): Receiver => {
+    const lnurl = flagged
+      ? encodeLnurl(`${baseUrl}/lnurl/${deriveSessionId(held)}`)
+      : encodeLnurl(`${baseUrl}/.well-known/lnurlp/${handle}`);
+    return {
+      handle,
+      lightningAddress: lightningAddress ?? undefined,
+      lnurl,
+      // `resolve` ignores `baseUrl` and sends no token, so one client is enough.
+      payRequest: () => client.resolve(lnurl),
+      payments: (listOpts) => client.listPayments(held, handle, { domain, ...listOpts }),
+      sync: async () => syncPayments(
+        [{ baseUrl, token: held, handle, domain }],
+        { client: (target) => createLnurlClient({ baseUrl: target }), store: needStore() },
+      ),
+      async upgrade(upgradeOpts) {
+        const registered = await client.upgradeAddress({ token: held, handle, domain, ...upgradeOpts });
+        return receiverFrom(held, registered.handle, registered.lightningAddress, flagged);
+      },
+    };
+  };
+
   return {
     token,
+    capabilities: () => client.domainCapabilities({ domain }),
     async owned() {
-      const mine = await client.listAddresses(await token());
-      return mine.find((a) => a.status === "active")?.username ?? mine[0]?.username;
-    },
-    async claim(username) {
       const held = await token();
-      const registered = await client.registerAddress({ token: held, username });
+      const mine = (await client.listAddresses(held)).filter((a) => a.domain.toLowerCase() === domain.toLowerCase());
+      const active = mine.filter((a) => a.status === "active");
+      const chosen = active.find((a) => a.sessionLnurl !== null) ?? active[0] ?? mine[0];
+      return chosen ? receiverFrom(held, chosen.handle, chosen.lightningAddress, chosen.sessionLnurl !== null) : undefined;
+    },
+    async claim(claimOpts) {
+      const held = await token();
+      const registered = await client.registerAddress({
+        token: held,
+        domain,
+        ...(claimOpts?.nameless ? { nameless: true as const } : {}),
+        ...(claimOpts?.username !== undefined ? { username: claimOpts.username } : {}),
+        ...(claimOpts?.claimCode !== undefined ? { claimCode: claimOpts.claimCode } : {}),
+      });
+      // From the response, not the request: a server predating nameless ignores the flag and allocates a name.
+      const flagged = registered.sessionLnurl != null;
+      if (claimOpts?.nameless && !flagged) {
+        throw new LnurlError(
+          `server ignored nameless and registered "${registered.handle}"; it predates nameless receivers — revoke that address if unwanted`,
+        );
+      }
       // Boarding rides along: a later call omitting it leaves the rail unregistered.
       await client.registerArkadeIdentity(
         await arkadeIdentityRequest({
           identity,
           token: held,
-          username: registered.username,
+          handle: registered.handle,
+          domain,
           ...(await addresses()),
         }),
       );
-      return { username: registered.username, lightningAddress: registered.lightningAddress };
-    },
-    lightningAddress: (username) => `${username.toLowerCase()}@${domain}`,
-    lnurl: (username) => encodeLnurl(`${baseUrl}/.well-known/lnurlp/${username.toLowerCase()}`),
-    // `resolve` ignores `baseUrl` and sends no token, so one client is enough.
-    payRequest(username) {
-      return client.resolve(this.lnurl(username));
-    },
-    async payments(username, listOpts) {
-      return client.listPayments(await token(), username, { domain, ...listOpts });
-    },
-    async sync(username) {
-      return syncPayments(
-        [{ baseUrl, token: await token(), username, domain }],
-        { client: (target) => createLnurlClient({ baseUrl: target }), store: needStore() },
-      );
+      return receiverFrom(held, registered.handle, registered.lightningAddress, flagged);
     },
     router,
     options: (target, amountSat, prefs) =>

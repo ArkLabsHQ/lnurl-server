@@ -187,8 +187,8 @@ export interface PollVerifyOptions {
  * re-fetching from it dedupes on paymentHash/verifyId.
  */
 export interface PaymentPage {
-  /** Where the payments were earned: serving domain and full address. */
-  source: { domain: string; lightningAddress: string };
+  /** Where the payments were earned: domain, full address (null when nameless), and handle. */
+  source: { domain: string; lightningAddress: string | null; handle: string };
   /** Activity entries, oldest first. */
   payments: PaymentActivity[];
   /** created_at of the last row, or the request's since when empty. */

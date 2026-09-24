@@ -3,12 +3,14 @@ import { randomBytes } from "node:crypto";
 import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
-import { AddressService, ProvisioningError } from "../src/address-service.js";
+import { AddressService, ProvisioningError, isNameless } from "../src/address-service.js";
 import { deriveSessionId } from "../src/session-id.js";
+import type { DomainRow } from "../src/db/types.js";
 
 const KEY = randomBytes(32);
 let db: Db; let repos: Repositories; let svc: AddressService; let domainId: number;
 const TOKEN = "ab".repeat(32);
+const OTHER = "cd".repeat(32);
 
 beforeEach(() => {
   db = openDb(":memory:"); runMigrations(db); repos = createRepositories(db);
@@ -124,5 +126,125 @@ describe("edge cases", () => {
 
   it("listByToken with an invalid token returns empty array", () => {
     expect(svc.listByToken("nothexa")).toEqual([]);
+  });
+});
+
+describe("AddressService — session mode, nameless register, upgrade", () => {
+  let sessionDomain: DomainRow, selfOnlyDomain: DomainRow, selfDomain: DomainRow, allModes: DomainRow;
+
+  beforeEach(() => {
+    sessionDomain = repos.domains.create({ domain: "session.example", allocationModes: ["session"] });
+    selfOnlyDomain = repos.domains.create({ domain: "selfonly.example", allocationModes: ["self"] });
+    selfDomain = repos.domains.create({ domain: "self.example", allocationModes: ["self"] });
+    allModes = repos.domains.create({ domain: "all.example", allocationModes: ["self", "random", "admin", "session"] });
+  });
+
+  it("registers a nameless row idempotently", () => {
+    const first = svc.registerNameless({ domain: sessionDomain, token: TOKEN });
+    const again = svc.registerNameless({ domain: sessionDomain, token: TOKEN });
+    expect(first.created).toBe(true);
+    expect(again.created).toBe(false);
+    expect(again.address.id).toBe(first.address.id);
+    expect(first.address.username).toBe(deriveSessionId(TOKEN));
+    expect(isNameless(first.address)).toBe(true);
+  });
+
+  it("refuses nameless without the session mode", () => {
+    expect(() => svc.registerNameless({ domain: selfOnlyDomain, token: TOKEN })).toThrow(expect.objectContaining({ code: "forbidden_mode" }));
+  });
+
+  it("reserves hex handles in every mode", () => {
+    const hex = "a".repeat(32);
+    expect(() => svc.register({ domain: selfDomain, token: TOKEN, username: hex })).toThrow(expect.objectContaining({ code: "invalid_username" }));
+    expect(() => svc.reserve(selfDomain, hex)).toThrow(expect.objectContaining({ code: "invalid_username" }));
+    expect(() => svc.mint(selfDomain, hex)).toThrow(expect.objectContaining({ code: "invalid_username" }));
+  });
+
+  it("refuses to upgrade to a hex handle, whatever its case, leaving the row nameless", () => {
+    const { address } = svc.registerNameless({ domain: allModes, token: TOKEN });
+    expect(() => svc.upgrade({ domain: allModes, handle: address.username, token: TOKEN, username: "AB".repeat(16) }))
+      .toThrow(expect.objectContaining({ code: "invalid_username" }));
+    expect(isNameless(repos.addresses.getById(address.id)!)).toBe(true);
+  });
+
+  it("upgrades in place, keeping id and session flag, lowercasing the name", () => {
+    const { address } = svc.registerNameless({ domain: allModes, token: TOKEN });
+    const up = svc.upgrade({ domain: allModes, handle: address.username, token: TOKEN, username: "Alice" });
+    expect(up.id).toBe(address.id);
+    expect(up.username).toBe("alice");
+    expect(up.sessionLnurl).toBe(true);
+    expect(isNameless(up)).toBe(false);
+  });
+
+  it("upgrades to a random name when none is given", () => {
+    const { address } = svc.registerNameless({ domain: allModes, token: TOKEN });
+    const up = svc.upgrade({ domain: allModes, handle: address.username, token: TOKEN });
+    expect(up.username).not.toBe(address.username);
+  });
+
+  it("upgrades onto a reserved name with its claim code, consuming the reservation", () => {
+    const { claimCode } = svc.reserve(allModes, "bob");
+    const { address } = svc.registerNameless({ domain: allModes, token: TOKEN });
+    const up = svc.upgrade({ domain: allModes, handle: address.username, token: TOKEN, username: "bob", claimCode });
+    expect(up.id).toBe(address.id);
+    expect(repos.addresses.list({ domainId: allModes.id }).filter((a) => a.username === "bob")).toHaveLength(1);
+  });
+
+  it("keeps the reserved row's rail policy when upgrading onto it", () => {
+    const { address: reserved, claimCode } = svc.reserve(allModes, "bob");
+    svc.setRailPolicy(reserved.id, ["arkade"]);
+    const { address } = svc.registerNameless({ domain: allModes, token: TOKEN });
+    svc.setRailPolicy(address.id, ["onchain"]);
+    const up = svc.upgrade({ domain: allModes, handle: address.username, token: TOKEN, username: "bob", claimCode });
+    expect([...up.disabledRails].sort()).toEqual(["arkade", "onchain"]);
+  });
+
+  it("resolves an upgraded row's session id for its owner only", () => {
+    const { address } = svc.registerNameless({ domain: allModes, token: TOKEN });
+    svc.upgrade({ domain: allModes, handle: address.username, token: TOKEN, username: "zed" });
+    expect(svc.ownedByHandle(allModes, address.username, TOKEN)?.id).toBe(address.id);
+    expect(svc.ownedByHandle(allModes, address.username.toUpperCase(), TOKEN)?.id).toBe(address.id);
+    expect(svc.ownedByHandle(allModes, address.username, OTHER)).toBeUndefined();
+    expect(svc.setOfflineReceive(allModes, address.username, TOKEN, { arkadeAddress: "tark1q", claimPublicKey: "02" + "ab".repeat(32) })).toBe(true);
+    expect(svc.revokeOwn(allModes, address.username, TOKEN)).toBe(true);
+    expect(repos.addresses.getById(address.id)!.status).toBe("revoked");
+  });
+
+  it("refuses to upgrade a named row, a foreign token, or a taken name", () => {
+    const { address } = svc.registerNameless({ domain: allModes, token: TOKEN });
+    svc.register({ domain: allModes, token: OTHER, username: "carol" });
+    expect(() => svc.upgrade({ domain: allModes, handle: address.username, token: OTHER, username: "x" })).toThrow(expect.objectContaining({ code: "not_found" }));
+    expect(() => svc.upgrade({ domain: allModes, handle: address.username, token: TOKEN, username: "carol" })).toThrow(expect.objectContaining({ code: "taken" }));
+    svc.upgrade({ domain: allModes, handle: address.username, token: TOKEN, username: "dave" });
+    expect(() => svc.upgrade({ domain: allModes, handle: "dave", token: TOKEN, username: "eve" })).toThrow(expect.objectContaining({ code: "already_named" }));
+  });
+
+  it("reactivates the owner's revoked nameless row instead of colliding on its username", () => {
+    const { address } = svc.registerNameless({ domain: sessionDomain, token: TOKEN });
+    svc.revokeOwn(sessionDomain, address.username, TOKEN);
+    const again = svc.registerNameless({ domain: sessionDomain, token: TOKEN });
+    expect(again.address.id).toBe(address.id);
+    expect(again.address.status).toBe("active");
+  });
+
+  it("refuses to reactivate a hex-named row owned by a different session", () => {
+    const sid = deriveSessionId(TOKEN);
+    const foreign = repos.addresses.create({ domainId: sessionDomain.id, username: sid, status: "active", sessionId: deriveSessionId(OTHER) });
+    expect(() => svc.registerNameless({ domain: sessionDomain, token: TOKEN })).toThrow(expect.objectContaining({ code: "taken" }));
+    expect(repos.addresses.getById(foreign.id)!.status).toBe("active");
+    expect(repos.addresses.getById(foreign.id)!.sessionId).toBe(deriveSessionId(OTHER));
+  });
+
+  it("refuses to reactivate a hex-named row that is reserved", () => {
+    const sid = deriveSessionId(TOKEN);
+    const reserved = repos.addresses.create({ domainId: sessionDomain.id, username: sid, status: "reserved" });
+    expect(() => svc.registerNameless({ domain: sessionDomain, token: TOKEN })).toThrow(expect.objectContaining({ code: "taken" }));
+    expect(repos.addresses.getById(reserved.id)!.status).toBe("reserved");
+  });
+
+  it("does not count an upgrade against maxPerSession", () => {
+    const capped = repos.domains.create({ domain: "capped.example", allocationModes: ["session", "self"], maxPerSession: 1 });
+    const { address } = svc.registerNameless({ domain: capped, token: TOKEN });
+    expect(() => svc.upgrade({ domain: capped, handle: address.username, token: TOKEN, username: "frank" })).not.toThrow();
   });
 });

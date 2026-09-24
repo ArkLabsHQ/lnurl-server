@@ -18,6 +18,7 @@ interface AddressRecord {
   claim_public_key: string | null;
   boarding_address: string | null;
   disabled_rails: string | null;
+  session_lnurl: number;
   created_at: number;
   updated_at: number;
 }
@@ -44,6 +45,7 @@ function rowToAddress(r: AddressRecord): AddressRow {
     claimPublicKey: r.claim_public_key,
     boardingAddress: r.boarding_address,
     disabledRails: parseDisabledRails(r.disabled_rails),
+    sessionLnurl: r.session_lnurl === 1,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -59,8 +61,8 @@ export class AddressesRepo {
       .prepare(
         `INSERT INTO addresses
            (domain_id, username, session_id, token_ciphertext, token_iv, token_tag,
-            claim_code_hash, status, metadata, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            claim_code_hash, status, metadata, session_lnurl, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         p.domainId,
@@ -72,6 +74,7 @@ export class AddressesRepo {
         p.claimCodeHash ?? null,
         p.status,
         p.metadata ?? null,
+        p.sessionLnurl ? 1 : 0,
         now,
         now,
       );
@@ -88,6 +91,17 @@ export class AddressesRepo {
       .prepare("SELECT * FROM addresses WHERE domain_id = ? AND username = ?")
       .get(domainId, username.toLowerCase()) as AddressRecord | undefined;
     return r ? rowToAddress(r) : undefined;
+  }
+
+  getSessionLnurl(domainId: number, sessionId: string): AddressRow | undefined {
+    const r = this.db
+      .prepare("SELECT * FROM addresses WHERE domain_id = ? AND session_id = ? AND session_lnurl = 1 AND status = 'active'")
+      .get(domainId, sessionId) as AddressRecord | undefined;
+    return r ? rowToAddress(r) : undefined;
+  }
+
+  rename(id: number, username: string): void {
+    this.db.prepare("UPDATE addresses SET username = ?, updated_at = ? WHERE id = ?").run(username.toLowerCase(), Date.now(), id);
   }
 
   listBySessionId(sessionId: string): AddressRow[] {

@@ -3,7 +3,7 @@ import { api } from "./api.js";
 
 type Tab = "Dashboard" | "Rails" | "Solvers" | "Sessions" | "Settlements" | "Domains" | "Addresses" | "API Keys" | "Blacklist" | "Settings";
 const TABS: Tab[] = ["Dashboard", "Rails", "Solvers", "Sessions", "Settlements", "Domains", "Addresses", "API Keys", "Blacklist", "Settings"];
-const ALLOCATION_MODES = ["self", "random", "admin"] as const;
+const ALLOCATION_MODES = ["self", "random", "admin", "session"] as const;
 
 interface Domain {
   id: number;

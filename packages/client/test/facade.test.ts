@@ -5,7 +5,8 @@ describe("createLnurlClient", () => {
   it("exposes the payer and receiver surface", () => {
     const c = createLnurlClient({ baseUrl: "https://x" });
     for (const m of ["resolve", "requestInvoice", "pollVerify", "openSession",
-                     "registerAddress", "listAddresses", "revokeAddress", "registerArkadeIdentity"]) {
+                     "registerAddress", "listAddresses", "revokeAddress", "registerArkadeIdentity",
+                     "upgradeAddress", "domainCapabilities"]) {
       expect(typeof (c as unknown as Record<string, unknown>)[m]).toBe("function");
     }
   });

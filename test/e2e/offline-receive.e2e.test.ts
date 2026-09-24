@@ -30,6 +30,7 @@ import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { MnemonicIdentity, Wallet, RestIndexerProvider, ArkAddress, Extension, Transaction } from "@arkade-os/sdk";
 import { CLAIM_PACKET_TYPE } from "../../src/claim-packet.js";
+import { deriveSessionId } from "../../src/session-id.js";
 import { createServer } from "../../src/server.js";
 import { openDb, type Db } from "../../src/db/connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
@@ -77,6 +78,23 @@ function req(url: string, method: string, body?: unknown, token?: string) {
     if (body) r.write(JSON.stringify(body));
     r.end();
   });
+}
+
+// Awaited, not snapshotted: verify settles the moment THIS server claims, and
+// that claim is what lets the solver settle the payer's HTLC — so SUCCEEDED
+// on the payer's own node lands just after, never at the same instant.
+async function awaitPayerSuccess(paymentHash: string): Promise<NonNullable<Awaited<ReturnType<typeof counterpartyPayment>>>> {
+  let payment: Awaited<ReturnType<typeof counterpartyPayment>> = null;
+  await pollUntil(
+    "the payer's Lightning payment to succeed",
+    async () => {
+      payment = await counterpartyPayment(paymentHash);
+      return payment?.status === "SUCCEEDED";
+    },
+    120_000,
+    2000,
+  );
+  return payment!;
 }
 
 // Under `stamped` no reveal is sent, so a settle proves the tx-stream ingress.
@@ -283,10 +301,9 @@ describe.each([
     // one the payer's own node settled with — and it was never disclosed before the claim.
     const preimage = String(settled.preimage);
     expect(preimage).toMatch(/^[0-9a-f]{64}$/);
-    const payment = await counterpartyPayment(paymentHash);
-    expect(payment?.status).toBe("SUCCEEDED");
-    expect(payment?.payment_preimage).toBe(preimage);
-    expect(Number(payment?.value_sat)).toBe(AMOUNT_SATS);
+    const payment = await awaitPayerSuccess(paymentHash);
+    expect(payment.payment_preimage).toBe(preimage);
+    expect(Number(payment.value_sat)).toBe(AMOUNT_SATS);
     expect(selfClaimed).toBe(selfClaim);
 
     // And the covenant did its one job: the sats landed on the user's Arkade address.
@@ -312,5 +329,201 @@ describe.each([
       packet = undefined; // no extension output at all — an unstamped funding
     }
     expect(Boolean(packet)).toBe(stamp);
+  }, SWAP_TIMEOUT_MS);
+});
+
+// A nameless row has no lightning address — offline receive must work off its
+// session LNURL alone, through the same corridor as a named one.
+describe("e2e: nameless offline receive via the intents corridor (self-claim)", () => {
+  let db: Db | undefined;
+  let server: http.Server | undefined;
+  let baseUrl: string;
+  let stopPoller: () => void = () => {};
+  let creator: OfflineSwapCreator | undefined;
+  let settlements: DbSettlementStore;
+  let receiver: { arkadeAddress: string; claimPublicKey: string };
+  const token = randomBytes(32).toString("hex");
+  const encryptionKey = randomBytes(32);
+  const stateDir = mkdtempSync(join(tmpdir(), "lnurl-server-e2e-nameless-"));
+  const dbPath = join(stateDir, "lnurl-server.sqlite");
+  let payer: { stop: () => void } | undefined;
+  let selfClaimed = false;
+  let sessionId = "";
+
+  async function startLocal(): Promise<void> {
+    db = openDb(dbPath);
+    runMigrations(db);
+    bootstrap(db, { bootstrapDomain: "localhost" });
+    const repos = createRepositories(db);
+    const domain = repos.domains.getByDomain("localhost")!;
+    if (!domain.allocationModes.includes("session")) {
+      repos.domains.update(domain.id, { allocationModes: [...domain.allocationModes, "session"] });
+    }
+    const addressService = new AddressService(repos, encryptionKey);
+    settlements = new DbSettlementStore(db, 3_600_000);
+    const offlineSwaps = new OfflineSwapStore(db, 3_600_000);
+    const card = solverCard("registry", 30, "regtest");
+    const realSelfClaimer = createSelfClaimer({ arkServerUrl: ARKD_URL, emulatorUrl: EMULATOR_URL });
+    creator = await createOfflineSwapCoordinator({
+      discovery: { selectLightningReceive: () => [{
+        name: card.name,
+        market: { ...card.markets[0]!, solver: card.name, discovery_pubkey: card.discovery_pubkey!, transports: card.transports!, source: "e2e-fixture", sourceType: "local" },
+        discoveryPubkey: card.discovery_pubkey!,
+        relays: card.transports!.nostr!.relays,
+        source: "e2e-fixture",
+        sourceType: "local",
+      }] },
+      transportFactory: () => httpTransport(SOLVER_HTTP_TEST_URL),
+      covclaimdUrl: COVCLAIMD_URL,
+      arkServerUrl: ARKD_URL,
+      stampClaimPacket: false,
+      selfClaimer: {
+        register: (registration) => realSelfClaimer.register(registration),
+        claim: async (swapId, preimage) => {
+          const outcome = await realSelfClaimer.claim(swapId, preimage);
+          if (outcome.state === "claimed") selfClaimed = true;
+          return outcome;
+        },
+      },
+    });
+    const defaults = { baseUrl: "", minSendable: 1000, maxSendable: 100_000_000_000, invoiceTimeoutMs: 30_000, registrationRateLimitPerMin: 1000 };
+    const app = createServer(
+      { port: 0, baseUrl: "", minSendable: 1000, maxSendable: 100_000_000_000, invoiceTimeoutMs: 30_000, trustProxy: false },
+      { repos, addressService, settings: staticSettings(defaults), settlements, offlineSwapCreator: creator, offlineSwaps },
+    );
+    server = await new Promise<http.Server>((resolve) => {
+      const listening = http.createServer(app);
+      listening.listen(0, "127.0.0.1", () => resolve(listening));
+    });
+    baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    defaults.baseUrl = baseUrl;
+    stopPoller = startOfflineSettlementPoller(settlements, creator, 1000, offlineSwaps).stop;
+  }
+
+  async function stopLocal(): Promise<void> {
+    stopPoller();
+    stopPoller = () => {};
+    await creator?.close?.();
+    creator = undefined;
+    if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = undefined;
+    db?.close();
+    db = undefined;
+  }
+
+  beforeAll(async () => {
+    console.log("[setup] ensuring regtest stack…");
+    await ensureStack();
+    console.log("[setup] funding solver float…");
+    await fundSolverFloat();
+    console.log("[setup] creating receiver identity…");
+
+    const identity = MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist), { isMainnet: false });
+    const wallet = await Wallet.create({
+      identity,
+      arkServerUrl: ARKD_URL,
+      storage: await nodeSqliteStorage(":memory:"),
+      settlementConfig: false,
+    });
+    receiver = {
+      arkadeAddress: await wallet.getAddress(),
+      claimPublicKey: hex.encode(await identity.compressedPublicKey()),
+    };
+    await wallet.dispose();
+
+    console.log("[setup] starting lnurl-server…");
+    await startLocal();
+
+    const reg = await req(`${baseUrl}/lnurl/address`, "POST", { token, nameless: true });
+    expect(reg.status).toBe(201);
+    sessionId = String(reg.body.handle);
+    expect(sessionId).toBe(deriveSessionId(token));
+    const ark = await req(`${baseUrl}/lnurl/address/${sessionId}/arkade`, "POST", receiver, token);
+    expect(ark.status).toBe(200);
+  }, SETUP_TIMEOUT_MS);
+
+  afterAll(async () => {
+    payer?.stop();
+    await stopLocal();
+    rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("pays a nameless LNURL end to end: corridor swap, self-claim, verify flip", async () => {
+    // No lightning address exists for this row — the session LNURL is the only handle.
+    const cb = await req(`${baseUrl}/lnurl/${sessionId}/callback?amount=${AMOUNT_SATS * 1000}`, "GET");
+    expect(cb.body.status).not.toBe("ERROR");
+    const pr = String(cb.body.pr);
+    expect(pr).toMatch(/^lnbcrt/);
+    let verifyUrl = String(cb.body.verify);
+    expect(verifyUrl).toContain("/lnurl/verify/");
+    const paymentHash = verifyUrl.split("/").pop()!;
+
+    const swapId = settlements.get(paymentHash)?.swapId;
+    if (!swapId) throw new Error(`no settlement record / swap id for ${paymentHash} — the callback should have created one`);
+
+    // Restart to prove the nameless row and its swap survive a process bounce.
+    await stopLocal();
+    await startLocal();
+    verifyUrl = `${baseUrl}/lnurl/verify/${paymentHash}`;
+    expect(settlements.get(paymentHash)).toMatchObject({ swapId, settled: false });
+
+    payer = payFromCounterparty(pr);
+
+    let minedFunding = false;
+    let blocksMined = 0;
+    let lastMine = 0;
+    let settled: Record<string, unknown> = {};
+    let swapState: string | undefined;
+    let swapStateChangedAt = 0;
+    await pollUntil(
+      "verify settled",
+      async () => {
+        if (swapId) {
+          const raw = (await fetch(`${SOLVER_HTTP_TEST_URL}/v1/rfq/${swapId}`)
+            .then((r) => (r.ok ? r.json() : null))
+            .catch(() => null)) as { state?: string } | null;
+          if ((raw?.state === "filling" || raw?.state === "filled") && !minedFunding) {
+            minedFunding = true;
+            await mine(2);
+            blocksMined += 2;
+            lastMine = Date.now();
+          }
+          if (raw?.state && raw.state !== swapState) {
+            swapState = raw.state;
+            swapStateChangedAt = Date.now();
+          }
+        }
+        if (minedFunding && blocksMined < 20 && Date.now() - lastMine > 30_000) {
+          await mine(1);
+          blocksMined += 1;
+          lastMine = Date.now();
+        }
+        const v = await req(verifyUrl, "GET");
+        if (v.body.settled === true) {
+          settled = v.body;
+          return true;
+        }
+        return false;
+      },
+      SWAP_TIMEOUT_MS - 60_000,
+      3000,
+      () =>
+        `swap ${swapId} stuck at ${swapState ?? "unknown"}` +
+        (swapStateChangedAt ? ` for ${Math.round((Date.now() - swapStateChangedAt) / 1000)}s` : "") +
+        `, ${blocksMined} blocks mined`,
+    );
+
+    const preimage = String(settled.preimage);
+    expect(preimage).toMatch(/^[0-9a-f]{64}$/);
+    const payment = await awaitPayerSuccess(paymentHash);
+    expect(payment.payment_preimage).toBe(preimage);
+    expect(selfClaimed).toBe(true);
+
+    const script = hex.encode(ArkAddress.decode(receiver.arkadeAddress).pkScript);
+    const indexer = new RestIndexerProvider(ARKD_URL);
+    const { vtxos } = await indexer.getVtxos({ scripts: [script] });
+    const received = vtxos.reduce((sum, v) => sum + v.value, 0);
+    expect(received).toBeGreaterThan(0);
+    expect(received).toBeLessThanOrEqual(AMOUNT_SATS);
   }, SWAP_TIMEOUT_MS);
 });

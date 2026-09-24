@@ -21,28 +21,36 @@ import { browserPaymentStore } from '@arkade-os/lnurl-client'
 const lnurl = arkadeLnurl({ wallet, baseUrl: 'https://lnurl.example.com', store: browserPaymentStore() })
 
 // Receive: claims the name AND binds the identity, which is what makes the
-// address advertise any paymentOptions at all.
-const { lightningAddress } = await lnurl.claim('alice')   // alice@lnurl.example.com
-await lnurl.sync('alice')                                 // pull the server's own records
+// address advertise any paymentOptions at all. Omit the name for a
+// server-assigned one, or pass `{ nameless: true }` for no address at all -
+// just the stable `lnurl` below.
+const rx = await lnurl.claim({ username: 'alice' })   // rx.lightningAddress === 'alice@lnurl.example.com'
+await rx.sync()                                       // pull the server's own records
 
 // Send: the router already knows how to pay a Lightning address.
 const [best] = await lnurl.options('bob@example.com', 1000)
 const handle = await (await best.quote()).send()
 ```
 
-`wallet.identity` supplies the signing, so nothing else is passed in. The token is derived once and memoised - it signs twice on first use to prove the signer is deterministic, and a second call costs nothing.
+`wallet.identity` supplies the signing, so nothing else is passed in. The token is derived once and memoised - it signs twice on first use to prove the signer is deterministic, and a second call costs nothing. `claim` and `owned` return a `Receiver`, scoped to one address:
 
 | you want | call |
 | --- | --- |
-| the name this wallet already owns here | `owned()` |
-| claim a name and bind the identity | `claim(username)` |
-| its `user@domain` | `lightningAddress(username)` |
-| an LNURL for a QR | `lnurl(username)` |
-| its own payRequest | `payRequest(username)` |
-| one page of the server's records | `payments(username, opts)` |
-| everything new, into your store | `sync(username)` |
+| what this domain allows | `capabilities()` |
+| the address this wallet already owns here | `owned()` |
+| claim a name (or none) and bind the identity | `claim(opts?)` |
+| its `user@domain`, or `undefined` when nameless | `receiver.lightningAddress` |
+| an LNURL for a QR | `receiver.lnurl` |
+| its own payRequest | `receiver.payRequest()` |
+| one page of the server's records | `receiver.payments(opts)` |
+| everything new, into your store | `receiver.sync()` |
+| name a nameless receiver in place | `receiver.upgrade(opts?)` |
 | rank the ways to pay a target | `options(target, amountSat)` |
 | the router itself | `router()` |
+
+`capabilities()` reads what a domain allows before you call it - `{ domain, allocationModes, usernameRules, requireApiKey }` - so onboarding can offer only the modes actually enabled instead of guessing and hitting `forbidden_mode`. A domain requiring an operator-reserved name takes a `claimCode` the same way on either call below: `claim({ username: 'alice', claimCode })`.
+
+**Nameless, and upgrading later.** `claim({ nameless: true })` returns a `Receiver` with no lightning address at all - offline receive, rails and payment sync all work off its stable `lnurl` alone. `receiver.upgrade({ username: 'alice' })` (or `{ username, claimCode }` for a reserved name) names it in place: the wallet keeps its history and the same `lnurl` keeps paying it, but the upgrade **publicly links** that LNURL to the new name. To keep them unlinked instead, call `lnurl.claim({ username: 'alice' })` on the side - a second, separate named address (counted against the domain's per-wallet limit) with no connection to the nameless one.
 
 Paying needs no address of your own, so the router is available separately - `arkadePaymentRouter({ wallet, lightning })` returns the SDK router with the LNURL rails registered, which is what makes `route()` accept a Lightning address instead of throwing `no rail for`.
 

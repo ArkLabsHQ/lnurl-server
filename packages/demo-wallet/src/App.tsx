@@ -1,12 +1,13 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PaymentOption, WalletBalance } from "@arkade-os/sdk";
-import type { InvoiceResult, PayRequest } from "@arkade-os/lnurl-client";
+import type { DomainCapabilities, InvoiceResult, PayRequest } from "@arkade-os/lnurl-client";
+import type { ClaimOptions, Receiver } from "@arkade-os/lnurl-client/arkade";
 import { EXPLORER, LNURL_DOMAIN, USERNAME_KEY } from "./config.js";
 import { mergeFeed, readWalletActivity, type FeedRow, type FeedStatus } from "./activity.js";
 import { lnurlActivityResolver, sentActivityResolver } from "./lnurl-activity.js";
 import { balanceView } from "./balance.js";
 import { createMnemonic, loadMnemonic, openWallet, wipeWallet, type DemoWallet } from "./wallet.js";
-import { ownPayRequest, payer, receiver } from "./lnurl.js";
+import { bootState, claimOrAdopt, domainCapabilities, payer, receiver } from "./lnurl.js";
 import { createRouter, RAIL_PRIORITY } from "./router.js";
 import { storedPayments } from "@arkade-os/lnurl-client";
 import { autoSettleBoarding, type BoardingState } from "./boarding.js";
@@ -45,27 +46,28 @@ function Field({ label, value }: { label: string; value: string }) {
 
 export function App() {
   const [wallet, setWallet] = useState<DemoWallet | null>(null);
-  const [username, setUsername] = useState<string | null>(() => localStorage.getItem(USERNAME_KEY));
-  const [token, setToken] = useState<string | null>(null);
+  const [shown, setShown] = useState<Receiver | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [booting, setBooting] = useState(true);
+  const [unreachable, setUnreachable] = useState<{ error: string; mnemonic: string } | null>(null);
   const opened = useRef(false);
 
   const adopt = useCallback(async (mnemonic: string) => {
     setBooting(true);
     setErr(null);
+    setShown(null);
+    setUnreachable(null);
     try {
       const w = await openWallet(mnemonic);
       setWallet(w);
-      const rx = receiver({ wallet: w.wallet });
-      setToken(await rx.token());
-
-      // The username is not in the phrase, so on a fresh browser ask the server
-      // which one this token owns. Re-registering it would fail: the server
-      // refuses any existing username, owner or not.
-      const owned = localStorage.getItem(USERNAME_KEY) ?? (await rx.owned().catch(() => undefined));
-      if (owned) localStorage.setItem(USERNAME_KEY, owned);
-      setUsername(owned ?? null);
+      // Asked every boot, not read from storage: the phrase carries no handle,
+      // and only the server can hand back a Receiver to act through.
+      const boot = await bootState(receiver({ wallet: w.wallet }));
+      if (boot.kind === "unreachable") setUnreachable({ error: boot.error, mnemonic });
+      if (boot.kind === "ready") {
+        localStorage.setItem(USERNAME_KEY, boot.receiver.handle);
+        setShown(boot.receiver);
+      }
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -87,8 +89,7 @@ export function App() {
 
   const forget = useCallback(() => {
     setWallet(null);
-    setUsername(null);
-    setToken(null);
+    setShown(null);
   }, []);
 
   if (booting) return <div style={page}>Opening wallet…</div>;
@@ -98,23 +99,85 @@ export function App() {
       <h1 style={{ fontSize: 20, marginBottom: 2 }}>Arkade demo wallet</h1>
       <p style={{ color: "#666", marginTop: 0, fontSize: 13 }}>mutinynet · receives through lnurl-server</p>
       {err && <p style={{ color: "crimson" }}>{err}</p>}
-      {!wallet || !username || !token
-        ? <Onboarding wallet={wallet} username={username} onReady={(w, u, t) => { setWallet(w); setUsername(u); setToken(t); }} onError={setErr} />
-        : <Wallet wallet={wallet} username={username} token={token} onRestored={adopt} onReset={forget} />}
+      {unreachable
+        ? (
+          <div style={card}>
+            <p style={{ color: "crimson", marginTop: 0 }}>Could not reach {LNURL_DOMAIN} to find this wallet's address: {unreachable.error}</p>
+            <button style={btn} onClick={() => void adopt(unreachable.mnemonic)}>Retry</button>
+          </div>
+        )
+        : !wallet || !shown
+        ? <Onboarding wallet={wallet} onReady={(w, r) => { setWallet(w); setShown(r); }} onError={setErr} />
+        : <Wallet wallet={wallet} receiver={shown} onRenamed={setShown} onRestored={adopt} onReset={forget} />}
     </div>
   );
 }
 
-function Onboarding({ wallet, username, onReady, onError }: {
-  wallet: DemoWallet | null;
-  username: string | null;
-  onReady: (w: DemoWallet, u: string, t: string) => void;
-  onError: (m: string) => void;
+const SELF_SERVICE = ["self", "random", "session"];
+
+/** What the domain lets a wallet do for itself. A server predating the route
+ *  only ever offered a chosen name, so that is what a failed read falls back to. */
+function useCapabilities(): { caps: DomainCapabilities | null; note: string } {
+  const [caps, setCaps] = useState<DomainCapabilities | null>(null);
+  const [note, setNote] = useState("");
+  useEffect(() => {
+    let live = true;
+    domainCapabilities()
+      .then((c) => { if (live) setCaps(c); })
+      .catch((e: Error) => {
+        if (!live) return;
+        setNote(`could not read what ${LNURL_DOMAIN} allows (${e.message}); offering a chosen name`);
+        setCaps({ domain: LNURL_DOMAIN, allocationModes: ["self"], usernameRules: { minLen: 3, maxLen: 64, pattern: "" }, requireApiKey: false });
+      });
+    return () => { live = false; };
+  }, []);
+  return { caps, note };
+}
+
+function NameChoice({ caps, note, busy, selfLabel, withSession, onPick }: {
+  caps: DomainCapabilities | null; note: string; busy: boolean; selfLabel: string; withSession: boolean;
+  onPick: (opts: ClaimOptions) => void;
 }) {
   const [name, setName] = useState("");
+  if (!caps) return <p style={{ color: "#666", fontSize: 13 }}>Reading what {LNURL_DOMAIN} allows…</p>;
+  const modes = caps.allocationModes.filter((m) => SELF_SERVICE.includes(m) && (withSession || m !== "session"));
+  const { minLen, maxLen } = caps.usernameRules;
+  const length = name.trim().length;
+  return (
+    <>
+      {note && <p style={{ ...mono, color: "#946200", fontSize: 12 }}>{note}</p>}
+      {!modes.length && <p style={{ color: "crimson" }}>{caps.domain} does not let a wallet claim an address for itself.</p>}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        {modes.includes("self") && (
+          <>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="username"
+              style={{ padding: 8, borderRadius: 6, border: "1px solid #bbb", minWidth: 200 }}
+            />
+            <button style={btn} disabled={busy || length < minLen || length > maxLen}
+              onClick={() => onPick({ username: name.trim() })}>{busy ? "Working…" : selfLabel}</button>
+          </>
+        )}
+        {modes.includes("random") && <button style={btn} disabled={busy} onClick={() => onPick({})}>Pick a name for me</button>}
+        {modes.includes("session") && (
+          <button style={btn} disabled={busy} onClick={() => onPick({ nameless: true })}>Skip — just a LNURL</button>
+        )}
+      </div>
+    </>
+  );
+}
+
+function Onboarding({ wallet, onReady, onError }: {
+  wallet: DemoWallet | null;
+  onReady: (w: DemoWallet, r: Receiver) => void;
+  onError: (m: string) => void;
+}) {
+  const { caps, note } = useCapabilities();
   const [busy, setBusy] = useState(false);
 
-  const go = useCallback(async () => {
+  const go = useCallback(async (opts: ClaimOptions) => {
     setBusy(true);
     onError("");
     try {
@@ -123,47 +186,35 @@ function Onboarding({ wallet, username, onReady, onError }: {
       // bound identity advertises no rails, so a half-done onboarding is a
       // wallet that silently cannot receive.
       const rx = receiver({ wallet: w.wallet });
-      const claimed = username ? { username } : await rx.claim(name.trim());
-      const result = { ...claimed, token: await rx.token() };
-      localStorage.setItem(USERNAME_KEY, result.username);
-      onReady(w, result.username, result.token);
+      const claimed = await claimOrAdopt(rx, opts);
+      localStorage.setItem(USERNAME_KEY, claimed.handle);
+      onReady(w, claimed);
     } catch (e) {
       onError((e as Error).message);
     } finally {
       setBusy(false);
     }
-  }, [wallet, username, name, onReady, onError]);
+  }, [wallet, onReady, onError]);
 
   return (
     <div style={card}>
       <h2 style={{ fontSize: 16, marginTop: 0 }}>Create your wallet</h2>
       <p style={{ color: "#555", fontSize: 14 }}>
-        Generates an Arkade identity, claims a Lightning address, and binds the identity
+        Generates an Arkade identity, claims an address to be paid at, and binds the identity
         so payments can arrive while this page is closed.
       </p>
-      <input
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        placeholder="username"
-        style={{ padding: 8, borderRadius: 6, border: "1px solid #bbb", marginRight: 8, minWidth: 200 }}
-      />
-      <button style={btn} disabled={busy || name.trim().length < 3} onClick={() => void go()}>
-        {busy ? "Working…" : "Create wallet"}
-      </button>
+      <NameChoice caps={caps} note={note} busy={busy} selfLabel="Create wallet" withSession onPick={(o) => void go(o)} />
     </div>
   );
 }
 
-function Wallet({ wallet, username, token, onRestored, onReset }: {
-  wallet: DemoWallet; username: string; token: string;
+function Wallet({ wallet, receiver: shown, onRenamed, onRestored, onReset }: {
+  wallet: DemoWallet; receiver: Receiver; onRenamed: (r: Receiver) => void;
   onRestored: (mnemonic: string) => void; onReset: () => void;
 }) {
   const [tab, setTab] = useState<Tab>("Receive");
   const [balance, setBalance] = useState<WalletBalance | null>(null);
   const view = balanceView(balance);
-  // From the pinned domain, never location.hostname: this is served from GitHub
-  // Pages, where the page's own host has nothing to do with the LNURL server.
-  const lightningAddress = `${username}@${LNURL_DOMAIN}`;
 
   const [boarding, setBoarding] = useState<BoardingState>({ status: "idle" });
 
@@ -241,9 +292,9 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
         ))}
       </nav>
 
-      {tab === "Receive" && <Receive lightningAddress={lightningAddress} />}
+      {tab === "Receive" && <Receive key={shown.handle} receiver={shown} onRenamed={onRenamed} />}
       {tab === "Send" && <Send wallet={wallet} onSent={refresh} />}
-      {tab === "Activity" && <Activity token={token} username={username} lightningAddress={lightningAddress} wallet={wallet} />}
+      {tab === "Activity" && <Activity receiver={shown} wallet={wallet} />}
       {tab === "Settings" && (
         <>
           <Backup onRestored={onRestored} onReset={() => { forgetStoredPayments(); forgetSent(); onReset(); }} />
@@ -265,7 +316,8 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
  * callback mints a destination and files a settlement record, so rendering the
  * list by calling every rail would leave a trail of quotes nobody asked for.
  */
-function Receive({ lightningAddress }: { lightningAddress: string }) {
+function Receive({ receiver: shown, onRenamed }: { receiver: Receiver; onRenamed: (r: Receiver) => void }) {
+  const { lightningAddress } = shown;
   const [payRequest, setPayRequest] = useState<PayRequest | null>(null);
   const [amount, setAmount] = useState(1000);
   const [result, setResult] = useState<{ option: string; value: InvoiceResult } | null>(null);
@@ -275,7 +327,7 @@ function Receive({ lightningAddress }: { lightningAddress: string }) {
 
   const load = async () => {
     setBusy("options"); setErr(""); setResult(null); setSettled("");
-    try { setPayRequest(await ownPayRequest(lightningAddress.split("@")[0]!)); }
+    try { setPayRequest(await shown.payRequest()); }
     catch (e) { setErr((e as Error).message); }
     finally { setBusy(""); }
   };
@@ -304,11 +356,11 @@ function Receive({ lightningAddress }: { lightningAddress: string }) {
   return (
     <>
       <div style={card}>
-        <h2 style={{ fontSize: 16, marginTop: 0 }}>Your Lightning address</h2>
+        <h2 style={{ fontSize: 16, marginTop: 0 }}>{lightningAddress ? "Your Lightning address" : "Your LNURL"}</h2>
         <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "flex-start" }}>
-          <ReceiveQr lightningAddress={lightningAddress} />
+          <ReceiveQr target={lightningAddress ?? shown.lnurl} caption={lightningAddress ? "Lightning address" : "LNURL"} />
           <div style={{ flex: 1, minWidth: 260 }}>
-            <Field label="Lightning address" value={lightningAddress} />
+            <Field label={lightningAddress ? "Lightning address" : "LNURL"} value={lightningAddress ?? shown.lnurl} />
             <p style={{ color: "#555", fontSize: 13 }}>
               Everything this wallet receives arrives through this one address, open page or
               not — the server takes the swap or destination on your behalf, constrained to
@@ -317,6 +369,7 @@ function Receive({ lightningAddress }: { lightningAddress: string }) {
             </p>
           </div>
         </div>
+        {!lightningAddress && <AddName receiver={shown} onRenamed={onRenamed} />}
 
         {/* Same card as the address: the rails are what the address IS, and a
             separate panel read as a second, unrelated thing to configure. */}
@@ -372,6 +425,33 @@ function Receive({ lightningAddress }: { lightningAddress: string }) {
         </div>
       </div>
     </>
+  );
+}
+
+function AddName({ receiver: shown, onRenamed }: { receiver: Receiver; onRenamed: (r: Receiver) => void }) {
+  const { caps, note } = useCapabilities();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const name = async (opts: ClaimOptions) => {
+    setBusy(true); setErr("");
+    try {
+      const named = await shown.upgrade(opts);
+      localStorage.setItem(USERNAME_KEY, named.handle);
+      onRenamed(named);
+    } catch (e) { setErr((e as Error).message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ borderTop: "1px solid #eee", marginTop: 16, paddingTop: 16 }}>
+      <h3 style={{ fontSize: 14, marginTop: 0 }}>Add a name</h3>
+      <p style={{ color: "#555", fontSize: 13, marginTop: 0 }}>
+        This LNURL keeps paying you, and anyone holding it will see the name: naming it links the two publicly.
+      </p>
+      <NameChoice caps={caps} note={note} busy={busy} selfLabel="Add a name" withSession={false} onPick={(o) => void name(o)} />
+      {err && <p style={{ ...mono, color: "crimson" }}>{err}</p>}
+    </div>
   );
 }
 
@@ -534,20 +614,18 @@ function ActivityRow({ row }: { row: FeedRow }) {
   );
 }
 
-function Activity({ token, username, lightningAddress, wallet }: {
-  token: string; username: string; lightningAddress: string; wallet: DemoWallet;
-}) {
-  const rx = useMemo(() => receiver({ wallet: wallet.wallet }), [wallet]);
+function Activity({ receiver: shown, wallet }: { receiver: Receiver; wallet: DemoWallet }) {
   const [rows, setRows] = useState<FeedRow[] | null>(null);
   const [err, setErr] = useState("");
   const [walletErr, setWalletErr] = useState("");
 
   useEffect(() => {
     let live = true;
+    const mine = () => storedPayments({ domain: LNURL_DOMAIN, handle: shown.handle });
     // Registered on the wallet rather than merged afterwards, so the server's
     // record lands on the SDK's own activity row. `use` is keyed by id, so
     // re-running this effect replaces the resolver instead of stacking copies.
-    wallet.wallet.activity.use(lnurlActivityResolver(() => storedPayments(lightningAddress)));
+    wallet.wallet.activity.use(lnurlActivityResolver(mine));
     wallet.wallet.activity.use(sentActivityResolver(sentPayments));
     // The wallet half comes from the SDK and needs no server, so it renders even
     // when the sync fails — which is also why the error does not replace the list.
@@ -556,16 +634,18 @@ function Activity({ token, username, lightningAddress, wallet }: {
       const { activities, error } = await readWalletActivity(wallet.wallet);
       if (!live) return;
       setWalletErr(error ?? "");
-      setRows(mergeFeed(activities, storedPayments(lightningAddress)));
+      setRows(mergeFeed(activities, mine()));
     };
     void show();
-    const load = () => rx.sync(username)
+    // The receiver on screen, never a fresh `owned()`: a token holding two rows
+    // would sync whichever that prefers.
+    const load = () => shown.sync()
       .then(() => show())
       .catch((e: Error) => { if (live) setErr(e.message); });
     void load();
     const id = setInterval(() => void load(), 8000);
     return () => { live = false; clearInterval(id); };
-  }, [token, username, lightningAddress, rx, wallet]);
+  }, [shown, wallet]);
 
   if (!rows) return <div style={card}>Loading…</div>;
 
@@ -573,7 +653,7 @@ function Activity({ token, username, lightningAddress, wallet }: {
     <div style={card}>
       <h2 style={{ fontSize: 16, marginTop: 0 }}>Activity</h2>
       <p style={{ color: "#555", fontSize: 13, marginTop: 0 }}>
-        This wallet's own transactions, and everything quoted against {username} — including
+        This wallet's own transactions, and everything quoted against {shown.lightningAddress ?? "its LNURL"} — including
         quotes nobody paid, which have no transaction to show up as.
       </p>
       {err && <p style={{ ...mono, color: "crimson", fontSize: 12 }}>payment sync failed: {err}</p>}

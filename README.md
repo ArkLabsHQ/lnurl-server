@@ -45,8 +45,10 @@ Wallet                    Service                     Payer
 | GET | `/.well-known/lnurlp/:username/callback` | Payer | Invoice callback for LN address payments |
 | POST | `/lnurl/address` | Wallet | Register/claim a Lightning address |
 | GET | `/lnurl/address` | Wallet | List own addresses (`Authorization: Bearer <token>`) |
-| DELETE | `/lnurl/address/:username` | Wallet | Revoke own address (`Authorization: Bearer <token>`) |
-| POST | `/lnurl/address/:username/arkade` | Wallet | Register Arkade receive identity for offline receive (`Authorization: Bearer <token>`) |
+| GET | `/lnurl/domain` | Wallet | What the domain allows: allocation modes (`self`, `random`, `admin`, `session`) and username rules |
+| PATCH | `/lnurl/address/:handle` | Wallet | Give a nameless receiver a name in place; its LNURL keeps working (`Authorization: Bearer <token>`) |
+| DELETE | `/lnurl/address/:handle` | Wallet | Revoke own address (`Authorization: Bearer <token>`) |
+| POST | `/lnurl/address/:handle/arkade` | Wallet | Register Arkade receive identity for offline receive (`Authorization: Bearer <token>`) |
 
 ## Usage
 

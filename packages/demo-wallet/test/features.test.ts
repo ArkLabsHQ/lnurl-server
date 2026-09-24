@@ -18,7 +18,7 @@ import { createRepositories, type Repositories } from "../../../src/db/repositor
 import { AddressService } from "../../../src/address-service.js";
 import { RateLimiter } from "../../../src/rate-limit.js";
 import type { ArkadeSigner } from "@arkade-os/lnurl-client/arkade";
-import { receiverAt } from "../src/lnurl.js";
+import { claimOrAdopt, receiverAt } from "../src/lnurl.js";
 
 const DOMAIN = "127.0.0.1";
 const CONFIG = { port: 0, minSendable: 1_000, maxSendable: 100_000_000, invoiceTimeoutMs: 3_000 };
@@ -40,8 +40,8 @@ const tokenFor = (identity: ArkadeSigner) =>
 
 const onboard = async (identity: ArkadeSigner, arkadeAddress: string, username: string) => {
   const rx = receiverAt(baseUrl, DOMAIN, { identity, arkadeAddress });
-  const claimed = await rx.claim(username);
-  return { ...claimed, token: await rx.token() };
+  const claimed = await rx.claim({ username });
+  return { username: claimed.handle, lightningAddress: claimed.lightningAddress, token: await rx.token() };
 };
 
 
@@ -145,6 +145,45 @@ describe("restoring a wallet", () => {
 
   it("reports nothing for a token that owns no address", async () => {
     expect(await ownedUsername(await tokenFor(newIdentity()))).toBeUndefined();
+  });
+});
+
+describe("nameless onboarding", () => {
+  const allowSession = () => {
+    const domain = repos.domains.getByDomain(DOMAIN)!;
+    repos.domains.update(domain.id, { allocationModes: ["self", "random", "session"] });
+  };
+
+  it("offers skipping a name only where the domain allows it", async () => {
+    const rx = receiverAt(baseUrl, DOMAIN, { identity: newIdentity(), arkadeAddress: arkadeAddress() });
+    expect((await rx.capabilities()).allocationModes).toEqual(["self", "random"]);
+
+    allowSession();
+    expect((await rx.capabilities()).allocationModes).toContain("session");
+  });
+
+  it("restores a nameless wallet as its LNURL, and names it without changing that LNURL", async () => {
+    allowSession();
+    const identity = newIdentity();
+    const rx = receiverAt(baseUrl, DOMAIN, { identity, arkadeAddress: arkadeAddress() });
+    const nameless = await rx.claim({ nameless: true });
+
+    const restored = await receiverAt(baseUrl, DOMAIN, { identity, arkadeAddress: arkadeAddress() }).owned();
+    expect(restored).toMatchObject({ handle: nameless.handle, lightningAddress: undefined, lnurl: nameless.lnurl });
+
+    const named = await restored!.upgrade({ username: "carol" });
+    expect(named).toMatchObject({ lightningAddress: `carol@${DOMAIN}`, lnurl: nameless.lnurl });
+    expect((await rx.owned())?.handle).toBe("carol");
+  });
+
+  it("adopts the address a kept phrase already owns instead of claiming a second", async () => {
+    allowSession();
+    const identity = newIdentity();
+    const { token } = await onboard(identity, arkadeAddress(), "dave");
+
+    const rx = receiverAt(baseUrl, DOMAIN, { identity, arkadeAddress: arkadeAddress() });
+    expect((await claimOrAdopt(rx, { nameless: true })).handle).toBe("dave");
+    expect(await createLnurlClient({ baseUrl }).listAddresses(token)).toHaveLength(1);
   });
 });
 

@@ -93,6 +93,24 @@ test("backup: the revealed phrase is the stored key, and erasing destroys it", a
   }
 });
 
+test("boot: lnurl-server down keeps a returning wallet out of onboarding until Retry finds its address", async ({ browser }) => {
+  const { context, page, username } = await freshWallet(browser, "down", { keepExisting: true });
+  try {
+    const listing = (url: URL) => url.href.startsWith(stack.lnurlBase) && url.pathname === "/lnurl/address";
+    await page.route(listing, (route) => route.fulfill({ status: 503, body: "down" }));
+    await page.reload();
+    await expect(page.getByRole("button", { name: "Retry" })).toBeVisible({ timeout: 120_000 });
+    await expect(page.getByRole("heading", { name: "Create your wallet" })).toHaveCount(0);
+
+    await page.unroute(listing);
+    await page.getByRole("button", { name: "Retry" }).click();
+    await expect(page.getByText(`${username}@${stack.lnurlDomain}`)).toBeVisible({ timeout: 120_000 });
+    expect(await adminUsernames(GLOBAL_ADMIN, username)).toEqual([username]);
+  } finally {
+    await context.close();
+  }
+});
+
 /** Records across every store in the SDK's IndexedDB. Summed rather than named,
  *  so a store added by a later SDK counts without editing this. */
 const sdkRecords = (page: Page): Promise<number> =>
@@ -180,18 +198,25 @@ test("settings: an endpoint override sends the next registration to the other se
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByText("Saved. Reload the page to use it.")).toBeVisible();
 
+    // The same key owns nothing on the other server, so the wallet boots into onboarding there.
     await page.reload();
-    await page.getByRole("button", { name: "Settings" }).click();
-    await expect(page.getByText(other.base, { exact: true })).toBeVisible();
-
-    // Erase rather than a second browser: the override lives beside the keys and
-    // survives wiping them, so this is the one path that onboards against it.
-    await page.getByRole("button", { name: "Erase wallet…" }).click();
-    await page.getByPlaceholder("ERASE").fill("ERASE");
-    await page.getByRole("button", { name: "Erase wallet", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Create your wallet" })).toBeVisible({ timeout: 120_000 });
     const moved = await onboard(page, "sy");
     expect(await adminUsernames(OTHER_ADMIN, moved)).toEqual([moved]);
     expect(await adminUsernames(GLOBAL_ADMIN, moved)).toEqual([]);
+
+    await page.getByRole("button", { name: "Settings" }).click();
+    await expect(page.getByText(other.base, { exact: true })).toBeVisible();
+
+    // The override lives beside the keys and must survive wiping them.
+    await page.getByRole("button", { name: "Erase wallet…" }).click();
+    await page.getByPlaceholder("ERASE").fill("ERASE");
+    await page.getByRole("button", { name: "Erase wallet", exact: true }).click();
+    const again = await onboard(page, "sz");
+    expect(await adminUsernames(OTHER_ADMIN, again)).toEqual([again]);
+    expect(await adminUsernames(GLOBAL_ADMIN, again)).toEqual([]);
+    await page.getByRole("button", { name: "Settings" }).click();
+    await expect(page.getByText(other.base, { exact: true })).toBeVisible();
   } finally {
     await context.close();
   }

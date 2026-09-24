@@ -39,6 +39,7 @@ const TOKEN = "ab".repeat(32);
 beforeEach(async () => {
   db = openDb(":memory:"); runMigrations(db); repos = createRepositories(db);
   domainId = repos.domains.create({ domain: "domain.com", allocationModes: ["self", "random"] }).id;
+  repos.domains.create({ domain: "session.com", allocationModes: ["self", "random", "session"] });
   ctx = await start();
 });
 afterEach(async () => { await ctx.close(); db.close(); });
@@ -130,5 +131,158 @@ describe("address routes", () => {
     await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "domain.com", body: { username: "wrongtoken", token: TOKEN } });
     const res = await req("DELETE", `${ctx.baseUrl}/lnurl/address/wrongtoken`, { host: "domain.com", bearer: "ff".repeat(32) });
     expect(res.status).toBe(404);
+  });
+});
+
+describe("nameless registration", () => {
+  it("POST nameless: true creates then returns the same row idempotently", async () => {
+    const first = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "session.com", body: { token: TOKEN, nameless: true } });
+    expect(first.status).toBe(201);
+    expect(first.body.lightningAddress).toBeNull();
+    expect(first.body.username).toBeNull();
+    expect(typeof first.body.handle).toBe("string");
+    expect(String(first.body.lnurl)).toMatch(/^LNURL1/);
+
+    const second = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "session.com", body: { token: TOKEN, nameless: true } });
+    expect(second.status).toBe(200);
+    expect(second.body.handle).toBe(first.body.handle);
+  });
+
+  it("403s without the session mode", async () => {
+    const res = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "domain.com", body: { token: TOKEN, nameless: true } });
+    expect(res.status).toBe(403);
+  });
+
+  it("400s when nameless is combined with username or claimCode", async () => {
+    const withUsername = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "session.com", body: { token: TOKEN, nameless: true, username: "bob" } });
+    expect(withUsername.status).toBe(400);
+    expect(withUsername.body.code).toBe("invalid_username");
+
+    const withClaimCode = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "session.com", body: { token: TOKEN, nameless: true, claimCode: "x" } });
+    expect(withClaimCode.status).toBe(400);
+    expect(withClaimCode.body.code).toBe("invalid_username");
+  });
+});
+
+describe("PATCH /lnurl/address/:handle (upgrade)", () => {
+  async function registerNameless(token: string): Promise<string> {
+    const res = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "session.com", body: { token, nameless: true } });
+    return String(res.body.handle);
+  }
+
+  it("upgrades a nameless row, and the new name resolves at .well-known", async () => {
+    const handle = await registerNameless(TOKEN);
+    const res = await req("PATCH", `${ctx.baseUrl}/lnurl/address/${handle}`, { host: "session.com", bearer: TOKEN, body: { username: "upgraded" } });
+    expect(res.status).toBe(200);
+    expect(res.body.lightningAddress).toBe("upgraded@session.com");
+    expect(res.body.handle).toBe("upgraded");
+
+    const resolved = await req("GET", `${ctx.baseUrl}/.well-known/lnurlp/upgraded`, { host: "session.com" });
+    expect(resolved.status).toBe(200);
+    expect(resolved.body.tag).toBe("payRequest");
+  });
+
+  it("409s already_named on a second upgrade attempt", async () => {
+    const handle = await registerNameless(TOKEN);
+    await req("PATCH", `${ctx.baseUrl}/lnurl/address/${handle}`, { host: "session.com", bearer: TOKEN, body: { username: "onceonly" } });
+    const res = await req("PATCH", `${ctx.baseUrl}/lnurl/address/onceonly`, { host: "session.com", bearer: TOKEN, body: { username: "again" } });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("already_named");
+  });
+
+  it("404s with the wrong token", async () => {
+    const handle = await registerNameless(TOKEN);
+    const res = await req("PATCH", `${ctx.baseUrl}/lnurl/address/${handle}`, { host: "session.com", bearer: "ff".repeat(32), body: { username: "stolen" } });
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("owner routes by the session id of an upgraded row", () => {
+  const OTHER = "cd".repeat(32);
+  const IDENTITY = { arkadeAddress: "tark1qpf3lesxsy69q0f8yvfnyf7gv7kglfkg83fhaxjyc0zmm0wtrl3n024rshrsa8fnnv73w38094qfl9jp5g7pzdc8j2m58metfpd8rcd37nqs45", claimPublicKey: "02" + "ab".repeat(32) };
+
+  async function upgraded(token: string, username: string): Promise<string> {
+    const reg = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "session.com", body: { token, nameless: true } });
+    const sid = String(reg.body.handle);
+    const up = await req("PATCH", `${ctx.baseUrl}/lnurl/address/${sid}`, { host: "session.com", bearer: token, body: { username } });
+    expect(up.status).toBe(200);
+    return sid;
+  }
+
+  it("serves payments, arkade and DELETE to the owner", async () => {
+    const sid = await upgraded(TOKEN, "renamed");
+    const payments = await req("GET", `${ctx.baseUrl}/lnurl/address/${sid}/payments`, { host: "session.com", bearer: TOKEN });
+    expect(payments.status).toBe(200);
+    expect((payments.body.source as { handle: string }).handle).toBe("renamed");
+
+    const arkade = await req("POST", `${ctx.baseUrl}/lnurl/address/${sid}/arkade`, { host: "session.com", bearer: TOKEN, body: IDENTITY });
+    expect(arkade.status).toBe(200);
+    const sessionDomainId = repos.domains.getByDomain("session.com")!.id;
+    expect(repos.addresses.getByDomainAndUsername(sessionDomainId, "renamed")!.claimPublicKey).toBe(IDENTITY.claimPublicKey);
+
+    const gone = await req("DELETE", `${ctx.baseUrl}/lnurl/address/${sid}`, { host: "session.com", bearer: TOKEN });
+    expect(gone.status).toBe(200);
+    expect(repos.addresses.getByDomainAndUsername(sessionDomainId, "renamed")!.status).toBe("revoked");
+  });
+
+  it("409s already_named on PATCH by the old session id", async () => {
+    const sid = await upgraded(TOKEN, "firstname");
+    const res = await req("PATCH", `${ctx.baseUrl}/lnurl/address/${sid}`, { host: "session.com", bearer: TOKEN, body: { username: "second" } });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("already_named");
+  });
+
+  it("404s a different token presenting someone's session id", async () => {
+    const sid = await upgraded(TOKEN, "victim");
+    expect((await req("GET", `${ctx.baseUrl}/lnurl/address/${sid}/payments`, { host: "session.com", bearer: OTHER })).status).toBe(404);
+    expect((await req("POST", `${ctx.baseUrl}/lnurl/address/${sid}/arkade`, { host: "session.com", bearer: OTHER, body: IDENTITY })).status).toBe(404);
+    expect((await req("DELETE", `${ctx.baseUrl}/lnurl/address/${sid}`, { host: "session.com", bearer: OTHER })).status).toBe(404);
+    expect((await req("PATCH", `${ctx.baseUrl}/lnurl/address/${sid}`, { host: "session.com", bearer: OTHER, body: { username: "x" } })).status).toBe(404);
+  });
+
+  it("does not alias a named row that never had a session LNURL", async () => {
+    await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "session.com", body: { token: TOKEN, username: "plain" } });
+    const sid = String(repos.addresses.getByDomainAndUsername(repos.domains.getByDomain("session.com")!.id, "plain")!.sessionId);
+    expect((await req("GET", `${ctx.baseUrl}/lnurl/address/${sid}/payments`, { host: "session.com", bearer: TOKEN })).status).toBe(404);
+    expect((await req("DELETE", `${ctx.baseUrl}/lnurl/address/${sid}`, { host: "session.com", bearer: TOKEN })).status).toBe(404);
+  });
+});
+
+describe("GET /lnurl/domain", () => {
+  it("returns the domain's allocation policy", async () => {
+    const res = await req("GET", `${ctx.baseUrl}/lnurl/domain`, { host: "session.com" });
+    expect(res.status).toBe(200);
+    expect(res.body.domain).toBe("session.com");
+    expect(res.body.allocationModes).toEqual(["self", "random", "session"]);
+    expect(res.body.usernameRules).toMatchObject({ minLen: expect.any(Number), maxLen: expect.any(Number), pattern: expect.any(String) });
+    expect(res.body.requireApiKey).toBe(false);
+  });
+
+  it("404s for an unknown domain", async () => {
+    const res = await req("GET", `${ctx.baseUrl}/lnurl/domain`, { host: "unknown.example" });
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("GET /lnurl/address — nameless listing fields", () => {
+  it("shows nameless fields, then named fields with the same sessionLnurl after upgrade", async () => {
+    const registerRes = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "session.com", body: { token: TOKEN, nameless: true } });
+    const handle = String(registerRes.body.handle);
+
+    const before = await req("GET", `${ctx.baseUrl}/lnurl/address`, { bearer: TOKEN });
+    expect(before.status).toBe(200);
+    const beforeEntry = (before.body as unknown as Record<string, unknown>[])[0];
+    expect(beforeEntry.nameless).toBe(true);
+    expect(beforeEntry.lightningAddress).toBeNull();
+    expect(typeof beforeEntry.sessionLnurl).toBe("string");
+    expect(String(beforeEntry.sessionLnurl)).toMatch(/^LNURL1/);
+
+    await req("PATCH", `${ctx.baseUrl}/lnurl/address/${handle}`, { host: "session.com", bearer: TOKEN, body: { username: "named" } });
+
+    const after = await req("GET", `${ctx.baseUrl}/lnurl/address`, { bearer: TOKEN });
+    const afterEntry = (after.body as unknown as Record<string, unknown>[])[0];
+    expect(afterEntry.nameless).toBe(false);
+    expect(afterEntry.lightningAddress).toBe("named@session.com");
+    expect(afterEntry.sessionLnurl).toBe(beforeEntry.sessionLnurl);
   });
 });

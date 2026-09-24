@@ -28,7 +28,7 @@ const Domain = {
   properties: {
     id: { type: "integer" },
     domain: { type: "string" },
-    allocationModes: { type: "array", items: { type: "string", enum: ["self", "random", "admin"] } },
+    allocationModes: { type: "array", items: { type: "string", enum: ["self", "random", "admin", "session"] } },
     requireApiKey: { type: "boolean" },
     maxPerSession: { type: "integer", nullable: true },
     usernameMinLen: { type: "integer" },
@@ -46,7 +46,7 @@ const domainBody = {
   type: "object",
   properties: {
     domain: { type: "string", description: "Domain name (lowercased)" },
-    allocationModes: { type: "array", items: { type: "string", enum: ["self", "random", "admin"] } },
+    allocationModes: { type: "array", items: { type: "string", enum: ["self", "random", "admin", "session"] } },
     requireApiKey: { type: "boolean" },
     enabled: { type: "boolean" },
     maxPerSession: { type: "integer", nullable: true, description: "Max active addresses per wallet; null = unlimited" },

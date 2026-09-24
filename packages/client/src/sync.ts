@@ -13,8 +13,10 @@ export interface StoredPayment {
   baseUrl: string;
   /** Domain serving the address, taken from the page source. */
   domain: string;
-  /** Full `user@domain` address, taken from the page source. */
-  lightningAddress: string;
+  /** Full `user@domain` address, taken from the page source; null when nameless. */
+  lightningAddress: string | null;
+  /** The username, or the session id while nameless, taken from the page source. */
+  handle: string;
   /** paymentHash for bolt11, verifyId for destination. */
   identifier: string;
   /** Which rail the payment arrived on. */
@@ -70,8 +72,8 @@ export interface PaymentSyncTarget {
   baseUrl: string;
   /** Token owning the address; sent as the Bearer credential. */
   token: string;
-  /** Username part of the address. */
-  username: string;
+  /** The username, or the session id while nameless; the sync watermark is keyed off it. */
+  handle: string;
   /** Domain part of the address. */
   domain: string;
 }
@@ -94,7 +96,8 @@ const isRetryable = (error: unknown): boolean => {
 const toStored = (
   baseUrl: string,
   domain: string,
-  lightningAddress: string,
+  lightningAddress: string | null,
+  handle: string,
   entry: PaymentActivity,
 ): StoredPayment => {
   const identifier = entry.kind === "bolt11" ? entry.paymentHash : entry.verifyId;
@@ -103,6 +106,7 @@ const toStored = (
     baseUrl,
     domain,
     lightningAddress,
+    handle,
     identifier,
     kind: entry.kind,
     settled: entry.settled,
@@ -132,14 +136,14 @@ const resumeFrom = (tail: StoredPayment[], fallback: number): number => {
 const listWithBackoff = (
   client: SyncClient,
   token: string,
-  username: string,
+  handle: string,
   domain: string,
   since: number | undefined,
   limit: number,
 ) => {
   const attempt = async (tries: number) => {
     try {
-      return await client.listPayments(token, username, { domain, since, limit });
+      return await client.listPayments(token, handle, { domain, since, limit });
     } catch (error) {
       if (!isRetryable(error) || tries >= SYNC_MAX_ATTEMPTS) throw error;
       await wait(tries * SYNC_RETRY_DELAY_MS);
@@ -156,14 +160,15 @@ const syncTarget = async (
   limit: number,
   onStored: (count: number) => void,
 ): Promise<void> => {
-  const lightningAddress = `${target.username}@${target.domain}`;
-  let since = await store.readWatermark(target.baseUrl, lightningAddress);
+  // Not the address (null while nameless); an upgrade's new handle costs one re-read, which upsert absorbs.
+  const watermarkKey = `${target.handle}@${target.domain}`;
+  let since = await store.readWatermark(target.baseUrl, watermarkKey);
   // One page's worth: how far back the cursor may reach for a pending row.
   const tail: StoredPayment[] = [];
   for (;;) {
-    const page = await listWithBackoff(client, target.token, target.username, target.domain, since, limit);
+    const page = await listWithBackoff(client, target.token, target.handle, target.domain, since, limit);
     const records = page.payments.map((entry) =>
-      toStored(target.baseUrl, page.source.domain, page.source.lightningAddress, entry),
+      toStored(target.baseUrl, page.source.domain, page.source.lightningAddress, page.source.handle, entry),
     );
     await store.upsert(records);
     // Reported per page rather than returned, so a target that fails later
@@ -173,13 +178,13 @@ const syncTarget = async (
     if (tail.length > limit) tail.splice(0, tail.length - limit);
     const previous = since;
     since = page.nextSince;
-    await store.writeWatermark(target.baseUrl, lightningAddress, resumeFrom(tail, since));
+    await store.writeWatermark(target.baseUrl, watermarkKey, resumeFrom(tail, since));
     if (page.payments.length < limit) return;
     // The cursor is the last row's createdAt, so a full page that fails to
     // advance it would re-fetch itself forever. The page is already stored.
     if (previous !== undefined && since <= previous) {
       throw new LnurlError(
-        `payment sync stalled for ${lightningAddress} at ${target.baseUrl}: ${limit} payments share ` +
+        `payment sync stalled for ${watermarkKey} at ${target.baseUrl}: ${limit} payments share ` +
           `createdAt ${since}, so the cursor cannot advance past them`,
       );
     }

@@ -11,7 +11,7 @@ import { createRepositories, type Repositories } from "../../../src/db/repositor
 import { AddressService } from "../../../src/address-service.js";
 import { createLnurlClient } from "@arkade-os/lnurl-client";
 import type { ArkadeSigner } from "@arkade-os/lnurl-client/arkade";
-import { receiverAt } from "../src/lnurl.js";
+import { bootState, receiverAt } from "../src/lnurl.js";
 
 // The host the client will send, since it connects by IP: the server resolves
 // the domain from the Host header when the body names none.
@@ -31,8 +31,8 @@ async function payRequestFor(username: string): Promise<{ paymentOptions?: { id:
 /** The old `api.onboard` shape over the facade, plus the token tests need. */
 const onboard = async (identity: ArkadeSigner, arkadeAddress: string, username: string) => {
   const rx = receiverAt(baseUrl, DOMAIN, { identity, arkadeAddress });
-  const claimed = await rx.claim(username);
-  return { ...claimed, token: await rx.token() };
+  const claimed = await rx.claim({ username });
+  return { username: claimed.handle, lightningAddress: claimed.lightningAddress, token: await rx.token() };
 };
 
 let db: Db;
@@ -44,7 +44,7 @@ beforeEach(async () => {
   db = openDb(":memory:");
   runMigrations(db);
   repos = createRepositories(db);
-  repos.domains.create({ domain: DOMAIN, allocationModes: ["self", "random"] });
+  repos.domains.create({ domain: DOMAIN, allocationModes: ["self", "random", "session"] });
   const addressService = new AddressService(repos, randomBytes(32));
   server = http.createServer();
   await new Promise<void>((resolve) => server.listen(0, DOMAIN, () => resolve()));
@@ -87,5 +87,43 @@ describe("onboarding", () => {
 
     const payRequest = await payRequestFor(registered.username);
     expect(payRequest.paymentOptions ?? []).toEqual([]);
+  });
+
+  it("advertises paymentOptions for a nameless receiver with the page closed", async () => {
+    const identity = MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist));
+    const rx = receiverAt(baseUrl, DOMAIN, { identity, arkadeAddress: arkadeAddress() });
+
+    const claimed = await rx.claim({ nameless: true });
+    expect(claimed.lightningAddress).toBeUndefined();
+
+    // No openSession call anywhere in this test: the identity bind alone is
+    // enough for /lnurl/<sid> to advertise the arkade rail.
+    const payRequest = await claimed.payRequest();
+    expect(payRequest.paymentOptions?.map((o) => o.type)).toContain("arkade");
+  });
+});
+
+describe("boot", () => {
+  it("sends a wallet with no address to onboarding, and one with an address to it", async () => {
+    const identity = MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist));
+    const rx = receiverAt(baseUrl, DOMAIN, { identity, arkadeAddress: arkadeAddress() });
+    expect(await bootState(rx)).toEqual({ kind: "onboard" });
+
+    await rx.claim({ username: "carol" });
+    const booted = await bootState(rx);
+    expect(booted.kind === "ready" && booted.receiver.handle).toBe("carol");
+  });
+
+  it("keeps a wallet out of onboarding when lnurl-server cannot answer", async () => {
+    const down = http.createServer((_req, res) => { res.writeHead(502); res.end("bad gateway"); });
+    await new Promise<void>((resolve) => down.listen(0, DOMAIN, () => resolve()));
+    const { port } = down.address() as { port: number };
+    try {
+      const identity = MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist));
+      const booted = await bootState(receiverAt(`http://${DOMAIN}:${port}`, DOMAIN, { identity, arkadeAddress: arkadeAddress() }));
+      expect(booted.kind).toBe("unreachable");
+    } finally {
+      await new Promise<void>((resolve) => { down.closeAllConnections(); down.close(() => resolve()); });
+    }
   });
 });

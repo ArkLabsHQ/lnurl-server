@@ -148,7 +148,7 @@ describe("listPayments contract against a DB-backed server", () => {
     db = openDb(":memory:");
     runMigrations(db);
     repos = createRepositories(db);
-    repos.domains.create({ domain: "domain.com", allocationModes: ["self", "random"] });
+    repos.domains.create({ domain: "domain.com", allocationModes: ["self", "random", "session"] });
     clock = 1_000;
     settlements = new DbSettlementStore(db, 86_400_000, () => clock);
     const addressService = new AddressService(repos, KEY);
@@ -198,7 +198,7 @@ describe("listPayments contract against a DB-backed server", () => {
       const callback = await getCallback(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000`, "domain.com");
       expect(callback.pr).toBe(pr);
       const page = await owner.listPayments(TOKEN, "alice", { domain: "domain.com" });
-      expect(page.source).toEqual({ domain: "domain.com", lightningAddress: "alice@domain.com" });
+      expect(page.source).toEqual({ domain: "domain.com", lightningAddress: "alice@domain.com", handle: "alice" });
       expect(page.payments.map((entry) => (entry.kind === "bolt11" ? entry.paymentHash : entry.verifyId))).toContain(HASH);
       const found = page.payments.find((entry) => entry.kind === "bolt11" && entry.paymentHash === HASH);
       expect(found).toMatchObject({ pr, settled: false });
@@ -229,7 +229,7 @@ describe("listPayments contract against a DB-backed server", () => {
         watermarks.set(`${b}|${a}`, since);
       },
     };
-    const target = { baseUrl: ctx.baseUrl, token: TOKEN, username: "alice", domain: "domain.com" };
+    const target = { baseUrl: ctx.baseUrl, token: TOKEN, handle: "alice", domain: "domain.com" };
     const client = () => owner;
 
     // limit 2 forces a second page, so the cursor is genuinely walked.
@@ -266,7 +266,7 @@ describe("listPayments contract against a DB-backed server", () => {
         watermarks.set(`${b}|${a}`, since);
       },
     };
-    const target = { baseUrl: ctx.baseUrl, token: TOKEN, username: "alice", domain: "domain.com" };
+    const target = { baseUrl: ctx.baseUrl, token: TOKEN, handle: "alice", domain: "domain.com" };
 
     const first = await syncPayments([target], { client: () => owner, store });
     expect(first.failures).toEqual([]);
@@ -297,7 +297,7 @@ describe("listPayments contract against a DB-backed server", () => {
       readWatermark: async () => undefined,
       writeWatermark: async () => {},
     };
-    const result = await syncPayments([{ baseUrl: ctx.baseUrl, token: TOKEN, username: "alice", domain: "domain.com" }], {
+    const result = await syncPayments([{ baseUrl: ctx.baseUrl, token: TOKEN, handle: "alice", domain: "domain.com" }], {
       client: () => owner,
       store,
       limit: 2,
@@ -306,6 +306,59 @@ describe("listPayments contract against a DB-backed server", () => {
     expect(result.failures).toHaveLength(1);
     expect(String((result.failures[0]?.error as LnurlError).message)).toContain("stalled");
     expect((result.failures[0]?.error as LnurlError).retryable).toBe(false);
+  });
+
+  // `/lnurl/:id` resolves the domain from the Host header only; this replays requests at the real port while keeping domain.com as the Host.
+  function hostedFetch(baseUrl: string) {
+    const real = new URL(baseUrl);
+    return (url: string, init?: RequestInit) =>
+      new Promise<Response>((res, reject) => {
+        const target = new URL(url);
+        const req = http.request(
+          {
+            hostname: real.hostname,
+            port: real.port,
+            path: `${target.pathname}${target.search}`,
+            method: init?.method ?? "GET",
+            headers: { ...(init?.headers as Record<string, string> | undefined), Host: target.host },
+          },
+          (response) => {
+            const chunks: Buffer[] = [];
+            response.on("data", (c) => chunks.push(c));
+            response.on("end", () =>
+              res(
+                new Response(Buffer.concat(chunks), {
+                  status: response.statusCode ?? 500,
+                  headers: { "content-type": String(response.headers["content-type"] ?? "application/json") },
+                }),
+              ),
+            );
+          },
+        );
+        req.on("error", reject);
+        if (init?.body) req.write(init.body as string);
+        req.end();
+      });
+  }
+
+  it("registers nameless, resolves the session lnurl, upgrades to a name, and keeps listing the same sessionLnurl", async () => {
+    const owner = createLnurlClient({ baseUrl: ctx.baseUrl, fetchImpl: hostedFetch(ctx.baseUrl) });
+    const reg = await owner.registerAddress({ token: TOKEN, nameless: true, domain: "domain.com" });
+    expect(reg).toMatchObject({ lightningAddress: null, username: null });
+    expect(reg.handle).toMatch(/^[0-9a-f]{32}$/);
+
+    const sessionPayRequest = await owner.resolve(reg.lnurl);
+    expect(sessionPayRequest.tag).toBe("payRequest");
+
+    const upgraded = await owner.upgradeAddress({ token: TOKEN, handle: reg.handle, username: "carol", domain: "domain.com" });
+    expect(upgraded).toMatchObject({ lightningAddress: "carol@domain.com", username: "carol", handle: "carol" });
+
+    const namedPayRequest = await owner.resolve("carol@domain.com");
+    expect(namedPayRequest.tag).toBe("payRequest");
+
+    const list = await owner.listAddresses(TOKEN);
+    const row = list.find((a) => a.handle === "carol");
+    expect(row?.sessionLnurl).toBe(reg.lnurl);
   });
 });
 
@@ -439,7 +492,7 @@ describe("onchain rail contract", () => {
     const owner = createLnurlClient({ baseUrl: ctx.baseUrl });
     await owner.registerAddress({ token: TOKEN, username: "alice" });
     await owner.registerArkadeIdentity({
-      token: TOKEN, username: "alice", arkadeAddress: ARK, claimPublicKey: CLAIMPK, boardingAddress: BOARDING,
+      token: TOKEN, handle: "alice", arkadeAddress: ARK, claimPublicKey: CLAIMPK, boardingAddress: BOARDING,
     });
 
     const payer = createLnurlClient();
@@ -460,7 +513,7 @@ describe("onchain rail contract", () => {
   it("leaves a registered boarding address alone when a later call omits it", async () => {
     const owner = createLnurlClient({ baseUrl: ctx.baseUrl });
     await owner.registerAddress({ token: TOKEN, username: "bob" });
-    const identity = { token: TOKEN, username: "bob", arkadeAddress: ARK, claimPublicKey: CLAIMPK };
+    const identity = { token: TOKEN, handle: "bob", arkadeAddress: ARK, claimPublicKey: CLAIMPK };
     await owner.registerArkadeIdentity({ ...identity, boardingAddress: BOARDING });
     await owner.registerArkadeIdentity(identity);
 
