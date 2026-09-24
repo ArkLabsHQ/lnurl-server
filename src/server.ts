@@ -41,9 +41,12 @@ import type {
   LnurlPayMetadata,
   LnurlPayCallbackResponse,
   LnurlPayDestinationResponse,
-  LnurlErrorResponse,
   InvoiceResponse,
 } from "./types/index.js";
+import {
+  BadRequest, Conflict, HttpError, LnurlError, NotFound, TooManyRequests, Unauthorized,
+  httpErrorHandler, lnurlErrorHandler,
+} from "./http-responses.js";
 
 const DEFAULT_INVOICE_TIMEOUT_MS = 30_000;
 const DEFAULT_DESTINATION_WATCH_MS = 604_800_000;
@@ -149,7 +152,7 @@ async function createOfflineSwapAndRespond(args: {
   } catch (err) {
     logger.warn("offline_quote_failed", { requestId, error: err });
     const reason = err instanceof RailRefusedError ? err.message : "Unable to create offline invoice";
-    res.json({ status: "ERROR", reason } satisfies LnurlErrorResponse);
+    throw new LnurlError(reason);
   }
 }
 
@@ -214,12 +217,10 @@ async function requestInvoiceAndRespond(args: {
 }): Promise<void> {
   const { sessions, sessionId, addressId, amountMsat, comment, min, max, timeoutMs, offlineReason, store, baseUrl, paymentQuote, echoLightningOption, res } = args;
   if (amountMsat < min || amountMsat > max) {
-    res.json({ status: "ERROR", reason: `Amount must be between ${min} and ${max} millisats` } satisfies LnurlErrorResponse);
-    return;
+    throw new LnurlError(`Amount must be between ${min} and ${max} millisats`);
   }
   if (!sessions.isActive(sessionId)) {
-    res.json({ status: "ERROR", reason: offlineReason } satisfies LnurlErrorResponse);
-    return;
+    throw new LnurlError(offlineReason);
   }
   try {
     const pr = await sessions.requestInvoice(sessionId, amountMsat, comment, timeoutMs);
@@ -234,7 +235,7 @@ async function requestInvoiceAndRespond(args: {
       res.json({ pr, routes: [], ...(paymentQuote ? { paymentQuote } : {}), ...echo } satisfies LnurlPayCallbackResponse);
     }
   } catch (err) {
-    res.json({ status: "ERROR", reason: err instanceof Error ? err.message : "Failed to get invoice" } satisfies LnurlErrorResponse);
+    throw new LnurlError(err instanceof Error ? err.message : "Failed to get invoice");
   }
 }
 
@@ -322,8 +323,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     const amountStr = strParam(req.query.amount);
     const comment = strParam(req.query.comment);
     if (!amountStr || !Number.isSafeInteger(Number(amountStr))) {
-      res.json({ status: "ERROR", reason: "Missing or invalid amount parameter" } satisfies LnurlErrorResponse);
-      return;
+      throw new LnurlError("Missing or invalid amount parameter");
     }
     let amountMsat = Number(amountStr);
     // The envelope only. Each branch below narrows it to what its own rail can
@@ -337,8 +337,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     const paymentOptionId = strParam(req.query.paymentOption);
     // Non-positive amounts are refused before the quote/provider path.
     if (amountMsat <= 0) {
-      res.json({ status: "ERROR", reason: `Amount must be between ${min} and ${max} millisats` } satisfies LnurlErrorResponse);
-      return;
+      throw new LnurlError(`Amount must be between ${min} and ${max} millisats`);
     }
 
     // LUD-XX paymentOptions: resolve the wallet's selected rail. "lightning" (or absent)
@@ -346,15 +345,13 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     // registered address + a non-`pr` verify record.
     const resolved = resolvePaymentOption(paymentOptionId, address);
     if (resolved.kind === "error") {
-      res.json({ status: "ERROR", reason: resolved.reason } satisfies LnurlErrorResponse);
-      return;
+      throw new LnurlError(resolved.reason);
     }
     // Per-address rail policy: a disabled rail fails loudly instead of serving.
     const railCaps = currentRailCaps();
     const railStates = railStatesFor(address, railCaps);
     if (resolved.kind === "destination" && railStates.get("arkade")?.enabled === false) {
-      res.json({ status: "ERROR", reason: "paymentOption arkade is disabled for this address" } satisfies LnurlErrorResponse);
-      return;
+      throw new LnurlError("paymentOption arkade is disabled for this address");
     }
 
     // LUD-XX paymentQuote: a unit-denominated request is quoted to a msat amount by the
@@ -364,13 +361,11 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     let paymentQuote: PaymentQuote | undefined;
     if (unit !== undefined || receiveUnit !== undefined) {
       if (resolved.kind === "destination") {
-        res.json({ status: "ERROR", reason: "unit is not supported for this paymentOption" } satisfies LnurlErrorResponse);
-        return;
+        throw new LnurlError("unit is not supported for this paymentOption");
       }
       const q = applyQuote(quoteProvider, { amount: amountMsat, unit, receiveUnit, paymentOption: paymentOptionId });
       if (!q.ok) {
-        res.json({ status: "ERROR", reason: q.reason } satisfies LnurlErrorResponse);
-        return;
+        throw new LnurlError(q.reason);
       }
       amountMsat = q.amountMsat;
       paymentQuote = q.paymentQuote;
@@ -379,20 +374,17 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     if (resolved.kind === "destination") {
       // Unauthed store-writing branch — same per-IP guard as the offline-swap branch.
       if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) {
-        res.status(429).json({ status: "ERROR", reason: "Too many requests" } satisfies LnurlErrorResponse);
-        return;
+        throw new LnurlError("Too many requests", 429);
       }
       const arkadeBounds = optionBounds("arkade", railAddress, railCaps, base) ?? base;
       if (amountMsat < arkadeBounds.min || amountMsat > arkadeBounds.max) {
-        res.json({ status: "ERROR", reason: `Amount must be between ${arkadeBounds.min} and ${arkadeBounds.max} millisats` } satisfies LnurlErrorResponse);
-        return;
+        throw new LnurlError(`Amount must be between ${arkadeBounds.min} and ${arkadeBounds.max} millisats`);
       }
       // LUD-XX (lnurl/luds#303): a non-pr option MUST honor the requested amount
       // exactly and MUST NOT round — a sub-satoshi amount is not exactly
       // representable in a whole-sat destination payment, so reject it.
       if (amountMsat % 1000 !== 0) {
-        res.json({ status: "ERROR", reason: "Amount must be a whole number of satoshis" } satisfies LnurlErrorResponse);
-        return;
+        throw new LnurlError("Amount must be a whole number of satoshis");
       }
       // The payer pays the destination directly, so the server isn't in the payment path:
       // `verify` records the agreed amount, but `settled` only flips once an Arkade watcher
@@ -466,30 +458,24 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       // unready discovery fails loudly per request while the process keeps
       // serving interactive sessions (never a silent stall).
       if (railStates.get("offline-swap")?.enabled === false) {
-        res.json({ status: "ERROR", reason: "offline receive is disabled for this address" } satisfies LnurlErrorResponse);
-        return;
+        throw new LnurlError("offline receive is disabled for this address");
       }
       if (!railCaps.discoveryReady) {
-        res.json({ status: "ERROR", reason: `offline receive unavailable: ${railCaps.discoveryReason ?? "no usable lightning-receive solver cards"}` } satisfies LnurlErrorResponse);
-        return;
+        throw new LnurlError(`offline receive unavailable: ${railCaps.discoveryReason ?? "no usable lightning-receive solver cards"}`);
       }
       if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) {
-        res.status(429).json({ status: "ERROR", reason: "Too many requests" } satisfies LnurlErrorResponse);
-        return;
+        throw new LnurlError("Too many requests", 429);
       }
       const swapBounds = railBounds("offline-swap", railCaps, base);
       if (amountMsat < swapBounds.min || amountMsat > swapBounds.max) {
-        res.json({ status: "ERROR", reason: `Amount must be between ${swapBounds.min} and ${swapBounds.max} millisats` } satisfies LnurlErrorResponse);
-        return;
+        throw new LnurlError(`Amount must be between ${swapBounds.min} and ${swapBounds.max} millisats`);
       }
       // The corridor deals in whole sats; reject before reserving capacity.
       if (amountMsat % 1000 !== 0) {
-        res.json({ status: "ERROR", reason: "Amount must be a whole number of satoshis" } satisfies LnurlErrorResponse);
-        return;
+        throw new LnurlError("Amount must be a whole number of satoshis");
       }
       if (offlineQuotes >= (config.maxConcurrentOfflineQuotes ?? 20)) {
-        res.status(429).json({ status: "ERROR", reason: "Offline quote capacity reached" } satisfies LnurlErrorResponse);
-        return;
+        throw new LnurlError("Offline quote capacity reached", 429);
       }
       offlineQuotes++;
       try {
@@ -507,13 +493,11 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
 
     // The lightning relay needs a live session to request the invoice from.
     if (!address.sessionId) {
-      res.json({ status: "ERROR", reason: offlineReason } satisfies LnurlErrorResponse);
-      return;
+      throw new LnurlError(offlineReason);
     }
 
     if (railStates.get("interactive-lightning")?.enabled === false) {
-      res.json({ status: "ERROR", reason: "lightning receive is disabled for this address" } satisfies LnurlErrorResponse);
-      return;
+      throw new LnurlError("lightning receive is disabled for this address");
     }
 
     const interactiveBounds = railBounds("interactive-lightning", railCaps, base);
@@ -602,18 +586,15 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     const { token: providedToken } = req.body ?? {};
 
     if (providedToken != null && (typeof providedToken !== "string" || !isValidToken(providedToken))) {
-      res.status(400).json({ error: "token must be an even-length hex string of at least 32 characters" });
-      return;
+      throw new BadRequest("token must be an even-length hex string of at least 32 characters");
     }
     if (!sessions.canAccept(req.ip, config.maxSessions ?? 5_000, config.maxSessionsPerIp ?? 50, providedToken)) {
-      res.status(429).json({ error: "Session limit reached" });
-      return;
+      throw new TooManyRequests("Session limit reached");
     }
 
     // Detect an id collision before committing the SSE 200 so we can return a clean 409.
     if (providedToken && sessions.peekCollision(providedToken)) {
-      res.status(409).json({ error: "Session ID already in use" });
-      return;
+      throw new Conflict("Session ID already in use");
     }
 
     // Set SSE headers
@@ -646,10 +627,10 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
   // "address" being captured as a session id param.
   app.get("/lnurl/address", (req, res) => {
     const addressService = deps?.addressService;
-    if (!addressService) { res.status(404).json({ error: "Not found" }); return; }
+    if (!addressService) throw new NotFound("Not found");
     const auth = req.headers.authorization;
     const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
-    if (!token) { res.status(401).json({ error: "Unauthorized" }); return; }
+    if (!token) throw new Unauthorized();
     const list = addressService.listByToken(token).map((a) => {
       const domain = deps!.repos.domains.getById(a.domainId)!;
       return { ...addressView(domain, a, req.protocol), createdAt: a.createdAt };
@@ -659,10 +640,10 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
 
   // Public + unauthed. Registered before /lnurl/:id or "domain" is captured as a session id.
   app.get("/lnurl/domain", (req, res) => {
-    if (!deps?.repos) { res.status(404).json({ error: "Not found" }); return; }
+    if (!deps?.repos) throw new NotFound("Not found");
     const domainName = domainFromHost(strParam(req.query.domain) ?? req.get("host") ?? undefined);
     const domain = domainName ? deps.repos.domains.getByDomain(domainName) : undefined;
-    if (!domain || !domain.enabled) { res.status(404).json({ error: "Unknown or disabled domain" }); return; }
+    if (!domain || !domain.enabled) throw new NotFound("Unknown or disabled domain");
     res.json({
       domain: domain.domain,
       allocationModes: domain.allocationModes,
@@ -676,13 +657,11 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
   // Public + unauthed (payment_hash is not secret). Registered before /lnurl/:id.
   app.get("/lnurl/verify/:paymentHash", (req, res) => {
     if (!verifyLimiter.allow(req.ip ?? "unknown")) {
-      res.status(429).json({ status: "ERROR", reason: "Too many requests" } satisfies LnurlErrorResponse);
-      return;
+      throw new LnurlError("Too many requests", 429);
     }
     const rec = store.get(req.params.paymentHash.toLowerCase());
     if (!rec) {
-      res.json({ status: "ERROR", reason: "Not found" } satisfies LnurlErrorResponse);
-      return;
+      throw new LnurlError("Not found");
     }
     // LUD-XX: non-`pr` options report the destination + a method-specific reference
     // (e.g. a txid, once observed) instead of a preimage/bolt11.
@@ -725,12 +704,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     }
 
     if (!sessions.isActive(id)) {
-      const err: LnurlErrorResponse = {
-        status: "ERROR",
-        reason: "This LNURL is no longer active",
-      };
-      res.json(err);
-      return;
+      throw new LnurlError("This LNURL is no longer active");
     }
 
     const response: LnurlPayMetadata = {
@@ -758,13 +732,11 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     const comment = strParam(req.query.comment);
 
     if (!amountStr || !Number.isSafeInteger(Number(amountStr))) {
-      res.json({ status: "ERROR", reason: "Missing or invalid amount parameter" } satisfies LnurlErrorResponse);
-      return;
+      throw new LnurlError("Missing or invalid amount parameter");
     }
 
     if (Number(amountStr) <= 0) {
-      res.json({ status: "ERROR", reason: `Amount must be between ${settings.minSendable()} and ${settings.maxSendable()} millisats` } satisfies LnurlErrorResponse);
-      return;
+      throw new LnurlError(`Amount must be between ${settings.minSendable()} and ${settings.maxSendable()} millisats`);
     }
     await requestInvoiceAndRespond({
       sessions, sessionId: id, amountMsat: Number(amountStr), comment,
@@ -782,8 +754,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : "";
 
     if (!token || !sessions.verifyToken(id, token)) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
+      throw new Unauthorized();
     }
 
     const body = req.body as (InvoiceResponse & { error?: string }) | undefined;
@@ -792,23 +763,20 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     if (body?.error) {
       const rejected = sessions.rejectInvoice(id, body.error);
       if (!rejected) {
-        res.status(404).json({ error: "No pending invoice request for this session" });
-        return;
+        throw new NotFound("No pending invoice request for this session");
       }
       res.json({ ok: true });
       return;
     }
 
     if (!body?.pr) {
-      res.status(400).json({ error: "Missing pr (bolt11 invoice)" });
-      return;
+      throw new BadRequest("Missing pr (bolt11 invoice)");
     }
 
     const resolved = sessions.resolveInvoice(id, body.pr);
 
     if (!resolved) {
-      res.status(404).json({ error: "No pending invoice request for this session" });
-      return;
+      throw new NotFound("No pending invoice request for this session");
     }
 
     res.json({ ok: true });
@@ -823,19 +791,16 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     const authHeader = req.headers.authorization;
     const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : "";
     if (!token || !sessions.verifyToken(id, token)) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
+      throw new Unauthorized();
     }
     const preimage = (req.body as { preimage?: string } | undefined)?.preimage;
     if (!preimage || !/^[0-9a-f]{64}$/i.test(preimage)) {
-      res.status(400).json({ error: "Missing or invalid preimage" });
-      return;
+      throw new BadRequest("Missing or invalid preimage");
     }
     const hash = createHash("sha256").update(Buffer.from(preimage, "hex")).digest("hex");
     const rec = store.get(hash);
     if (!rec || rec.sessionId !== id) {
-      res.status(404).json({ error: "No settlement record for this session" });
-      return;
+      throw new NotFound("No settlement record for this session");
     }
     store.markSettled(hash, preimage);
     res.json({ ok: true });
@@ -849,14 +814,12 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       const domainName = domainFromHost(req.get("host") ?? undefined);
       const domain = domainName ? repos.domains.getByDomain(domainName) : undefined;
       if (!domain || !domain.enabled) {
-        res.json({ status: "ERROR", reason: "Unknown or disabled domain" } satisfies LnurlErrorResponse);
-        return;
+        throw new LnurlError("Unknown or disabled domain");
       }
       const username = req.params.username.toLowerCase();
       const address = repos.addresses.getByDomainAndUsername(domain.id, username);
       if (!address || address.status !== "active" || isNameless(address)) {
-        res.json({ status: "ERROR", reason: "Unknown LN address" } satisfies LnurlErrorResponse);
-        return;
+        throw new LnurlError("Unknown LN address");
       }
       serveAddressPayRequest(res, domain, address, `${originOf(req, domain)}/.well-known/lnurlp/${username}/callback`);
     });
@@ -865,14 +828,12 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       const domainName = domainFromHost(req.get("host") ?? undefined);
       const domain = domainName ? repos.domains.getByDomain(domainName) : undefined;
       if (!domain || !domain.enabled) {
-        res.json({ status: "ERROR", reason: "Unknown or disabled domain" } satisfies LnurlErrorResponse);
-        return;
+        throw new LnurlError("Unknown or disabled domain");
       }
       const username = req.params.username.toLowerCase();
       const address = repos.addresses.getByDomainAndUsername(domain.id, username);
       if (!address || address.status !== "active" || isNameless(address)) {
-        res.json({ status: "ERROR", reason: "Unknown LN address" } satisfies LnurlErrorResponse);
-        return;
+        throw new LnurlError("Unknown LN address");
       }
       await serveAddressCallback(req, res, domain, address);
     });
@@ -884,20 +845,20 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       app.post("/lnurl/address", (req, res) => {
         const domainName = domainFromHost((req.body?.domain as string | undefined) ?? req.get("host") ?? undefined);
         const domain = domainName ? deps.repos.domains.getByDomain(domainName) : undefined;
-        if (!domain || !domain.enabled) { res.status(404).json({ error: "Unknown or disabled domain" }); return; }
+        if (!domain || !domain.enabled) throw new NotFound("Unknown or disabled domain");
 
         // Rate-limit keys on req.ip — only trustworthy when `trust proxy` matches the
         // actual proxy hop count (see app.set("trust proxy", ...) above).
-        if (limiter && !limiter.allow(req.ip ?? "unknown")) { res.status(429).json({ error: "Too many requests" }); return; }
+        if (limiter && !limiter.allow(req.ip ?? "unknown")) throw new TooManyRequests("Too many requests");
 
         if (domain.requireApiKey) {
           const key = req.get("x-api-key");
-          if (!key || !deps.repos.apiKeys.verify(key, domain.id)) { res.status(401).json({ error: "Valid X-API-Key required" }); return; }
+          if (!key || !deps.repos.apiKeys.verify(key, domain.id)) throw new Unauthorized("Valid X-API-Key required");
         }
 
         const { token, username, claimCode, nameless } = (req.body ?? {}) as { token?: string; username?: string; claimCode?: string; nameless?: boolean };
-        if (!token) { res.status(400).json({ error: "Missing token" }); return; }
-        if (nameless && (username || claimCode)) { res.status(400).json({ error: "nameless cannot be combined with username or claimCode", code: "invalid_username" }); return; }
+        if (!token) throw new BadRequest("Missing token");
+        if (nameless && (username || claimCode)) throw new BadRequest("nameless cannot be combined with username or claimCode", { code: "invalid_username" });
 
         try {
           if (nameless) {
@@ -908,7 +869,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           const { address, created } = addressService.register({ domain, username, token, claimCode });
           res.status(created ? 201 : 200).json(addressView(domain, address, req.protocol));
         } catch (err) {
-          if (err instanceof ProvisioningError) { res.status(PROVISIONING_STATUS[err.code] ?? 400).json({ error: err.message, code: err.code }); return; }
+          if (err instanceof ProvisioningError) throw new HttpError(PROVISIONING_STATUS[err.code] ?? 400, err.message, { code: err.code });
           throw err;
         }
       });
@@ -916,18 +877,18 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       app.patch("/lnurl/address/:handle", (req, res) => {
         const domainName = domainFromHost(strParam(req.query.domain) ?? (req.body?.domain as string | undefined) ?? req.get("host") ?? undefined);
         const domain = domainName ? deps.repos.domains.getByDomain(domainName) : undefined;
-        if (!domain || !domain.enabled) { res.status(404).json({ error: "Unknown or disabled domain" }); return; }
-        if (limiter && !limiter.allow(req.ip ?? "unknown")) { res.status(429).json({ error: "Too many requests" }); return; }
+        if (!domain || !domain.enabled) throw new NotFound("Unknown or disabled domain");
+        if (limiter && !limiter.allow(req.ip ?? "unknown")) throw new TooManyRequests("Too many requests");
         const auth = req.headers.authorization;
         const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
         // isValidToken, not just a presence check: see the payments route's `<token>zz` comment.
-        if (!isValidToken(token)) { res.status(401).json({ error: "Unauthorized" }); return; }
+        if (!isValidToken(token)) throw new Unauthorized();
         const { username, claimCode } = (req.body ?? {}) as { username?: string; claimCode?: string };
         try {
           const address = addressService.upgrade({ domain, handle: req.params.handle, token, username, claimCode });
           res.json(addressView(domain, address, req.protocol));
         } catch (err) {
-          if (err instanceof ProvisioningError) { res.status(PROVISIONING_STATUS[err.code] ?? 400).json({ error: err.message, code: err.code }); return; }
+          if (err instanceof ProvisioningError) throw new HttpError(PROVISIONING_STATUS[err.code] ?? 400, err.message, { code: err.code });
           throw err;
         }
       });
@@ -935,12 +896,12 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       app.delete("/lnurl/address/:handle", (req, res) => {
         const domainName = domainFromHost((req.query.domain as string | undefined) ?? req.get("host") ?? undefined);
         const domain = domainName ? deps.repos.domains.getByDomain(domainName) : undefined;
-        if (!domain) { res.status(404).json({ error: "Unknown domain" }); return; }
+        if (!domain) throw new NotFound("Unknown domain");
         const auth = req.headers.authorization;
         const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
-        if (!isValidToken(token)) { res.status(401).json({ error: "Unauthorized" }); return; }
+        if (!isValidToken(token)) throw new Unauthorized();
         const ok = addressService.revokeOwn(domain, req.params.handle, token);
-        if (!ok) { res.status(404).json({ error: "Address not found or not owned by this token" }); return; }
+        if (!ok) throw new NotFound("Address not found or not owned by this token");
         res.json({ ok: true });
       });
 
@@ -949,36 +910,33 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       app.post("/lnurl/address/:handle/arkade", (req, res) => {
         const domainName = domainFromHost((req.body?.domain as string | undefined) ?? req.get("host") ?? undefined);
         const domain = domainName ? deps.repos.domains.getByDomain(domainName) : undefined;
-        if (!domain) { res.status(404).json({ error: "Unknown domain" }); return; }
+        if (!domain) throw new NotFound("Unknown domain");
         const auth = req.headers.authorization;
         const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
-        if (!isValidToken(token)) { res.status(401).json({ error: "Unauthorized" }); return; }
+        if (!isValidToken(token)) throw new Unauthorized();
         const { arkadeAddress, claimPublicKey, boardingAddress } = (req.body ?? {}) as
           { arkadeAddress?: string; claimPublicKey?: string; boardingAddress?: string };
         // Compressed 33-byte key (02/03 prefix) — the covenant's receiver role.
         if (!arkadeAddress || typeof arkadeAddress !== "string" || !claimPublicKey || !/^0[23][0-9a-f]{64}$/i.test(claimPublicKey)) {
-          res.status(400).json({ error: "arkadeAddress and a compressed-hex claimPublicKey (02/03 + 64 hex) are required" });
-          return;
+          throw new BadRequest("arkadeAddress and a compressed-hex claimPublicKey (02/03 + 64 hex) are required");
         }
         try {
           ArkAddress.decode(arkadeAddress);
         } catch {
-          res.status(400).json({ error: "arkadeAddress is not a valid Arkade address" });
-          return;
+          throw new BadRequest("arkadeAddress is not a valid Arkade address");
         }
         // Optional: the onchain rail is advertised only for an address that has
         // one, and it is the owner's own onchain key, so it is validated for
         // shape here and never derived from anything the server holds.
         if (boardingAddress !== undefined && (typeof boardingAddress !== "string" || boardingAddress.length === 0)) {
-          res.status(400).json({ error: "boardingAddress must be a non-empty string when provided" });
-          return;
+          throw new BadRequest("boardingAddress must be a non-empty string when provided");
         }
         const ok = addressService.setOfflineReceive(domain, req.params.handle, token, {
           arkadeAddress,
           claimPublicKey,
           ...(boardingAddress !== undefined ? { boardingAddress } : {}),
         });
-        if (!ok) { res.status(404).json({ error: "Address not found or not owned by this token" }); return; }
+        if (!ok) throw new NotFound("Address not found or not owned by this token");
         res.json({ ok: true });
       });
 
@@ -987,16 +945,15 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       app.get("/lnurl/address/:handle/payments", (req, res) => {
         const domainName = domainFromHost(strParam(req.query.domain) ?? req.get("host") ?? undefined);
         const domain = domainName ? deps.repos.domains.getByDomain(domainName) : undefined;
-        if (!domain || !domain.enabled) { res.status(404).json({ error: "Unknown or disabled domain" }); return; }
+        if (!domain || !domain.enabled) throw new NotFound("Unknown or disabled domain");
         const auth = req.headers.authorization;
         const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
         // isValidToken, not just a presence check: Buffer.from(hex) truncates at
         // the first invalid pair, so `<token>zz` would derive the owner's id.
-        if (!isValidToken(token)) { res.status(401).json({ error: "Unauthorized" }); return; }
+        if (!isValidToken(token)) throw new Unauthorized();
         const address = addressService.ownedByHandle(domain, req.params.handle, token);
         if (!address || address.status !== "active") {
-          res.status(404).json({ error: "Address not found or not owned by this token" });
-          return;
+          throw new NotFound("Address not found or not owned by this token");
         }
         const sinceNum = Number(strParam(req.query.since));
         const since = Number.isFinite(sinceNum) ? sinceNum : undefined;
@@ -1018,5 +975,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     }
   }
 
+  app.use(lnurlErrorHandler);
+  app.use(httpErrorHandler(logger));
   return app;
 }

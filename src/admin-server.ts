@@ -6,13 +6,15 @@ import { createAdminApi, type AdminDeps } from "./admin-api.js";
 import { randomUUID } from "node:crypto";
 import { createLogger } from "./logger.js";
 import { requestTraceMiddleware } from "./request-trace.js";
+import { httpErrorHandler } from "./http-responses.js";
 
 /** Admin app: JSON API under /admin/api, plus the built SPA (when present) with SPA fallback.
  *  No built-in auth — bind to loopback and front with a proxy. */
 export function createAdminServer(deps: AdminDeps, uiDir?: string): express.Express {
   const app = express();
   app.disable("x-powered-by");
-  if (deps.config.traceRequests) app.use(requestTraceMiddleware(deps.logger ?? createLogger()));
+  const logger = deps.logger ?? createLogger();
+  if (deps.config.traceRequests) app.use(requestTraceMiddleware(logger));
   app.use(express.json({ limit: "256kb" }));
   app.use((_req, res, next) => { res.setHeader("X-Request-Id", randomUUID()); next(); });
   app.use("/admin/api", createAdminApi(deps));
@@ -25,5 +27,6 @@ export function createAdminServer(deps: AdminDeps, uiDir?: string): express.Expr
       res.sendFile(join(dir, "index.html"));
     });
   }
+  app.use(httpErrorHandler(logger));
   return app;
 }

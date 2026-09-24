@@ -6,6 +6,7 @@ import type { SessionManager } from "./session-manager.js";
 import type { AddressStatus } from "./types/index.js";
 import type { SettingsService } from "./settings.js";
 import { isSettingKey, SettingsError } from "./settings.js";
+import { BadRequest, Conflict, NotFound, NotImplemented, ServiceUnavailable, httpErrorHandler } from "./http-responses.js";
 import type { AppConfig } from "./config.js";
 import type { SettlementStore } from "./settlement-store.js";
 import { adminOpenApiSpec } from "./admin-openapi.js";
@@ -13,7 +14,7 @@ import { validateCard } from "@arkade-os/solver-discovery";
 import { hex } from "@scure/base";
 import { ArkAddress, type IndexerProvider } from "@arkade-os/sdk";
 import type { DiscoveryService } from "./solver-discovery.js";
-import type { Logger } from "./logger.js";
+import { createLogger, type Logger } from "./logger.js";
 import { describeServerRails, effectiveRails, type ServerRailCaps } from "./rails.js";
 
 const ADMIN_DOCS_HTML = `<!DOCTYPE html>
@@ -78,11 +79,11 @@ export function createAdminApi(deps: AdminDeps): Router {
   r.get("/rails", (_req, res) => res.json({ rails: describeServerRails(serverCaps()) }));
 
   r.get("/discovery", (_req, res) => {
-    if (!deps.discovery) { res.status(503).json({ error: "solver discovery is not configured", code: "discovery_unavailable" }); return; }
+    if (!deps.discovery) throw new ServiceUnavailable("solver discovery is not configured", { code: "discovery_unavailable" });
     res.json(deps.discovery.status());
   });
   r.post("/discovery/refresh", async (_req, res) => {
-    if (!deps.discovery) { res.status(503).json({ error: "solver discovery is not configured", code: "discovery_unavailable" }); return; }
+    if (!deps.discovery) throw new ServiceUnavailable("solver discovery is not configured", { code: "discovery_unavailable" });
     await deps.discovery.refresh();
     res.json(deps.discovery.status());
   });
@@ -120,29 +121,29 @@ export function createAdminApi(deps: AdminDeps): Router {
   r.get("/solver-cards", (_req, res) => res.json(repos.solverCards.list().map(cardResponse)));
   r.post("/solver-cards", async (req, res) => {
     const input = cardInput(req.body);
-    if ("error" in input) { res.status(400).json({ error: input.error, code: "invalid_solver_card", details: input.details ?? [] }); return; }
+    if ("error" in input) throw new BadRequest(input.error, { code: "invalid_solver_card", details: input.details ?? [] });
     const row = repos.solverCards.create(input);
     const active = await refreshDiscovery(row.id);
     res.status(202).json({ persisted: true, active, card: cardResponse(row) });
   });
   r.put("/solver-cards/:id", async (req, res) => {
     const id = Number(req.params.id);
-    if (!repos.solverCards.get(id)) { res.status(404).json({ error: "solver card not found" }); return; }
+    if (!repos.solverCards.get(id)) throw new NotFound("solver card not found");
     const input = cardInput(req.body);
-    if ("error" in input) { res.status(400).json({ error: input.error, code: "invalid_solver_card", details: input.details ?? [] }); return; }
+    if ("error" in input) throw new BadRequest(input.error, { code: "invalid_solver_card", details: input.details ?? [] });
     const row = repos.solverCards.replace(id, input)!;
     res.status(202).json({ persisted: true, active: await refreshDiscovery(row.id), card: cardResponse(row) });
   });
   r.patch("/solver-cards/:id", async (req, res) => {
     const enabled = (req.body ?? {}).enabled;
-    if (typeof enabled !== "boolean") { res.status(400).json({ error: "enabled must be boolean" }); return; }
+    if (typeof enabled !== "boolean") throw new BadRequest("enabled must be boolean");
     const row = repos.solverCards.setEnabled(Number(req.params.id), enabled);
-    if (!row) { res.status(404).json({ error: "solver card not found" }); return; }
+    if (!row) throw new NotFound("solver card not found");
     const active = await refreshDiscovery(enabled ? row.id : undefined);
     res.status(202).json({ persisted: true, active: enabled && active, card: cardResponse(row) });
   });
   r.delete("/solver-cards/:id", async (req, res) => {
-    if (!repos.solverCards.delete(Number(req.params.id))) { res.status(404).json({ error: "solver card not found" }); return; }
+    if (!repos.solverCards.delete(Number(req.params.id))) throw new NotFound("solver card not found");
     res.status(202).json({ persisted: false, active: await refreshDiscovery() });
   });
 
@@ -150,16 +151,16 @@ export function createAdminApi(deps: AdminDeps): Router {
   r.get("/domains", (_req, res) => res.json(repos.domains.list()));
   r.post("/domains", (req, res) => {
     const b = req.body ?? {};
-    if (!b.domain || !Array.isArray(b.allocationModes)) { res.status(400).json({ error: "domain and allocationModes are required" }); return; }
-    if (!isValidAllocationModes(b.allocationModes)) { res.status(400).json({ error: "allocationModes entries must each be 'self', 'random', 'admin', or 'session'" }); return; }
+    if (!b.domain || !Array.isArray(b.allocationModes)) throw new BadRequest("domain and allocationModes are required");
+    if (!isValidAllocationModes(b.allocationModes)) throw new BadRequest("allocationModes entries must each be 'self', 'random', 'admin', or 'session'");
     res.status(201).json(repos.domains.create(b));
   });
   r.patch("/domains/:id", (req, res) => {
     const id = Number(req.params.id);
-    if (!repos.domains.getById(id)) { res.status(404).json({ error: "domain not found" }); return; }
+    if (!repos.domains.getById(id)) throw new NotFound("domain not found");
     const body = req.body ?? {};
     if (body.allocationModes !== undefined && !isValidAllocationModes(body.allocationModes)) {
-      res.status(400).json({ error: "allocationModes entries must each be 'self', 'random', 'admin', or 'session'" }); return;
+      throw new BadRequest("allocationModes entries must each be 'self', 'random', 'admin', or 'session'");
     }
     repos.domains.update(id, body);
     res.json(repos.domains.getById(id));
@@ -187,9 +188,9 @@ export function createAdminApi(deps: AdminDeps): Router {
   r.post("/addresses", (req, res) => {
     const { domain: domainName, username, mode } = (req.body ?? {}) as { domain?: string; username?: string; mode?: string };
     const domain = domainName ? repos.domains.getByDomain(domainName) : undefined;
-    if (!domain) { res.status(404).json({ error: "unknown domain" }); return; }
-    if (!username) { res.status(400).json({ error: "username required" }); return; }
-    if (mode !== undefined && mode !== "reserve" && mode !== "mint") { res.status(400).json({ error: "mode must be 'reserve' or 'mint'" }); return; }
+    if (!domain) throw new NotFound("unknown domain");
+    if (!username) throw new BadRequest("username required");
+    if (mode !== undefined && mode !== "reserve" && mode !== "mint") throw new BadRequest("mode must be 'reserve' or 'mint'");
     try {
       if (mode === "mint") {
         const { address, secret } = addressService.mint(domain, username);
@@ -199,23 +200,23 @@ export function createAdminApi(deps: AdminDeps): Router {
         res.status(201).json({ id: address.id, username: address.username, domain: domain.domain, status: address.status, claimCode });
       }
     } catch (err) {
-      if (err instanceof ProvisioningError) { res.status(409).json({ error: err.message, code: err.code }); return; }
+      if (err instanceof ProvisioningError) throw new Conflict(err.message, { code: err.code });
       throw err;
     }
   });
   r.patch("/addresses/:id", (req, res) => {
     const status = (req.body ?? {}).status as AddressStatus | undefined;
-    if (status !== "active" && status !== "revoked") { res.status(400).json({ error: "status must be active or revoked" }); return; }
+    if (status !== "active" && status !== "revoked") throw new BadRequest("status must be active or revoked");
     repos.addresses.updateStatus(Number(req.params.id), status);
     res.json({ ok: true });
   });
   r.patch("/addresses/:id/rails", (req, res) => {
     const id = Number(req.params.id);
-    if (!repos.addresses.getById(id)) { res.status(404).json({ error: "address not found" }); return; }
+    if (!repos.addresses.getById(id)) throw new NotFound("address not found");
     try {
       addressService.setRailPolicy(id, (req.body ?? {}).disabledRails);
     } catch (err) {
-      if (err instanceof ProvisioningError) { res.status(400).json({ error: err.message, code: err.code }); return; }
+      if (err instanceof ProvisioningError) throw new BadRequest(err.message, { code: err.code });
       throw err;
     }
     const updated = repos.addresses.getById(id)!;
@@ -342,13 +343,13 @@ export function createAdminApi(deps: AdminDeps): Router {
    * every payment to it would be guesswork; this exists to inform a human.
    */
   r.get("/reconcile", async (req, res) => {
-    if (!deps.indexer) { res.status(501).json({ error: "reconcile needs an Arkade indexer (ARK_SERVER_URL)" }); return; }
+    if (!deps.indexer) throw new NotImplemented("reconcile needs an Arkade indexer (ARK_SERVER_URL)");
     const raw = typeof req.query.ids === "string" ? req.query.ids.trim() : "";
     let rows: { id: number; arkadeAddress: string | null }[];
     if (raw) {
       const ids = raw.split(",").map((v) => Number(v.trim()));
-      if (ids.some((id) => !Number.isSafeInteger(id) || id <= 0)) { res.status(400).json({ error: "ids must be positive integers" }); return; }
-      if (ids.length > RECONCILE_MAX) { res.status(400).json({ error: `ids accepts at most ${RECONCILE_MAX} addresses` }); return; }
+      if (ids.some((id) => !Number.isSafeInteger(id) || id <= 0)) throw new BadRequest("ids must be positive integers");
+      if (ids.length > RECONCILE_MAX) throw new BadRequest(`ids accepts at most ${RECONCILE_MAX} addresses`);
       rows = ids.map((id) => {
         const row = repos.addresses.getById(id);
         return { id, arkadeAddress: row ? row.arkadeAddress ?? null : null, ...(row ? {} : { missing: true }) };
@@ -368,9 +369,9 @@ export function createAdminApi(deps: AdminDeps): Router {
 
   /** The single-address view of the same check. @see GET /reconcile */
   r.get("/addresses/:id/reconcile", async (req, res) => {
-    if (!deps.indexer) { res.status(501).json({ error: "reconcile needs an Arkade indexer (ARK_SERVER_URL)" }); return; }
+    if (!deps.indexer) throw new NotImplemented("reconcile needs an Arkade indexer (ARK_SERVER_URL)");
     const address = repos.addresses.getById(Number(req.params.id));
-    if (!address) { res.status(404).json({ error: "address not found" }); return; }
+    if (!address) throw new NotFound("address not found");
     const [result] = await reconcile([{ id: address.id, arkadeAddress: address.arkadeAddress ?? null }]);
     if (result!.error) { res.status(String(result!.error).includes("indexer") ? 502 : 400).json({ error: result!.error }); return; }
     res.json(result);
@@ -393,7 +394,7 @@ export function createAdminApi(deps: AdminDeps): Router {
   );
   r.post("/blacklist", (req, res) => {
     const { username, domainId, reason } = (req.body ?? {}) as { username?: string; domainId?: number; reason?: string };
-    if (!username) { res.status(400).json({ error: "username required" }); return; }
+    if (!username) throw new BadRequest("username required");
     res.status(201).json(repos.blacklist.add({ domainId: domainId ?? null, username, reason }));
   });
   r.delete("/blacklist/:id", (req, res) => { repos.blacklist.remove(Number(req.params.id)); res.json({ ok: true }); });
@@ -418,7 +419,7 @@ export function createAdminApi(deps: AdminDeps): Router {
     })),
   ));
   r.post("/sessions/:id/disconnect", (req, res) => {
-    if (!sessions.disconnect(req.params.id)) { res.status(404).json({ error: "session not found" }); return; }
+    if (!sessions.disconnect(req.params.id)) throw new NotFound("session not found");
     res.json({ ok: true });
   });
 
@@ -441,17 +442,17 @@ export function createAdminApi(deps: AdminDeps): Router {
     const body = (req.body ?? {}) as Record<string, unknown>;
     try {
       for (const [k, v] of Object.entries(body)) {
-        if (!isSettingKey(k)) { res.status(400).json({ error: `unknown setting: ${k}` }); return; }
+        if (!isSettingKey(k)) throw new BadRequest(`unknown setting: ${k}`);
         settings.set(k, v);
       }
     } catch (e) {
-      if (e instanceof SettingsError) { res.status(400).json({ error: e.message }); return; }
+      if (e instanceof SettingsError) throw new BadRequest(e.message);
       throw e;
     }
     res.json(settings.view());
   });
   r.delete("/settings/:key", (req, res) => {
-    if (!isSettingKey(req.params.key)) { res.status(400).json({ error: "unknown setting" }); return; }
+    if (!isSettingKey(req.params.key)) throw new BadRequest("unknown setting");
     settings.clear(req.params.key);
     res.json(settings.view());
   });
@@ -460,7 +461,7 @@ export function createAdminApi(deps: AdminDeps): Router {
   // Read-only audit view over the settlements table. The preimage is never exposed
   // (a hasPreimage flag is enough for debugging) and `pr` is omitted as bulk.
   r.get("/settlements", (req, res) => {
-    if (!deps.settlements) { res.status(503).json({ error: "no settlement store configured" }); return; }
+    if (!deps.settlements) throw new ServiceUnavailable("no settlement store configured");
     const limitRaw = Number(req.query.limit);
     const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 1000) : 200;
     const settled = req.query.settled as string | undefined;
@@ -515,5 +516,6 @@ export function createAdminApi(deps: AdminDeps): Router {
   r.get("/openapi.json", (_req, res) => res.json(adminOpenApiSpec));
   r.get("/docs", (_req, res) => res.type("html").send(ADMIN_DOCS_HTML));
 
+  r.use(httpErrorHandler(deps.logger ?? createLogger()));
   return r;
 }
