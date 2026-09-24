@@ -6,7 +6,7 @@ import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
 import type { OfflineSwapCreator } from "../src/intent-swap.js";
 import type { CovenantDestinationProvider } from "../src/covenant-destination.js";
-import type { LnurlServiceConfig } from "../src/types.js";
+import type { LnurlServiceConfig } from "../src/types/index.js";
 
 const CONFIG: LnurlServiceConfig = { port: 0, baseUrl: "", minSendable: 1000, maxSendable: 100_000_000, invoiceTimeoutMs: 3000 };
 const ARK = "ark1qexampledestination";

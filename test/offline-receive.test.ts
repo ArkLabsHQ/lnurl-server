@@ -14,7 +14,7 @@ import { encryptToken } from "../src/crypto.js";
 import { deriveSessionId } from "../src/session-id.js";
 import type { OfflineSwapCreator, OfflineSwapParams, OfflineSwapResult } from "../src/intent-swap.js";
 import { RailRefusedError } from "../src/rails.js";
-import type { LnurlServiceConfig } from "../src/types.js";
+import type { LnurlServiceConfig } from "../src/types/index.js";
 
 const KEY = randomBytes(32);
 const CONFIG: LnurlServiceConfig = { port: 0, baseUrl: "", minSendable: 1000, maxSendable: 100_000_000, invoiceTimeoutMs: 3000 };

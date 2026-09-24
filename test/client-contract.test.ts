@@ -9,7 +9,7 @@ import { createRepositories, type Repositories } from "../src/db/repositories/in
 import { AddressService } from "../src/address-service.js";
 import { RateLimiter } from "../src/rate-limit.js";
 import { DbSettlementStore } from "../src/settlement-store.js";
-import type { LnurlServiceConfig } from "../src/types.js";
+import type { LnurlServiceConfig } from "../src/types/index.js";
 import {
   createLnurlClient,
   deriveSessionId,

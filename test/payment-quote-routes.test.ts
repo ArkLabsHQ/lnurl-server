@@ -9,7 +9,7 @@ import type { OfflineSwapCreator, OfflineSwapParams } from "../src/intent-swap.j
 import { SessionManager } from "../src/session-manager.js";
 import { deriveSessionId } from "../src/session-id.js";
 import { buildInvoice } from "./helpers/bolt11.js";
-import type { LnurlServiceConfig } from "../src/types.js";
+import type { LnurlServiceConfig } from "../src/types/index.js";
 
 const CONFIG: LnurlServiceConfig = { port: 0, baseUrl: "", minSendable: 1000, maxSendable: 100_000_000, invoiceTimeoutMs: 3000 };
 const ARK = "ark1qexampledestination";

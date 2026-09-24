@@ -3,7 +3,7 @@ import type { Repositories } from "./db/repositories/index.js";
 import type { AddressService } from "./address-service.js";
 import { ProvisioningError } from "./address-service.js";
 import type { SessionManager } from "./session-manager.js";
-import type { AddressStatus } from "./db/types.js";
+import type { AddressStatus } from "./types/index.js";
 import type { SettingsService } from "./settings.js";
 import { isSettingKey, SettingsError } from "./settings.js";
 import type { AppConfig } from "./config.js";

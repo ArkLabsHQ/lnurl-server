@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { Repositories } from "./db/repositories/index.js";
-import type { AddressRow, DomainRow } from "./db/types.js";
+import type { AddressRow, DomainRow } from "./types/index.js";
 import { encryptToken, hashSecret } from "./crypto.js";
 import { deriveSessionId } from "./session-id.js";
 import { validateUsername, randomUsername, isValidToken } from "./usernames.js";

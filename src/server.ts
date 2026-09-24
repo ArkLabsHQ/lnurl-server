@@ -11,7 +11,7 @@ import { ProvisioningError, isNameless } from "./address-service.js";
 import { RateLimiter } from "./rate-limit.js";
 import { paymentHashFromBolt11 } from "./bolt11.js";
 import { isValidToken } from "./usernames.js";
-import type { AddressRow, DomainRow } from "./db/types.js";
+import type { AddressRow, DomainRow } from "./types/index.js";
 import { MemorySettlementStore, type SettlementStore } from "./settlement-store.js";
 import { attachVerifyBatchRoute, BATCH_PATH } from "./verify-batch.js";
 import type { OfflineSwapCreator } from "./intent-swap.js";
@@ -43,7 +43,7 @@ import type {
   LnurlPayDestinationResponse,
   LnurlErrorResponse,
   InvoiceResponse,
-} from "./types.js";
+} from "./types/index.js";
 
 const DEFAULT_INVOICE_TIMEOUT_MS = 30_000;
 const DEFAULT_DESTINATION_WATCH_MS = 604_800_000;

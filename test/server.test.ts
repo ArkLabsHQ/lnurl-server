@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import http from "node:http";
 import { createServer } from "../src/server.js";
-import type { LnurlServiceConfig } from "../src/types.js";
+import type { LnurlServiceConfig } from "../src/types/index.js";
 
 const CONFIG: LnurlServiceConfig = {
   port: 0,

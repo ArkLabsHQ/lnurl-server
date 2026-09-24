@@ -10,7 +10,7 @@ import { createServer } from "../src/server.js";
 import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
-import type { LnurlServiceConfig } from "../src/types.js";
+import type { LnurlServiceConfig } from "../src/types/index.js";
 
 // The watcher against a fake Arkade indexer over real HTTP (repo style). The wire
 // vtxo shape mirrors the indexer's (amount in string-sats, createdAt in string-secs).

@@ -1,6 +1,6 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { Response } from "express";
-import type { Session, SessionEvent, SessionInfo } from "./types.js";
+import type { Session, SessionEvent, SessionInfo } from "./types/index.js";
 import { deriveSessionId } from "./session-id.js";
 
 /** Constant-time comparison for secret tokens (avoids a byte-by-byte timing oracle). */

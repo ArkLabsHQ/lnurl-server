@@ -4,7 +4,7 @@ import { bech32 } from "@scure/base";
 import { createHash } from "node:crypto";
 import { createServer, type ServerDeps } from "../src/server.js";
 import { MemorySettlementStore } from "../src/settlement-store.js";
-import type { LnurlServiceConfig } from "../src/types.js";
+import type { LnurlServiceConfig } from "../src/types/index.js";
 
 const CONFIG: LnurlServiceConfig = { port: 0, baseUrl: "", minSendable: 1_000, maxSendable: 100_000_000, invoiceTimeoutMs: 3_000 };
 
