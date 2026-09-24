@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Fixed
+- **The client loads under `require()`** — its exports map offered only an `import` condition, so anything loading it through CommonJS (Playwright specs, for one) failed with `No "exports" main defined`. Both entries now also export `default`, which Node's `require(esm)` loads; the package is still ESM-only, as its `@noble` dependencies are.
 - **Plain Lightning addresses now route** — a LUD-06/16 payRequest with no `paymentOptions` at all (a non-Arkade server) made both lnurl rails report unavailable, so the SDK router found no route. The lightning rail now reads such a payRequest's top-level `minSendable`/`maxSendable` directly and sends no `paymentOption`.
 - **The client refuses an invoice that doesn't match the requested amount** — `requestInvoice` never checked the bolt11 it got back; it now decodes the HRP amount and throws when it's missing, unparseable, or disagrees with the requested amount, including an amountless invoice answering an amounted request.
 
