@@ -51,9 +51,12 @@ export interface ServerDeps {
 }
 
 /** What every public router shares, resolved once by `createServer`. */
-export interface ServerContext {
+export interface ServerContext extends Pick<ServerDeps,
+  "addressService" | "registrationLimiter" | "offlineSwapCreator" | "offlineSwaps" | "covenantDestinations" | "quoteProvider" | "onDestinationIssued"
+> {
   config: LnurlServiceConfig;
-  deps?: ServerDeps;
+  /** Absent in library mode: no DB, so no Lightning addresses. */
+  repos?: Repositories;
   sessions: SessionManager;
   store: SettlementStore;
   settings: RuntimeSettings;

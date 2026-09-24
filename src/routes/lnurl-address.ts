@@ -27,10 +27,8 @@ function addressView(domain: DomainRow, a: AddressRow, proto: string) {
 }
 
 /** The owner's API for their Lightning addresses, authed by the session token. */
-export function lnurlAddressRoutes({ deps, store }: ServerContext): Router {
+export function lnurlAddressRoutes({ repos, addressService, registrationLimiter: limiter, store }: ServerContext): Router {
   const r = Router();
-  const addressService = deps?.addressService;
-  const repos = deps?.repos;
 
   // Must be mounted before /lnurl/:id, or "address" is captured as a session id.
   r.get("/lnurl/address", (req, res) => {
@@ -58,7 +56,6 @@ export function lnurlAddressRoutes({ deps, store }: ServerContext): Router {
   });
 
   if (!repos || !addressService) return r;
-  const limiter = deps?.registrationLimiter;
 
   r.post("/lnurl/address", (req, res) => {
     const domain = domainFor(repos, (req.body?.domain as string | undefined) ?? req.get("host"));

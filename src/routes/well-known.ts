@@ -31,10 +31,10 @@ const railStatesFor = (address: { arkadeAddress: string | null; claimPublicKey: 
 /** LUD-16 `user@domain`, and a flagged address at its session LNURL: the pay request and its
  *  callback, across every rail an address has. */
 export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router {
-  const { config, deps, sessions, store, settings, logger, currentRailCaps } = ctx;
-  const creator = deps?.offlineSwapCreator;
-  const quoteProvider = deps?.quoteProvider;
-  const covenantDestinations = deps?.covenantDestinations;
+  const {
+    config, sessions, store, settings, logger, currentRailCaps,
+    offlineSwapCreator: creator, offlineSwaps, quoteProvider, covenantDestinations, onDestinationIssued,
+  } = ctx;
   // Tighter per-IP guard on callback branches that cost resources without a live
   // wallet session: each offline-swap hit asks the solver for a fresh quote, and
   // each destination hit writes a store record.
@@ -170,7 +170,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       });
       // Only the static rail: a covenant destination is watched as a contract.
       if (resolved.paymentOption === "arkade" && !derived) {
-        deps?.onDestinationIssued?.(resolved.paymentDestination);
+        onDestinationIssued?.(resolved.paymentDestination);
       }
       const destination = derived?.address ?? resolved.paymentDestination;
       res.json({
@@ -217,7 +217,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       offlineQuotes++;
       try {
         res.json(await createOfflineSwapInvoice({
-          creator, store, offlineSwaps: deps?.offlineSwaps, baseUrl: settings.baseUrl(), amountMsat,
+          creator, store, offlineSwaps, baseUrl: settings.baseUrl(), amountMsat,
           receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, paymentQuote,
           echoLightningOption: Boolean(paymentOptionId),
           logger, requestId: res.locals.requestId as string,

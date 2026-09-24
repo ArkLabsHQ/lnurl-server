@@ -37,8 +37,8 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     registrationRateLimitPerMin: 10,
   });
   const ctx: ServerContext = {
+    ...deps,
     config,
-    deps,
     logger,
     settings,
     sessions: deps?.sessions ?? new SessionManager(),
@@ -77,7 +77,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
   // Before lnurlPayRoutes: GET /lnurl/address would otherwise match /lnurl/:id.
   app.use(lnurlAddressRoutes(ctx));
   // Before lnurlPayRoutes: a flagged address's session LNURL is served as the address.
-  if (deps?.repos) app.use(wellKnownRoutes(ctx, deps.repos));
+  if (ctx.repos) app.use(wellKnownRoutes(ctx, ctx.repos));
   app.use(lnurlPayRoutes(ctx));
 
   app.use(lnurlErrorHandler);
