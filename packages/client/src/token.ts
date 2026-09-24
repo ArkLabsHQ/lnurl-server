@@ -97,7 +97,7 @@ export async function deriveSessionTokenWithSigner(
  * Derives the session id from a token: the first 32 hex chars of
  * `sha256(hexDecode(token))`, hashing the token's bytes, not its hex string.
  *
- * Must agree with the server's derivation (`src/session-id.ts`): the id is
+ * Must agree with the server's derivation (`src/session-token.ts`): the id is
  * both the live session key and the ownership key for registered LUD-16
  * lightning addresses, so a mismatch would orphan addresses and sessions.
  *

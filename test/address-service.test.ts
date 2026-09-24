@@ -5,7 +5,7 @@ import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
 import { AddressService, isNameless } from "../src/address-service.js";
 import { ProvisioningError } from "../src/errors.js";
-import { deriveSessionId } from "../src/session-id.js";
+import { deriveSessionId } from "../src/session-token.js";
 import type { DomainRow } from "../src/types/index.js";
 
 const KEY = randomBytes(32);

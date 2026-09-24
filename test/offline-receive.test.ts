@@ -11,7 +11,7 @@ import { AddressService } from "../src/address-service.js";
 import { DbSettlementStore, MemorySettlementStore, type SettlementStore } from "../src/settlement-store.js";
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
 import { encryptToken } from "../src/crypto.js";
-import { deriveSessionId } from "../src/session-id.js";
+import { deriveSessionId } from "../src/session-token.js";
 import type { OfflineSwapCreator, OfflineSwapParams, OfflineSwapResult } from "../src/intent-swap.js";
 import { RailRefusedError } from "../src/errors.js";
 import type { LnurlServiceConfig } from "../src/types/index.js";

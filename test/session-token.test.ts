@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { createHash } from "node:crypto";
-import { deriveSessionId, isValidToken } from "../src/session-id.js";
+import { deriveSessionId, isValidToken } from "../src/session-token.js";
 import { InvalidSessionTokenError } from "../src/errors.js";
 
 describe("deriveSessionId", () => {

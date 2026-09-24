@@ -8,7 +8,7 @@ import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
 import { AddressService } from "../src/address-service.js";
 import { MemorySettlementStore } from "../src/settlement-store.js";
-import { deriveSessionId } from "../src/session-id.js";
+import { deriveSessionId } from "../src/session-token.js";
 import type { OfflineSwapCreator, OfflineSwapParams, OfflineSwapResult } from "../src/intent-swap.js";
 import type { AddressRow, DomainRow } from "../src/types/index.js";
 import type { LnurlServiceConfig } from "../src/types/index.js";

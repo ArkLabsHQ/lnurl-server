@@ -8,7 +8,7 @@ import type { QuoteProvider, PaymentQuote } from "../src/quote-provider.js";
 import { QuoteError } from "../src/errors.js";
 import type { OfflineSwapCreator, OfflineSwapParams } from "../src/intent-swap.js";
 import { SessionManager } from "../src/session-manager.js";
-import { deriveSessionId } from "../src/session-id.js";
+import { deriveSessionId } from "../src/session-token.js";
 import { buildInvoice } from "./helpers/bolt11.js";
 import type { LnurlServiceConfig } from "../src/types/index.js";
 

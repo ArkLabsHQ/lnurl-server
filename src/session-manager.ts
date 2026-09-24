@@ -1,15 +1,8 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import type { Response } from "express";
 import type { Session, SessionEvent, SessionInfo } from "./types/index.js";
 import { InvoiceRequestError } from "./errors.js";
-import { deriveSessionId } from "./session-id.js";
-
-/** Constant-time comparison for secret tokens (avoids a byte-by-byte timing oracle). */
-function tokensEqual(a: string, b: string): boolean {
-  const ba = Buffer.from(a, "utf8");
-  const bb = Buffer.from(b, "utf8");
-  return ba.length === bb.length && timingSafeEqual(ba, bb);
-}
+import { deriveSessionId, newSessionToken, tokensEqual } from "./session-token.js";
 
 export class SessionManager {
   private sessions = new Map<string, Session>();
@@ -30,7 +23,7 @@ export class SessionManager {
    *  deterministically, so reconnecting produces the same LNURL.
    *  `ip` is the client address (post-`trust proxy`) recorded for admin visibility. */
   create(sseRes: Response, providedToken?: string, ip?: string): Session | null {
-    const token = providedToken || randomBytes(32).toString("hex");
+    const token = providedToken || newSessionToken();
     const id = providedToken
       ? deriveSessionId(providedToken)
       : randomBytes(16).toString("hex");
