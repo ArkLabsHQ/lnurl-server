@@ -601,9 +601,8 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
   app.post("/lnurl/session", (req, res) => {
     const { token: providedToken } = req.body ?? {};
 
-    const HEX_RE = /^[0-9a-f]+$/i;
-    if (providedToken != null && (typeof providedToken !== "string" || providedToken.length < 32 || !HEX_RE.test(providedToken))) {
-      res.status(400).json({ error: "token must be a hex string of at least 32 characters" });
+    if (providedToken != null && (typeof providedToken !== "string" || !isValidToken(providedToken))) {
+      res.status(400).json({ error: "token must be an even-length hex string of at least 32 characters" });
       return;
     }
     if (!sessions.canAccept(req.ip, config.maxSessions ?? 5_000, config.maxSessionsPerIp ?? 50, providedToken)) {

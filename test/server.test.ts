@@ -209,6 +209,11 @@ describe("LNURL Service", () => {
         session.abort();
       }
     });
+
+    it("rejects an odd-length token", async () => {
+      const res = await jsonRequest(`${ctx.baseUrl}/lnurl/session`, "POST", { token: "ab".repeat(16) + "a" });
+      expect(res.status).toBe(400);
+    });
   });
 
   describe("GET /lnurl/:id (LNURL-pay metadata)", () => {

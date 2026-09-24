@@ -28,4 +28,7 @@ describe("isValidToken", () => {
     expect(isValidToken("xyz")).toBe(false);
     expect(isValidToken("abc")).toBe(false);
   });
+  it("rejects odd-length hex", () => {
+    expect(isValidToken("ab".repeat(16) + "a")).toBe(false);
+  });
 });

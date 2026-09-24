@@ -26,5 +26,5 @@ export function randomUsername(): string {
 }
 
 export function isValidToken(token: string): boolean {
-  return /^[0-9a-f]+$/i.test(token) && token.length >= 32;
+  return /^(?:[0-9a-f]{2})+$/i.test(token) && token.length >= 32;
 }

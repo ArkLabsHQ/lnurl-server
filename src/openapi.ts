@@ -102,7 +102,7 @@ export const openApiSpec = {
               },
             },
           },
-          "400": { description: "token must be a hex string of at least 32 characters" },
+          "400": { description: "token must be an even-length hex string of at least 32 characters" },
           "409": { description: "Session ID derived from the token is already in use" },
           "429": { description: "Session limit reached" },
         },

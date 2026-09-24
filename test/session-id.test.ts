@@ -9,4 +9,10 @@ describe("deriveSessionId", () => {
     expect(deriveSessionId(token)).toBe(expected);
     expect(deriveSessionId(token)).toHaveLength(32);
   });
+
+  it("refuses tokens Buffer.from would truncate onto another token's id", () => {
+    const token = "ab".repeat(32);
+    expect(() => deriveSessionId(token + "a")).toThrow(/invalid session token/);
+    expect(() => deriveSessionId(token + "zz")).toThrow(/invalid session token/);
+  });
 });
