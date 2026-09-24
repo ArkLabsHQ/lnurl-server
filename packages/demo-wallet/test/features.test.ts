@@ -131,16 +131,13 @@ describe("LUD-16 address lifecycle", () => {
 });
 
 describe("restoring a wallet", () => {
-  it("finds the username the token already owns, which re-registering cannot", async () => {
+  it("finds the username the token already owns, and re-registering returns it", async () => {
     const identity = newIdentity();
     const { token, username } = await onboard(identity, arkadeAddress(), "alice");
 
     // What a fresh browser has: the phrase, and nothing else.
     expect(await ownedUsername(token)).toBe(username);
-
-    // And why it has to ask rather than re-claim -- the server refuses an
-    // existing username without looking at who owns it.
-    await expect(onboard(identity, arkadeAddress(), username)).rejects.toThrow();
+    await expect(onboard(identity, arkadeAddress(), username)).resolves.toMatchObject({ username });
   });
 
   it("reports nothing for a token that owns no address", async () => {

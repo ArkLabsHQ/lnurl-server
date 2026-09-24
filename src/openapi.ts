@@ -442,8 +442,10 @@ export const openApiSpec = {
           "allowed), send `username` + `claimCode` to claim an admin-reserved one, or " +
           "send `nameless: true` (when `session` is allowed) for a receiver with no " +
           "lightning address, reachable only at its session LNURL — mutually exclusive " +
-          "with `username`/`claimCode`. Returns 200 (not 201) when a nameless call " +
-          "repeats: the existing row is returned idempotently. " +
+          "with `username`/`claimCode`. Returns 200 (not 201) when the call repeats: " +
+          "a nameless call, or a named one from the session that already owns that " +
+          "username, gets the existing row back idempotently — another session still " +
+          "gets 409. " +
           "Include `X-API-Key` when the domain requires one.",
         tags: ["LN Address"],
         parameters: [
@@ -474,7 +476,7 @@ export const openApiSpec = {
           },
         },
         responses: {
-          "200": { description: "An existing nameless row was returned idempotently", content: { "application/json": { schema: { $ref: "#/components/schemas/OwnedAddress" } } } },
+          "200": { description: "An existing row owned by this session was returned idempotently", content: { "application/json": { schema: { $ref: "#/components/schemas/OwnedAddress" } } } },
           "201": { description: "Address registered", content: { "application/json": { schema: { $ref: "#/components/schemas/OwnedAddress" } } } },
           "400": { description: "Missing token, invalid token/username, or `nameless` combined with `username`/`claimCode`" },
           "401": { description: "Missing/invalid X-API-Key, or invalid claim code" },

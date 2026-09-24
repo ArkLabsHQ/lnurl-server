@@ -73,6 +73,29 @@ describe("AddressService.register", () => {
     expect(() => svc.register({ domain: domain(), username: "dup", token: "cd".repeat(32) })).toThrow(/taken/i);
   });
 
+  it("returns the owner's existing row when the same token re-registers", () => {
+    const first = svc.register({ domain: domain(), username: "dup", token: TOKEN });
+    const again = svc.register({ domain: domain(), username: "dup", token: TOKEN });
+    expect(first.created).toBe(true);
+    expect(again.created).toBe(false);
+    expect(again.address.id).toBe(first.address.id);
+    expect(again.lightningAddress).toBe("dup@domain.com");
+    expect(repos.addresses.list({ domainId })).toHaveLength(1);
+  });
+
+  it("does not spend the per-session limit on a re-registration", () => {
+    svc.register({ domain: domain(), username: "one", token: TOKEN });
+    repos.domains.update(domainId, { maxPerSession: 1 });
+    expect(svc.register({ domain: domain(), username: "one", token: TOKEN }).created).toBe(false);
+  });
+
+  it("keeps 'taken' for the same token's revoked row, so DELETE stays final", () => {
+    svc.register({ domain: domain(), username: "gone", token: TOKEN });
+    svc.revokeOwn(domain(), "gone", TOKEN);
+    expect(() => svc.register({ domain: domain(), username: "gone", token: TOKEN }))
+      .toThrow(expect.objectContaining({ code: "taken" }));
+  });
+
   it("enforces max_per_session", () => {
     repos.domains.update(domainId, { maxPerSession: 1 });
     svc.register({ domain: domain(), username: "one", token: TOKEN });
@@ -87,6 +110,23 @@ describe("reserve + claim + mint", () => {
     const r = svc.register({ domain: domain(), username: "held", token: TOKEN, claimCode });
     expect(r.lightningAddress).toBe("held@domain.com");
     expect(repos.addresses.getByDomainAndUsername(domainId, "held")!.status).toBe("active");
+  });
+
+  it("returns the claimed row when the claiming token repeats the claim", () => {
+    const { claimCode } = svc.reserve(domain(), "held");
+    const first = svc.register({ domain: domain(), username: "held", token: TOKEN, claimCode });
+    const again = svc.register({ domain: domain(), username: "held", token: TOKEN, claimCode });
+    expect(again.created).toBe(false);
+    expect(again.address.id).toBe(first.address.id);
+    expect(again.address.sessionId).toBe(deriveSessionId(TOKEN));
+  });
+
+  it("refuses a second session replaying a consumed claim code", () => {
+    const { claimCode } = svc.reserve(domain(), "held");
+    svc.register({ domain: domain(), username: "held", token: TOKEN, claimCode });
+    expect(() => svc.register({ domain: domain(), username: "held", token: OTHER, claimCode }))
+      .toThrow(expect.objectContaining({ code: "taken" }));
+    expect(repos.addresses.getByDomainAndUsername(domainId, "held")!.sessionId).toBe(deriveSessionId(TOKEN));
   });
 
   it("rejects a claim with the wrong code", () => {
@@ -147,6 +187,12 @@ describe("AddressService — session mode, nameless register, upgrade", () => {
     expect(again.address.id).toBe(first.address.id);
     expect(first.address.username).toBe(deriveSessionId(TOKEN));
     expect(isNameless(first.address)).toBe(true);
+  });
+
+  it("does not hand the owner its own nameless row back through the named path", () => {
+    const { address } = svc.registerNameless({ domain: allModes, token: TOKEN });
+    expect(() => svc.register({ domain: allModes, token: TOKEN, username: address.username }))
+      .toThrow(expect.objectContaining({ code: "taken" }));
   });
 
   it("refuses nameless without the session mode", () => {

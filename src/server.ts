@@ -907,8 +907,8 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
             res.status(created ? 201 : 200).json(addressView(domain, address, req.protocol));
             return;
           }
-          const { address } = addressService.register({ domain, username, token, claimCode });
-          res.status(201).json(addressView(domain, address, req.protocol));
+          const { address, created } = addressService.register({ domain, username, token, claimCode });
+          res.status(created ? 201 : 200).json(addressView(domain, address, req.protocol));
         } catch (err) {
           if (err instanceof ProvisioningError) { res.status(PROVISIONING_STATUS[err.code] ?? 400).json({ error: err.message, code: err.code }); return; }
           throw err;

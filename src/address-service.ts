@@ -30,6 +30,7 @@ export class AddressService {
   register(p: { domain: DomainRow; username?: string; token: string; claimCode?: string }): {
     address: AddressRow;
     lightningAddress: string;
+    created: boolean;
   } {
     const { domain, token } = p;
     if (!isValidToken(token)) throw new ProvisioningError("invalid_token", "token must be hex of length >= 32");
@@ -44,21 +45,27 @@ export class AddressService {
         }
         this.enforceMax(domain, sessionId);
         this.repos.addresses.bind(existing.id, { sessionId, encryptedToken: encryptToken(token, this.key) });
-        return this.result(domain, username);
+        return this.result(domain, username, true);
+      }
+      // A claim whose second step (the identity bind) failed leaves the row behind; the same
+      // session retrying gets it back rather than being locked out of its own name. Ownership is
+      // the sessionId every other owner route checks, so this reveals nothing listByToken doesn't.
+      if (existing && existing.status === "active" && existing.sessionId === sessionId && !isNameless(existing)) {
+        return this.result(domain, username, false);
       }
       if (existing) throw new ProvisioningError("taken", "username already taken");
       if (!domain.allocationModes.includes("self")) throw new ProvisioningError("forbidden_mode", "self-registration disabled");
       this.assertUsername(domain, username);
       this.enforceMax(domain, sessionId);
       this.repos.addresses.create({ domainId: domain.id, username, status: "active", sessionId, encryptedToken: encryptToken(token, this.key) });
-      return this.result(domain, username);
+      return this.result(domain, username, true);
     }
 
     if (!domain.allocationModes.includes("random")) throw new ProvisioningError("forbidden_mode", "random allocation disabled");
     this.enforceMax(domain, sessionId);
     const username = this.pickRandomUsername(domain);
     this.repos.addresses.create({ domainId: domain.id, username, status: "active", sessionId, encryptedToken: encryptToken(token, this.key) });
-    return this.result(domain, username);
+    return this.result(domain, username, true);
   }
 
   registerNameless(p: { domain: DomainRow; token: string }): { address: AddressRow; created: boolean } {
@@ -167,8 +174,8 @@ export class AddressService {
     return true;
   }
 
-  private result(domain: DomainRow, username: string) {
-    return { address: this.repos.addresses.getByDomainAndUsername(domain.id, username)!, lightningAddress: `${username}@${domain.domain}` };
+  private result(domain: DomainRow, username: string, created: boolean) {
+    return { address: this.repos.addresses.getByDomainAndUsername(domain.id, username)!, lightningAddress: `${username}@${domain.domain}`, created };
   }
 
   private assertUsername(domain: DomainRow, username: string): void {

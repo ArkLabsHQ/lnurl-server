@@ -197,6 +197,57 @@ describe("PATCH /lnurl/address/:handle (upgrade)", () => {
   });
 });
 
+describe("re-claiming after a failed identity bind", () => {
+  const OTHER = "cd".repeat(32);
+  const IDENTITY = { arkadeAddress: "tark1qpf3lesxsy69q0f8yvfnyf7gv7kglfkg83fhaxjyc0zmm0wtrl3n024rshrsa8fnnv73w38094qfl9jp5g7pzdc8j2m58metfpd8rcd37nqs45", claimPublicKey: "02" + "ab".repeat(32) };
+
+  it("returns the half-bound row to the session that made it, and the bind then lands", async () => {
+    const first = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "domain.com", body: { username: "retry", token: TOKEN } });
+    expect(first.status).toBe(201);
+    // The client's second call never happened: registered, no arkade identity.
+    expect(repos.addresses.getByDomainAndUsername(domainId, "retry")!.arkadeAddress).toBeNull();
+
+    const again = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "domain.com", body: { username: "retry", token: TOKEN } });
+    expect(again.status).toBe(200);
+    expect(again.body.lightningAddress).toBe("retry@domain.com");
+    expect(repos.addresses.list({ domainId }).filter((a) => a.username === "retry")).toHaveLength(1);
+
+    const bind = await req("POST", `${ctx.baseUrl}/lnurl/address/retry/arkade`, { host: "domain.com", bearer: TOKEN, body: IDENTITY });
+    expect(bind.status).toBe(200);
+    expect(repos.addresses.getByDomainAndUsername(domainId, "retry")!.arkadeAddress).toBe(IDENTITY.arkadeAddress);
+  });
+
+  it("is idempotent for the owner after the identity is bound", async () => {
+    await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "domain.com", body: { username: "bound", token: TOKEN } });
+    await req("POST", `${ctx.baseUrl}/lnurl/address/bound/arkade`, { host: "domain.com", bearer: TOKEN, body: IDENTITY });
+    const again = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "domain.com", body: { username: "bound", token: TOKEN } });
+    expect(again.status).toBe(200);
+    expect(repos.addresses.getByDomainAndUsername(domainId, "bound")!.arkadeAddress).toBe(IDENTITY.arkadeAddress);
+  });
+
+  it("still 409s a different session, which cannot take over or rebind the row", async () => {
+    await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "domain.com", body: { username: "mine", token: TOKEN } });
+    const owner = repos.addresses.getByDomainAndUsername(domainId, "mine")!;
+
+    const res = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "domain.com", body: { username: "mine", token: OTHER } });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("taken");
+    expect(res.body.lnurl).toBeUndefined();
+
+    const after = repos.addresses.getByDomainAndUsername(domainId, "mine")!;
+    expect(after.sessionId).toBe(owner.sessionId);
+    expect((await req("POST", `${ctx.baseUrl}/lnurl/address/mine/arkade`, { host: "domain.com", bearer: OTHER, body: IDENTITY })).status).toBe(404);
+    expect(repos.addresses.getByDomainAndUsername(domainId, "mine")!.arkadeAddress).toBeNull();
+  });
+
+  it("random allocation retries with a fresh name rather than colliding", async () => {
+    const first = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "domain.com", body: { token: TOKEN } });
+    const again = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "domain.com", body: { token: TOKEN } });
+    expect(again.status).toBe(201);
+    expect(again.body.lightningAddress).not.toBe(first.body.lightningAddress);
+  });
+});
+
 describe("owner routes by the session id of an upgraded row", () => {
   const OTHER = "cd".repeat(32);
   const IDENTITY = { arkadeAddress: "tark1qpf3lesxsy69q0f8yvfnyf7gv7kglfkg83fhaxjyc0zmm0wtrl3n024rshrsa8fnnv73w38094qfl9jp5g7pzdc8j2m58metfpd8rcd37nqs45", claimPublicKey: "02" + "ab".repeat(32) };
