@@ -2,8 +2,8 @@ import { describe, it, expect, vi } from "vitest";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { MultisigTapscript, VtxoScript, type IContractManager } from "@arkade-os/sdk";
 import { createCovenantSweeper, startCovenantSweeper } from "../src/workers/covenant-sweeper.js";
-import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler as handler } from "../src/covenant-contract.js";
-import { COLLABORATIVE_LEAF, COVENANT_V1, RECOVERY_LEAF, SWEEP_LEAF } from "../src/covenant-destination.js";
+import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler as handler } from "../src/covenant/contract.js";
+import { COLLABORATIVE_LEAF, COVENANT_V1, RECOVERY_LEAF, SWEEP_LEAF } from "../src/covenant/destination.js";
 
 /** Real params, so the leaves the sweeper matches against are the real ones. */
 const xonly = (fill: number) => secp256k1.getPublicKey(new Uint8Array(32).fill(fill), true).subarray(1);

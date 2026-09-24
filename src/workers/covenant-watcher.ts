@@ -7,7 +7,7 @@
 
 import { isContractVtxoEvent, type IContractManager } from "@arkade-os/sdk";
 import type { SettlementStore } from "../settlement-store.js";
-import { COVENANT_CONTRACT_TYPE } from "../covenant-contract.js";
+import { COVENANT_CONTRACT_TYPE } from "../covenant/contract.js";
 
 /** Settle `record` from any output at its script that covers the agreed amount. */
 function settleFrom(

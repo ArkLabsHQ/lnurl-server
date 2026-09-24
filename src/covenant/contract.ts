@@ -5,7 +5,7 @@
 
 import { hex } from "@scure/base";
 import { getSequence, VtxoScript, type Contract, type ContractHandler, type PathSelection } from "@arkade-os/sdk";
-import { COLLABORATIVE_LEAF, COVENANT_V1, RECOVERY_LEAF, SWEEP_LEAF, covenantVtxoScript } from "./covenant-destination.js";
+import { COLLABORATIVE_LEAF, COVENANT_V1, RECOVERY_LEAF, SWEEP_LEAF, covenantVtxoScript } from "./destination.js";
 
 export const COVENANT_CONTRACT_TYPE = "lnurl-covenant-destination";
 

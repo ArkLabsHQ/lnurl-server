@@ -10,7 +10,7 @@ import {
   type CreateContractParams,
   type IContractManager,
 } from "@arkade-os/sdk";
-import { covenantDestinationHandler as handler, COVENANT_CONTRACT_TYPE } from "../src/covenant-contract.js";
+import { covenantDestinationHandler as handler, COVENANT_CONTRACT_TYPE } from "../src/covenant/contract.js";
 import {
   COVENANT_V1,
   COVENANT_V2,
@@ -20,7 +20,7 @@ import {
   deriveCovenantDestination,
   SWEEP_LEAF,
   RECOVERY_LEAF,
-} from "../src/covenant-destination.js";
+} from "../src/covenant/destination.js";
 
 const xonly = (fill: number) => secp256k1.getPublicKey(new Uint8Array(32).fill(fill), true).subarray(1);
 const serverPubkey = xonly(3);

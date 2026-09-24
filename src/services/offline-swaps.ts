@@ -17,7 +17,7 @@
 // solver settled the payer's hold invoice, not merely that a lockup exists.
 
 import { base64, hex } from "@scure/base";
-import { encodeClientClaimPacket } from "../claim-packet.js";
+import { encodeClientClaimPacket } from "../covenant/claim-packet.js";
 import { ArkAddress, RestArkProvider, VHTLCV2ContractHandler, getNetwork, toXOnly, type NetworkName } from "@arkade-os/sdk";
 import {
   assertReceivable,
@@ -35,11 +35,11 @@ import {
 import { nostrRfqTransport } from "@arkade-os/swap/nostr";
 import { invoiceFactsFromBolt11 } from "../bolt11.js";
 import { MalformedRecordError, RailRefusedError, SolverQuoteError, UpstreamError } from "../errors.js";
-import { checkedPreimage, randomEntropy, type EntropyProvider } from "../entropy.js";
+import { checkedPreimage, randomEntropy, type EntropyProvider } from "../covenant/entropy.js";
 import { createLogger, type Logger } from "../logger.js";
 import type { DiscoveryService, SolverCandidate } from "./solver-discovery.js";
-import type { SelfClaimer, SelfClaimOutcome } from "../self-claim.js";
-import { deserializeSelfClaim } from "../self-claim-codec.js";
+import type { SelfClaimer, SelfClaimOutcome } from "../covenant/self-claim.js";
+import { deserializeSelfClaim } from "../covenant/self-claim-codec.js";
 
 export interface OfflineSwapParams {
   /** Invoice amount in satoshis — the payer pays exactly this (`amountSide: "from"`). */
@@ -166,7 +166,7 @@ function compressedKey(v: unknown, name: string): Uint8Array {
   return hex.decode(v.toLowerCase());
 }
 
-/** Same ceiling as src/self-claim.ts's pairing probe. Unbounded, a hung covclaimd
+/** Same ceiling as src/covenant/self-claim.ts's pairing probe. Unbounded, a hung covclaimd
  *  parks every quote waiting on the corridor context, and those hold the
  *  MAX_CONCURRENT_OFFLINE_QUOTES slots with them. */
 const KEY_FETCH_TIMEOUT_MS = 5_000;

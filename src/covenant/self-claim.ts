@@ -24,7 +24,7 @@ import {
   type VHTLC,
 } from "@arkade-os/sdk";
 import { LOCKTIME_THRESHOLD } from "@arkade-os/swap";
-import { UpstreamError } from "./errors.js";
+import { UpstreamError } from "../errors.js";
 
 export interface SelfClaimRegistration {
   swapId: string;

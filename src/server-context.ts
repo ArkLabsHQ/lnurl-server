@@ -9,7 +9,7 @@ import type { HealthRegistry } from "./health.js";
 import type { Logger } from "./logger.js";
 import type { ServerRailCaps } from "./rails.js";
 import type { QuoteProvider } from "./quote-provider.js";
-import type { CovenantDestinationProvider } from "./covenant-destination.js";
+import type { CovenantDestinationProvider } from "./covenant/destination.js";
 import type { RuntimeSettings } from "./services/settings.js";
 import type { LnurlServiceConfig } from "./types/index.js";
 

@@ -27,7 +27,7 @@ export interface SettlementRecord {
    *  payment against it — without it an under-payment would flip settled just the same. */
   amountMsat: number | null;
   /** Set on destination records with a per-payment covenant address; null for the
-   *  static-address shape and for lightning. @see covenant-destination.ts */
+   *  static-address shape and for lightning. @see covenant/destination.ts */
   covenantScript: string | null;
   addressId: number | null;
   createdAt: number;

@@ -1,5 +1,5 @@
 import { VHTLCV2ContractHandler, type VHTLC } from "@arkade-os/sdk";
-import { MalformedRecordError } from "./errors.js";
+import { MalformedRecordError } from "../errors.js";
 
 export interface SerializedSelfClaimV1 {
   version: 1;

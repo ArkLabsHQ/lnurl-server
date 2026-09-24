@@ -2,7 +2,7 @@
  * ClaimPacket TLV codec, mirroring covclaimd `pkg/preimage/packet.go`.
  */
 
-import { MalformedRecordError } from "./errors.js";
+import { MalformedRecordError } from "../errors.js";
 
 /** Arkade extension packet type covclaimd scans the arkd tx stream for. */
 export const CLAIM_PACKET_TYPE = 0x04;

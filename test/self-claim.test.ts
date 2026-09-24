@@ -14,7 +14,7 @@ import {
   scriptFromTapLeafScript,
   toXOnly,
 } from "@arkade-os/sdk";
-import { createSelfClaimer } from "../src/self-claim.js";
+import { createSelfClaimer } from "../src/covenant/self-claim.js";
 import { receiveVtxoScript, unilateralClaimDelay } from "@arkade-os/swap";
 
 // Against a fake Arkade operator + emulator over real HTTP, repo style. The fake

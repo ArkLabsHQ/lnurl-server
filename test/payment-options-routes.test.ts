@@ -7,7 +7,7 @@ import { createRepositories, type Repositories } from "../src/db/repositories/in
 import { MemorySettlementStore } from "../src/settlement-store.js";
 import type { OfflineSwapCreator } from "../src/services/offline-swaps.js";
 import type { LnurlServiceConfig } from "../src/types/index.js";
-import type { CovenantDestinationProvider } from "../src/covenant-destination.js";
+import type { CovenantDestinationProvider } from "../src/covenant/destination.js";
 
 const CONFIG: LnurlServiceConfig = { port: 0, baseUrl: "", minSendable: 1000, maxSendable: 100_000_000, invoiceTimeoutMs: 3000 };
 const ARK = "ark1qexampledestination";

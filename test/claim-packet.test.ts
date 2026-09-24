@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { encodeClaimPacket, encodeClientClaimPacket, decodeClaimPacket, CLAIM_PACKET_TYPE } from "../src/claim-packet.js";
+import { encodeClaimPacket, encodeClientClaimPacket, decodeClaimPacket, CLAIM_PACKET_TYPE } from "../src/covenant/claim-packet.js";
 
 const hex = (b: Uint8Array): string => Buffer.from(b).toString("hex");
 const bytes = (s: string): Uint8Array => new Uint8Array(Buffer.from(s, "hex"));

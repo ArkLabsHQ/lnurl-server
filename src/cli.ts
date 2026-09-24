@@ -77,7 +77,7 @@ async function main(): Promise<void> {
       const { ContractManager, RestIndexerProvider, contractHandlers } = await import("@arkade-os/sdk");
       const { sqliteContractStores } = await import("./contract-store.js");
       if (off.covenantDestinations) {
-        const { covenantDestinationHandler } = await import("./covenant-contract.js");
+        const { covenantDestinationHandler } = await import("./covenant/contract.js");
         // The SDK tracks, watches and spends these; registering the handler is what
         // lets it build the script and pick a leaf without us restating either. Must
         // precede create(), which re-adds every stored contract.
@@ -156,9 +156,9 @@ async function main(): Promise<void> {
         : null;
       if (covclaimdProbe && !covclaimdProbe.ok) throw new UpstreamError("covclaimd pubkey endpoint", covclaimdProbe.status);
       offlineSwaps = new OfflineSwapStore(db, config.verifyTtlMs);
-      let selfClaimer: import("./self-claim.js").SelfClaimer | undefined;
+      let selfClaimer: import("./covenant/self-claim.js").SelfClaimer | undefined;
       if (off.selfClaim) {
-        const { createSelfClaimer, checkEmulatorPairing } = await import("./self-claim.js");
+        const { createSelfClaimer, checkEmulatorPairing } = await import("./covenant/self-claim.js");
         selfClaimer = createSelfClaimer({ arkServerUrl: off.arkServerUrl!, emulatorUrl: off.emulatorUrl! });
         console.log(`offline self-claim: enabled (emulator=${off.emulatorUrl}${off.covclaimdUrl ? "" : ", no covclaimd — RFQ omits the claim packet"})`);
         if (off.covclaimdUrl) {
@@ -180,9 +180,9 @@ async function main(): Promise<void> {
       });
       if (offlineSwapCreator.close) runtime.addTransport({ close: offlineSwapCreator.close });
     }
-    let covenantDestinations: import("./covenant-destination.js").CovenantDestinationProvider | undefined;
+    let covenantDestinations: import("./covenant/destination.js").CovenantDestinationProvider | undefined;
     if (off.covenantDestinations && contracts) {
-      const { createCovenantDestinationProvider } = await import("./covenant-destination.js");
+      const { createCovenantDestinationProvider } = await import("./covenant/destination.js");
       covenantDestinations = createCovenantDestinationProvider({
         arkServerUrl: off.arkServerUrl!,
         ...(off.covclaimdUrl ? { covclaimdUrl: off.covclaimdUrl } : {}),

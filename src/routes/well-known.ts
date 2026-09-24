@@ -14,7 +14,7 @@ import {
   type ServerRailCaps,
 } from "../rails.js";
 import { applyQuote, type PaymentQuote } from "../quote-provider.js";
-import type { DerivedDestination } from "../covenant-destination.js";
+import type { DerivedDestination } from "../covenant/destination.js";
 import type { AddressRow, DomainRow, LnurlPayDestinationResponse, LnurlPayMetadata } from "../types/index.js";
 import { LnurlError } from "../http-errors.js";
 import { domainFor, originOf, strParam } from "../http-params.js";

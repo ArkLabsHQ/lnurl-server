@@ -9,7 +9,7 @@
 // stay fixed, and the user's two recovery paths need neither P nor this server.
 
 import type { IContractManager } from "@arkade-os/sdk";
-import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler } from "./covenant-contract.js";
+import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler } from "./contract.js";
 import { checkedPreimage, randomEntropy, type EntropyProvider } from "./entropy.js";
 import { hex } from "@scure/base";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -22,7 +22,7 @@ import {
   MultisigTapscript,
   VtxoScript,
 } from "@arkade-os/sdk";
-import { UpstreamError } from "./errors.js";
+import { UpstreamError } from "../errors.js";
 
 /** `HASH160 <hash20> EQUAL` — the condition the sweep leaf gates on. */
 const preimageCondition = (hash20: Uint8Array): Uint8Array =>
@@ -131,7 +131,7 @@ export interface CovenantDestinationProvider {
 }
 
 const CONTEXT_TTL_MS = 5 * 60_000;
-/** Matches the pairing probe in src/self-claim.ts: long enough for a healthy
+/** Matches the pairing probe in src/covenant/self-claim.ts: long enough for a healthy
  *  round trip, short enough that a dead dependency fails rather than parks. */
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
 
