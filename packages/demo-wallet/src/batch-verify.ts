@@ -5,47 +5,93 @@ import { payer } from "./lnurl.js";
 const WATCH_MS = 15 * 60_000;
 const MAX_BACKOFF_MS = 30_000;
 
+export interface WatchHandlers { settled: () => void; gaveUp: (reason: string) => void }
+export interface SettlementWatcher {
+  add(verifyUrl: string, on: WatchHandlers): void;
+  pending(): number;
+  stop(): void;
+}
+
 /**
- * Watches one receive on a verifyBatch stream until it settles. Reopening a
- * closed stream is the client's job under LUD-XX, so a server close or failure
- * reconnects with backoff until the window lapses.
+ * Every pending receive at one verifyBatch endpoint, on one stream: later
+ * requests join it with `update`, settled ones leave it. Reopening a closed
+ * stream is the client's job under LUD-XX, so a close with anything still
+ * pending reconnects with backoff, each invoice until its own window lapses.
  */
-export function watchSettlement(
-  opts: { verifyBatchUrl: string; verifyUrl: string; timeoutMs?: number; open?: typeof payer.openVerifyBatchStream },
-  on: { settled: () => void; gaveUp: (reason: string) => void },
-): { stop: () => void } {
+export function settlementWatcher(opts: {
+  verifyBatchUrl: string;
+  timeoutMs?: number;
+  open?: typeof payer.openVerifyBatchStream;
+  onChange?: (state: { pending: number; connected: boolean }) => void;
+}): SettlementWatcher {
   const open = opts.open ?? ((o, h) => payer.openVerifyBatchStream(o, h));
-  const deadline = Date.now() + (opts.timeoutMs ?? WATCH_MS);
+  const pending = new Map<string, { on: WatchHandlers; deadline: number }>();
+  const unsent = new Set<string>();
   let stream: VerifyBatchStream | undefined;
   let retry: ReturnType<typeof setTimeout> | undefined;
-  let done = false;
+  let stopped = false;
   let attempt = 0;
   let lastError = "";
 
-  const finish = (then: () => void): void => {
-    if (done) return;
-    done = true;
-    clearTimeout(retry);
-    stream?.close();
-    then();
+  const changed = (): void => opts.onChange?.({ pending: pending.size, connected: stream !== undefined });
+  // `update` throws until the session frame lands; the caller retries on the next frame.
+  const send = (add: string[], remove: string[] = []): boolean => {
+    if (!stream) return false;
+    try { stream.update(add, remove); return true; } catch { return false; }
   };
-  const connect = (): void => {
-    stream = open({ verifyBatchUrl: opts.verifyBatchUrl, verifyUrls: [opts.verifyUrl] }, {
-      onUpdate: (_url, status) => {
+
+  const reopen = (): void => {
+    const delay = Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** attempt++);
+    for (const [url, entry] of pending) {
+      if (Date.now() + delay < entry.deadline) continue;
+      pending.delete(url);
+      entry.on.gaveUp(lastError || "not settled within the watch window");
+    }
+    if (pending.size) retry = setTimeout(connect, delay);
+  };
+
+  function connect(): void {
+    retry = undefined;
+    unsent.clear();
+    stream = open({ verifyBatchUrl: opts.verifyBatchUrl, verifyUrls: [...pending.keys()] }, {
+      onUpdate: (url, status) => {
         attempt = 0;
-        if (status.settled) finish(on.settled);
+        if (unsent.size && send([...unsent])) unsent.clear();
+        const entry = pending.get(url);
+        if (!entry || !status.settled) return;
+        pending.delete(url);
+        // The server closes a stream whose every URL is settled, so removing the last one would race that close.
+        if (pending.size) send([], [url]);
+        changed();
+        entry.on.settled();
       },
       onError: (e) => { lastError = e.message; },
       onClose: () => {
-        if (done) return;
-        const delay = Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** attempt++);
-        if (Date.now() + delay >= deadline) finish(() => on.gaveUp(lastError || "not settled within the watch window"));
-        else retry = setTimeout(connect, delay);
+        stream = undefined;
+        if (stopped) return;
+        if (pending.size) reopen();
+        changed();
       },
     });
+    changed();
+  }
+
+  return {
+    add(verifyUrl, on) {
+      if (stopped || pending.has(verifyUrl)) return;
+      pending.set(verifyUrl, { on, deadline: Date.now() + (opts.timeoutMs ?? WATCH_MS) });
+      if (stream) { if (!send([verifyUrl])) unsent.add(verifyUrl); }
+      else if (!retry) connect();
+      changed();
+    },
+    pending: () => pending.size,
+    stop() {
+      stopped = true;
+      clearTimeout(retry);
+      pending.clear();
+      stream?.close();
+    },
   };
-  connect();
-  return { stop: () => finish(() => undefined) };
 }
 
 /** What one pending send needs from its verify answer. */

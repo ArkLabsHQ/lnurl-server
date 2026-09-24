@@ -3,29 +3,13 @@
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import { bech32 } from "@scure/base";
 import { mine, payFromCounterparty, pollUntil } from "../../../test/e2e/support/regtest.js";
-import { LNURL_ADMIN_PORT, readLocalStack, useLocalStack, type LocalStack } from "./local-stack.js";
+import { readLocalStack, setModes, useLocalStack, type LocalStack } from "./local-stack.js";
 
 const SATS = 5000;
 const SWAP_TIMEOUT_MS = 12 * 60_000;
-const ADMIN = `http://127.0.0.1:${LNURL_ADMIN_PORT}/admin/api`;
-
-interface DomainRow { id: number; domain: string; allocationModes: string[] }
 
 const decodeLnurl = (lnurl: string): string =>
   new TextDecoder().decode(bech32.fromWords(bech32.decode(lnurl as `${string}1${string}`, 1023).words));
-
-async function setModes(stack: LocalStack, modes: (current: string[]) => string[]): Promise<string[]> {
-  const rows = (await (await fetch(`${ADMIN}/domains`)).json()) as DomainRow[];
-  const row = rows.find((d) => d.domain === stack.lnurlDomain);
-  if (!row) throw new Error(`no ${stack.lnurlDomain} domain on the admin API`);
-  const res = await fetch(`${ADMIN}/domains/${row.id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ allocationModes: modes(row.allocationModes) }),
-  });
-  if (!res.ok) throw new Error(`domain patch -> HTTP ${res.status}: ${await res.text()}`);
-  return row.allocationModes;
-}
 
 /** The advertised URLs name the LUD-16 domain, which has no port here. */
 const onServer = (stack: LocalStack, advertised: string): string => {

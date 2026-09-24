@@ -187,6 +187,33 @@ export async function boardingAddressOf(base: string, username: string, sats = 1
   return paymentDestination;
 }
 
+const ADMIN = `http://127.0.0.1:${LNURL_ADMIN_PORT}/admin/api`;
+
+/** Rewrites the test domain's allocationModes; returns the previous ones for an afterAll to restore. */
+export async function setModes(stack: LocalStack, modes: (current: string[]) => string[]): Promise<string[]> {
+  const rows = (await (await fetch(`${ADMIN}/domains`)).json()) as { id: number; domain: string; allocationModes: string[] }[];
+  const row = rows.find((d) => d.domain === stack.lnurlDomain);
+  if (!row) throw new Error(`no ${stack.lnurlDomain} domain on the admin API`);
+  const res = await fetch(`${ADMIN}/domains/${row.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ allocationModes: modes(row.allocationModes) }),
+  });
+  if (!res.ok) throw new Error(`domain patch -> HTTP ${res.status}: ${await res.text()}`);
+  return row.allocationModes;
+}
+
+/** Reserves `username` the way an operator does, returning the one-time claim code. */
+export async function reserveName(stack: LocalStack, username: string): Promise<string> {
+  const res = await fetch(`${ADMIN}/addresses`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ domain: stack.lnurlDomain, username, mode: "reserve" }),
+  });
+  if (!res.ok) throw new Error(`reserve ${username} -> HTTP ${res.status}: ${await res.text()}`);
+  return String(((await res.json()) as { claimCode: string }).claimCode);
+}
+
 export function readLocalStack(): LocalStack {
   try {
     return JSON.parse(readFileSync(HANDOFF, "utf8")) as LocalStack;

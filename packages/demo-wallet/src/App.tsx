@@ -9,7 +9,8 @@ import { balanceView } from "./balance.js";
 import { createMnemonic, loadMnemonic, openWallet, wipeWallet, type DemoWallet } from "./wallet.js";
 import { bootState, claimOrAdopt, domainCapabilities, payer, receiver } from "./lnurl.js";
 import { createRouter, RAIL_PRIORITY } from "./router.js";
-import { pendingConfirmations, watchSettlement } from "./batch-verify.js";
+import { CHOICE_ARGS, nameChoices } from "./name-choice.js";
+import { pendingConfirmations, settlementWatcher, type SettlementWatcher } from "./batch-verify.js";
 import { storedPayments } from "@arkade-os/lnurl-client";
 import { autoSettleBoarding, type BoardingState } from "./boarding.js";
 import { Backup } from "./Backup.js";
@@ -33,6 +34,16 @@ function Copy({ value }: { value: string }) {
       style={{ ...btn, padding: "2px 8px", fontSize: 12, marginLeft: 8 }}
       onClick={() => { void navigator.clipboard.writeText(value); setDone(true); setTimeout(() => setDone(false), 1200); }}
     >{done ? "copied" : "copy"}</button>
+  );
+}
+
+/** The client code an action runs, so the demo doubles as its own usage guide. */
+function Call({ code }: { code: string }) {
+  return (
+    <details style={{ marginTop: 4, fontSize: 12, color: "#666" }}>
+      <summary style={{ cursor: "pointer" }}>the call behind this</summary>
+      <pre style={{ ...mono, fontSize: 12, whiteSpace: "pre-wrap", margin: "4px 0 0", padding: 8, background: "#f6f6f6", borderRadius: 4 }}>{code}</pre>
+    </details>
   );
 }
 
@@ -114,8 +125,6 @@ export function App() {
   );
 }
 
-const SELF_SERVICE = ["self", "random", "session"];
-
 /** What the domain lets a wallet do for itself. A server predating the route
  *  only ever offered a chosen name, so that is what a failed read falls back to. */
 function useCapabilities(): { caps: DomainCapabilities | null; note: string } {
@@ -135,37 +144,67 @@ function useCapabilities(): { caps: DomainCapabilities | null; note: string } {
   return { caps, note };
 }
 
-function NameChoice({ caps, note, busy, selfLabel, withSession, onPick }: {
+const input = { padding: 8, borderRadius: 6, border: "1px solid #bbb", minWidth: 200 } as const;
+const choiceRow = { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } as const;
+
+function NameChoice({ caps, note, busy, selfLabel, withSession, call, onPick }: {
   caps: DomainCapabilities | null; note: string; busy: boolean; selfLabel: string; withSession: boolean;
+  call: (args: string) => string;
   onPick: (opts: ClaimOptions) => void;
 }) {
   const [name, setName] = useState("");
+  const [reserved, setReserved] = useState({ open: false, name: "", code: "" });
   if (!caps) return <p style={{ color: "#666", fontSize: 13 }}>Reading what {LNURL_DOMAIN} allows…</p>;
-  const modes = caps.allocationModes.filter((m) => SELF_SERVICE.includes(m) && (withSession || m !== "session"));
+  const offer = nameChoices(caps.allocationModes, { nameless: withSession });
   const { minLen, maxLen } = caps.usernameRules;
   const length = name.trim().length;
   return (
     <>
       {note && <p style={{ ...mono, color: "#946200", fontSize: 12 }}>{note}</p>}
-      {!modes.length && <p style={{ color: "crimson" }}>{caps.domain} does not let a wallet claim an address for itself.</p>}
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-        {modes.includes("self") && (
-          <>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="username"
-              style={{ padding: 8, borderRadius: 6, border: "1px solid #bbb", minWidth: 200 }}
-            />
+      {!Object.values(offer).some(Boolean) && (
+        <p style={{ color: "crimson" }}>{caps.domain} does not let a wallet claim an address for itself.</p>
+      )}
+      {offer.self && (
+        <div style={{ marginTop: 10 }}>
+          <div style={choiceRow}>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="username" style={input} />
             <button style={btn} disabled={busy || length < minLen || length > maxLen}
               onClick={() => onPick({ username: name.trim() })}>{busy ? "Working…" : selfLabel}</button>
-          </>
-        )}
-        {modes.includes("random") && <button style={btn} disabled={busy} onClick={() => onPick({})}>Pick a name for me</button>}
-        {modes.includes("session") && (
+          </div>
+          <Call code={call(CHOICE_ARGS.self)} />
+        </div>
+      )}
+      {offer.random && (
+        <div style={{ marginTop: 10 }}>
+          <button style={btn} disabled={busy} onClick={() => onPick({})}>Pick a name for me</button>
+          <Call code={call(CHOICE_ARGS.random)} />
+        </div>
+      )}
+      {offer.nameless && (
+        <div style={{ marginTop: 10 }}>
           <button style={btn} disabled={busy} onClick={() => onPick({ nameless: true })}>Skip — just a LNURL</button>
-        )}
-      </div>
+          <Call code={call(CHOICE_ARGS.nameless)} />
+        </div>
+      )}
+      {offer.claimCode && (
+        <div style={{ marginTop: 10 }}>
+          {!reserved.open
+            ? <button style={btn} disabled={busy} onClick={() => setReserved({ ...reserved, open: true })}>I have a claim code</button>
+            : (
+              <div style={choiceRow}>
+                <input value={reserved.name} onChange={(e) => setReserved({ ...reserved, name: e.target.value })}
+                  placeholder="reserved name" style={input} />
+                <input value={reserved.code} onChange={(e) => setReserved({ ...reserved, code: e.target.value })}
+                  placeholder="claim code" style={input} />
+                <button style={btn} disabled={busy || !reserved.name.trim() || !reserved.code.trim()}
+                  onClick={() => onPick({ username: reserved.name.trim(), claimCode: reserved.code.trim() })}>
+                  {busy ? "Working…" : "Claim reserved name"}
+                </button>
+              </div>
+            )}
+          <Call code={call(CHOICE_ARGS.claimCode)} />
+        </div>
+      )}
     </>
   );
 }
@@ -204,7 +243,12 @@ function Onboarding({ wallet, onReady, onError }: {
         Generates an Arkade identity, claims an address to be paid at, and binds the identity
         so payments can arrive while this page is closed.
       </p>
-      <NameChoice caps={caps} note={note} busy={busy} selfLabel="Create wallet" withSession onPick={(o) => void go(o)} />
+      <Call code={[
+        "const { allocationModes } = await createLnurlClient({ baseUrl }).domainCapabilities({ domain })",
+        "const lnurl = arkadeLnurl({ wallet, baseUrl, domain, store: browserPaymentStore() })",
+      ].join("\n")} />
+      <NameChoice caps={caps} note={note} busy={busy} selfLabel="Create wallet" withSession
+        call={(args) => `(await lnurl.owned()) ?? (await lnurl.claim(${args}))`} onPick={(o) => void go(o)} />
     </div>
   );
 }
@@ -317,51 +361,83 @@ function Wallet({ wallet, receiver: shown, onRenamed, onRestored, onReset }: {
  * callback mints a destination and files a settlement record, so rendering the
  * list by calling every rail would leave a trail of quotes nobody asked for.
  */
+interface Requested { key: number; option: string; amount: number; value: InvoiceResult; payable: string; status: string }
+type WatchStates = Record<string, { pending: number; connected: boolean }>;
+
+const invoices = (n: number) => `${n} invoice${n === 1 ? "" : "s"}`;
+
+function watchLine(states: WatchStates): string {
+  const live = Object.values(states).filter((s) => s.pending > 0);
+  const pending = live.reduce((n, s) => n + s.pending, 0);
+  const connections = live.filter((s) => s.connected).length;
+  if (!pending) return "";
+  if (!connections) return `reconnecting — ${invoices(pending)} pending`;
+  return `watching ${invoices(pending)} on ${connections === 1 ? "one connection" : `${connections} connections`}`;
+}
+
 function Receive({ receiver: shown, onRenamed }: { receiver: Receiver; onRenamed: (r: Receiver) => void }) {
   const { lightningAddress } = shown;
   const [payRequest, setPayRequest] = useState<PayRequest | null>(null);
   const [amount, setAmount] = useState(1000);
-  const [result, setResult] = useState<{ option: string; value: InvoiceResult } | null>(null);
-  const [settled, setSettled] = useState<string>("");
+  const [requests, setRequests] = useState<Requested[]>([]);
+  const [watching, setWatching] = useState<WatchStates>({});
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
-  const watch = useRef<{ stop: () => void } | null>(null);
-  useEffect(() => () => watch.current?.stop(), []);
+  const watchers = useRef(new Map<string, SettlementWatcher>());
+  useEffect(() => () => {
+    for (const w of watchers.current.values()) w.stop();
+    watchers.current.clear();
+  }, []);
+
+  const mark = (key: number, status: string) =>
+    setRequests((rs) => rs.map((r) => (r.key === key ? { ...r, status } : r)));
+
+  const watcherFor = (endpoint: string): SettlementWatcher => {
+    let w = watchers.current.get(endpoint);
+    if (!w) {
+      w = settlementWatcher({ verifyBatchUrl: endpoint, onChange: (s) => setWatching((prev) => ({ ...prev, [endpoint]: s })) });
+      watchers.current.set(endpoint, w);
+    }
+    return w;
+  };
 
   const load = async () => {
-    setBusy("options"); setErr(""); setResult(null); setSettled("");
+    setBusy("options"); setErr("");
     try { setPayRequest(await shown.payRequest()); }
     catch (e) { setErr((e as Error).message); }
     finally { setBusy(""); }
   };
 
   const request = async (optionId: string) => {
-    setBusy(optionId); setErr(""); setResult(null); setSettled("");
+    setBusy(optionId); setErr("");
     try {
       const value = await payer.requestInvoice(payRequest!, {
         amountSat: amount,
         ...(optionId === "lightning" ? {} : { paymentOption: optionId }),
       });
-      setResult({ option: optionId, value });
+      const key = Date.now();
+      const payable = (value.kind === "bolt11" ? value.pr : value.paymentDestination) ?? "";
       // Absence is "no answer available", not failure: only a destination that
       // identifies the payment gets a verify URL. @see lnurl.ts
-      if (value.verify) {
-        if (value.verifyBatch) {
-          watch.current?.stop();
-          watch.current = watchSettlement(
-            { verifyBatchUrl: value.verifyBatch, verifyUrl: value.verify },
-            { settled: () => setSettled("settled"), gaveUp: (reason) => setSettled(`not settled: ${reason}`) },
-          );
-        } else {
-          void payer.pollVerify(value.verify, { timeoutMs: 300_000, intervalMs: 3_000 })
-            .then((v) => setSettled(v.settled ? "settled" : "not settled within the poll window"))
-            .catch((e: Error) => setSettled(`verify failed: ${e.message}`));
-        }
+      const status = !value.verify ? "" : value.verifyBatch ? "watching" : "polling verify…";
+      setRequests((rs) => [{ key, option: optionId, amount, value, payable, status }, ...rs]);
+      if (value.verify && value.verifyBatch) {
+        watcherFor(value.verifyBatch).add(value.verify, {
+          settled: () => mark(key, "settled"),
+          gaveUp: (reason) => mark(key, `not settled: ${reason}`),
+        });
+      } else if (value.verify) {
+        void payer.pollVerify(value.verify, { timeoutMs: 300_000, intervalMs: 3_000 })
+          .then((v) => mark(key, v.settled ? "settled" : "not settled within the poll window"))
+          .catch((e: Error) => mark(key, `verify failed: ${e.message}`));
       }
     } catch (e) { setErr((e as Error).message); }
     finally { setBusy(""); }
   };
 
+  const result = requests[0];
+  const tracked = requests.filter((r) => r.status);
+  const line = watchLine(watching);
   const options = payRequest?.paymentOptions ?? (payRequest ? [{ id: "lightning", type: "lightning" }] : []);
 
   return (
@@ -393,6 +469,7 @@ function Receive({ receiver: shown, onRenamed }: { receiver: Receiver; onRenamed
             style={{ padding: 8, borderRadius: 6, border: "1px solid #bbb", width: 120 }} />
           <span style={{ color: "#666", fontSize: 13 }}>sats</span>
         </div>
+        <Call code="const payRequest = await receiver.payRequest()" />
 
         {payRequest && (
           <p style={{ color: "#666", fontSize: 12, marginTop: 0 }}>
@@ -414,24 +491,48 @@ function Receive({ receiver: shown, onRenamed }: { receiver: Receiver; onRenamed
             </button>
           </div>
         ))}
+        {options.length > 0 && (
+          <Call code={[
+            "const payer = createLnurlClient()",
+            `await payer.requestInvoice(payRequest, { amountSat: ${amount} })  // lightning`,
+            `await payer.requestInvoice(payRequest, { amountSat: ${amount}, paymentOption: "arkade" })  // any other rail, by id`,
+          ].join("\n")} />
+        )}
 
         {err && <p style={{ ...mono, color: "crimson" }}>{err}</p>}
-        {result && (() => {
-          const payable = (result.value.kind === "bolt11" ? result.value.pr : result.value.paymentDestination) ?? "";
-          return (
-            <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12, display: "flex", gap: 20, flexWrap: "wrap" }}>
-              <CopyableQr uri={payable} caption={`${result.option} · ${amount} sats`} />
-              <div style={{ flex: 1, minWidth: 240 }}>
-                <Field label={`${result.option} — pay this`} value={payable} />
-                <p style={{ color: "#666", fontSize: 12 }}>
-                  {result.value.verify
-                    ? settled || "polling verify…"
-                    : "no verify on this rail — the server cannot say whether this was paid"}
-                </p>
-              </div>
+        {result && (
+          <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12, display: "flex", gap: 20, flexWrap: "wrap" }}>
+            <CopyableQr uri={result.payable} caption={`${result.option} · ${result.amount} sats`} />
+            <div style={{ flex: 1, minWidth: 240 }}>
+              <Field label={`${result.option} — pay this`} value={result.payable} />
+              {!result.value.verify && (
+                <p style={{ color: "#666", fontSize: 12 }}>no verify on this rail — the server cannot say whether this was paid</p>
+              )}
             </div>
-          );
-        })()}
+          </div>
+        )}
+        {tracked.length > 0 && (
+          <div style={{ marginTop: 12, fontSize: 12 }}>
+            {line && <p style={{ ...mono, color: "#946200", fontSize: 12 }}>{line}</p>}
+            {tracked.map((r) => (
+              <div key={r.key} style={{ display: "flex", gap: 12, padding: "4px 0", borderTop: "1px solid #eee" }}>
+                <span style={{ width: 80 }}>{r.option}</span>
+                <span style={{ width: 80 }}>{r.amount} sats</span>
+                <span title={r.payable} style={{ ...mono, fontSize: 12, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.payable}</span>
+                <span style={{ color: r.status === "settled" ? "#16834b" : "#946200" }}>{r.status}</span>
+              </div>
+            ))}
+            <Call code={[
+              "const stream = payer.openVerifyBatchStream(",
+              "  { verifyBatchUrl: invoice.verifyBatch, verifyUrls: [invoice.verify] },",
+              "  { onUpdate: (url, status) => { /* status.settled */ }, onClose: () => { /* reopen with what is still pending */ } },",
+              ")",
+              "stream.update([next.verify])         // each later request joins the same connection",
+              "stream.update([], [settled.verify])  // each settled one leaves it",
+              "await payer.pollVerify(invoice.verify, { timeoutMs, intervalMs })  // no verifyBatch: LUD-21, preimage-checked",
+            ].join("\n")} />
+          </div>
+        )}
         <a href={EXPLORER} target="_blank" rel="noreferrer" style={{ color: "#06c", fontSize: 13 }}>explorer</a>
         </div>
       </div>
@@ -459,8 +560,10 @@ function AddName({ receiver: shown, onRenamed }: { receiver: Receiver; onRenamed
       <h3 style={{ fontSize: 14, marginTop: 0 }}>Add a name</h3>
       <p style={{ color: "#555", fontSize: 13, marginTop: 0 }}>
         This LNURL keeps paying you, and anyone holding it will see the name: naming it links the two publicly.
+        To stay unlinked, claim a separate name with <code>lnurl.claim({"{ username }"})</code> instead.
       </p>
-      <NameChoice caps={caps} note={note} busy={busy} selfLabel="Add a name" withSession={false} onPick={(o) => void name(o)} />
+      <NameChoice caps={caps} note={note} busy={busy} selfLabel="Add a name" withSession={false}
+        call={(args) => `await receiver.upgrade(${args})`} onPick={(o) => void name(o)} />
       {err && <p style={{ ...mono, color: "crimson" }}>{err}</p>}
     </div>
   );
@@ -577,6 +680,14 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
         </div>
       ))}
       {status && <p style={{ ...mono, color: status.includes("failed") ? "crimson" : "#16834b" }}>{status}</p>}
+      <Call code={[
+        "const router = arkadePaymentRouter({ wallet, lightning })",
+        `const options = await router.options({ raw: target, amount: ${amount} }, { priority: DEFAULT_RAIL_PRIORITY })`,
+        "const quote = await option.quote()  // the option you clicked; quoted on click, not on listing",
+        "const handle = await quote.send()",
+        "pendingConfirmations.add({ verifyUrl, verifyBatch, onSettled, onError })",
+        "// every 2s it runs batchVerify(verifyBatch, pendingVerifyUrls): one GET for every unconfirmed send",
+      ].join("\n")} />
     </div>
   );
 }
@@ -673,6 +784,10 @@ function Activity({ receiver: shown, wallet }: { receiver: Receiver; wallet: Dem
         This wallet's own transactions, and everything quoted against {shown.lightningAddress ?? "its LNURL"} — including
         quotes nobody paid, which have no transaction to show up as.
       </p>
+      <Call code={[
+        "await receiver.sync()  // every 8s",
+        "const rows = storedPayments({ domain, handle: receiver.handle })",
+      ].join("\n")} />
       {err && <p style={{ ...mono, color: "crimson", fontSize: 12 }}>payment sync failed: {err}</p>}
       {walletErr && <p style={{ ...mono, color: "crimson", fontSize: 12 }}>wallet history unavailable: {walletErr}</p>}
       {!rows.length && <p style={{ color: "#666" }}>Nothing yet.</p>}
