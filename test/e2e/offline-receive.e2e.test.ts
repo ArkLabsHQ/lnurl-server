@@ -348,6 +348,7 @@ describe("e2e: nameless offline receive via the intents corridor (self-claim)", 
   const dbPath = join(stateDir, "lnurl-server.sqlite");
   let payer: { stop: () => void } | undefined;
   let selfClaimed = false;
+  let covclaimdStopped = false;
   let sessionId = "";
 
   async function startLocal(): Promise<void> {
@@ -445,6 +446,7 @@ describe("e2e: nameless offline receive via the intents corridor (self-claim)", 
   afterAll(async () => {
     payer?.stop();
     await stopLocal();
+    if (covclaimdStopped) await startCovclaimd();
     rmSync(stateDir, { recursive: true, force: true });
   });
 
@@ -462,7 +464,10 @@ describe("e2e: nameless offline receive via the intents corridor (self-claim)", 
     if (!swapId) throw new Error(`no settlement record / swap id for ${paymentHash} — the callback should have created one`);
 
     // Restart to prove the nameless row and its swap survive a process bounce.
+    // covclaimd would otherwise race the self-claim this case asserts, as in the self-claim case above.
     await stopLocal();
+    await stopCovclaimd();
+    covclaimdStopped = true;
     await startLocal();
     verifyUrl = `${baseUrl}/lnurl/verify/${paymentHash}`;
     expect(settlements.get(paymentHash)).toMatchObject({ swapId, settled: false });
