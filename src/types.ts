@@ -27,6 +27,8 @@ export interface LnurlServiceConfig {
   maxSessions?: number;
   maxSessionsPerIp?: number;
   maxConcurrentOfflineQuotes?: number;
+  /** LUD-XX `verifyBatch` endpoint caps. Absent leaves every default. */
+  verifyBatch?: Partial<import("./verify-batch.js").VerifyBatchConfig>;
 }
 
 /** SSE event types sent to the wallet */
@@ -117,6 +119,8 @@ export interface LnurlPayCallbackResponse {
   routes: never[];
   /** LUD-21: URL the payer can poll to confirm settlement. Omitted if the bolt11 can't be decoded. */
   verify?: string;
+  /** LUD-XX verifyBatch: present exactly when `verify` is, since it only answers verify URLs. */
+  verifyBatch?: string;
   /** LUD-XX: echoed when the wallet explicitly selected `paymentOption=lightning` on the callback. */
   paymentOption?: string;
   /** LUD-XX: the quote, when the request was unit-denominated. */
@@ -129,6 +133,8 @@ export interface LnurlPayDestinationResponse {
   paymentOption: string;
   paymentDestination?: string;
   verify?: string;
+  /** LUD-XX verifyBatch: batch/stream endpoint covering every verify URL this server issues. */
+  verifyBatch?: string;
   /**
    * Unix seconds after which this server stops attributing payments to this
    * quote. A BOLT11 carries its own expiry and an address carries none, so

@@ -121,6 +121,8 @@ export interface Bolt11Result {
   pr: string;
   /** Verify URL tracking settlement; absent when the server could not decode the payment hash. */
   verify?: string;
+  /** LUD-XX verifyBatch: endpoint that batch-styles or streams settlement for a whole tracked set. */
+  verifyBatch?: string;
   /** Rail the invoice was issued for, echoed back when one was selected. */
   paymentOption?: string;
   /** Quote for a unit-converted payment, when one was requested. */
@@ -139,6 +141,8 @@ export interface DestinationResult {
   paymentDestination?: string;
   /** Verify URL tracking settlement; absent under the same conditions as the BOLT11 shape. */
   verify?: string;
+  /** LUD-XX verifyBatch: batch/stream endpoint covering a whole tracked set. */
+  verifyBatch?: string;
 }
 /** The settlement state `pollVerify` resolves with, in either rail shape. */
 export type VerifyStatus = Bolt11VerifyStatus | DestinationVerifyStatus;

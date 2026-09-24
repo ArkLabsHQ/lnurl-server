@@ -1,6 +1,14 @@
 import { LnurlError, LnurlTransportError, LnurlTimeoutError } from "./errors.js";
 import type { FetchImpl } from "./http.js";
 import { resolve, requestInvoice, pollVerify } from "./payer.js";
+import { batchVerify, openVerifyBatchStream } from "./verify-batch.js";
+import type {
+  BatchVerifyOptions,
+  OpenVerifyBatchStreamOptions,
+  VerifyBatchResult,
+  VerifyBatchStream,
+  VerifyBatchStreamHandlers,
+} from "./verify-batch.js";
 import { openSession } from "./session.js";
 import type { InvoiceResponder, LnurlSession, OpenSessionOptions, SessionHandlers } from "./session.js";
 import { deriveSessionToken, deriveSessionTokenWithSigner, deriveSessionId } from "./token.js";
@@ -90,6 +98,18 @@ export interface LnurlClient {
    */
   pollVerify(verifyUrl: string, opts?: PollVerifyOptions): Promise<VerifyStatus>;
   /**
+   * One-shot LUD-XX verifyBatch: N invoice statuses on one GET.
+   *
+   * @param verifyBatchUrl - The endpoint advertised next to the verify URLs.
+   * @param verifyUrls - The verify URLs currently pending, grouped by endpoint.
+   * @param opts - Optional abort signal and `fetch` override.
+   */
+  batchVerify(
+    verifyBatchUrl: string,
+    verifyUrls: readonly string[],
+    opts?: BatchVerifyOptions & { fetchImpl?: FetchImpl },
+  ): Promise<VerifyBatchResult>;
+  /**
    * Opens a receiver session as POST-SSE; resolves on `session_created`.
    * Requires `baseUrl`.
    *
@@ -98,6 +118,17 @@ export interface LnurlClient {
    * @returns The opened session once `session_created` arrives.
    */
   openSession(opts: OpenSessionOptions, handlers: SessionHandlers): Promise<LnurlSession>;
+  /**
+   * LUD-XX verifyBatch stream: snapshot burst first, then live settlements, and
+   * in-place tracked-set updates without reopening the connection.
+   *
+   * @param opts - Endpoint plus the initially pending verify URLs.
+   * @param handlers - Frame, removal and close callbacks.
+   */
+  openVerifyBatchStream(
+    opts: OpenVerifyBatchStreamOptions & { fetchImpl?: FetchImpl },
+    handlers: VerifyBatchStreamHandlers,
+  ): VerifyBatchStream;
   /**
    * Registers a LUD-16 lightning address. Requires `baseUrl`.
    *
@@ -166,8 +197,11 @@ export function createLnurlClient(opts?: LnurlClientOptions): LnurlClient {
     resolve: (input) => resolve(input, fetchImpl),
     requestInvoice: (payRequest, reqOpts) => requestInvoice(payRequest, reqOpts, fetchImpl),
     pollVerify: (verifyUrl, pollOpts) => pollVerify(verifyUrl, pollOpts, fetchImpl),
+    batchVerify: (verifyBatchUrl, verifyUrls, opts) => batchVerify(verifyBatchUrl, verifyUrls, opts, opts?.fetchImpl),
     openSession: async (sessionOpts, handlers) =>
       openSession(needBase("openSession"), sessionOpts, handlers, fetchImpl),
+    openVerifyBatchStream: (streamOpts, handlers) =>
+      openVerifyBatchStream(streamOpts, handlers, streamOpts?.fetchImpl),
     registerAddress: async (req) =>
       registerAddress(needBase("registerAddress"), req, fetchImpl),
     listAddresses: async (token) =>
@@ -203,6 +237,8 @@ export {
   resolve,
   revokeAddress,
   syncPayments,
+  batchVerify,
+  openVerifyBatchStream,
 };
 export { browserPaymentStore, forgetStoredPayments, storedPayments } from "./stores.js";
 export type {
@@ -237,3 +273,11 @@ export type {
   Unit,
   VerifyStatus,
 };
+export type {
+  BatchVerifyOptions,
+  OpenVerifyBatchStreamOptions,
+  VerifyBatchResult,
+  VerifyBatchResultItem,
+  VerifyBatchStream,
+  VerifyBatchStreamHandlers,
+} from "./verify-batch.js";

@@ -329,6 +329,64 @@ export const openApiSpec = {
         },
       },
     },
+    "/lnurl/verifyBatch": {
+      get: {
+        summary: "Batched and streamed settlement checking (LUD-XX verifyBatch)",
+        description:
+          "One GET answers the settlement state of every presented `verify` URL. " +
+          "With `Accept: text/event-stream` the same endpoint instead streams the " +
+          "snapshot and later settlement frames (the first frame is the session id). " +
+          "A `session` parameter instead updates that stream's tracked set via " +
+          "`add`/`remove`. Per-item errors never change the top-level status. " +
+          "Only URLs this server issued are answerable; none are ever fetched.",
+        tags: ["LNURL-pay"],
+        parameters: [
+          { name: "verify", in: "query", required: true, schema: { type: "array", items: { type: "string" } }, description: "LUD-21 verify URLs, repeated once each (duplicates collapse)" },
+          { name: "session", in: "query", schema: { type: "string" }, description: "Batch-stream session token; present it to update that stream's tracked set via `add`/`remove`" },
+          { name: "add", in: "query", schema: { type: "array", items: { type: "string" } }, description: "Verify URLs to start tracking (session update)" },
+          { name: "remove", in: "query", schema: { type: "array", items: { type: "string" } }, description: "Verify URLs to stop tracking (session update)" },
+        ],
+        responses: {
+          "200": {
+            description: "One-shot snapshot, update ack, or stream",
+            content: {
+              "application/json": {
+                schema: {
+                  oneOf: [
+                    {
+                      type: "object",
+                      properties: {
+                        status: { type: "string", enum: ["OK"] },
+                        results: {
+                          type: "object",
+                          description: "Keyed by the exact verify URL presented",
+                          additionalProperties: true,
+                        },
+                      },
+                    },
+                    {
+                      type: "object",
+                      properties: {
+                        status: { type: "string", enum: ["OK"] },
+                      },
+                    },
+                    {
+                      type: "object",
+                      properties: {
+                        status: { type: "string", enum: ["ERROR"] },
+                        reason: { type: "string" },
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+          "4xx": { description: "Malformed request or unknown session" },
+          "429": { description: "Rate limited or stream cap reached" },
+        },
+      },
+    },
     "/lnurl/session/{id}/settled": {
       post: {
         summary: "Report settlement (LUD-21)",

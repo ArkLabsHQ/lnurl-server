@@ -3,6 +3,7 @@
 import { expect, test } from "@playwright/test";
 import { counterpartyPayment, mine, payFromCounterparty, pollUntil } from "../../../test/e2e/support/regtest.js";
 import { readLocalStack, useLocalStack } from "./local-stack.js";
+import { paymentHashFromBolt11 } from "../../../src/bolt11.js";
 
 const SATS = 5000;
 const SWAP_TIMEOUT_MS = 12 * 60_000;
@@ -34,18 +35,20 @@ test("a browser wallet claims a name on the local server and receives a Lightnin
 
   const balanceBefore = sats(await page.locator("div").filter({ hasText: /^\d+ sats$/ }).first().innerText());
 
-  const payRequest = await (await fetch(`${stack.lnurlBase}/.well-known/lnurlp/${username}`)).json();
-  expect(payRequest.tag, `address did not resolve: ${payRequest.reason}`).toBe("payRequest");
-  // The advertised callback carries the address's domain, and a LUD-16 domain
-  // cannot name a port — so re-origin it rather than teach the server to
-  // advertise one it would not advertise behind a proxy.
-  const callbackUrl = new URL(new URL(String(payRequest.callback)).pathname, stack.lnurlBase);
-  const callback = await (await fetch(`${callbackUrl}?amount=${SATS * 1000}`)).json();
-  expect(callback.status, `callback refused: ${callback.reason}`).not.toBe("ERROR");
-  const invoice = String(callback.pr);
-  expect(invoice, "the offline-swap rail should have minted a regtest hold invoice").toMatch(/^lnbcrt/);
-  const verifyUrl = String(callback.verify);
-  const paymentHash = verifyUrl.split("/").pop()!;
+  // Requested through the Receive tab, so the page's own verifyBatch stream is what
+  // has to report the settlement below. The callback carries the LUD-16 domain,
+  // which cannot name a port, so the page's request is re-origined onto the server.
+  const portless = `http://${stack.lnurlDomain}/`;
+  await page.route((url) => url.href.startsWith(portless), (route) =>
+    route.continue({ url: route.request().url().replace(portless, `${stack.lnurlBase}/`) }));
+  await page.locator('input[type="number"]').fill(String(SATS));
+  await page.getByRole("button", { name: /Load options/ }).click();
+  await page.locator("div").filter({ has: page.locator("span", { hasText: /^lightning$/ }) }).last()
+    .getByRole("button", { name: `Request ${SATS} sats` }).click();
+  const invoice = (await page.getByText(/^lnbcrt/).first().innerText({ timeout: 60_000 })).trim();
+  const paymentHash = paymentHashFromBolt11(invoice)!;
+  expect(paymentHash, "the offline-swap rail should have minted a regtest hold invoice").toMatch(/^[0-9a-f]{64}$/);
+  const verifyUrl = `${stack.lnurlBase}/lnurl/verify/${paymentHash}`;
 
   const payer = payFromCounterparty(invoice);
   try {
@@ -92,6 +95,7 @@ test("a browser wallet claims a name on the local server and receives a Lightnin
     );
     expect(payment!.payment_preimage).toBe(preimage);
     expect(Number(payment!.value_sat)).toBe(SATS);
+    await expect(page.getByText("settled", { exact: true })).toBeVisible({ timeout: 60_000 });
   } finally {
     payer.stop();
   }

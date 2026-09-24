@@ -120,7 +120,7 @@ function makeRail(
       return {
         ...quote,
         railId: id,
-        meta: { ...quote.meta, lnurl: { target: req.raw, via: inner.id, verify: result.verify } },
+        meta: { ...quote.meta, lnurl: { target: req.raw, via: inner.id, verify: result.verify, verifyBatch: result.verifyBatch } },
       };
     },
   };

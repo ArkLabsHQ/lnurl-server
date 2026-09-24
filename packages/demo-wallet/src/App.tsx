@@ -8,6 +8,7 @@ import { balanceView } from "./balance.js";
 import { createMnemonic, loadMnemonic, openWallet, wipeWallet, type DemoWallet } from "./wallet.js";
 import { ownPayRequest, payer, receiver } from "./lnurl.js";
 import { createRouter, RAIL_PRIORITY } from "./router.js";
+import { pendingConfirmations, watchSettlement } from "./batch-verify.js";
 import { storedPayments } from "@arkade-os/lnurl-client";
 import { autoSettleBoarding, type BoardingState } from "./boarding.js";
 import { Backup } from "./Backup.js";
@@ -228,7 +229,7 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
           </span>
         )}
         <button style={{ ...btn, marginLeft: "auto" }} onClick={() => refresh()}>Refresh</button>
-        <button style={btn} onClick={async () => { await wipeWallet(); forgetStoredPayments(); forgetSent(); onReset(); }}>Reset</button>
+        <button style={btn} onClick={async () => { await wipeWallet(); forgetStoredPayments(); forgetSent(); pendingConfirmations.forget(); onReset(); }}>Reset</button>
       </div>
 
       <nav style={{ display: "flex", gap: 12, borderBottom: "1px solid #ccc", marginBottom: 16 }}>
@@ -272,6 +273,8 @@ function Receive({ lightningAddress }: { lightningAddress: string }) {
   const [settled, setSettled] = useState<string>("");
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
+  const watch = useRef<{ stop: () => void } | null>(null);
+  useEffect(() => () => watch.current?.stop(), []);
 
   const load = async () => {
     setBusy("options"); setErr(""); setResult(null); setSettled("");
@@ -291,9 +294,17 @@ function Receive({ lightningAddress }: { lightningAddress: string }) {
       // Absence is "no answer available", not failure: only a destination that
       // identifies the payment gets a verify URL. @see lnurl.ts
       if (value.verify) {
-        void payer.pollVerify(value.verify, { timeoutMs: 300_000, intervalMs: 3_000 })
-          .then((v) => setSettled(v.settled ? "settled" : "not settled within the poll window"))
-          .catch((e: Error) => setSettled(`verify failed: ${e.message}`));
+        if (value.verifyBatch) {
+          watch.current?.stop();
+          watch.current = watchSettlement(
+            { verifyBatchUrl: value.verifyBatch, verifyUrl: value.verify },
+            { settled: () => setSettled("settled"), gaveUp: (reason) => setSettled(`not settled: ${reason}`) },
+          );
+        } else {
+          void payer.pollVerify(value.verify, { timeoutMs: 300_000, intervalMs: 3_000 })
+            .then((v) => setSettled(v.settled ? "settled" : "not settled within the poll window"))
+            .catch((e: Error) => setSettled(`verify failed: ${e.message}`));
+        }
       }
     } catch (e) { setErr((e as Error).message); }
     finally { setBusy(""); }
@@ -437,16 +448,22 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
       // Sending says the payment left; only this says the receiver got it —
       // and a rail whose destination cannot identify the payment supplies none,
       // so absence is "no answer available" rather than a failure.
-      const verifyUrl = (quote.meta?.lnurl as { verify?: string } | undefined)?.verify;
-      if (verifyUrl) {
-        void payer.pollVerify(verifyUrl, { timeoutMs: 180_000, intervalMs: 2_000 })
-          .then((v) => {
+      const lnurlMeta = quote.meta?.lnurl as { verify?: string; verifyBatch?: string } | undefined;
+      if (lnurlMeta?.verify) {
+        // One LUD-XX verifyBatch GET per endpoint per cycle covers the whole
+        // pending send set; a verify-less endpoint keeps plain LUD-21 polling.
+        pendingConfirmations.add({
+          verifyUrl: lnurlMeta.verify,
+          ...(lnurlMeta.verifyBatch !== undefined ? { verifyBatch: lnurlMeta.verifyBatch } : {}),
+          timeoutMs: 180_000,
+          onSettled: (v) => {
             note({ receiverConfirmed: v.settled });
             setStatus(v.settled
               ? `receiver confirmed settled via ${quote.railId}`
               : `receiver has not confirmed settlement via ${quote.railId}`);
-          })
-          .catch((e: Error) => setStatus(`sent via ${quote.railId}, but verify failed: ${e.message}`));
+          },
+          onError: (e) => setStatus(`sent via ${quote.railId}, but receiver settled unconfirmed: ${e.message}`),
+        });
       }
     } catch (e) { setStatus(`payment failed: ${(e as Error).message}`); }
     finally { setBusy(false); setPaying(undefined); }

@@ -2,6 +2,15 @@ import { lnurlFetch, type FetchImpl } from "./http.js";
 import { LnurlError, LnurlTimeoutError, LnurlTransportError } from "./errors.js";
 import { toPayRequestUrl } from "./encoding.js";
 import type { Bolt11Result, InvoiceResult, PayRequest, PaymentQuote, PollVerifyOptions, RequestInvoiceOptions, VerifyStatus } from "./types.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { hex } from "@scure/base";
+import { paymentHashOf } from "./bolt11.js";
+
+function preimageOpens(preimage: string, pr: string): boolean {
+  const hash = paymentHashOf(pr);
+  if (!hash || !/^[0-9a-f]{64}$/i.test(preimage)) return false;
+  return hex.encode(sha256(hex.decode(preimage.toLowerCase()))) === hash;
+}
 
 /**
  * Fetches the payRequest for a lightning address or bech32 LNURL.
@@ -79,6 +88,7 @@ export async function requestInvoice(
   const body = await lnurlFetch<Record<string, unknown>>(`${payRequest.callback}${sep}${params.toString()}`, undefined, fetchImpl);
   if (typeof body.pr === "string") {
     const result: Bolt11Result = { kind: "bolt11", pr: body.pr, verify: typeof body.verify === "string" ? body.verify : undefined };
+    if (typeof body.verifyBatch === "string") result.verifyBatch = body.verifyBatch;
     if (typeof body.paymentOption === "string") result.paymentOption = body.paymentOption;
     if (body.paymentQuote !== undefined) result.paymentQuote = body.paymentQuote as PaymentQuote;
     return result;
@@ -89,19 +99,24 @@ export async function requestInvoice(
       paymentOption: body.paymentOption,
       ...(typeof body.paymentDestination === "string" ? { paymentDestination: body.paymentDestination } : {}),
       ...(typeof body.verify === "string" ? { verify: body.verify } : {}),
+      ...(typeof body.verifyBatch === "string" ? { verifyBatch: body.verifyBatch } : {}),
     };
   }
   throw new LnurlError("Unexpected callback response");
 }
 
-function parseVerifyStatus(body: Record<string, unknown>): VerifyStatus {
+/** Parses one verify answer — the per-invoice route, one `results` entry of the
+ *  batch endpoint, or one streamed frame payload all share the shape. */
+export function parseVerifyStatus(body: Record<string, unknown>): VerifyStatus {
   if (typeof body.pr === "string") {
-    return {
-      kind: "bolt11",
-      settled: body.settled === true,
-      preimage: typeof body.preimage === "string" ? body.preimage : null,
-      pr: body.pr,
-    };
+    const settled = body.settled === true;
+    const preimage = typeof body.preimage === "string" ? body.preimage : null;
+    // A settled claim is only proof when the preimage opens this invoice; one
+    // that cannot be checked is treated like one that fails.
+    if (settled && (!preimage || !preimageOpens(preimage, body.pr))) {
+      throw new LnurlError("Verify reported settled with a preimage that does not match the invoice's payment hash");
+    }
+    return { kind: "bolt11", settled, preimage, pr: body.pr };
   }
   // Without this the cast would hand back `undefined` typed as `string` for any
   // body that is neither a bolt11 nor a well-formed destination.

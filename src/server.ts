@@ -13,6 +13,7 @@ import { paymentHashFromBolt11 } from "./bolt11.js";
 import { deriveSessionId } from "./session-id.js";
 import { isValidToken } from "./usernames.js";
 import { MemorySettlementStore, type SettlementStore } from "./settlement-store.js";
+import { attachVerifyBatchRoute, BATCH_PATH } from "./verify-batch.js";
 import type { OfflineSwapCreator } from "./intent-swap.js";
 import type { OfflineSwapStore } from "./offline-swap-store.js";
 import { HealthRegistry } from "./health.js";
@@ -138,6 +139,7 @@ async function createOfflineSwapAndRespond(args: {
       pr: swap.invoice,
       routes: [],
       verify: `${baseUrl}/lnurl/verify/${swap.preimageHash}`,
+      verifyBatch: `${baseUrl}${BATCH_PATH}`,
       ...(paymentQuote ? { paymentQuote } : {}),
       ...(echoLightningOption ? { paymentOption: "lightning" } : {}),
     } satisfies LnurlPayCallbackResponse);
@@ -206,7 +208,7 @@ async function requestInvoiceAndRespond(args: {
     const echo = echoLightningOption ? { paymentOption: "lightning" } : {};
     if (paymentHash) {
       store.create({ paymentHash, pr, sessionId, amountMsat, addressId });
-      res.json({ pr, routes: [], verify: `${baseUrl}/lnurl/verify/${paymentHash}`, ...(paymentQuote ? { paymentQuote } : {}), ...echo } satisfies LnurlPayCallbackResponse);
+      res.json({ pr, routes: [], verify: `${baseUrl}/lnurl/verify/${paymentHash}`, verifyBatch: `${baseUrl}${BATCH_PATH}`, ...(paymentQuote ? { paymentQuote } : {}), ...echo } satisfies LnurlPayCallbackResponse);
     } else {
       res.json({ pr, routes: [], ...(paymentQuote ? { paymentQuote } : {}), ...echo } satisfies LnurlPayCallbackResponse);
     }
@@ -424,10 +426,22 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         // rail that txid links the per-payment destination to the user's static
         // address. Owners read it from the authenticated payments sync.
         paymentReference: rec.paymentReference,
+        verifyBatch: `${settings.baseUrl()}${BATCH_PATH}`,
       });
       return;
     }
-    res.json({ status: "OK", settled: rec.settled, preimage: rec.settled ? rec.preimage : null, pr: rec.pr });
+    res.json({ status: "OK", settled: rec.settled, preimage: rec.settled ? rec.preimage : null, pr: rec.pr, verifyBatch: `${settings.baseUrl()}${BATCH_PATH}` });
+  });
+
+  // ─── GET /lnurl/verifyBatch ─────────────────────────────────────────
+  // LUD-XX verifyBatch: one GET for a whole set of pending invoices, optional
+  // SSE stream over the same endpoint, and in-place tracked-set updates via
+  // session GETs. Registered before /lnurl/:id which would eat the literal path.
+  attachVerifyBatchRoute(app, {
+    store,
+    verifyLimiter,
+    logger,
+    ...(config.verifyBatch ? { config: config.verifyBatch } : {}),
   });
 
   // ─── GET /lnurl/:id ──────────────────────────────────────────────────
@@ -735,7 +749,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           // be told someone else's arrived. The record is still written — the
           // watcher settles it and the activity list shows it — but the payer is
           // not handed a URL whose answer the server cannot stand behind.
-          ...(derived ? { verify: `${settings.baseUrl()}/lnurl/verify/${verifyId}` } : {}),
+          ...(derived ? { verify: `${settings.baseUrl()}/lnurl/verify/${verifyId}`, verifyBatch: `${settings.baseUrl()}${BATCH_PATH}` } : {}),
         } satisfies LnurlPayDestinationResponse);
         return;
       }

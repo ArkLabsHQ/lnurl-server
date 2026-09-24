@@ -69,9 +69,28 @@ if (invoice.kind === "bolt11" && invoice.verify) {
 }
 ```
 
+A settled bolt11 status is only returned when `SHA256(preimage)` equals the payment hash in `pr`. Anything else — a wrong preimage, or a `pr` that cannot be decoded — is rejected rather than reported as settled.
+
 `requestInvoice` takes `amountSat` plus an optional `comment`. On an address payRequest it also accepts `paymentOption` and `unit`; on a session payRequest those two are rejected. The amount is range-checked locally before anything hits the wire.
 
 **Rails can carry different amounts, so check the option you selected.** A covenant destination is bounded by dust and VTXO shape, a solver-mediated swap by whatever the solver quotes — so an entry in `paymentOptions` may publish its own `minSendable`/`maxSendable`, and those win over the top-level pair when you select it. The top-level pair describes the rail you get by sending no `paymentOption` at all. `requestInvoice` applies that rule for you; apply it yourself if you build the callback URL by hand, or you will reject amounts the rail would have accepted.
+
+### Many pending invoices: verifyBatch
+
+When the callback also returns `verifyBatch` ([LUD-XX, lnurl/luds#299](https://github.com/lnurl/luds/pull/299)), one request covers every pending invoice at that endpoint:
+
+```ts
+const { results } = await payer.batchVerify(invoice.verifyBatch, pendingVerifyUrls);
+// results[url] is { kind: "verify", status } or { kind: "error", reason }, one per URL you sent
+
+const stream = payer.openVerifyBatchStream(
+  { verifyBatchUrl: invoice.verifyBatch, verifyUrls: pendingVerifyUrls },
+  { onUpdate: (url, status) => { /* snapshot first, then live settlements */ }, onClose: () => { /* reopen if still pending */ } },
+);
+stream.update([newVerifyUrl], [settledVerifyUrl]); // grow or shrink the set without reconnecting
+```
+
+`batchVerify` splits the set and retries when the server answers `414`/`431`. The stream falls back to the one-shot snapshot when the server does not stream (including a `406`), and closing is final: reopening is the caller's job.
 
 ## Receiver
 
