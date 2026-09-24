@@ -1,4 +1,4 @@
-import { createServer } from "./server.js";
+import { createServer } from "./http/server.js";
 import { loadConfig } from "./config.js";
 import { VERSION } from "./version.js";
 import { SessionManager } from "./services/sessions.js";
@@ -44,7 +44,7 @@ async function main(): Promise<void> {
     runtime.setDatabase(db);
     health.register("persistence", () => ({ ok: runtime.resources().dbOpen, detail: "SQLite open" }));
   }
-  let deps: import("./server.js").ServerDeps | undefined;
+  let deps: import("./http/server.js").ServerDeps | undefined;
   let solverDiscovery: import("./services/solver-discovery.js").DiscoveryService | undefined;
 
   if (db) {
@@ -250,7 +250,7 @@ async function main(): Promise<void> {
     }
     console.log(`persistence: enabled at ${config.dbPath} (${deps.repos.domains.list().length} domain(s))`);
 
-    const { createAdminServer } = await import("./admin-server.js");
+    const { createAdminServer } = await import("./http/admin-server.js");
     // Its own indexer client rather than a shared one: the reconcile route is an
     // operator-triggered read, and giving it the contract manager's would let a
     // support query contend with the watchers for the same connection.

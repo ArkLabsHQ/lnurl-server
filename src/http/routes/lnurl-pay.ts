@@ -1,11 +1,11 @@
 import { Router } from "express";
-import { RateLimiter } from "../rate-limit.js";
-import type { LnurlPayMetadata } from "../types/index.js";
-import { LnurlError } from "../http-errors.js";
-import { strParam } from "../http-params.js";
-import { buildMetadata, requestSessionInvoice } from "../services/pay-flow.js";
+import { RateLimiter } from "../../rate-limit.js";
+import type { LnurlPayMetadata } from "../../types/index.js";
+import { LnurlError } from "../errors.js";
+import { strParam } from "../params.js";
+import { buildMetadata, requestSessionInvoice } from "../../services/pay-flow.js";
 import type { ServerContext } from "../server-context.js";
-import { attachVerifyBatchRoute, BATCH_PATH } from "../verify-batch.js";
+import { attachVerifyBatchRoute, BATCH_PATH } from "../../verify-batch.js";
 
 /** LUD-06 pay flow for an interactive session's LNURL, plus LUD-21 verify and LUD-XX verifyBatch. */
 export function lnurlPayRoutes({ config, sessions, store, settings, logger }: ServerContext): Router {

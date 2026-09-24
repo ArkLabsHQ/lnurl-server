@@ -17,7 +17,7 @@ import { hex } from "@scure/base";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { MnemonicIdentity, Wallet, RestIndexerProvider, ArkAddress, ContractManager, contractHandlers, type IContractManager } from "@arkade-os/sdk";
-import { createServer } from "../../src/server.js";
+import { createServer } from "../../src/http/server.js";
 import { openDb, type Db } from "../../src/db/connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
 import { bootstrap } from "../../src/bootstrap.js";

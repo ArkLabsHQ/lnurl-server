@@ -31,7 +31,7 @@ import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { MnemonicIdentity, Wallet, RestIndexerProvider, ArkAddress, Extension, Transaction } from "@arkade-os/sdk";
 import { CLAIM_PACKET_TYPE } from "../../src/covenant/claim-packet.js";
 import { deriveSessionId } from "../../src/session-token.js";
-import { createServer } from "../../src/server.js";
+import { createServer } from "../../src/http/server.js";
 import { openDb, type Db } from "../../src/db/connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
 import { bootstrap } from "../../src/bootstrap.js";

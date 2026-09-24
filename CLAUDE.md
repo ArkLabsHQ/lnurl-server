@@ -59,10 +59,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/):
 
 ## Architecture
 
-- `src/server.ts` — Composes the public Express app: middleware, `ServerContext` (`src/server-context.ts`), routers, error handlers
-- `src/routes/` — Routers only, one file per URL group: `lnurl-session` (wallet SSE), `lnurl-pay` (LUD-06/21 for a session), `well-known` (LUD-16), `lnurl-address` (owner REST), `health`, `docs`, and `admin/` (mounted by `src/admin-server.ts`). Shared logic lives outside: `src/services/pay-flow.ts`, `src/services/reconcile.ts`, `src/http-params.ts`
+- Layout: `src/http/` (Express apps, routes, HTTP errors), `src/services/` (domain logic routes call), `src/workers/` (background loops), `src/covenant/` (covenant scripts, claim packets, self-claim); cross-cutting modules stay in `src/`
+- `src/http/server.ts` — Composes the public Express app: middleware, `ServerContext` (`src/http/server-context.ts`), routers, error handlers
+- `src/http/routes/` — Routers only, one file per URL group: `lnurl-session` (wallet SSE), `lnurl-pay` (LUD-06/21 for a session), `well-known` (LUD-16), `lnurl-address` (owner REST), `health`, `docs`, and `admin/` (mounted by `src/http/admin-server.ts`). Shared logic lives outside: `src/services/pay-flow.ts`, `src/services/reconcile.ts`, `src/http/params.ts`
 - `src/errors.ts` — Domain errors, each with a `kind`; none knows HTTP
-- `src/http-errors.ts` — HTTP errors (`LnurlError` → LUD-06 body; `BadRequest`/`NotFound`/… → `{ error }`), the exhaustive domain `kind` → status map, and the handlers that answer both
+- `src/http/errors.ts` — HTTP errors (`LnurlError` → LUD-06 body; `BadRequest`/`NotFound`/… → `{ error }`), the exhaustive domain `kind` → status map, and the handlers that answer both
 - `src/services/sessions.ts` — Session lifecycle, SSE streaming, invoice request/response flow
 - `src/types/` — Shared TypeScript types by topic (config, session, lnurl, db) behind `index.ts`
 - `src/cli.ts` — CLI entrypoint reading config from env vars

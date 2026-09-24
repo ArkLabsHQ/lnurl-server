@@ -6,7 +6,7 @@ import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
 import { AddressService } from "../src/services/addresses.js";
 import { SessionManager } from "../src/services/sessions.js";
-import { createAdminServer } from "../src/admin-server.js";
+import { createAdminServer } from "../src/http/admin-server.js";
 import { loadConfig } from "../src/config.js";
 import { SettingsService } from "../src/services/settings.js";
 

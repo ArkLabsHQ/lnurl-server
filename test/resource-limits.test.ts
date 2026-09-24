@@ -3,7 +3,7 @@ import request from "supertest";
 import { PassThrough } from "node:stream";
 import type { Response } from "express";
 import { SessionManager } from "../src/services/sessions.js";
-import { createServer } from "../src/server.js";
+import { createServer } from "../src/http/server.js";
 
 describe("resource limits", () => {
   it("rejects an SSE connection above the per-IP cap before opening the stream", async () => {

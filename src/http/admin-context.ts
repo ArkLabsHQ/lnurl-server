@@ -1,13 +1,13 @@
 import type { IndexerProvider } from "@arkade-os/sdk";
-import type { Repositories } from "./db/repositories/index.js";
-import type { AddressService } from "./services/addresses.js";
-import type { SessionManager } from "./services/sessions.js";
-import type { SettingsService } from "./services/settings.js";
-import type { AppConfig } from "./config.js";
-import type { SettlementStore } from "./settlement-store.js";
-import type { DiscoveryService } from "./services/solver-discovery.js";
-import type { Logger } from "./logger.js";
-import type { ServerRailCaps } from "./rails.js";
+import type { Repositories } from "../db/repositories/index.js";
+import type { AddressService } from "../services/addresses.js";
+import type { SessionManager } from "../services/sessions.js";
+import type { SettingsService } from "../services/settings.js";
+import type { AppConfig } from "../config.js";
+import type { SettlementStore } from "../settlement-store.js";
+import type { DiscoveryService } from "../services/solver-discovery.js";
+import type { Logger } from "../logger.js";
+import type { ServerRailCaps } from "../rails.js";
 
 export interface AdminDeps {
   repos: Repositories;

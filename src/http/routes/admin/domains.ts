@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { BadRequest, NotFound } from "../../http-errors.js";
+import { BadRequest, NotFound } from "../../errors.js";
 import type { AdminDeps } from "../../admin-context.js";
 
 const VALID_ALLOCATION_MODES = new Set(["self", "random", "admin", "session"]);

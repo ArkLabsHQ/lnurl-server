@@ -1,11 +1,11 @@
 import { Router } from "express";
 import { ArkAddress } from "@arkade-os/sdk";
-import { encodeLnurl } from "../lnurl.js";
-import { isNameless } from "../services/addresses.js";
-import { isValidToken } from "../session-token.js";
-import type { AddressRow, DomainRow } from "../types/index.js";
-import { BadRequest, NotFound, TooManyRequests, Unauthorized } from "../http-errors.js";
-import { bearerToken, domainFor, strParam } from "../http-params.js";
+import { encodeLnurl } from "../../lnurl.js";
+import { isNameless } from "../../services/addresses.js";
+import { isValidToken } from "../../session-token.js";
+import type { AddressRow, DomainRow } from "../../types/index.js";
+import { BadRequest, NotFound, TooManyRequests, Unauthorized } from "../errors.js";
+import { bearerToken, domainFor, strParam } from "../params.js";
 import type { ServerContext } from "../server-context.js";
 
 /** One shape for register, upgrade and list, so they cannot drift. A flagged row's

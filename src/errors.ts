@@ -1,5 +1,5 @@
 /** Errors the domain throws for a caller to recognise. None of them knows HTTP:
- *  http-errors.ts maps each kind to a status, exhaustively. */
+ *  http/errors.ts maps each kind to a status, exhaustively. */
 
 export const ERROR_KINDS = [
   "invalid_session_token",

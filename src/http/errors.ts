@@ -1,7 +1,7 @@
 import type { ErrorRequestHandler } from "express";
-import type { LnurlErrorResponse } from "./types/index.js";
-import type { Logger } from "./logger.js";
-import { assertUnreachable, isDomainError, type DomainError, type ProvisioningCode } from "./errors.js";
+import type { LnurlErrorResponse } from "../types/index.js";
+import type { Logger } from "../logger.js";
+import { assertUnreachable, isDomainError, type DomainError, type ProvisioningCode } from "../errors.js";
 
 /** An LNURL protocol failure. LUD-06 carries it in the body, so the status stays 200 unless rate-limiting. */
 export class LnurlError extends Error {

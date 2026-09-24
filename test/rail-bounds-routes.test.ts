@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import http from "node:http";
-import { createServer, type ServerDeps } from "../src/server.js";
+import { createServer, type ServerDeps } from "../src/http/server.js";
 import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
 import { MemorySettlementStore } from "../src/settlement-store.js";
 import type { OfflineSwapCreator } from "../src/services/offline-swaps.js";
 import type { LnurlServiceConfig } from "../src/types/index.js";
-import { openApiSpec } from "../src/openapi.js";
+import { openApiSpec } from "../src/http/openapi.js";
 
 /** Present only so the offline-swap rail counts as available; never called. */
 const swapCreator = {

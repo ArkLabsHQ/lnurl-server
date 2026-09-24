@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { BadRequest, HttpError, NotFound, NotImplemented } from "../../http-errors.js";
-import { RECONCILE_MAX, reconcileAddresses } from "../../services/reconcile.js";
+import { BadRequest, HttpError, NotFound, NotImplemented } from "../../errors.js";
+import { RECONCILE_MAX, reconcileAddresses } from "../../../services/reconcile.js";
 import type { AdminDeps } from "../../admin-context.js";
 
 /** @see reconcileAddresses */

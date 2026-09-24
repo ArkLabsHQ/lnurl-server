@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { BadRequest } from "../../http-errors.js";
+import { BadRequest } from "../../errors.js";
 import type { AdminDeps } from "../../admin-context.js";
 
 export function adminBlacklistRoutes({ repos }: AdminDeps): Router {

@@ -9,10 +9,10 @@ import { SessionManager } from "../src/services/sessions.js";
 import { SettingsService } from "../src/services/settings.js";
 import { loadConfig } from "../src/config.js";
 import { DbSettlementStore } from "../src/settlement-store.js";
-import { createServer } from "../src/server.js";
-import { createAdminServer } from "../src/admin-server.js";
-import { openApiSpec } from "../src/openapi.js";
-import { adminOpenApiSpec } from "../src/admin-openapi.js";
+import { createServer } from "../src/http/server.js";
+import { createAdminServer } from "../src/http/admin-server.js";
+import { openApiSpec } from "../src/http/openapi.js";
+import { adminOpenApiSpec } from "../src/http/admin-openapi.js";
 
 /**
  * Endpoints that serve the specs/docs themselves and are deliberately absent from them:

@@ -1,7 +1,7 @@
 import type { Request } from "express";
-import type { Repositories } from "./db/repositories/index.js";
-import type { DomainRow } from "./types/index.js";
-import { domainFromHost } from "./http-origin.js";
+import type { Repositories } from "../db/repositories/index.js";
+import type { DomainRow } from "../types/index.js";
+import { domainFromHost } from "./origin.js";
 
 /** Express types query values as string | string[] | ...; an array (`?a=1&a=2`)
  *  is never meaningful for our params — take them only when they're a string. */

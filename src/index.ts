@@ -1,4 +1,4 @@
-export { createServer } from "./server.js";
+export { createServer } from "./http/server.js";
 export { SessionManager } from "./services/sessions.js";
 export type {
   LnurlServiceConfig,

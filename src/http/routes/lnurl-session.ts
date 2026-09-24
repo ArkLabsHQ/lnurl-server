@@ -1,10 +1,10 @@
 import { Router } from "express";
 import { createHash } from "node:crypto";
-import { encodeLnurl } from "../lnurl.js";
-import { isValidToken } from "../session-token.js";
-import type { InvoiceResponse } from "../types/index.js";
-import { BadRequest, Conflict, NotFound, TooManyRequests, Unauthorized } from "../http-errors.js";
-import { bearerToken } from "../http-params.js";
+import { encodeLnurl } from "../../lnurl.js";
+import { isValidToken } from "../../session-token.js";
+import type { InvoiceResponse } from "../../types/index.js";
+import { BadRequest, Conflict, NotFound, TooManyRequests, Unauthorized } from "../errors.js";
+import { bearerToken } from "../params.js";
 import type { ServerContext } from "../server-context.js";
 
 /** The wallet's side of an interactive session: the SSE stream and its two replies. */

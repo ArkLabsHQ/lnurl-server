@@ -1,7 +1,7 @@
 import { Router } from "express";
-import type { AddressStatus } from "../../types/index.js";
-import { effectiveRails } from "../../rails.js";
-import { BadRequest, NotFound } from "../../http-errors.js";
+import type { AddressStatus } from "../../../types/index.js";
+import { effectiveRails } from "../../../rails.js";
+import { BadRequest, NotFound } from "../../errors.js";
 import { adminRailCaps, type AdminDeps } from "../../admin-context.js";
 
 export function adminAddressRoutes(deps: AdminDeps): Router {

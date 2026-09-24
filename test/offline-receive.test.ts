@@ -3,7 +3,7 @@ import http from "node:http";
 import { randomBytes } from "node:crypto";
 import { bech32 } from "@scure/base";
 import { ArkAddress } from "@arkade-os/sdk";
-import { createServer } from "../src/server.js";
+import { createServer } from "../src/http/server.js";
 import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";

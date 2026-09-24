@@ -19,7 +19,7 @@
 // it; no plumbing changes are needed beyond a new entry here.
 
 import type { PaymentOption } from "./payment-options.js";
-import type { ServerDeps } from "./server-context.js";
+import type { ServerDeps } from "./http/server-context.js";
 import { InvalidRailPolicyError } from "./errors.js";
 
 /** Every receive rail the server knows. The order is the advertise order. */

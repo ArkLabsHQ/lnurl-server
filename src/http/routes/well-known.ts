@@ -1,8 +1,8 @@
 import { Router, type Request, type Response } from "express";
 import { randomBytes } from "node:crypto";
-import type { Repositories } from "../db/repositories/index.js";
-import { RateLimiter } from "../rate-limit.js";
-import { resolvePaymentOption } from "../payment-options.js";
+import type { Repositories } from "../../db/repositories/index.js";
+import { RateLimiter } from "../../rate-limit.js";
+import { resolvePaymentOption } from "../../payment-options.js";
 import {
   advertisedBounds,
   advertisedRailOptions,
@@ -12,16 +12,16 @@ import {
   type AddressRailState,
   type Bounds,
   type ServerRailCaps,
-} from "../rails.js";
-import { applyQuote, type PaymentQuote } from "../quote-provider.js";
-import type { DerivedDestination } from "../covenant/destination.js";
-import type { AddressRow, DomainRow, LnurlPayDestinationResponse, LnurlPayMetadata } from "../types/index.js";
-import { LnurlError } from "../http-errors.js";
-import { domainFor, originOf, strParam } from "../http-params.js";
-import { buildMetadata, createOfflineSwapInvoice, destinationUri, requestSessionInvoice } from "../services/pay-flow.js";
+} from "../../rails.js";
+import { applyQuote, type PaymentQuote } from "../../quote-provider.js";
+import type { DerivedDestination } from "../../covenant/destination.js";
+import type { AddressRow, DomainRow, LnurlPayDestinationResponse, LnurlPayMetadata } from "../../types/index.js";
+import { LnurlError } from "../errors.js";
+import { domainFor, originOf, strParam } from "../params.js";
+import { buildMetadata, createOfflineSwapInvoice, destinationUri, requestSessionInvoice } from "../../services/pay-flow.js";
 import type { ServerContext } from "../server-context.js";
-import { isNameless } from "../services/addresses.js";
-import { BATCH_PATH } from "../verify-batch.js";
+import { isNameless } from "../../services/addresses.js";
+import { BATCH_PATH } from "../../verify-batch.js";
 
 const DEFAULT_DESTINATION_WATCH_MS = 604_800_000;
 

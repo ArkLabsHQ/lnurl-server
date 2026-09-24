@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import express from "express";
 import request from "supertest";
-import { BadRequest, LnurlError, NotFound, httpErrorHandler, lnurlErrorHandler } from "../src/http-errors.js";
+import { BadRequest, LnurlError, NotFound, httpErrorHandler, lnurlErrorHandler } from "../src/http/errors.js";
 import type { Logger } from "../src/logger.js";
 import { MalformedRecordError, ProvisioningError, UpstreamError } from "../src/errors.js";
 

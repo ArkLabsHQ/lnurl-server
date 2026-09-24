@@ -1,4 +1,4 @@
-import { VERSION } from "./version.js";
+import { VERSION } from "../version.js";
 
 const HANDLE_PARAM =
   "Handle: the username, or the session id while nameless. A row that had a session LNURL still answers to its session id after an upgrade, while it is active.";

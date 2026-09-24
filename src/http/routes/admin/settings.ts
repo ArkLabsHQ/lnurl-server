@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { isSettingKey } from "../../services/settings.js";
-import { BadRequest } from "../../http-errors.js";
+import { isSettingKey } from "../../../services/settings.js";
+import { BadRequest } from "../../errors.js";
 import type { AdminDeps } from "../../admin-context.js";
 
 /** Editable "soft" settings (env default + DB override) plus a read-only view of the

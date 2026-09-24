@@ -1,5 +1,5 @@
 import { Router } from "express";
-import type { HealthRegistry } from "../health.js";
+import type { HealthRegistry } from "../../health.js";
 
 export function healthRoutes(health: HealthRegistry): Router {
   const r = Router();

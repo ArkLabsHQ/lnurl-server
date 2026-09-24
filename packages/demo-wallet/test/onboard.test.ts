@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { ArkAddress, MnemonicIdentity } from "@arkade-os/sdk";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
-import { createServer } from "../../../src/server.js";
+import { createServer } from "../../../src/http/server.js";
 import { openDb, type Db } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../../../src/db/repositories/index.js";
