@@ -1,0 +1,13 @@
+{
+  "comment": "The vitest unit tests, which neither the app nor the e2e tsconfig includes. Standalone for the same reason as tsconfig.e2e.json: the app one pins `types` to vite/client.",
+  "compilerOptions": {
+    "target": "ES2022", "module": "ESNext", "moduleResolution": "bundler",
+    "jsx": "react-jsx", "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true, "skipLibCheck": true, "noEmit": true,
+    "paths": {
+      "@arkade-os/lnurl-client": ["../client/src/index.ts"],
+      "@arkade-os/lnurl-client/arkade": ["../client/src/arkade.ts"]
+    }
+  },
+  "include": ["test"]
+}

@@ -88,9 +88,11 @@ export class AddressService {
     const a = this.ownedByHandle(p.domain, p.handle, p.token);
     if (!a || a.status !== "active") throw new ProvisioningError("not_found", "address not found or not owned by this token");
     if (!isNameless(a)) throw new ProvisioningError("already_named", "address already has a name");
-    const username = this.pickUpgradeName(p.domain, a, p.username, p.claimCode);
-    this.repos.addresses.rename(a.id, username);
-    return this.repos.addresses.getById(a.id)!;
+    return this.repos.transaction(() => {
+      const username = this.pickUpgradeName(p.domain, a, p.username, p.claimCode);
+      this.repos.addresses.rename(a.id, username);
+      return this.repos.addresses.getById(a.id)!;
+    });
   }
 
   /** The row `handle` names for this token's owner. A flagged row stays reachable by its session id after

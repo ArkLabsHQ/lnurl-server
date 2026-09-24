@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { randomBytes } from "node:crypto";
 import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
@@ -197,6 +197,23 @@ describe("AddressService — session mode, nameless register, upgrade", () => {
     svc.setRailPolicy(address.id, ["onchain"]);
     const up = svc.upgrade({ domain: allModes, handle: address.username, token: TOKEN, username: "bob", claimCode });
     expect([...up.disabledRails].sort()).toEqual(["arkade", "onchain"]);
+  });
+
+  it("leaves the reservation and the target's policy untouched when the rename fails", () => {
+    const { address: reserved, claimCode } = svc.reserve(allModes, "bob");
+    svc.setRailPolicy(reserved.id, ["arkade"]);
+    const { address } = svc.registerNameless({ domain: allModes, token: TOKEN });
+    svc.setRailPolicy(address.id, ["onchain"]);
+    vi.spyOn(repos.addresses, "rename").mockImplementation(() => { throw new Error("rename failed"); });
+
+    expect(() => svc.upgrade({ domain: allModes, handle: address.username, token: TOKEN, username: "bob", claimCode })).toThrow("rename failed");
+
+    const stillReserved = repos.addresses.getById(reserved.id)!;
+    expect(stillReserved.status).toBe("reserved");
+    expect(stillReserved.disabledRails).toEqual(["arkade"]);
+    const target = repos.addresses.getById(address.id)!;
+    expect(target.disabledRails).toEqual(["onchain"]);
+    expect(isNameless(target)).toBe(true);
   });
 
   it("resolves an upgraded row's session id for its owner only", () => {

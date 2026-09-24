@@ -153,7 +153,7 @@ Wallets register a Lightning address via `POST /lnurl/address`. The request body
 | `username` + `claimCode` provided | Wallet claims a pre-reserved address |
 
 Constraints enforced per domain:
-- **`allocationModes`** — which of `"self"`, `"random"`, `"admin"` the domain permits.
+- **`allocationModes`** — which of `"self"`, `"random"`, `"admin"`, `"session"` the domain permits. `"session"` allows a receiver with no lightning address, reachable at `/lnurl/<sessionId>`.
 - **`requireApiKey`** — if true, requests must include a valid `X-API-Key` header.
 - **`max_per_session`** — cap on active addresses per wallet session.
 - **`username_min_len` / `username_max_len` / `username_pattern`** — username validation rules.

@@ -85,7 +85,7 @@ describe("onboarding", () => {
     // Register only — the half of onboard() that claims the name.
     const registered = await client.registerAddress({ token: await receiverAt(baseUrl, DOMAIN, { identity, arkadeAddress: arkadeAddress() }).token(), username: "bob" });
 
-    const payRequest = await payRequestFor(registered.username);
+    const payRequest = await payRequestFor(registered.handle);
     expect(payRequest.paymentOptions ?? []).toEqual([]);
   });
 

@@ -310,7 +310,7 @@ export const faucet = (address: string, amountBtc: string) =>
 // `lnd` fails as a self-payment. It was `boltz-lnd` until arkade-regtest dropped Boltz
 // and kept the node behind it -- same role, and its image still falls back to
 // BOLTZ_LND_IMAGE.
-const PAYER_CONTAINER = process.env.E2E_LN_PAYER_CONTAINER ?? "lnd-peer";
+export const PAYER_CONTAINER = process.env.E2E_LN_PAYER_CONTAINER ?? "lnd-peer";
 
 export const lncli = async <T>(container: string, args: readonly string[]): Promise<T> => {
   const { stdout } = await run("docker", ["exec", container, "lncli", "--network=regtest", ...args], { timeout: 30_000 });

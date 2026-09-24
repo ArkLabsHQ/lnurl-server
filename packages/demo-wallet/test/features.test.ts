@@ -243,7 +243,7 @@ describe("paymentOptions", () => {
     const client = createLnurlClient({ baseUrl });
 
     const reg = await client.registerAddress({ token, username: "alice" });
-    expect((await payRequestFor(reg.username)).paymentOptions ?? []).toEqual([]);
+    expect((await payRequestFor(reg.handle)).paymentOptions ?? []).toEqual([]);
 
     await onboard(identity, arkadeAddress(), "bob");
     expect((await payRequestFor("bob")).paymentOptions.map((o: any) => o.type)).toEqual(["lightning", "arkade"]);

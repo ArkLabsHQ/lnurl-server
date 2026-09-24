@@ -28,6 +28,10 @@ feature-matrix gate — a green `pnpm test` says nothing about a browser, and th
 shipped fully broken past one. `@funded`/`@provision` specs in the mutinynet suite need a
 hand-funded wallet and are skipped in CI.
 
+The local stack's intent-solver allows 5 quotes per 15 minutes per requester IP (hard-coded in
+solver-core). The budget lives in the solver's memory and global setup restarts the solver, so it
+resets every run; a run needing more has the rest refused (send-rails fails loudly when it is).
+
 ## Releasing
 
 Releases are driven by the `version` field in `package.json`:

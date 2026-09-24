@@ -12,6 +12,7 @@ const payment = (over: Partial<StoredPayment>): StoredPayment => ({
   baseUrl: "https://lnurl.example",
   domain: "lnurl.mutinynet.arkade.sh",
   lightningAddress: ADDRESS,
+  handle: "test2",
   identifier: "id1",
   kind: "destination",
   settled: true,

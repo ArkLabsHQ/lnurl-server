@@ -4,7 +4,7 @@
 // it answers HTTP without ever subscribing to a relay (so the RFQ goes over
 // `httpTransport`, same-origin through the proxy, since it sends no CORS headers).
 import { expect, test } from "@playwright/test";
-import { faucet, lncli, mine } from "../../../test/e2e/support/regtest.js";
+import { PAYER_CONTAINER, faucet, lncli, mine } from "../../../test/e2e/support/regtest.js";
 import { boardingAddressOf, readLocalStack, useLocalStack } from "./local-stack.js";
 
 const SATS = 2000;
@@ -40,7 +40,10 @@ test("a browser wallet routes a BOLT11 over the solver's lightning corridor", as
     }, { timeout: 240_000, intervals: [5_000] })
     .toBeGreaterThan(0);
 
-  const invoice = (await lncli<{ payment_request: string }>("lnd", ["addinvoice", "--amt", String(SATS)])).payment_request;
+  // The solver pays from `lnd`, so an invoice there is a self-payment it refunds.
+  const payee = PAYER_CONTAINER;
+  const { payment_request: invoice, r_hash: paymentHash } =
+    await lncli<{ payment_request: string; r_hash: string }>(payee, ["addinvoice", "--amt", String(SATS)]);
   await page.getByRole("button", { name: "Send" }).click();
   await page.getByPlaceholder(/name@domain/).fill(invoice);
   await page.locator('input[type="number"]').fill(String(SATS));
@@ -59,11 +62,30 @@ test("a browser wallet routes a BOLT11 over the solver's lightning corridor", as
   // Resolving a route never touches the solver; quoting is where `connect`
   // builds the transport, so only this puts an RFQ on the wire.
   await pay.click();
-  await expect(page.getByText(/sent \d+ sats|payment failed|receiver|solver-lightning ·/)).toBeVisible({ timeout: 300_000 });
+  const sendCard = page.locator("div").filter({ has: page.getByRole("heading", { name: "Send", exact: true }) }).last();
+  const status = sendCard.locator('p[style*="ui-monospace"]');
+  const seen: string[] = [];
+  await expect
+    .poll(async () => {
+      const text = await status.innerText({ timeout: 1_000 }).catch(() => "");
+      if (text && seen.at(-1) !== text) seen.push(text);
+      return text;
+    }, { timeout: 300_000, intervals: [1_000] })
+    .toMatch(/failed|^solver-lightning · sent$/);
   console.log(`TRIAGE solver calls: ${solverCalls.length ? solverCalls.slice(0, 2).join(", ") : "NONE"}`);
   console.log(`TRIAGE blocked: ${blocked.length ? blocked.join(", ") : "none"}`);
-  console.log(`TRIAGE status: ${await page.getByText(/sent \d+ sats|payment failed|receiver|solver-lightning ·/).first().innerText()}`);
+  console.log(`TRIAGE status: ${seen.join(" | ")}`);
 
   expect(solverCalls.length, "the browser never issued an RFQ to the solver").toBeGreaterThan(0);
   expect(blocked, "the solver request was blocked (CORS or transport)").toEqual([]);
+  expect(seen.at(-1), `the send was refused or failed: ${seen.join(" | ")}`).toBe("solver-lightning · sent");
+
+  // "sent" only means the lockup was funded; the payee's node settling the invoice is the payment.
+  await expect
+    .poll(async () => (await lncli<{ state: string }>(payee, ["lookupinvoice", paymentHash])).state, {
+      message: `the payee's invoice never settled (wallet: ${seen.join(" | ")})`,
+      timeout: 180_000,
+      intervals: [3_000],
+    })
+    .toBe("SETTLED");
 });
