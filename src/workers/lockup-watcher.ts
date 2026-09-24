@@ -8,8 +8,8 @@
 import { ArkAddress, isContractVtxoEvent, type IContractManager } from "@arkade-os/sdk";
 import { SWAP_LOCKUP_CONTRACT_TYPE } from "@arkade-os/swap";
 import { hex } from "@scure/base";
-import type { OfflineSwapStore } from "./offline-swap-store.js";
-import { createLogger, type Logger } from "./logger.js";
+import type { OfflineSwapStore } from "../offline-swap-store.js";
+import { createLogger, type Logger } from "../logger.js";
 
 /** Pending lockups keyed the way contract rows and events are: by pkScript hex. */
 function pendingScripts(swaps: OfflineSwapStore): Set<string> {

@@ -6,7 +6,7 @@
 
 import { hex } from "@scure/base";
 import { ArkAddress, RestIndexerProvider, isContractVtxoEvent, type IContractManager, type IndexerProvider } from "@arkade-os/sdk";
-import type { SettlementStore } from "./settlement-store.js";
+import type { SettlementStore } from "../settlement-store.js";
 
 /** One watch pass: flip any pending destination record whose payment is visible at
  *  the indexer. Matching is oldest-record-first with each VTXO assigned at most once;

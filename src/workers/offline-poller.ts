@@ -1,7 +1,7 @@
-import type { SettlementStore } from "./settlement-store.js";
-import type { OfflineSwapCreator } from "./services/offline-swaps.js";
-import type { OfflineSwapStore } from "./offline-swap-store.js";
-import { createLogger, type Logger } from "./logger.js";
+import type { SettlementStore } from "../settlement-store.js";
+import type { OfflineSwapCreator } from "../services/offline-swaps.js";
+import type { OfflineSwapStore } from "../offline-swap-store.js";
+import { createLogger, type Logger } from "../logger.js";
 
 /** One settlement pass: mark any pending offline swap settled once the solver reports
  *  its invoice settled. The server already holds the preimage, so `verify` can then
@@ -15,7 +15,7 @@ export async function settleOfflineSwaps(
   logger: Logger = createLogger(),
 ): Promise<number> {
   let settled = 0;
-  const pending: Array<{ swapId: string; paymentHash: string; preimage: string; recovery?: import("./services/offline-swaps.js").OfflineSwapRecoveryV1 }> = recovered
+  const pending: Array<{ swapId: string; paymentHash: string; preimage: string; recovery?: import("../services/offline-swaps.js").OfflineSwapRecoveryV1 }> = recovered
     ? recovered.listPending().map((row) => ({ ...row, swapId: row.recovery.rfqId }))
     : store.listPendingSwaps();
   await creator.prune?.(pending.map((row) => row.swapId));
@@ -66,7 +66,7 @@ export interface OfflineSettlementPoller {
 /**
  * Run {@link settleOfflineSwaps} on demand, with a catch-up behind it.
  *
- * src/lockup-watcher.ts is the mechanism; this covers what no event can. Rescheduled
+ * src/workers/lockup-watcher.ts is the mechanism; this covers what no event can. Rescheduled
  * after each pass rather than on a fixed grid, so a slow solver spaces passes out.
  */
 export function startOfflineSettlementPoller(

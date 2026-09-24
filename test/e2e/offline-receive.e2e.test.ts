@@ -44,7 +44,7 @@ import { createOfflineSwapCoordinator, type OfflineSwapCreator } from "../../src
 import { createSelfClaimer } from "../../src/self-claim.js";
 import { httpTransport } from "@arkade-os/swap";
 import { solverCard } from "../fixtures/solver-cards.js";
-import { startOfflineSettlementPoller } from "../../src/offline-poller.js";
+import { startOfflineSettlementPoller } from "../../src/workers/offline-poller.js";
 import {
   ensureStack,
   fundSolverFloat,

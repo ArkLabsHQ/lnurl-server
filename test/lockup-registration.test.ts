@@ -71,7 +71,7 @@ describe("registerLockupContract", () => {
 
     const rows = await contracts.getContracts({ type: SWAP_LOCKUP_CONTRACT_TYPE });
     expect(rows).toHaveLength(1);
-    // The event's `contractScript` is this row's key, and src/lockup-watcher.ts derives
+    // The event's `contractScript` is this row's key, and src/workers/lockup-watcher.ts derives
     // its side of the match from the stored lockup address. They have to agree.
     expect(rows[0]!.script).toBe(hex.encode(ArkAddress.decode(address).pkScript));
     contracts.dispose();

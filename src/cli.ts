@@ -192,8 +192,8 @@ async function main(): Promise<void> {
       });
       // Event-driven, with the repeating catch-up behind it as the dropped-subscription
       // backstop OFFLINE_POLL_INTERVAL_MS is already documented to size.
-      const { startCovenantWatcher } = await import("./covenant-watcher.js");
-      const { createCovenantSweeper, startCovenantSweeper } = await import("./covenant-sweeper.js");
+      const { startCovenantWatcher } = await import("./workers/covenant-watcher.js");
+      const { createCovenantSweeper, startCovenantSweeper } = await import("./workers/covenant-sweeper.js");
       // Built before the watcher so its trigger can be handed over: the event that
       // settles a covenant payment is the same event that makes it sweepable.
       const sweeper = startCovenantSweeper(
@@ -226,8 +226,8 @@ async function main(): Promise<void> {
     // Every background scheduler registers its stop hook before the listeners
     // begin accepting traffic.
     if (offlineSwapCreator) {
-      const { startOfflineSettlementPoller } = await import("./offline-poller.js");
-      const { startLockupWatcher } = await import("./lockup-watcher.js");
+      const { startOfflineSettlementPoller } = await import("./workers/offline-poller.js");
+      const { startLockupWatcher } = await import("./workers/lockup-watcher.js");
       const poller = startOfflineSettlementPoller(settlements, offlineSwapCreator, off.pollIntervalMs, offlineSwaps, logger);
       runtime.addStop(poller.stop);
       if (contracts && offlineSwaps) runtime.addStop(startLockupWatcher(contracts, offlineSwaps, poller.trigger, logger));
@@ -238,7 +238,7 @@ async function main(): Promise<void> {
     // The destination rail (paymentOptions: arkade) settles by observation, not by
     // preimage: watch the indexer for payments to registered Arkade addresses.
     if (config.offlineReceive.arkServerUrl) {
-      const { startArkadeWatcher } = await import("./arkade-watcher.js");
+      const { startArkadeWatcher } = await import("./workers/arkade-watcher.js");
       // Shares the contract manager's subscription: a second one loses the race
       // for arkd's stream and reports an EventSource error for the process's life.
       const arkadeWatcher = startArkadeWatcher(settlements, config.offlineReceive.arkServerUrl, 15_000, {

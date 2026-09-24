@@ -33,9 +33,9 @@ import {
   type PathSelection,
   type VirtualCoin,
 } from "@arkade-os/sdk";
-import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler } from "./covenant-contract.js";
-import type { SettlementStore } from "./settlement-store.js";
-import { COVENANT_V1, COVENANT_V2, SWEEP_LEAF, enforcePayTo, enforcePayToWithAssets } from "./covenant-destination.js";
+import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler } from "../covenant-contract.js";
+import type { SettlementStore } from "../settlement-store.js";
+import { COVENANT_V1, COVENANT_V2, SWEEP_LEAF, enforcePayTo, enforcePayToWithAssets } from "../covenant-destination.js";
 
 interface EmulatorSubmit {
   submitTx(arkTx: string, checkpointTxs: string[]): Promise<{ signedArkTx: string; signedCheckpointTxs: string[] }>;

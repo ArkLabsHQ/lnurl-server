@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { MultisigTapscript, VtxoScript, type IContractManager } from "@arkade-os/sdk";
-import { createCovenantSweeper, startCovenantSweeper } from "../src/covenant-sweeper.js";
+import { createCovenantSweeper, startCovenantSweeper } from "../src/workers/covenant-sweeper.js";
 import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler as handler } from "../src/covenant-contract.js";
 import { COLLABORATIVE_LEAF, COVENANT_V1, RECOVERY_LEAF, SWEEP_LEAF } from "../src/covenant-destination.js";
 

@@ -29,8 +29,8 @@ import { createCovenantDestinationProvider } from "../../src/covenant-destinatio
 import { covenantDestinationHandler, COVENANT_CONTRACT_TYPE } from "../../src/covenant-contract.js";
 import { sqliteContractStores } from "../../src/contract-store.js";
 import { loadConfig } from "../../src/config.js";
-import { createCovenantSweeper, startCovenantSweeper } from "../../src/covenant-sweeper.js";
-import { startCovenantWatcher } from "../../src/covenant-watcher.js";
+import { createCovenantSweeper, startCovenantSweeper } from "../../src/workers/covenant-sweeper.js";
+import { startCovenantWatcher } from "../../src/workers/covenant-watcher.js";
 import { ensureStack, pollUntil, mine, faucet, nodeSqliteStorage, ARKD_URL, COVCLAIMD_URL } from "./support/regtest.js";
 
 const AMOUNT_SATS = 3000;
@@ -100,7 +100,7 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
   let baseUrl: string;
   let payer: Wallet;
   let stopWatcher: () => void;
-  let sweeper: import("../../src/covenant-sweeper.js").CovenantSweeperHandle;
+  let sweeper: import("../../src/workers/covenant-sweeper.js").CovenantSweeperHandle;
   let receiver: { arkadeAddress: string; claimPublicKey: string };
   const token = randomBytes(32).toString("hex");
 

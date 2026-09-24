@@ -36,7 +36,7 @@ export interface OfflineReceiveConfig {
   covenantDestinations: boolean;
   /** CSV delay, seconds, before the user may sweep a covenant destination alone. */
   covenantRecoveryDelaySeconds: number;
-  /** Settlement-pass interval, ms. Not what claims a lockup — src/lockup-watcher.ts
+  /** Settlement-pass interval, ms. Not what claims a lockup — src/workers/lockup-watcher.ts
    *  does that on the funding event — so what is left on it is the backstop for a
    *  dropped subscription and the solver status check the RFQ transport cannot push. */
   pollIntervalMs: number;

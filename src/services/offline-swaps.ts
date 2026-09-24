@@ -107,7 +107,7 @@ export interface IntentSwapSettings {
   stampClaimPacket?: boolean;
   /** Set under OFFLINE_SELF_CLAIM: pushes each lockup's covenant claim leaf. */
   selfClaimer?: SelfClaimer;
-  /** Contract store each lockup is registered in, so src/lockup-watcher.ts hears its
+  /** Contract store each lockup is registered in, so src/workers/lockup-watcher.ts hears its
    *  funding as an event instead of the poller finding it a tick later. */
   contracts?: LockupContractWriter;
   transportFactory?: (candidate: Pick<SolverCandidate, "name" | "discoveryPubkey" | "relays">) => RfqTransport;
