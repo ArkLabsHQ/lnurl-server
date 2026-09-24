@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- **`lnurlQuoteMeta(quote)` and the `LnurlQuoteMeta` type** (`@arkade-os/lnurl-client/arkade`) — what an lnurl rail records on its quote (`target`, `via`, `verify`, `verifyBatch`), readable without casting `quote.meta.lnurl`. Undefined for a quote no lnurl rail made.
+
 ### Fixed
 - **The client loads under `require()`** — its exports map offered only an `import` condition, so anything loading it through CommonJS (Playwright specs, for one) failed with `No "exports" main defined`. Both entries now also export `default`, which Node's `require(esm)` loads; the package is still ESM-only, as its `@noble` dependencies are.
 - **Plain Lightning addresses now route** — a LUD-06/16 payRequest with no `paymentOptions` at all (a non-Arkade server) made both lnurl rails report unavailable, so the SDK router found no route. The lightning rail now reads such a payRequest's top-level `minSendable`/`maxSendable` directly and sends no `paymentOption`.

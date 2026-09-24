@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PaymentRail, RouteQuote, RouterContext } from "@arkade-os/sdk";
 import { createLnurlClient } from "../src/index.js";
-import { LNURL_ARKADE_RAIL, LNURL_LIGHTNING_RAIL, lnurlRails } from "../src/rail.js";
+import { LNURL_ARKADE_RAIL, LNURL_LIGHTNING_RAIL, lnurlQuoteMeta, lnurlRails } from "../src/rail.js";
 import { buildInvoice, HASH } from "./invoice.js";
 
 const json = (body: unknown, status = 200) =>
@@ -106,6 +106,18 @@ describe("lnurl rails", () => {
     expect(arkade.seen).toEqual([{ raw: "tark1qdest", amount: 500 }]);
     expect(quote.railId).toBe(LNURL_ARKADE_RAIL);
     expect(quote.total).toBe(507);
+  });
+
+  it("names what it paid in meta a consumer can read without a cast", async () => {
+    const { by } = railsFor(async (url) =>
+      String(url).includes("callback")
+        ? json({ paymentOption: "arkade", paymentDestination: "tark1qdest", verify: "https://x.test/verify/1" })
+        : json(payRequest()));
+
+    const quote = await by(LNURL_ARKADE_RAIL).quote({ raw: "alice@arkadeos.com", amount: 500 }, ctx);
+
+    expect(lnurlQuoteMeta(quote)).toEqual({ target: "alice@arkadeos.com", via: "ark", verify: "https://x.test/verify/1" });
+    expect(lnurlQuoteMeta({ railId: "ark", amount: 1, fee: 0, total: 1 } as RouteQuote)).toBeUndefined();
   });
 
   it("hands the invoice to the lightning rail without restating the amount", async () => {

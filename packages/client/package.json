@@ -1,6 +1,6 @@
 {
   "name": "@arkade-os/lnurl-client",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Full-duplex client for the lnurl-server protocol (payer and receiver)",
   "type": "module",
   "main": "./dist/index.js",

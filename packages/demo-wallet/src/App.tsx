@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import type { PaymentOption, WalletBalance } from "@arkade-os/sdk";
 import type { DomainCapabilities, InvoiceResult, PayRequest } from "@arkade-os/lnurl-client";
 import type { ClaimOptions, Receiver, SentPayment } from "@arkade-os/lnurl-client/arkade";
-import { lnurlActivityResolver, sentActivityResolver } from "@arkade-os/lnurl-client/arkade";
+import { lnurlActivityResolver, lnurlQuoteMeta, sentActivityResolver } from "@arkade-os/lnurl-client/arkade";
 import { EXPLORER, LNURL_DOMAIN, USERNAME_KEY } from "./config.js";
 import { mergeFeed, readWalletActivity, type FeedRow, type FeedStatus } from "./activity.js";
 import { balanceView } from "./balance.js";
@@ -603,7 +603,8 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
       // Unless the wallet writes this down, nothing ever knows who it paid.
       // `startedAt` is fixed so a later verify result updates the row, not its date.
       const startedAt = Date.now();
-      const paidTo = (quote.meta?.lnurl as { target?: string } | undefined)?.target ?? target.trim();
+      const lnurlMeta = lnurlQuoteMeta(quote);
+      const paidTo = lnurlMeta?.target ?? target.trim();
       let sentTxid: string | undefined;
       const note = (over: Partial<SentPayment> = {}): void => {
         if (!sentTxid) return;
@@ -631,7 +632,6 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
       // Sending says the payment left; only this says the receiver got it —
       // and a rail whose destination cannot identify the payment supplies none,
       // so absence is "no answer available" rather than a failure.
-      const lnurlMeta = quote.meta?.lnurl as { verify?: string; verifyBatch?: string } | undefined;
       if (lnurlMeta?.verify) {
         // One LUD-XX verifyBatch GET per endpoint per cycle covers the whole
         // pending send set; a verify-less endpoint keeps plain LUD-21 polling.
