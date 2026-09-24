@@ -128,7 +128,7 @@ function stringList(value: unknown): string[] | undefined {
 
 /** Wires `GET /lnurl/verifyBatch` (one-shot, streamed and session update forms)
  *  onto the app. MUST be registered before `GET /lnurl/:id`. */
-export function attachVerifyBatchRoute(app: express.Express, deps: VerifyBatchDeps): VerifyBatchManager {
+export function attachVerifyBatchRoute(app: express.IRouter, deps: VerifyBatchDeps): VerifyBatchManager {
   const cfg: VerifyBatchConfig = { ...DEFAULT_VERIFY_BATCH_CONFIG, ...deps.config };
   const { store, verifyLimiter, logger } = deps;
 

@@ -7,7 +7,7 @@ import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
 import { AddressService } from "../src/address-service.js";
 import { SessionManager } from "../src/session-manager.js";
-import { createAdminApi } from "../src/admin-api.js";
+import { createAdminApi } from "../src/routes/admin/index.js";
 import { loadConfig } from "../src/config.js";
 import { SettingsService } from "../src/settings.js";
 import { DbSettlementStore } from "../src/settlement-store.js";

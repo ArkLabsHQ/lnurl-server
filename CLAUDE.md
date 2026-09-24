@@ -59,7 +59,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/):
 
 ## Architecture
 
-- `src/server.ts` — Express app with SSE session endpoints and LNURL-pay protocol
+- `src/server.ts` — Composes the public Express app: middleware, `ServerContext` (`src/server-context.ts`), routers, error handlers
+- `src/routes/` — Routers only, one file per URL group: `lnurl-session` (wallet SSE), `lnurl-pay` (LUD-06/21 for a session), `well-known` (LUD-16), `lnurl-address` (owner REST), `health`, `docs`, and `admin/` (mounted by `src/admin-server.ts`). Shared logic lives outside: `src/pay-flow.ts`, `src/reconcile.ts`, `src/http-params.ts`
+- `src/http-responses.ts` — Thrown errors (`LnurlError` → LUD-06 body; `BadRequest`/`NotFound`/… → `{ error }`) and the handlers that answer them
 - `src/session-manager.ts` — Session lifecycle, SSE streaming, invoice request/response flow
 - `src/types.ts` — Shared TypeScript types
 - `src/cli.ts` — CLI entrypoint reading config from env vars

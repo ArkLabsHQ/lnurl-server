@@ -2,7 +2,7 @@ import express from "express";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createAdminApi, type AdminDeps } from "./admin-api.js";
+import { createAdminApi, type AdminDeps } from "./routes/admin/index.js";
 import { randomUUID } from "node:crypto";
 import { createLogger } from "./logger.js";
 import { requestTraceMiddleware } from "./request-trace.js";

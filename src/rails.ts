@@ -19,6 +19,7 @@
 // it; no plumbing changes are needed beyond a new entry here.
 
 import type { PaymentOption } from "./payment-options.js";
+import type { ServerDeps } from "./server-context.js";
 
 /** Every receive rail the server knows. The order is the advertise order. */
 export const RAIL_IDS = ["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain"] as const;
@@ -352,6 +353,47 @@ export function withVtxoFloors(
     };
   }
   return next;
+}
+
+/** Fold what the discovered solvers will quote into the offline-swap rail's
+ *  limits. Both are real caps, so the tighter of the two wins on each end. */
+function withSolverRange(
+  configured: ServerRailCaps["limits"],
+  range?: { minSat: number; maxSat: number },
+): ServerRailCaps["limits"] {
+  if (!range) return configured;
+  const own = configured?.["offline-swap"];
+  return {
+    ...configured,
+    "offline-swap": {
+      minSendable: Math.max(range.minSat * 1000, own?.minSendable ?? 0),
+      maxSendable: Math.min(range.maxSat * 1000, own?.maxSendable ?? Infinity),
+    },
+  };
+}
+
+/** Which backends this process wired, derived per request rather than frozen at boot:
+ *  discovery refreshes on a timer, so a rail going dark or republishing a narrower
+ *  range must move the next payRequest. Unknown discovery state (none injected, e.g.
+ *  unit scope) assumes ready; the coordinator still fails loudly per request. */
+export function currentRailCaps(wiring: Pick<ServerDeps,
+  "offlineSwapCreator" | "covenantDestinations" | "solverDiscovery" | "arkServerUrl" | "railLimits" | "arkDustSat" | "onchainMinSat"
+> = {}): ServerRailCaps {
+  const discoveryStatus = wiring.solverDiscovery?.status();
+  // Dust last: it is the protocol's floor, so it must survive whatever the
+  // operator and the solver narrowed to, not be averaged with them.
+  const limits = withVtxoFloors(withSolverRange(wiring.railLimits, discoveryStatus?.receiveBounds), {
+    ...(wiring.arkDustSat ? { dustSat: wiring.arkDustSat } : {}),
+    ...(wiring.onchainMinSat ? { onchainMinSat: wiring.onchainMinSat } : {}),
+  });
+  return {
+    offlineSwapCreator: Boolean(wiring.offlineSwapCreator),
+    discoveryReady: discoveryStatus?.ready ?? true,
+    ...(discoveryStatus?.reason ? { discoveryReason: discoveryStatus.reason } : {}),
+    ...(wiring.arkServerUrl ? { arkServerUrl: wiring.arkServerUrl } : {}),
+    covenantDestinations: Boolean(wiring.covenantDestinations),
+    ...(limits ? { limits } : {}),
+  };
 }
 
 /** Narrow `base` by one rail's configured bounds. Never widens: a rail cannot
