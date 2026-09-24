@@ -24,5 +24,5 @@ export interface LnurlServiceConfig {
   maxSessionsPerIp?: number;
   maxConcurrentOfflineQuotes?: number;
   /** LUD-XX `verifyBatch` endpoint caps. Absent leaves every default. */
-  verifyBatch?: Partial<import("../verify-batch.js").VerifyBatchConfig>;
+  verifyBatch?: Partial<import("../services/verify-batch.js").VerifyBatchConfig>;
 }

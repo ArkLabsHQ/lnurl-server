@@ -5,7 +5,8 @@ import { LnurlError } from "../errors.js";
 import { msatParam, strParam } from "../params.js";
 import { buildMetadata, requestSessionInvoice } from "../../services/pay-flow.js";
 import type { ServerContext } from "../server-context.js";
-import { attachVerifyBatchRoute, BATCH_PATH } from "../../verify-batch.js";
+import { BATCH_PATH, createVerifyBatch } from "../../services/verify-batch.js";
+import { verifyBatchRoutes } from "./verify-batch.js";
 
 /** LUD-06 pay flow for an interactive session's LNURL, plus LUD-21 verify and LUD-XX verifyBatch. */
 export function lnurlPayRoutes({ config, sessions, store, settings, logger }: ServerContext): Router {
@@ -38,9 +39,8 @@ export function lnurlPayRoutes({ config, sessions, store, settings, logger }: Se
     res.json({ status: "OK", settled: rec.settled, preimage: rec.settled ? rec.preimage : null, pr: rec.pr, verifyBatch: `${settings.baseUrl()}${BATCH_PATH}` });
   });
 
-  // One GET for a whole set of pending invoices, optionally streamed. Before /lnurl/:id,
-  // which would otherwise take the literal path.
-  attachVerifyBatchRoute(r, { store, verifyLimiter, logger, ...(config.verifyBatch ? { config: config.verifyBatch } : {}) });
+  // Shares the verify route's limiter; before /lnurl/:id, which would take the literal path.
+  r.use(verifyBatchRoutes(createVerifyBatch({ store, logger, ...(config.verifyBatch ? { config: config.verifyBatch } : {}) }), verifyLimiter));
 
   r.get("/lnurl/:id", (req, res) => {
     const { id } = req.params;

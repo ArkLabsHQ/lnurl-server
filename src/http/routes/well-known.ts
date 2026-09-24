@@ -21,7 +21,7 @@ import { domainFor, msatParam, originOf, strParam } from "../params.js";
 import { buildMetadata, createOfflineSwapInvoice, destinationUri, requestSessionInvoice } from "../../services/pay-flow.js";
 import type { ServerContext } from "../server-context.js";
 import { isNameless } from "../../services/addresses.js";
-import { BATCH_PATH } from "../../verify-batch.js";
+import { BATCH_PATH } from "../../services/verify-batch.js";
 
 const DEFAULT_DESTINATION_WATCH_MS = 604_800_000;
 
