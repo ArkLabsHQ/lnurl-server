@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { PaymentRail, RouteQuote, RouterContext } from "@arkade-os/sdk";
 import { createLnurlClient } from "../src/index.js";
 import { LNURL_ARKADE_RAIL, LNURL_LIGHTNING_RAIL, lnurlRails } from "../src/rail.js";
+import { buildInvoice, HASH } from "./invoice.js";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -108,16 +109,17 @@ describe("lnurl rails", () => {
   });
 
   it("hands the invoice to the lightning rail without restating the amount", async () => {
+    const invoice = buildInvoice(HASH, 500);
     const { by, inner } = railsFor(async (url) =>
       String(url).includes("callback")
-        ? json({ pr: "lnbc5u1pexample" })
+        ? json({ pr: invoice })
         : json(payRequest()));
 
     await by(LNURL_LIGHTNING_RAIL).quote({ raw: "alice@arkadeos.com", amount: 500 }, ctx);
 
     // The invoice fixes the amount; solverLightningRail refuses a req.amount
     // that disagrees, so the rail must not restate it.
-    expect(inner.seen).toEqual([{ raw: "lnbc5u1pexample", amount: undefined }]);
+    expect(inner.seen).toEqual([{ raw: invoice, amount: undefined }]);
   });
 
   it("keeps the arkade rail off a session payRequest, which has no rails", async () => {
@@ -136,5 +138,36 @@ describe("lnurl rails", () => {
   it("registers no lightning rail when none was supplied", () => {
     const { rails } = railsFor(async () => json(payRequest()), false);
     expect(rails.map((r) => r.id)).toEqual([LNURL_ARKADE_RAIL]);
+  });
+
+  // LUD-06: a payRequest with no `paymentOptions` at all (not an empty array)
+  // comes from a plain, non-Arkade server and is lightning-only.
+  describe("a plain LUD-06 payRequest with no paymentOptions", () => {
+    const plainPr = () => payRequest({ paymentOptions: undefined });
+
+    it("is available on lightning, within the top-level bounds", async () => {
+      const { by } = railsFor(async () => json(plainPr()));
+      expect(await by(LNURL_LIGHTNING_RAIL).available!({ raw: "alice@plain.com", amount: 500 }, ctx)).toBe(true);
+    });
+
+    it("refuses an amount outside the top-level bounds", async () => {
+      const { by } = railsFor(async () => json(plainPr()));
+      expect(await by(LNURL_LIGHTNING_RAIL).available!({ raw: "alice@plain.com", amount: 200_000 }, ctx)).toBe(false);
+    });
+
+    it("is not available on the arkade rail", async () => {
+      const { by } = railsFor(async () => json(plainPr()));
+      expect(await by(LNURL_ARKADE_RAIL).available!({ raw: "alice@plain.com", amount: 500 }, ctx)).toBe(false);
+    });
+
+    it("quotes with no paymentOption", async () => {
+      const invoice = buildInvoice(HASH, 500);
+      const { by, inner } = railsFor(async (url) =>
+        String(url).includes("callback") ? json({ pr: invoice }) : json(plainPr()));
+
+      await by(LNURL_LIGHTNING_RAIL).quote({ raw: "alice@plain.com", amount: 500 }, ctx);
+
+      expect(inner.seen).toEqual([{ raw: invoice, amount: undefined }]);
+    });
   });
 });

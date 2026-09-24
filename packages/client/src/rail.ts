@@ -88,7 +88,17 @@ function makeRail(
       // serves lightning alone and rejects a `paymentOption` outright.
       if (pr.source.surface === "session") return type === "lightning";
 
-      const option = pr.paymentOptions?.find((o) => o.type === type && o.available !== false);
+      // No `paymentOptions` at all (not an empty array) is LUD-06 silence: a
+      // plain payRequest from a non-Arkade server, which is lightning-only on
+      // its top-level minSendable/maxSendable.
+      if (pr.paymentOptions === undefined) {
+        if (type !== "lightning") return false;
+        if (req.amount === undefined) return true;
+        const msat = req.amount * 1000;
+        return msat >= pr.minSendable && msat <= pr.maxSendable;
+      }
+
+      const option = pr.paymentOptions.find((o) => o.type === type && o.available !== false);
       if (!option) return false;
       if (req.amount === undefined) return true;
 

@@ -4,7 +4,7 @@ import { toPayRequestUrl } from "./encoding.js";
 import type { Bolt11Result, InvoiceResult, PayRequest, PaymentQuote, PollVerifyOptions, RequestInvoiceOptions, VerifyStatus } from "./types.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { hex } from "@scure/base";
-import { paymentHashOf } from "./bolt11.js";
+import { amountMsatOf, paymentHashOf } from "./bolt11.js";
 
 function preimageOpens(preimage: string, pr: string): boolean {
   const hash = paymentHashOf(pr);
@@ -87,6 +87,13 @@ export async function requestInvoice(
   const sep = payRequest.callback.includes("?") ? "&" : "?";
   const body = await lnurlFetch<Record<string, unknown>>(`${payRequest.callback}${sep}${params.toString()}`, undefined, fetchImpl);
   if (typeof body.pr === "string") {
+    const invoiceMsat = amountMsatOf(body.pr);
+    if (invoiceMsat === undefined) throw new LnurlError("The callback returned an invoice that does not decode");
+    // An amountless invoice answering an amounted request is refused too: the
+    // payer asked for a fixed amount, and paying it could settle for any amount.
+    if (invoiceMsat !== amountMsat) {
+      throw new LnurlError(`The callback returned an invoice for ${invoiceMsat ?? "no"} millisats, not the requested ${amountMsat}`);
+    }
     const result: Bolt11Result = { kind: "bolt11", pr: body.pr, verify: typeof body.verify === "string" ? body.verify : undefined };
     if (typeof body.verifyBatch === "string") result.verifyBatch = body.verifyBatch;
     if (typeof body.paymentOption === "string") result.paymentOption = body.paymentOption;

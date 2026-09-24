@@ -22,7 +22,10 @@ import type { LnurlSession, PaymentSyncStore, StoredPayment } from "../packages/
 
 const CONFIG: LnurlServiceConfig = { port: 0, baseUrl: "", minSendable: 1_000, maxSendable: 100_000_000, invoiceTimeoutMs: 3_000 };
 
-function buildInvoice(paymentHashHex: string): string {
+// amountSat, when given, is encoded in the HRP with the `n` multiplier
+// (value = amountSat * 10, so value * 100 msat == amountSat * 1000 msat
+// exactly) — the client now decodes and checks it against the request.
+function buildInvoice(paymentHashHex: string, amountSat?: number): string {
   const words: number[] = [];
   for (let i = 0; i < 7; i++) words.push(0);
   const desc = bech32.toWords(new TextEncoder().encode("hello"));
@@ -30,7 +33,8 @@ function buildInvoice(paymentHashHex: string): string {
   const hw = bech32.toWords(Uint8Array.from(Buffer.from(paymentHashHex, "hex")));
   words.push(1, 52 >> 5, 52 & 31, ...hw);
   for (let i = 0; i < 104; i++) words.push(0);
-  return bech32.encode("lnbc", words, 2000);
+  const hrp = amountSat === undefined ? "lnbc" : `lnbc${amountSat * 10}n`;
+  return bech32.encode(hrp, words, 2000);
 }
 
 function startServer() {
@@ -65,7 +69,7 @@ describe("client contract against the real server", () => {
   });
 
   it("payer requestInvoice receives the exact pr the receiver answered, with a verify URL", async () => {
-    const pr = buildInvoice(HASH);
+    const pr = buildInvoice(HASH, 50);
     const receiver = createLnurlClient({ baseUrl: ctx.baseUrl });
     const session = await receiver.openSession({}, {
       onInvoiceRequest: (_req, respond) => { void respond.answerInvoice(pr); },
@@ -81,7 +85,7 @@ describe("client contract against the real server", () => {
   });
 
   it("pollVerify is unsettled until reportSettled flips it with the preimage", async () => {
-    const pr = buildInvoice(HASH);
+    const pr = buildInvoice(HASH, 50);
     const receiver = createLnurlClient({ baseUrl: ctx.baseUrl });
     const session = await receiver.openSession({}, {
       onInvoiceRequest: (_req, respond) => { void respond.answerInvoice(pr); },

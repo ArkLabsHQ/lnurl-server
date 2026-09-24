@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { requestInvoice } from "../src/payer.js";
 import type { PayRequest } from "../src/types.js";
 import { LnurlError } from "../src/errors.js";
+import { buildInvoice, HASH } from "./invoice.js";
 
 const jsonResponse = (body: unknown) =>
   new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
@@ -19,10 +20,11 @@ const sessionPr: PayRequest = { ...addressPr, source: { url: "https://x/lnurl/ab
 describe("requestInvoice", () => {
   it("converts sats to msats on the query", async () => {
     let seen = "";
-    const fetchImpl = async (url: string) => { seen = String(url); return jsonResponse({ pr: "lnbc1...", routes: [], verify: "https://x/v/h" }); };
+    const invoice = buildInvoice(HASH, 2100);
+    const fetchImpl = async (url: string) => { seen = String(url); return jsonResponse({ pr: invoice, routes: [], verify: "https://x/v/h" }); };
     const r = await requestInvoice(addressPr, { amountSat: 2100 }, fetchImpl as never);
     expect(seen).toContain("amount=2100000");
-    expect(r).toMatchObject({ kind: "bolt11", pr: "lnbc1...", verify: "https://x/v/h" });
+    expect(r).toMatchObject({ kind: "bolt11", pr: invoice, verify: "https://x/v/h" });
   });
 
   it("range-checks before hitting the network", async () => {
@@ -35,7 +37,7 @@ describe("requestInvoice", () => {
     let seen = "";
     const fetchImpl = async (url: string) => {
       seen = String(url);
-      return jsonResponse({ pr: "lnbc1...", routes: [] });
+      return jsonResponse({ pr: buildInvoice(HASH, 1000), routes: [] });
     };
     // commentAllowed is absent, so comments are not supported at all.
     await requestInvoice(addressPr, { amountSat: 1000, comment: "" }, fetchImpl as never);
@@ -58,7 +60,7 @@ describe("requestInvoice", () => {
     await expect(requestInvoice(narrowed, { amountSat: 5, paymentOption: "arkade" }, reject as never)).rejects.toBeInstanceOf(LnurlError);
 
     // The same amount on the unnarrowed lightning option still reaches the wire.
-    const fetchImpl = async () => jsonResponse({ pr: "lnbc1...", routes: [] });
+    const fetchImpl = async () => jsonResponse({ pr: buildInvoice(HASH, 50_000), routes: [] });
     await expect(
       requestInvoice(narrowed, { amountSat: 50_000, paymentOption: "lightning" }, fetchImpl as never),
     ).resolves.toMatchObject({ kind: "bolt11" });
@@ -71,7 +73,7 @@ describe("requestInvoice", () => {
   });
 
   it("tolerates a callback response with no verify URL", async () => {
-    const fetchImpl = async () => jsonResponse({ pr: "lnbc1undecodable", routes: [] });
+    const fetchImpl = async () => jsonResponse({ pr: buildInvoice(HASH, 1000), routes: [] });
     const r = await requestInvoice(addressPr, { amountSat: 1000 }, fetchImpl as never);
     expect(r).toMatchObject({ kind: "bolt11", verify: undefined });
   });
@@ -84,7 +86,7 @@ describe("requestInvoice", () => {
 
   it("passes comment through when allowed", async () => {
     let seen = "";
-    const fetchImpl = async (url: string) => { seen = String(url); return jsonResponse({ pr: "lnbc1...", routes: [] }); };
+    const fetchImpl = async (url: string) => { seen = String(url); return jsonResponse({ pr: buildInvoice(HASH, 1000), routes: [] }); };
     await requestInvoice({ ...addressPr, commentAllowed: 140 }, { amountSat: 1000, comment: "hi there" }, fetchImpl as never);
     expect(seen).toContain("comment=hi+there");
   });
@@ -104,5 +106,27 @@ describe("requestInvoice", () => {
     await expect(
       requestInvoice(addressPr, { amountSat: 1000, comment: "hi" }, fetchImpl as never),
     ).rejects.toThrow(/does not accept comments/);
+  });
+
+  it("accepts a bolt11 whose amount matches the request", async () => {
+    const fetchImpl = async () => jsonResponse({ pr: buildInvoice(HASH, 1000), routes: [] });
+    await expect(requestInvoice(addressPr, { amountSat: 1000 }, fetchImpl as never)).resolves.toMatchObject({ kind: "bolt11" });
+  });
+
+  it("refuses a bolt11 whose amount disagrees with the request", async () => {
+    const fetchImpl = async () => jsonResponse({ pr: buildInvoice(HASH, 999), routes: [] });
+    await expect(requestInvoice(addressPr, { amountSat: 1000 }, fetchImpl as never)).rejects.toBeInstanceOf(LnurlError);
+  });
+
+  it("refuses a bolt11 that does not decode", async () => {
+    const fetchImpl = async () => jsonResponse({ pr: "lnbc1notbech32", routes: [] });
+    await expect(requestInvoice(addressPr, { amountSat: 1000 }, fetchImpl as never)).rejects.toBeInstanceOf(LnurlError);
+  });
+
+  // An amountless invoice could settle for any amount, so it cannot stand in
+  // for the fixed amount an amounted request asked for.
+  it("refuses an amountless bolt11 answering an amounted request", async () => {
+    const fetchImpl = async () => jsonResponse({ pr: buildInvoice(HASH), routes: [] });
+    await expect(requestInvoice(addressPr, { amountSat: 1000 }, fetchImpl as never)).rejects.toBeInstanceOf(LnurlError);
   });
 });
