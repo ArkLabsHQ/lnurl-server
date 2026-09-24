@@ -1,21 +1,6 @@
-const SENT_KEY = "arkade-demo-wallet.sent";
+import { mergeSentPayment, type SentPayment } from "@arkade-os/lnurl-client/arkade";
 
-/** What this wallet knows about a payment it made. Nothing else does: the server
- *  that recorded a send was the recipient's, so its record is theirs, not ours. */
-export interface SentPayment {
-  /** Arkade txid — the join key to the wallet's own activity row. */
-  txid: string;
-  /** What the user typed: a Lightning address, an LNURL, or a bare address. */
-  target: string;
-  railId: string;
-  amountSat: number;
-  feeSat: number;
-  createdAt: number;
-  swapId?: string;
-  preimage?: string;
-  /** Set once the receiver's LUD-21 verify answers, where a rail hands one out. */
-  receiverConfirmed?: boolean;
-}
+const SENT_KEY = "arkade-demo-wallet.sent";
 
 const read = (): SentPayment[] => {
   try {
@@ -28,9 +13,7 @@ const read = (): SentPayment[] => {
 
 /** Replace by txid, so a later verify result updates the row it belongs to. */
 export function recordSent(sent: SentPayment): void {
-  const byTxid = new Map(read().map((s) => [s.txid, s]));
-  byTxid.set(sent.txid, { ...byTxid.get(sent.txid), ...sent });
-  localStorage.setItem(SENT_KEY, JSON.stringify([...byTxid.values()]));
+  localStorage.setItem(SENT_KEY, JSON.stringify(mergeSentPayment(read(), sent)));
 }
 
 export function sentPayments(): SentPayment[] {

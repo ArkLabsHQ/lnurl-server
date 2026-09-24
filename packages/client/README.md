@@ -281,6 +281,10 @@ These matter for correctness. `syncPayments` handles them all; you must handle t
 - **Switch on `kind`, never on the presence of a payment hash.** On the arkade rail the server's own record has no payment hash — the identifier is an opaque verify id — which is why `DestinationActivity` calls it `verifyId` and has no `paymentHash` property at all.
 - **A full page need not advance the cursor.** `nextSince` is the last row's `createdAt`, so if a whole page shares one millisecond the next request returns that same page. Stop and report rather than loop; `syncPayments` fails that target with a terminal `LnurlError`.
 
+### Activity resolvers
+
+`@arkade-os/lnurl-client/arkade` also exports `lnurlActivityResolver(payments)` and `sentActivityResolver(sends)`, `ActivityResolver`s that label an `ArkTransaction` with the LNURL payment or send it corresponds to. Both take a getter rather than a store: storage — where `payments`/`sends` come from, and where a completed send is recorded (`mergeSentPayment` computes the merge; writing it is yours) — stays entirely with the caller.
+
 ## Errors
 
 Two shapes, both surfaced as `LnurlError`:

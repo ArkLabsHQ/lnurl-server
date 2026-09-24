@@ -1,6 +1,5 @@
 import type { ActivityResolver, ArkTransaction } from "@arkade-os/sdk";
-import type { StoredPayment } from "@arkade-os/lnurl-client";
-import type { SentPayment } from "./sent-store.js";
+import type { StoredPayment } from "./sync.js";
 
 /** Namespaced so it cannot clobber the SDK's own resolvers. */
 export const LNURL_RESOLVER_ID = "lnurl:payments";
@@ -14,6 +13,33 @@ export const railOf = (p: StoredPayment): string =>
 
 export function absorbedPaymentKey(activityId: string): string | undefined {
   return activityId.startsWith(LNURL_GROUP_PREFIX) ? activityId.slice(LNURL_GROUP_PREFIX.length) : undefined;
+}
+
+/** What a wallet knows about a payment it made. Nothing else does: the server
+ *  that recorded a send was the recipient's, so its record is theirs, not ours. */
+export interface SentPayment {
+  /** Arkade txid — the join key to the wallet's own activity row. */
+  txid: string;
+  /** What the user typed: a Lightning address, an LNURL, or a bare address. */
+  target: string;
+  railId: string;
+  amountSat: number;
+  feeSat: number;
+  createdAt: number;
+  swapId?: string;
+  preimage?: string;
+  /** Set once the receiver's LUD-21 verify answers, where a rail hands one out. */
+  receiverConfirmed?: boolean;
+}
+
+/** What to keep on file after a completed send: `incoming` replaces the record
+ *  sharing its txid, so a later verify result updates that row rather than
+ *  duplicating it. Storage — reading the existing set, writing the result — is
+ *  the caller's. */
+export function mergeSentPayment(existing: SentPayment[], incoming: SentPayment): SentPayment[] {
+  const byTxid = new Map(existing.map((s) => [s.txid, s]));
+  byTxid.set(incoming.txid, { ...byTxid.get(incoming.txid), ...incoming });
+  return [...byTxid.values()];
 }
 
 /** Labels a payment this wallet MADE, from what it recorded at send time. Joined

@@ -1,6 +1,6 @@
 import type { Activity, Wallet } from "@arkade-os/sdk";
 import type { StoredPayment } from "@arkade-os/lnurl-client";
-import { absorbedPaymentKey, railOf } from "./lnurl-activity.js";
+import { absorbedPaymentKey, railOf } from "@arkade-os/lnurl-client/arkade";
 
 /**
  * `untracked` is not a softer `pending`. A rail whose settlement nothing

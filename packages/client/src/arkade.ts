@@ -16,6 +16,18 @@ export { LNURL_ARKADE_RAIL, LNURL_LIGHTNING_RAIL, lnurlRails } from "./rail.js";
 export type { LnurlRailDeps } from "./rail.js";
 export { arkadeLnurl, arkadePaymentRouter, encodeLnurl, DEFAULT_RAIL_PRIORITY } from "./wallet.js";
 export type { ArkadeLnurl, ArkadeLnurlConfig, ArkadeLnurlOptions, ArkadeLnurlSource, ClaimOptions, NameOptions, Receiver } from "./wallet.js";
+export {
+  absorbedPaymentKey,
+  lnurlActivityResolver,
+  mergeSentPayment,
+  railOf,
+  sentActivityResolver,
+  LNURL_GROUP_PREFIX,
+  LNURL_RESOLVER_ID,
+  SENT_GROUP_PREFIX,
+  SENT_RESOLVER_ID,
+} from "./activity.js";
+export type { SentPayment } from "./activity.js";
 
 /** The slice of `@arkade-os/sdk`'s `Identity` these helpers need. */
 export interface ArkadeSigner {

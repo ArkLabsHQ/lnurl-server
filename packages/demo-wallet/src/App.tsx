@@ -1,10 +1,10 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PaymentOption, WalletBalance } from "@arkade-os/sdk";
 import type { DomainCapabilities, InvoiceResult, PayRequest } from "@arkade-os/lnurl-client";
-import type { ClaimOptions, Receiver } from "@arkade-os/lnurl-client/arkade";
+import type { ClaimOptions, Receiver, SentPayment } from "@arkade-os/lnurl-client/arkade";
+import { lnurlActivityResolver, sentActivityResolver } from "@arkade-os/lnurl-client/arkade";
 import { EXPLORER, LNURL_DOMAIN, USERNAME_KEY } from "./config.js";
 import { mergeFeed, readWalletActivity, type FeedRow, type FeedStatus } from "./activity.js";
-import { lnurlActivityResolver, sentActivityResolver } from "./lnurl-activity.js";
 import { balanceView } from "./balance.js";
 import { createMnemonic, loadMnemonic, openWallet, wipeWallet, type DemoWallet } from "./wallet.js";
 import { bootState, claimOrAdopt, domainCapabilities, payer, receiver } from "./lnurl.js";
@@ -16,7 +16,7 @@ import { autoSettleBoarding, type BoardingState } from "./boarding.js";
 import { Backup } from "./Backup.js";
 import { Settings } from "./Settings.js";
 import { forgetStoredPayments } from "@arkade-os/lnurl-client";
-import { forgetSent, recordSent, sentPayments, type SentPayment } from "./sent-store.js";
+import { forgetSent, recordSent, sentPayments } from "./sent-store.js";
 import { CopyableQr, ReceiveQr } from "./Qr.js";
 
 type Tab = "Receive" | "Send" | "Activity" | "Settings";

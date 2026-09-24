@@ -1,6 +1,6 @@
 {
   "name": "@arkade-os/lnurl-client",
-  "version": "0.3.4",
+  "version": "0.4.0",
   "description": "Full-duplex client for the lnurl-server protocol (payer and receiver)",
   "type": "module",
   "main": "./dist/index.js",
@@ -28,7 +28,7 @@
     "@scure/base": "^2.0.0"
   },
   "peerDependencies": {
-    "@arkade-os/sdk": ">=0.4.0"
+    "@arkade-os/sdk": ">=0.4.0 || >=0.5.0-rc.0"
   },
   "peerDependenciesMeta": {
     "@arkade-os/sdk": {
