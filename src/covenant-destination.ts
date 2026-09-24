@@ -22,6 +22,7 @@ import {
   MultisigTapscript,
   VtxoScript,
 } from "@arkade-os/sdk";
+import { UpstreamError } from "./errors.js";
 
 /** `HASH160 <hash20> EQUAL` — the condition the sweep leaf gates on. */
 const preimageCondition = (hash20: Uint8Array): Uint8Array =>
@@ -172,7 +173,7 @@ export function createCovenantDestinationProvider(opts: {
   // hides the status that caused it.
   const getJson = async <T>(url: string): Promise<T> => {
     const res = await fetch(url, { signal: AbortSignal.timeout(opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS) });
-    if (!res.ok) throw new Error(`${url} -> HTTP ${res.status}`);
+    if (!res.ok) throw new UpstreamError(url, res.status);
     return (await res.json()) as T;
   };
 

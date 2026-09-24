@@ -237,7 +237,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       sessions, sessionId: address.sessionId, addressId: address.id, amountMsat, comment,
       min: interactiveBounds.min, max: interactiveBounds.max, timeoutMs: settings.invoiceTimeoutMs(),
       offlineReason,
-      store, baseUrl: settings.baseUrl(), paymentQuote, echoLightningOption: Boolean(paymentOptionId), res,
+      store, baseUrl: settings.baseUrl(), paymentQuote, echoLightningOption: Boolean(paymentOptionId), res, logger,
     });
   };
 

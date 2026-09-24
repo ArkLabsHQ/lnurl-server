@@ -1,18 +1,12 @@
 import { Router } from "express";
 import { ArkAddress } from "@arkade-os/sdk";
 import { encodeLnurl } from "../lnurl.js";
-import { ProvisioningError, isNameless } from "../address-service.js";
+import { isNameless } from "../address-service.js";
 import { isValidToken } from "../usernames.js";
 import type { AddressRow, DomainRow } from "../types/index.js";
-import { BadRequest, HttpError, NotFound, TooManyRequests, Unauthorized } from "../http-responses.js";
+import { BadRequest, NotFound, TooManyRequests, Unauthorized } from "../http-responses.js";
 import { bearerToken, domainFor, strParam } from "../http-params.js";
 import type { ServerContext } from "../server-context.js";
-
-const PROVISIONING_STATUS: Record<string, number> = {
-  invalid_token: 400, invalid_username: 400, forbidden_mode: 403,
-  blacklisted: 409, taken: 409, limit_reached: 429, invalid_claim: 401,
-  already_named: 409, not_found: 404,
-};
 
 /** One shape for register, upgrade and list, so they cannot drift. A flagged row's
  *  lnurl is the stable session one (survives an upgrade); an unflagged row keeps
@@ -83,18 +77,13 @@ export function lnurlAddressRoutes({ deps, store }: ServerContext): Router {
     if (!token) throw new BadRequest("Missing token");
     if (nameless && (username || claimCode)) throw new BadRequest("nameless cannot be combined with username or claimCode", { code: "invalid_username" });
 
-    try {
-      if (nameless) {
-        const { address, created } = addressService.registerNameless({ domain, token });
-        res.status(created ? 201 : 200).json(addressView(domain, address, req.protocol));
-        return;
-      }
-      const { address, created } = addressService.register({ domain, username, token, claimCode });
+    if (nameless) {
+      const { address, created } = addressService.registerNameless({ domain, token });
       res.status(created ? 201 : 200).json(addressView(domain, address, req.protocol));
-    } catch (err) {
-      if (err instanceof ProvisioningError) throw new HttpError(PROVISIONING_STATUS[err.code] ?? 400, err.message, { code: err.code });
-      throw err;
+      return;
     }
+    const { address, created } = addressService.register({ domain, username, token, claimCode });
+    res.status(created ? 201 : 200).json(addressView(domain, address, req.protocol));
   });
 
   r.patch("/lnurl/address/:handle", (req, res) => {
@@ -104,13 +93,8 @@ export function lnurlAddressRoutes({ deps, store }: ServerContext): Router {
     const token = bearerToken(req);
     if (!isValidToken(token)) throw new Unauthorized();
     const { username, claimCode } = (req.body ?? {}) as { username?: string; claimCode?: string };
-    try {
-      const address = addressService.upgrade({ domain, handle: req.params.handle, token, username, claimCode });
-      res.json(addressView(domain, address, req.protocol));
-    } catch (err) {
-      if (err instanceof ProvisioningError) throw new HttpError(PROVISIONING_STATUS[err.code] ?? 400, err.message, { code: err.code });
-      throw err;
-    }
+    const address = addressService.upgrade({ domain, handle: req.params.handle, token, username, claimCode });
+    res.json(addressView(domain, address, req.protocol));
   });
 
   r.delete("/lnurl/address/:handle", (req, res) => {

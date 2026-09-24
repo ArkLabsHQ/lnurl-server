@@ -1,4 +1,5 @@
 import { VHTLCV2ContractHandler, type VHTLC } from "@arkade-os/sdk";
+import { MalformedRecordError } from "./errors.js";
 
 export interface SerializedSelfClaimV1 {
   version: 1;
@@ -25,18 +26,18 @@ export function deserializeSelfClaim(encoded: string): {
   expectedAmount: number;
 } {
   let value: unknown;
-  try { value = JSON.parse(encoded); } catch { throw new Error("invalid self-claim recovery JSON"); }
-  if (!value || typeof value !== "object") throw new Error("invalid self-claim recovery object");
+  try { value = JSON.parse(encoded); } catch { throw new MalformedRecordError("invalid self-claim recovery JSON"); }
+  if (!value || typeof value !== "object") throw new MalformedRecordError("invalid self-claim recovery object");
   const record = value as { version?: unknown; expectedAmount?: unknown; params?: unknown };
-  if (record.version !== 1) throw new Error("unsupported self-claim recovery version");
+  if (record.version !== 1) throw new MalformedRecordError("unsupported self-claim recovery version");
   if (!Number.isSafeInteger(record.expectedAmount) || Number(record.expectedAmount) <= 0) {
-    throw new Error("invalid self-claim expectedAmount");
+    throw new MalformedRecordError("invalid self-claim expectedAmount");
   }
   if (!record.params || typeof record.params !== "object" || Array.isArray(record.params)) {
-    throw new Error("invalid self-claim parameters");
+    throw new MalformedRecordError("invalid self-claim parameters");
   }
   for (const value of Object.values(record.params)) {
-    if (typeof value !== "string") throw new Error("invalid self-claim parameter value");
+    if (typeof value !== "string") throw new MalformedRecordError("invalid self-claim parameter value");
   }
   return {
     script: VHTLCV2ContractHandler.createScript(record.params as Record<string, string>),

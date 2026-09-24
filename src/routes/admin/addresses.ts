@@ -1,8 +1,7 @@
 import { Router } from "express";
-import { ProvisioningError } from "../../address-service.js";
 import type { AddressStatus } from "../../types/index.js";
 import { effectiveRails } from "../../rails.js";
-import { BadRequest, Conflict, NotFound } from "../../http-responses.js";
+import { BadRequest, NotFound } from "../../http-responses.js";
 import { adminRailCaps, type AdminDeps } from "../../admin-context.js";
 
 export function adminAddressRoutes(deps: AdminDeps): Router {
@@ -32,17 +31,12 @@ export function adminAddressRoutes(deps: AdminDeps): Router {
     if (!domain) throw new NotFound("unknown domain");
     if (!username) throw new BadRequest("username required");
     if (mode !== undefined && mode !== "reserve" && mode !== "mint") throw new BadRequest("mode must be 'reserve' or 'mint'");
-    try {
-      if (mode === "mint") {
-        const { address, secret } = addressService.mint(domain, username);
-        res.status(201).json({ id: address.id, username: address.username, domain: domain.domain, status: address.status, secret });
-      } else {
-        const { address, claimCode } = addressService.reserve(domain, username);
-        res.status(201).json({ id: address.id, username: address.username, domain: domain.domain, status: address.status, claimCode });
-      }
-    } catch (err) {
-      if (err instanceof ProvisioningError) throw new Conflict(err.message, { code: err.code });
-      throw err;
+    if (mode === "mint") {
+      const { address, secret } = addressService.mint(domain, username);
+      res.status(201).json({ id: address.id, username: address.username, domain: domain.domain, status: address.status, secret });
+    } else {
+      const { address, claimCode } = addressService.reserve(domain, username);
+      res.status(201).json({ id: address.id, username: address.username, domain: domain.domain, status: address.status, claimCode });
     }
   });
   r.patch("/addresses/:id", (req, res) => {
@@ -54,12 +48,7 @@ export function adminAddressRoutes(deps: AdminDeps): Router {
   r.patch("/addresses/:id/rails", (req, res) => {
     const id = Number(req.params.id);
     if (!repos.addresses.getById(id)) throw new NotFound("address not found");
-    try {
-      addressService.setRailPolicy(id, (req.body ?? {}).disabledRails);
-    } catch (err) {
-      if (err instanceof ProvisioningError) throw new BadRequest(err.message, { code: err.code });
-      throw err;
-    }
+    addressService.setRailPolicy(id, (req.body ?? {}).disabledRails);
     const updated = repos.addresses.getById(id)!;
     res.json({
       id: updated.id,

@@ -67,7 +67,7 @@ export function lnurlPayRoutes({ config, sessions, store, settings, logger }: Se
     await requestInvoiceAndRespond({
       sessions, sessionId: id, amountMsat: Number(amountStr), comment,
       min: settings.minSendable(), max: settings.maxSendable(), timeoutMs: settings.invoiceTimeoutMs(),
-      offlineReason: "This LNURL is no longer active", store, baseUrl: settings.baseUrl(), res,
+      offlineReason: "This LNURL is no longer active", store, baseUrl: settings.baseUrl(), res, logger,
     });
   });
 

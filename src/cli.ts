@@ -4,6 +4,7 @@ import { VERSION } from "./version.js";
 import { SessionManager } from "./session-manager.js";
 import type { Db } from "./db/connection.js";
 import { pathToFileURL } from "node:url";
+import { ConfigError, UpstreamError } from "./errors.js";
 
 /** Ceiling on the dependency probes boot makes. Generous next to the in-request
  *  timeouts: a cold arkd is slower than a warm one, and failing here refuses to
@@ -36,7 +37,7 @@ async function main(): Promise<void> {
   const logger = createLogger();
 
   const db = await initPersistence({ dbPath: config.dbPath, bootstrapDomain: config.bootstrapDomain, verifyTtlMs: config.verifyTtlMs });
-  if (config.offlineReceive.enabled && !db) throw new Error("offline receive requires DB_PATH for durable accepted-swap recovery");
+  if (config.offlineReceive.enabled && !db) throw new ConfigError("offline receive requires DB_PATH for durable accepted-swap recovery");
   const sessions = new SessionManager();
   runtime.addStop(() => sessions.shutdown("service shutdown"));
   if (db) {
@@ -119,7 +120,7 @@ async function main(): Promise<void> {
       // Bounded: an unreachable arkd that accepts the connection and never answers
       // would otherwise hang boot forever, with no listener and nothing in the log.
       const infoResponse = await fetch(`${off.arkServerUrl}/v1/info`, { signal: AbortSignal.timeout(BOOT_PROBE_TIMEOUT_MS) });
-      if (!infoResponse.ok) throw new Error(`Arkade info endpoint: HTTP ${infoResponse.status}`);
+      if (!infoResponse.ok) throw new UpstreamError("Arkade info endpoint", infoResponse.status);
       const arkInfo = await infoResponse.json() as { network?: unknown; dust?: unknown };
       arkNetwork = arkInfo.network;
       const dust = Number(arkInfo.dust);
@@ -132,7 +133,7 @@ async function main(): Promise<void> {
       const { DiscoveryService } = await import("./solver-discovery.js");
       const { isNetwork } = await import("@arkade-os/solver-discovery");
       const network = arkNetwork;
-      if (!isNetwork(network)) throw new Error(`Arkade info endpoint returned unsupported network ${String(network)}`);
+      if (!isNetwork(network)) throw new ConfigError(`Arkade info endpoint returned unsupported network ${String(network)}`);
       const discovery = new DiscoveryService({
         network,
         registryUrls: off.registryUrls,
@@ -153,7 +154,7 @@ async function main(): Promise<void> {
       const covclaimdProbe = off.covclaimdUrl
         ? await fetch(`${off.covclaimdUrl}/v1/preimage/covclaimd-pubkey`, { signal: AbortSignal.timeout(BOOT_PROBE_TIMEOUT_MS) })
         : null;
-      if (covclaimdProbe && !covclaimdProbe.ok) throw new Error(`covclaimd pubkey endpoint: HTTP ${covclaimdProbe.status}`);
+      if (covclaimdProbe && !covclaimdProbe.ok) throw new UpstreamError("covclaimd pubkey endpoint", covclaimdProbe.status);
       offlineSwaps = new OfflineSwapStore(db, config.verifyTtlMs);
       let selfClaimer: import("./self-claim.js").SelfClaimer | undefined;
       if (off.selfClaim) {
@@ -321,7 +322,7 @@ async function main(): Promise<void> {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((err) => {
-    console.error(err);
+    console.error(err instanceof ConfigError ? `config: ${err.message}` : err);
     process.exit(1);
   });
 }

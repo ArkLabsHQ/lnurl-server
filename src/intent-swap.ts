@@ -34,7 +34,7 @@ import {
 } from "@arkade-os/swap";
 import { nostrRfqTransport } from "@arkade-os/swap/nostr";
 import { invoiceFactsFromBolt11 } from "./bolt11.js";
-import { RailRefusedError } from "./rails.js";
+import { MalformedRecordError, RailRefusedError, SolverQuoteError, UpstreamError } from "./errors.js";
 import { checkedPreimage, randomEntropy, type EntropyProvider } from "./entropy.js";
 import { createLogger, type Logger } from "./logger.js";
 import type { DiscoveryService, SolverCandidate } from "./solver-discovery.js";
@@ -154,14 +154,14 @@ function nostrTransport(solverPubkey: string, relays: string[], nostrSecretKey?:
  *  since `"50" !== 50` rejects a correct quote and `"9" > "10"` is true. */
 function quoteSats(field: string, value: number | string): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value)) {
-    throw new Error(`solver quoted ${field} as ${JSON.stringify(value)}, which is not a whole number of sats`);
+    throw new SolverQuoteError(`solver quoted ${field} as ${JSON.stringify(value)}, which is not a whole number of sats`);
   }
   return value;
 }
 
 function compressedKey(v: unknown, name: string): Uint8Array {
   if (typeof v !== "string" || !/^0[23][0-9a-f]{64}$/i.test(v)) {
-    throw new Error(`${name}: expected a 33-byte compressed pubkey (hex)`);
+    throw new MalformedRecordError(`${name}: expected a 33-byte compressed pubkey (hex)`);
   }
   return hex.decode(v.toLowerCase());
 }
@@ -173,7 +173,7 @@ const KEY_FETCH_TIMEOUT_MS = 5_000;
 
 async function fetchCovclaimdKeys(covclaimdUrl: string): Promise<{ covclaimdPubkey: Uint8Array; emulatorPubkey: Uint8Array }> {
   const res = await fetch(`${covclaimdUrl}/v1/preimage/covclaimd-pubkey`, { signal: AbortSignal.timeout(KEY_FETCH_TIMEOUT_MS) });
-  if (!res.ok) throw new Error(`covclaimd pubkey endpoint: HTTP ${res.status}`);
+  if (!res.ok) throw new UpstreamError("covclaimd pubkey endpoint", res.status);
   const body = (await res.json()) as { covclaimd_pub_key?: unknown; emulator_pub_key?: unknown };
   return {
     covclaimdPubkey: compressedKey(body.covclaimd_pub_key, "covclaimd_pub_key"),
@@ -186,11 +186,11 @@ async function fetchCovclaimdKeys(covclaimdUrl: string): Promise<{ covclaimdPubk
  *  covclaimd-reported key stays authoritative so the covenant matches the solver. */
 async function fetchEmulatorKey(emulatorUrl: string): Promise<Uint8Array> {
   const res = await fetch(`${emulatorUrl}/v1/info`, { signal: AbortSignal.timeout(KEY_FETCH_TIMEOUT_MS) });
-  if (!res.ok) throw new Error(`emulator info endpoint: HTTP ${res.status}`);
+  if (!res.ok) throw new UpstreamError("emulator info endpoint", res.status);
   const body = (await res.json()) as { signerPubkey?: unknown };
   const v = body.signerPubkey;
   if (typeof v !== "string" || !/^([0-9a-f]{64}|0[23][0-9a-f]{64})$/i.test(v)) {
-    throw new Error("emulator signerPubkey: expected 32-byte x-only or 33-byte compressed pubkey (hex)");
+    throw new MalformedRecordError("emulator signerPubkey: expected 32-byte x-only or 33-byte compressed pubkey (hex)");
   }
   return hex.decode(v.toLowerCase());
 }
@@ -296,9 +296,9 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
           const fromAmount = quoteSats("from_amount", quote.from_amount);
           const toAmount = quoteSats("to_amount", quote.to_amount);
           if (fromAmount !== params.amountSat) {
-            throw new Error(`solver quoted from_amount ${fromAmount}, not the requested ${params.amountSat}`);
+            throw new SolverQuoteError(`solver quoted from_amount ${fromAmount}, not the requested ${params.amountSat}`);
           }
-          if (toAmount > fromAmount) throw new Error("solver quote pays out more than it takes in");
+          if (toAmount > fromAmount) throw new SolverQuoteError("solver quote pays out more than it takes in");
           const derived = deriveLightningReceive({
             quote,
             paymentHash,
@@ -345,7 +345,7 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
           failures.push(`${candidate.name}: ${error instanceof Error ? error.message : "failed"}`);
         }
       }
-      throw new Error(`all solver candidates failed: ${failures.join("; ")}`);
+      throw new SolverQuoteError(`all solver candidates failed: ${failures.join("; ")}`);
     },
 
     async isSettled(swapId, recovery) {

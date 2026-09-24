@@ -2,6 +2,8 @@
  * ClaimPacket TLV codec, mirroring covclaimd `pkg/preimage/packet.go`.
  */
 
+import { MalformedRecordError } from "./errors.js";
+
 /** Arkade extension packet type covclaimd scans the arkd tx stream for. */
 export const CLAIM_PACKET_TYPE = 0x04;
 
@@ -82,14 +84,14 @@ export function decodeClaimPacket(data: Uint8Array): ClaimPacket {
   let offset = 0;
   while (offset < data.length) {
     if (offset + 3 > data.length) {
-      throw new Error("truncated TLV: not enough bytes for type+length header");
+      throw new MalformedRecordError("truncated TLV: not enough bytes for type+length header");
     }
     const type = data[offset];
     const length = (data[offset + 1] << 8) | data[offset + 2];
     offset += 3;
     if (offset + length > data.length) {
       const hex = type.toString(16).padStart(2, "0");
-      throw new Error(`truncated TLV: type 0x${hex} wants ${length} bytes, ${data.length - offset} left`);
+      throw new MalformedRecordError(`truncated TLV: type 0x${hex} wants ${length} bytes, ${data.length - offset} left`);
     }
     const value = data.slice(offset, offset + length);
     offset += length;
@@ -98,13 +100,13 @@ export function decodeClaimPacket(data: Uint8Array): ClaimPacket {
     else if (type === TLV_ARKADE_SCRIPT) arkadeScript = value;
     else if (type === TLV_COVCLAIMD_PUBKEY) {
       if (value.length !== COMPRESSED_PUBKEY_LEN) {
-        throw new Error(`covclaimd_pub_key TLV (0x03) is ${value.length} bytes, want ${COMPRESSED_PUBKEY_LEN}`);
+        throw new MalformedRecordError(`covclaimd_pub_key TLV (0x03) is ${value.length} bytes, want ${COMPRESSED_PUBKEY_LEN}`);
       }
       covclaimdPubkey = value;
     }
   }
 
-  if (!ciphertext) throw new Error("missing ciphertext TLV (0x01)");
-  if (!arkadeScript) throw new Error("missing arkade_script TLV (0x02)");
+  if (!ciphertext) throw new MalformedRecordError("missing ciphertext TLV (0x01)");
+  if (!arkadeScript) throw new MalformedRecordError("missing arkade_script TLV (0x02)");
   return { ciphertext, arkadeScript, covclaimdPubkey };
 }

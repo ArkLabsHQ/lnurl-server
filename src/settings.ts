@@ -1,4 +1,5 @@
 import type { SettingsRepo } from "./db/repositories/settings.js";
+import { SettingsError } from "./errors.js";
 
 /** The runtime-soft settings the server reads per request (so DB overrides take effect live). */
 export interface RuntimeSettings {
@@ -29,8 +30,6 @@ export type SettingKey = (typeof EDITABLE_SETTING_KEYS)[number];
 export function isSettingKey(k: string): k is SettingKey {
   return (EDITABLE_SETTING_KEYS as readonly string[]).includes(k);
 }
-
-export class SettingsError extends Error {}
 
 /** RuntimeSettings backed by fixed values — used when persistence is disabled (no DB). */
 export function staticSettings(d: SettingsDefaults): RuntimeSettings {

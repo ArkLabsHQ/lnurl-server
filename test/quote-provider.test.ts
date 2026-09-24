@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { applyQuote, QuoteError, type QuoteProvider, type PaymentQuote } from "../src/quote-provider.js";
+import { applyQuote, type QuoteProvider, type PaymentQuote } from "../src/quote-provider.js";
+import { QuoteError } from "../src/errors.js";
 
 // A fake fixed-rate provider: 1 USD (decimals 2) = 1000 msat per cent, i.e. amount(cents)*1000 msat.
 const usd: QuoteProvider = {

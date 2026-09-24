@@ -1,6 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { Response } from "express";
 import type { Session, SessionEvent, SessionInfo } from "./types/index.js";
+import { InvoiceRequestError } from "./errors.js";
 import { deriveSessionId } from "./session-id.js";
 
 /** Constant-time comparison for secret tokens (avoids a byte-by-byte timing oracle). */
@@ -108,18 +109,18 @@ export class SessionManager {
   ): Promise<string> {
     const session = this.sessions.get(id);
     if (!session) {
-      return Promise.reject(new Error("Session not found"));
+      return Promise.reject(new InvoiceRequestError("Session not found"));
     }
     if (session.pendingInvoice) {
       return Promise.reject(
-        new Error("Another invoice request is already pending"),
+        new InvoiceRequestError("Another invoice request is already pending"),
       );
     }
 
     return new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => {
         session.pendingInvoice = null;
-        reject(new Error("Invoice request timed out"));
+        reject(new InvoiceRequestError("Invoice request timed out"));
       }, timeoutMs);
 
       session.pendingInvoice = {
@@ -160,7 +161,7 @@ export class SessionManager {
   rejectInvoice(id: string, reason: string): boolean {
     const session = this.sessions.get(id);
     if (!session?.pendingInvoice) return false;
-    session.pendingInvoice.reject(new Error(reason));
+    session.pendingInvoice.reject(new InvoiceRequestError(reason));
     return true;
   }
 
@@ -170,7 +171,7 @@ export class SessionManager {
     if (!session) return;
 
     if (session.pendingInvoice) {
-      session.pendingInvoice.reject(new Error("Session closed"));
+      session.pendingInvoice.reject(new InvoiceRequestError("Session closed"));
     }
 
     this.sessions.delete(id);

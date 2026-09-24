@@ -6,7 +6,7 @@ import type { OfflineSwapCreator } from "./intent-swap.js";
 import type { OfflineSwapStore } from "./offline-swap-store.js";
 import type { Logger } from "./logger.js";
 import type { PaymentQuote } from "./quote-provider.js";
-import { RailRefusedError } from "./rails.js";
+import { InvoiceRequestError, RailRefusedError } from "./errors.js";
 import { paymentHashFromBolt11 } from "./bolt11.js";
 import type { LnurlPayCallbackResponse } from "./types/index.js";
 import { LnurlError } from "./http-responses.js";
@@ -47,8 +47,9 @@ export async function requestInvoiceAndRespond(args: {
   /** LUD-XX: echo the explicitly-selected lightning option on the pr response. */
   echoLightningOption?: boolean;
   res: express.Response;
+  logger: Logger;
 }): Promise<void> {
-  const { sessions, sessionId, addressId, amountMsat, comment, min, max, timeoutMs, offlineReason, store, baseUrl, paymentQuote, echoLightningOption, res } = args;
+  const { sessions, sessionId, addressId, amountMsat, comment, min, max, timeoutMs, offlineReason, store, baseUrl, paymentQuote, echoLightningOption, res, logger } = args;
   if (amountMsat < min || amountMsat > max) {
     throw new LnurlError(`Amount must be between ${min} and ${max} millisats`);
   }
@@ -68,7 +69,9 @@ export async function requestInvoiceAndRespond(args: {
       res.json({ pr, routes: [], ...(paymentQuote ? { paymentQuote } : {}), ...echo } satisfies LnurlPayCallbackResponse);
     }
   } catch (err) {
-    throw new LnurlError(err instanceof Error ? err.message : "Failed to get invoice");
+    if (err instanceof InvoiceRequestError) throw new LnurlError(err.message);
+    logger.error("invoice_request_failed", { requestId: res.locals.requestId, error: err });
+    throw new LnurlError("Failed to get invoice");
   }
 }
 

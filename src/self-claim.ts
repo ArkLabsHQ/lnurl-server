@@ -24,6 +24,7 @@ import {
   type VHTLC,
 } from "@arkade-os/sdk";
 import { LOCKTIME_THRESHOLD } from "@arkade-os/swap";
+import { UpstreamError } from "./errors.js";
 
 export interface SelfClaimRegistration {
   swapId: string;
@@ -67,7 +68,7 @@ export async function checkEmulatorPairing(opts: {
   const warn = opts.warn ?? console.warn;
   const get = async (url: string) => {
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-    if (!res.ok) throw new Error(`${url} -> ${res.status}`);
+    if (!res.ok) throw new UpstreamError(url, res.status);
     return (await res.json()) as Record<string, unknown>;
   };
   let expected: string;

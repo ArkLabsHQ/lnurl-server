@@ -3,7 +3,8 @@ import { randomBytes } from "node:crypto";
 import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
-import { AddressService, ProvisioningError, isNameless } from "../src/address-service.js";
+import { AddressService, isNameless } from "../src/address-service.js";
+import { ProvisioningError } from "../src/errors.js";
 import { deriveSessionId } from "../src/session-id.js";
 import type { DomainRow } from "../src/types/index.js";
 

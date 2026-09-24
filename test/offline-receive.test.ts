@@ -13,7 +13,7 @@ import { OfflineSwapStore } from "../src/offline-swap-store.js";
 import { encryptToken } from "../src/crypto.js";
 import { deriveSessionId } from "../src/session-id.js";
 import type { OfflineSwapCreator, OfflineSwapParams, OfflineSwapResult } from "../src/intent-swap.js";
-import { RailRefusedError } from "../src/rails.js";
+import { RailRefusedError } from "../src/errors.js";
 import type { LnurlServiceConfig } from "../src/types/index.js";
 
 const KEY = randomBytes(32);

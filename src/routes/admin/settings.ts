@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { isSettingKey, SettingsError } from "../../settings.js";
+import { isSettingKey } from "../../settings.js";
 import { BadRequest } from "../../http-responses.js";
 import type { AdminDeps } from "../../admin-context.js";
 
@@ -21,14 +21,9 @@ export function adminSettingsRoutes({ settings, config }: AdminDeps): Router {
   }));
   r.patch("/settings", (req, res) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
-    try {
-      for (const [k, v] of Object.entries(body)) {
-        if (!isSettingKey(k)) throw new BadRequest(`unknown setting: ${k}`);
-        settings.set(k, v);
-      }
-    } catch (e) {
-      if (e instanceof SettingsError) throw new BadRequest(e.message);
-      throw e;
+    for (const [k, v] of Object.entries(body)) {
+      if (!isSettingKey(k)) throw new BadRequest(`unknown setting: ${k}`);
+      settings.set(k, v);
     }
     res.json(settings.view());
   });

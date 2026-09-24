@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { createHash } from "node:crypto";
 import { deriveSessionId } from "../src/session-id.js";
+import { InvalidSessionTokenError } from "../src/errors.js";
 
 describe("deriveSessionId", () => {
   it("is the first 32 hex chars of SHA-256(token bytes)", () => {
@@ -12,7 +13,7 @@ describe("deriveSessionId", () => {
 
   it("refuses tokens Buffer.from would truncate onto another token's id", () => {
     const token = "ab".repeat(32);
-    expect(() => deriveSessionId(token + "a")).toThrow(/invalid session token/);
-    expect(() => deriveSessionId(token + "zz")).toThrow(/invalid session token/);
+    expect(() => deriveSessionId(token + "a")).toThrow(InvalidSessionTokenError);
+    expect(() => deriveSessionId(token + "zz")).toThrow(InvalidSessionTokenError);
   });
 });

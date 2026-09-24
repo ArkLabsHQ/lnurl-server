@@ -13,6 +13,7 @@ import {
 import { solverLightningRendezvous } from "@arkade-os/swap";
 import type { SolverCardsRepo } from "./db/repositories/solver-cards.js";
 import type { SolverRegistryCacheRepo } from "./db/repositories/solver-registry-cache.js";
+import { UpstreamError } from "./errors.js";
 
 const DEFAULT_REFRESH_MS = 10 * 60_000;
 const MAX_CACHE_AGE_MS = DEFAULT_MAX_AGE_SECONDS * 1000;
@@ -290,7 +291,7 @@ export class DiscoveryService {
   private cacheAwareFetch: FetchLike = async (input, init) => {
     try {
       const response = await this.upstreamFetch(input, init);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok) throw new UpstreamError(String(input), response.status);
       const body = await response.text();
       this.fetchedBodies.set(input, body);
       return { ok: true, status: response.status, text: async () => body };

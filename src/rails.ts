@@ -20,6 +20,7 @@
 
 import type { PaymentOption } from "./payment-options.js";
 import type { ServerDeps } from "./server-context.js";
+import { InvalidRailPolicyError } from "./errors.js";
 
 /** Every receive rail the server knows. The order is the advertise order. */
 export const RAIL_IDS = ["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain"] as const;
@@ -82,9 +83,6 @@ export const RAIL_DEFS: Record<RailId, RailDef> = {
   },
 };
 
-/** A refusal safe to quote to the payer verbatim. Anything else a rail throws
- *  stays generic, because it may name a solver, a key, or this server's wiring. */
-export class RailRefusedError extends Error {}
 
 /** Amount bounds one rail can serve, in millisats. Either half may be absent,
  *  meaning that end is not narrowed beyond the server/domain bound. */
@@ -231,10 +229,10 @@ function disabledSet(address: RailAddress): Set<string> {
 
 /** Normalize a caller-supplied disabled-rails list; throws on unknown ids. */
 export function normalizeDisabledRails(value: unknown): RailId[] {
-  if (!Array.isArray(value)) throw new Error("disabledRails must be an array of rail ids");
+  if (!Array.isArray(value)) throw new InvalidRailPolicyError("disabledRails must be an array of rail ids");
   const out: RailId[] = [];
   for (const entry of value) {
-    if (!isRailId(entry)) throw new Error("unknown rail id: " + JSON.stringify(entry) + " (known: " + RAIL_IDS.join(", ") + ")");
+    if (!isRailId(entry)) throw new InvalidRailPolicyError("unknown rail id: " + JSON.stringify(entry) + " (known: " + RAIL_IDS.join(", ") + ")");
     if (!out.includes(entry)) out.push(entry);
   }
   return out;

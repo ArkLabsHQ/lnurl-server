@@ -1,22 +1,11 @@
 import { randomBytes } from "node:crypto";
-import type { Repositories } from "./db/repositories/index.js";
+import type { Repositories } from "./db/repositories";
 import type { AddressRow, DomainRow } from "./types/index.js";
 import { encryptToken, hashSecret } from "./crypto.js";
 import { deriveSessionId } from "./session-id.js";
 import { validateUsername, randomUsername, isValidToken } from "./usernames.js";
 import { normalizeDisabledRails } from "./rails.js";
-
-export type ProvisioningCode =
-  | "invalid_token" | "invalid_username" | "forbidden_mode"
-  | "blacklisted" | "taken" | "limit_reached" | "invalid_claim" | "invalid_rails"
-  | "already_named" | "not_found";
-
-export class ProvisioningError extends Error {
-  constructor(public code: ProvisioningCode, message: string) {
-    super(message);
-    this.name = "ProvisioningError";
-  }
-}
+import { InvalidRailPolicyError, ProvisioningError } from "./errors.js";
 
 const MAX_RANDOM_ATTEMPTS = 20;
 const HEX_HANDLE = /^[0-9a-f]{32}$/;
@@ -151,7 +140,8 @@ export class AddressService {
     try {
       normalized = normalizeDisabledRails(rails);
     } catch (err) {
-      throw new ProvisioningError("invalid_rails", err instanceof Error ? err.message : "invalid rail policy");
+      if (err instanceof InvalidRailPolicyError) throw new ProvisioningError("invalid_rails", err.message);
+      throw err;
     }
     this.repos.addresses.setDisabledRails(id, normalized);
   }
