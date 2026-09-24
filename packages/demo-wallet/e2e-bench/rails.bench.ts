@@ -81,7 +81,7 @@ async function register(base: string, username: string, user: Awaited<ReturnType
   const owner = createLnurlClient({ baseUrl: base });
   await owner.registerAddress({ token, username });
   await owner.registerArkadeIdentity({
-    token, username, arkadeAddress: user.arkadeAddress, claimPublicKey: user.claimPublicKey,
+    token, handle: username, arkadeAddress: user.arkadeAddress, claimPublicKey: user.claimPublicKey,
   });
   return { token, owner };
 }

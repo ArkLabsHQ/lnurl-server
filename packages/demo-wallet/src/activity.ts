@@ -38,7 +38,7 @@ const sats = (msat: number | null): string => (msat === null ? "any" : `${msat /
 function paymentDetails(p: StoredPayment): Detail[] {
   const details: Detail[] = [
     ["rail", railOf(p)],
-    ["paid to", p.lightningAddress],
+    ["paid to", p.lightningAddress ?? p.handle],
     ["quoted", sats(p.amountMsat)],
   ];
   if (p.swapId) details.push(["swap", p.swapId]);

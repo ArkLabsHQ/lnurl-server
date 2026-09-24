@@ -9,9 +9,9 @@ const SERVER_A = "https://lnurl-a.test";
 const SERVER_B = "https://lnurl-b.test";
 const DOMAIN = "example.com";
 
-const targetA: PaymentSyncTarget = { baseUrl: SERVER_A, token: "token-a", username: "alice", domain: DOMAIN };
-const targetB: PaymentSyncTarget = { baseUrl: SERVER_B, token: "token-b", username: "bob", domain: DOMAIN };
-const addressOf = (target: PaymentSyncTarget): string => `${target.username}@${target.domain}`;
+const targetA: PaymentSyncTarget = { baseUrl: SERVER_A, token: "token-a", handle: "alice", domain: DOMAIN };
+const targetB: PaymentSyncTarget = { baseUrl: SERVER_B, token: "token-b", handle: "bob", domain: DOMAIN };
+const addressOf = (target: PaymentSyncTarget): string => `${target.handle}@${target.domain}`;
 
 const makeBolt11 = (paymentHash: string, createdAt: number): Bolt11Activity => ({
   kind: "bolt11",
@@ -47,7 +47,7 @@ const makeDestination = (
 const settle = <T extends PaymentActivity>(entry: T, settledAt: number): T => ({ ...entry, settled: true, settledAt });
 
 const makePage = (target: PaymentSyncTarget, payments: PaymentActivity[], nextSince: number): PaymentPage => ({
-  source: { domain: target.domain, lightningAddress: addressOf(target) },
+  source: { domain: target.domain, lightningAddress: addressOf(target), handle: target.handle },
   payments,
   nextSince,
 });
@@ -116,6 +116,25 @@ describe("syncPayments", () => {
 
     expect(listPayments).toHaveBeenNthCalledWith(2, "token-a", "alice", { domain: DOMAIN, since: 1042, limit: 50 });
     expect(store.all()).toHaveLength(1);
+  });
+
+  // An upgrade renames the handle; the store's key-overwrite (by identifier) must absorb the from-zero re-fetch.
+  it("holds each payment once after syncing the same address under a renamed handle", async () => {
+    const rows: PaymentActivity[] = [settle(makeBolt11("hash-1", 1000), 1000), settle(makeBolt11("hash-2", 2000), 2000)];
+    const oldTarget: PaymentSyncTarget = { baseUrl: SERVER_A, token: "token-a", handle: "old-sid", domain: DOMAIN };
+    const newTarget: PaymentSyncTarget = { baseUrl: SERVER_A, token: "token-a", handle: "carol", domain: DOMAIN };
+    const listPayments = vi.fn<ListPayments["listPayments"]>(async (_token, handle, opts) => {
+      const page = rows.filter((row) => opts?.since === undefined || row.createdAt >= opts.since);
+      return { source: { domain: DOMAIN, lightningAddress: `${handle}@${DOMAIN}`, handle }, payments: page, nextSince: page[page.length - 1]?.createdAt ?? opts?.since ?? 0 };
+    });
+    const store = createMemoryStore();
+
+    await syncPayments([oldTarget], { client: () => ({ listPayments }), store });
+    await syncPayments([newTarget], { client: () => ({ listPayments }), store });
+
+    expect(store.all()).toHaveLength(2);
+    expect(await store.readWatermark(SERVER_A, addressOf(oldTarget))).toBe(2000);
+    expect(await store.readWatermark(SERVER_A, addressOf(newTarget))).toBe(2000);
   });
 
   it("builds a client per target so a token never reaches another server", async () => {

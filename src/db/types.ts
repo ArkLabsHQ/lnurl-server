@@ -1,7 +1,7 @@
 import type { EncryptedToken } from "../crypto.js";
 import type { RailId } from "../rails.js";
 
-export type AllocationMode = "self" | "random" | "admin";
+export type AllocationMode = "self" | "random" | "admin" | "session";
 export type AddressStatus = "reserved" | "active" | "revoked";
 
 export interface DomainRow {
@@ -50,6 +50,8 @@ export interface AddressRow {
   boardingAddress: string | null;
   /** Rail ids the operator disabled for this address (per-LNURL policy). */
   disabledRails: RailId[];
+  /** Also served at /lnurl/<sessionId>; survives a rename. */
+  sessionLnurl: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -62,6 +64,7 @@ export interface CreateAddressParams {
   encryptedToken?: EncryptedToken | null;
   claimCodeHash?: Buffer | null;
   metadata?: string | null;
+  sessionLnurl?: boolean;
 }
 
 export interface BlacklistRow {

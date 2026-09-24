@@ -105,7 +105,7 @@ beforeEach(() => {
 afterEach(async () => { await ctx.close(); db.close(); });
 
 describe("offline receive", () => {
-  it("registers an arkade receive identity via POST /lnurl/address/:username/arkade", async () => {
+  it("registers an arkade receive identity via POST /lnurl/address/:handle/arkade", async () => {
     ctx = await start(repos);
     const res = await req(`${ctx.baseUrl}/lnurl/address/off/arkade`, "POST", "domain.com", { arkadeAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY }, TOKEN);
     expect(res.status).toBe(200);

@@ -43,10 +43,19 @@ export function browserPaymentStore(prefix = ""): PaymentSyncStore {
   };
 }
 
-/** Everything synced for one address, newest first. */
-export function storedPayments(lightningAddress: string, prefix = ""): StoredPayment[] {
+/** Everything synced for one address, newest first. A nameless receiver has no
+ *  lightning address to match on, so name it by `{ domain, handle }` instead. */
+export function storedPayments(
+  address: string | { domain: string; handle: string },
+  prefix = "",
+): StoredPayment[] {
+  const mine = typeof address === "string"
+    ? (r: StoredPayment) => r.lightningAddress === address
+    : (r: StoredPayment) => r.domain === address.domain && (r.handle === address.handle
+      // Synced before records carried a handle, and the per-handle watermark never refetches them.
+      || (r.handle === undefined && r.lightningAddress === `${address.handle}@${address.domain}`));
   return read<StoredPayment[]>(`${prefix}${RECORDS}`, [])
-    .filter((r) => r.lightningAddress === lightningAddress)
+    .filter(mine)
     .sort((a, b) => b.createdAt - a.createdAt);
 }
 

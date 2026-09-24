@@ -18,36 +18,52 @@ export interface RegisterAddressRequest {
   domain?: string;
   /** Sent as `X-API-Key` on domains that require one. */
   apiKey?: string;
+  /** Registers a nameless receiver instead; mutually exclusive with `username`/`claimCode`. */
+  nameless?: boolean;
 }
 
 /** A freshly registered LUD-16 lightning address and how to reach it. */
 export interface RegisteredAddress {
-  /** The `user@domain` address payers use. */
-  lightningAddress: string;
+  /** The `user@domain` address payers use; null for a nameless receiver. */
+  lightningAddress: string | null;
   /** The bech32 LNURL encoding of the payRequest URL. */
   lnurl: string;
-  /** Username part of the address. */
-  username: string;
+  /** Username part of the address; null for a nameless receiver. */
+  username: string | null;
+  /** The username, or the session id while nameless; changes on upgrade. */
+  handle: string;
   /** Domain part of the address. */
   domain: string;
   /** Registration status reported by the server. */
   status: string;
+  nameless: boolean;
+  sessionLnurl: string | null;
 }
 
-/** One address owned by a token, as listed by the server. */
+/** One address owned by a token, as listed by the server; same nullability as `RegisteredAddress`. */
 export interface AddressListEntry {
-  /** Username part of the address. */
-  username: string;
+  username: string | null;
   /** Domain part of the address. */
   domain: string;
   /** Registration status reported by the server. */
   status: string;
   /** Creation timestamp reported by the server. */
   createdAt: number;
-  /** The `user@domain` address payers use. */
-  lightningAddress: string;
+  lightningAddress: string | null;
   /** The bech32 LNURL encoding of the payRequest URL. */
   lnurl: string;
+  handle: string;
+  nameless: boolean;
+  /** Survives a later upgrade to a name. */
+  sessionLnurl: string | null;
+}
+
+/** What a domain allows, discoverable before calling any of its routes. */
+export interface DomainCapabilities {
+  domain: string;
+  allocationModes: string[];
+  usernameRules: { minLen: number; maxLen: number; pattern: string };
+  requireApiKey: boolean;
 }
 
 /**
@@ -59,8 +75,8 @@ export interface AddressListEntry {
 export interface RegisterArkadeIdentityRequest {
   /** Token owning the address; sent as the Bearer credential. */
   token: string;
-  /** Username of the already-registered address. */
-  username: string;
+  /** Handle of the already-registered address. */
+  handle: string;
   /** Arkade address receiving offline payments; validated server-side. */
   arkadeAddress: string;
   /** Compressed 33-byte public key: `02`/`03` prefix plus 64 hex chars. */
@@ -74,6 +90,14 @@ export interface RegisterArkadeIdentityRequest {
 function rootOf(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, "");
 }
+
+/** A server predating nameless receivers omits these; every row it has is named. */
+const asRegistered = (a: RegisteredAddress): RegisteredAddress => ({
+  ...a, handle: a.handle ?? a.username!, nameless: a.nameless ?? false, sessionLnurl: a.sessionLnurl ?? null,
+});
+const asListed = (a: AddressListEntry): AddressListEntry => ({
+  ...a, handle: a.handle ?? a.username!, nameless: a.nameless ?? false, sessionLnurl: a.sessionLnurl ?? null,
+});
 
 /**
  * Registers a LUD-16 lightning address owned by `req.token`.
@@ -90,15 +114,16 @@ export function registerAddress(
 ): Promise<RegisteredAddress> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (req.apiKey !== undefined) headers["X-API-Key"] = req.apiKey;
-  const body: Record<string, string> = { token: req.token };
+  const body: Record<string, string | boolean> = { token: req.token };
   if (req.username !== undefined) body["username"] = req.username;
   if (req.claimCode !== undefined) body["claimCode"] = req.claimCode;
   if (req.domain !== undefined) body["domain"] = req.domain;
+  if (req.nameless !== undefined) body["nameless"] = req.nameless;
   return apiFetch<RegisteredAddress>(`${rootOf(baseUrl)}/lnurl/address`, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
-  }, fetchImpl);
+  }, fetchImpl).then(asRegistered);
 }
 
 /**
@@ -116,7 +141,33 @@ export function listAddresses(
 ): Promise<AddressListEntry[]> {
   return apiFetch<AddressListEntry[]>(`${rootOf(baseUrl)}/lnurl/address`, {
     headers: { Authorization: `Bearer ${token}` },
-  }, fetchImpl);
+  }, fetchImpl).then((entries) => entries.map(asListed));
+}
+
+/** Upgrades a nameless receiver in place to a named one; everything handed out while nameless keeps working. */
+export function upgradeAddress(
+  baseUrl: string,
+  req: { token: string; handle: string; username?: string; claimCode?: string; domain?: string },
+  fetchImpl: FetchImpl,
+): Promise<RegisteredAddress> {
+  const body: Record<string, string> = {};
+  if (req.username !== undefined) body["username"] = req.username;
+  if (req.claimCode !== undefined) body["claimCode"] = req.claimCode;
+  const query = req.domain !== undefined ? `?domain=${encodeURIComponent(req.domain)}` : "";
+  return apiFetch<RegisteredAddress>(`${rootOf(baseUrl)}/lnurl/address/${encodeURIComponent(req.handle)}${query}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", Authorization: `Bearer ${req.token}` },
+    body: JSON.stringify(body),
+  }, fetchImpl).then(asRegistered);
+}
+
+export function domainCapabilities(
+  baseUrl: string,
+  opts: { domain?: string } | undefined,
+  fetchImpl: FetchImpl,
+): Promise<DomainCapabilities> {
+  const query = opts?.domain !== undefined ? `?domain=${encodeURIComponent(opts.domain)}` : "";
+  return apiFetch<DomainCapabilities>(`${rootOf(baseUrl)}/lnurl/domain${query}`, undefined, fetchImpl);
 }
 
 /** One settlement row as the payments route serves it. */
@@ -175,7 +226,7 @@ function toActivity(row: AddressPaymentRow): PaymentActivity {
  *
  * @param baseUrl - Server root, e.g. `https://lnurl.example.com`.
  * @param token - Token owning the address; sent as the Bearer credential.
- * @param username - Username of the address whose payments to list.
+ * @param handle - Handle of the address whose payments to list.
  * @param opts - Optional domain, inclusive since cursor and page limit.
  * @param fetchImpl - The injected `fetch` implementation to call.
  * @returns The payment page with rail-discriminated activity entries.
@@ -183,7 +234,7 @@ function toActivity(row: AddressPaymentRow): PaymentActivity {
 export async function listPayments(
   baseUrl: string,
   token: string,
-  username: string,
+  handle: string,
   opts: { domain?: string; since?: number; limit?: number } | undefined,
   fetchImpl: FetchImpl,
 ): Promise<PaymentPage> {
@@ -193,13 +244,17 @@ export async function listPayments(
   if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
   const query = params.size > 0 ? `?${params.toString()}` : "";
   const page = await apiFetch<{ source: PaymentPage["source"]; payments: AddressPaymentRow[]; nextSince: number }>(
-    `${rootOf(baseUrl)}/lnurl/address/${encodeURIComponent(username)}/payments${query}`,
+    `${rootOf(baseUrl)}/lnurl/address/${encodeURIComponent(handle)}/payments${query}`,
     {
       headers: { Authorization: `Bearer ${token}` },
     },
     fetchImpl,
   );
-  return { source: page.source, payments: page.payments.map(toActivity), nextSince: page.nextSince };
+  return {
+    source: { ...page.source, handle: page.source.handle ?? handle },
+    payments: page.payments.map(toActivity),
+    nextSince: page.nextSince,
+  };
 }
 
 /**
@@ -207,7 +262,7 @@ export async function listPayments(
  *
  * @param baseUrl - Server root, e.g. `https://lnurl.example.com`.
  * @param token - Token owning the address; sent as the Bearer credential.
- * @param username - Username of the address to revoke.
+ * @param handle - Handle of the address to revoke.
  * @param opts - Optional domain scoping the revocation.
  * @param fetchImpl - The injected `fetch` implementation to call.
  * @returns A promise settling when the server revokes the address.
@@ -215,12 +270,12 @@ export async function listPayments(
 export async function revokeAddress(
   baseUrl: string,
   token: string,
-  username: string,
+  handle: string,
   opts: { domain?: string } | undefined,
   fetchImpl: FetchImpl,
 ): Promise<void> {
   const query = opts?.domain !== undefined ? `?domain=${encodeURIComponent(opts.domain)}` : "";
-  await apiFetch<unknown>(`${rootOf(baseUrl)}/lnurl/address/${encodeURIComponent(username)}${query}`, {
+  await apiFetch<unknown>(`${rootOf(baseUrl)}/lnurl/address/${encodeURIComponent(handle)}${query}`, {
     method: "DELETE",
     headers: { Authorization: `Bearer ${token}` },
   }, fetchImpl);
@@ -241,7 +296,7 @@ const COMPRESSED_KEY = /^0[23][0-9a-f]{64}$/i;
  * omitting it sends no field, read server-side as "leave the onchain rail".
  *
  * @param baseUrl - Server root, e.g. `https://lnurl.example.com`.
- * @param req - Token, username, Arkade address, claim key, optional boarding address and domain.
+ * @param req - Token, handle, Arkade address, claim key, optional boarding address and domain.
  * @param fetchImpl - The injected `fetch` implementation to call.
  * @returns A promise settling when the server records the identity.
  */
@@ -258,7 +313,7 @@ export async function registerArkadeIdentity(
   const body: Record<string, string> = { arkadeAddress: req.arkadeAddress, claimPublicKey: req.claimPublicKey };
   if (req.boardingAddress !== undefined) body["boardingAddress"] = req.boardingAddress;
   if (req.domain !== undefined) body["domain"] = req.domain;
-  await apiFetch<unknown>(`${rootOf(baseUrl)}/lnurl/address/${encodeURIComponent(req.username)}/arkade`, {
+  await apiFetch<unknown>(`${rootOf(baseUrl)}/lnurl/address/${encodeURIComponent(req.handle)}/arkade`, {
     method: "POST",
     headers: { "content-type": "application/json", Authorization: `Bearer ${req.token}` },
     body: JSON.stringify(body),

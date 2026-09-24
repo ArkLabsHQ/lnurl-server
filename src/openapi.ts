@@ -1,5 +1,8 @@
 import { VERSION } from "./version.js";
 
+const HANDLE_PARAM =
+  "Handle: the username, or the session id while nameless. A row that had a session LNURL still answers to its session id after an upgrade, while it is active.";
+
 export const openApiSpec = {
   openapi: "3.0.3",
   info: {
@@ -169,7 +172,10 @@ export const openApiSpec = {
         summary: "LNURL-pay metadata (LUD-06)",
         description:
           "Returns LNURL-pay metadata including min/max amounts " +
-          "and the callback URL. Called by the payer's wallet after scanning the LNURL.",
+          "and the callback URL. Called by the payer's wallet after scanning the LNURL. " +
+          "When `id` is a session ID with an active nameless or upgraded receiver, this " +
+          "serves that address (offline-capable, with its `paymentOptions`) instead of " +
+          "the plain session; otherwise it behaves as the live session's payRequest.",
         tags: ["LNURL-pay"],
         parameters: [
           {
@@ -219,7 +225,10 @@ export const openApiSpec = {
         description:
           "Payer requests an invoice for a specific amount. The server " +
           "notifies the wallet via SSE and holds the response until the " +
-          "wallet provides a bolt11 invoice or the request times out.",
+          "wallet provides a bolt11 invoice or the request times out. " +
+          "When `id` is an active nameless or upgraded receiver's session ID, this can " +
+          "also settle offline via that address's rails; otherwise it requires a live " +
+          "session.",
         tags: ["LNURL-pay"],
         parameters: [
           {
@@ -430,7 +439,11 @@ export const openApiSpec = {
           "domain comes from the `domain` body field or the Host header. Behaviour " +
           "follows the domain's allocation policy: send a `username` to self-claim " +
           "(when `self` is allowed), omit it for a random username (when `random` is " +
-          "allowed), or send `username` + `claimCode` to claim an admin-reserved one. " +
+          "allowed), send `username` + `claimCode` to claim an admin-reserved one, or " +
+          "send `nameless: true` (when `session` is allowed) for a receiver with no " +
+          "lightning address, reachable only at its session LNURL — mutually exclusive " +
+          "with `username`/`claimCode`. Returns 200 (not 201) when a nameless call " +
+          "repeats: the existing row is returned idempotently. " +
           "Include `X-API-Key` when the domain requires one.",
         tags: ["LN Address"],
         parameters: [
@@ -453,6 +466,7 @@ export const openApiSpec = {
                   username: { type: "string", description: "Desired username; omit for random allocation" },
                   claimCode: { type: "string", description: "Claim code for an admin-reserved username" },
                   domain: { type: "string", description: "Target domain (defaults to the Host header)" },
+                  nameless: { type: "boolean", description: "Register with no lightning address (requires `session` mode); cannot combine with `username`/`claimCode`" },
                 },
                 required: ["token"],
               },
@@ -460,24 +474,9 @@ export const openApiSpec = {
           },
         },
         responses: {
-          "201": {
-            description: "Address registered",
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  properties: {
-                    lightningAddress: { type: "string" },
-                    lnurl: { type: "string" },
-                    username: { type: "string" },
-                    domain: { type: "string" },
-                    status: { type: "string" },
-                  },
-                },
-              },
-            },
-          },
-          "400": { description: "Missing token, or invalid token/username" },
+          "200": { description: "An existing nameless row was returned idempotently", content: { "application/json": { schema: { $ref: "#/components/schemas/OwnedAddress" } } } },
+          "201": { description: "Address registered", content: { "application/json": { schema: { $ref: "#/components/schemas/OwnedAddress" } } } },
+          "400": { description: "Missing token, invalid token/username, or `nameless` combined with `username`/`claimCode`" },
           "401": { description: "Missing/invalid X-API-Key, or invalid claim code" },
           "403": { description: "Allocation mode not permitted for this domain" },
           "404": { description: "Unknown or disabled domain" },
@@ -495,20 +494,7 @@ export const openApiSpec = {
             description: "Owned addresses",
             content: {
               "application/json": {
-                schema: {
-                  type: "array",
-                  items: {
-                    type: "object",
-                    properties: {
-                      username: { type: "string" },
-                      domain: { type: "string" },
-                      status: { type: "string" },
-                      createdAt: { type: "number" },
-                      lightningAddress: { type: "string" },
-                      lnurl: { type: "string" },
-                    },
-                  },
-                },
+                schema: { type: "array", items: { allOf: [{ $ref: "#/components/schemas/OwnedAddress" }, { type: "object", properties: { createdAt: { type: "number" } } }] } },
               },
             },
           },
@@ -517,13 +503,52 @@ export const openApiSpec = {
         },
       },
     },
-    "/lnurl/address/{username}": {
+    "/lnurl/address/{handle}": {
+      patch: {
+        summary: "Upgrade a nameless receiver to a named LN address",
+        description:
+          "Gives a nameless row (registered with `nameless: true`) a name, in place: id, " +
+          "session id, offline-receive identity, rail policy and payment history all carry " +
+          "over. Same allocation rules as registration — `username` needs `self`, an " +
+          "omitted name needs `random`, `username` + `claimCode` claims an admin-reserved " +
+          "one, keeping the reservation's rail policy too. A row that already has a name refuses with `already_named`.",
+        tags: ["LN Address"],
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: "handle", in: "path", required: true, schema: { type: "string" }, description: "The nameless row's handle (its session id)" },
+          { name: "domain", in: "query", required: false, schema: { type: "string" }, description: "Target domain (defaults to the body `domain` or the Host header)" },
+        ],
+        requestBody: {
+          required: false,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  username: { type: "string", description: "Desired username; omit for random allocation" },
+                  claimCode: { type: "string", description: "Claim code for an admin-reserved username" },
+                  domain: { type: "string", description: "Target domain (defaults to the Host header)" },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "Address upgraded", content: { "application/json": { schema: { $ref: "#/components/schemas/OwnedAddress" } } } },
+          "400": { description: "Invalid token or username" },
+          "401": { description: "Missing or invalid claim code" },
+          "403": { description: "Allocation mode not permitted for this domain" },
+          "404": { description: "Unknown or disabled domain, or the handle not found / not owned by this token" },
+          "409": { description: "Username already taken, blacklisted, or the row already has a name" },
+          "429": { description: "Rate limited" },
+        },
+      },
       delete: {
         summary: "Revoke one of your LN addresses",
         tags: ["LN Address"],
         security: [{ bearerAuth: [] }],
         parameters: [
-          { name: "username", in: "path", required: true, schema: { type: "string" }, description: "Username to revoke" },
+          { name: "handle", in: "path", required: true, schema: { type: "string" }, description: HANDLE_PARAM },
           { name: "domain", in: "query", required: false, schema: { type: "string" }, description: "Target domain (defaults to the Host header)" },
         ],
         responses: {
@@ -536,7 +561,41 @@ export const openApiSpec = {
         },
       },
     },
-    "/lnurl/address/{username}/arkade": {
+    "/lnurl/domain": {
+      get: {
+        summary: "Domain capabilities",
+        description:
+          "Public capability discovery for a domain's provisioning policy, so a wallet can " +
+          "learn what it may do before calling anything else. Read-only; no auth.",
+        tags: ["LN Address"],
+        parameters: [
+          { name: "domain", in: "query", required: false, schema: { type: "string" }, description: "Target domain (defaults to the Host header)" },
+        ],
+        responses: {
+          "200": {
+            description: "Domain policy",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    domain: { type: "string" },
+                    allocationModes: { type: "array", items: { type: "string" } },
+                    usernameRules: {
+                      type: "object",
+                      properties: { minLen: { type: "number" }, maxLen: { type: "number" }, pattern: { type: "string" } },
+                    },
+                    requireApiKey: { type: "boolean" },
+                  },
+                },
+              },
+            },
+          },
+          "404": { description: "Unknown or disabled domain" },
+        },
+      },
+    },
+    "/lnurl/address/{handle}/arkade": {
       post: {
         summary: "Register Arkade receive identity (offline receive)",
         description:
@@ -546,7 +605,7 @@ export const openApiSpec = {
         tags: ["LN Address"],
         security: [{ bearerAuth: [] }],
         parameters: [
-          { name: "username", in: "path", required: true, schema: { type: "string" }, description: "LN address local part" },
+          { name: "handle", in: "path", required: true, schema: { type: "string" }, description: HANDLE_PARAM },
         ],
         requestBody: {
           required: true,
@@ -580,7 +639,7 @@ export const openApiSpec = {
         },
       },
     },
-    "/lnurl/address/{username}/payments": {
+    "/lnurl/address/{handle}/payments": {
       get: {
         summary: "List payments received by one of your LN addresses",
         description:
@@ -590,7 +649,7 @@ export const openApiSpec = {
         tags: ["LN Address"],
         security: [{ bearerAuth: [] }],
         parameters: [
-          { name: "username", in: "path", required: true, schema: { type: "string" }, description: "LN address local part" },
+          { name: "handle", in: "path", required: true, schema: { type: "string" }, description: HANDLE_PARAM },
           { name: "domain", in: "query", required: false, schema: { type: "string" }, description: "Target domain (defaults to the Host header)" },
           { name: "since", in: "query", required: false, schema: { type: "integer" }, description: "Only rows with created_at >= since (ms); absent or non-numeric starts from the beginning" },
           { name: "limit", in: "query", required: false, schema: { type: "integer" }, description: "Max rows returned; default 50, clamped to 1..200" },
@@ -607,7 +666,8 @@ export const openApiSpec = {
                       type: "object",
                       properties: {
                         domain: { type: "string" },
-                        lightningAddress: { type: "string" },
+                        lightningAddress: { type: "string", nullable: true, description: "null for a nameless address" },
+                        handle: { type: "string", description: "Username, or the session id for a nameless address" },
                       },
                     },
                     payments: { type: "array", items: { type: "object" } },
@@ -809,6 +869,21 @@ export const openApiSpec = {
   },
   components: {
     schemas: {
+      OwnedAddress: {
+        type: "object",
+        description: "A named or nameless address, as returned by register/upgrade/list",
+        properties: {
+          lightningAddress: { type: "string", nullable: true, description: "null for a nameless address" },
+          lnurl: { type: "string", description: "Session LNURL for a flagged row (survives upgrade); otherwise the .well-known LNURL" },
+          username: { type: "string", nullable: true, description: "null for a nameless address" },
+          handle: { type: "string", description: "The username, or the session id while nameless; changes on upgrade" },
+          domain: { type: "string" },
+          status: { type: "string" },
+          nameless: { type: "boolean" },
+          sessionLnurl: { type: "string", nullable: true, description: "The session LNURL string when this row is also served at /lnurl/<sessionId>, else null" },
+        },
+        required: ["lightningAddress", "lnurl", "username", "handle", "domain", "status", "nameless", "sessionLnurl"],
+      },
       AmountObject: {
         type: "object",
         description: "An amount denominated in a unit; strings avoid JSON integer-precision loss",

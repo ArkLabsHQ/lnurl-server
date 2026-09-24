@@ -100,7 +100,7 @@ async function register(base: string, username: string, user: User, opts?: { boa
   await owner.registerAddress({ token, username });
   await owner.registerArkadeIdentity({
     token,
-    username,
+    handle: username,
     arkadeAddress: user.arkadeAddress,
     claimPublicKey: user.claimPublicKey,
     ...(opts?.boarding ? { boardingAddress: user.boardingAddress } : {}),

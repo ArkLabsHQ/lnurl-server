@@ -112,6 +112,11 @@ describe("admin API", () => {
     expect(list.body).toHaveLength(1);
   });
 
+  it("accepts 'session' as an allocation mode", async () => {
+    const create = await request(app).post("/admin/api/domains").send({ domain: "session.com", allocationModes: ["session"] });
+    expect(create.status).toBe(201);
+  });
+
   it("creates a reserved address and returns the claim code once", async () => {
     await request(app).post("/admin/api/domains").send({ domain: "domain.com", allocationModes: ["admin"] });
     const res = await request(app).post("/admin/api/addresses").send({ domain: "domain.com", username: "vip", mode: "reserve" });

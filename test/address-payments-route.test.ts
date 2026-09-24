@@ -44,6 +44,7 @@ const BOB = "cd".repeat(32);
 beforeEach(async () => {
   db = openDb(":memory:"); runMigrations(db); repos = createRepositories(db);
   domainId = repos.domains.create({ domain: "domain.com", allocationModes: ["self", "random"] }).id;
+  repos.domains.create({ domain: "session.com", allocationModes: ["self", "random", "session"] });
   clock = 1000;
   settlements = new DbSettlementStore(db, 86_400_000, () => clock);
   ctx = await start();
@@ -61,7 +62,7 @@ function seed(hash: string, addressId: number): void {
 }
 
 interface Page {
-  source: { domain: string; lightningAddress: string };
+  source: { domain: string; lightningAddress: string | null; handle: string };
   payments: { paymentHash: string; createdAt: number }[];
   nextSince: number;
 }
@@ -78,7 +79,7 @@ describe("address payments route", () => {
     const res = await req("GET", `${ctx.baseUrl}/lnurl/address/alice/payments`, { host: "domain.com", bearer: ALICE });
     expect(res.status).toBe(200);
     const body = page(res.body);
-    expect(body.source).toEqual({ domain: "domain.com", lightningAddress: "alice@domain.com" });
+    expect(body.source).toEqual({ domain: "domain.com", lightningAddress: "alice@domain.com", handle: "alice" });
     expect(body.payments.map((p) => p.paymentHash)).toEqual(["a-old", "a-new"]);
     expect(body.nextSince).toBe(2000);
   });
@@ -180,5 +181,22 @@ describe("address payments route", () => {
     expect(b2.payments.map((p) => p.paymentHash)).toEqual(["w-a", "w-b", "w-c", "w-d"]);
     expect(b2.payments.slice(0, 2).map((p) => p.paymentHash)).toEqual(b1.payments.map((p) => p.paymentHash));
     expect(b2.nextSince).toBe(6000);
+  });
+
+  it("a payment settled before upgrade is listed after it, under the new handle", async () => {
+    const register = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "session.com", body: { token: ALICE, nameless: true } });
+    expect(register.status).toBe(201);
+    const handle = String(register.body.handle);
+    const addressId = repos.addresses.getByDomainAndUsername(repos.domains.getByDomain("session.com")!.id, handle)!.id;
+    seed("pre-upgrade", addressId);
+
+    const upgrade = await req("PATCH", `${ctx.baseUrl}/lnurl/address/${handle}`, { host: "session.com", bearer: ALICE, body: { username: "renamed" } });
+    expect(upgrade.status).toBe(200);
+
+    const res = await req("GET", `${ctx.baseUrl}/lnurl/address/renamed/payments`, { host: "session.com", bearer: ALICE });
+    expect(res.status).toBe(200);
+    const body = page(res.body);
+    expect(body.payments.map((p) => p.paymentHash)).toEqual(["pre-upgrade"]);
+    expect(body.source.handle).toBe("renamed");
   });
 });

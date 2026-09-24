@@ -7,11 +7,11 @@ import type { Repositories } from "./db/repositories/index.js";
 import { domainFromHost } from "./http-origin.js";
 import { encodeLnurl } from "./lnurl.js";
 import type { AddressService } from "./address-service.js";
-import { ProvisioningError } from "./address-service.js";
+import { ProvisioningError, isNameless } from "./address-service.js";
 import { RateLimiter } from "./rate-limit.js";
 import { paymentHashFromBolt11 } from "./bolt11.js";
-import { deriveSessionId } from "./session-id.js";
 import { isValidToken } from "./usernames.js";
+import type { AddressRow, DomainRow } from "./db/types.js";
 import { MemorySettlementStore, type SettlementStore } from "./settlement-store.js";
 import { attachVerifyBatchRoute, BATCH_PATH } from "./verify-batch.js";
 import type { OfflineSwapCreator } from "./intent-swap.js";
@@ -62,11 +62,14 @@ const METADATA_DESCRIPTION = "Arkade LNURL Receive";
 const PROVISIONING_STATUS: Record<string, number> = {
   invalid_token: 400, invalid_username: 400, forbidden_mode: 403,
   blacklisted: 409, taken: 409, limit_reached: 429, invalid_claim: 401,
+  already_named: 409, not_found: 404,
 };
 
 /** Express types query values as string | string[] | ...; an array (`?a=1&a=2`)
  *  is never meaningful for our params — take them only when they're a string. */
 const strParam = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+
+const originOf = (req: express.Request, domain: DomainRow): string => `${req.protocol}://${domain.domain}`;
 
 export interface ServerDeps {
   repos: Repositories;
@@ -173,6 +176,24 @@ function buildMetadata(identifier?: string): string {
   return JSON.stringify(entries);
 }
 
+/** One shape for register, upgrade and list, so they cannot drift. A flagged row's
+ *  lnurl is the stable session one (survives an upgrade); an unflagged row keeps
+ *  today's .well-known URL. */
+function addressView(domain: DomainRow, a: AddressRow, proto: string) {
+  const nameless = isNameless(a);
+  const sessionLnurl = a.sessionLnurl ? encodeLnurl(`${proto}://${domain.domain}/lnurl/${a.sessionId}`) : null;
+  return {
+    lightningAddress: nameless ? null : `${a.username}@${domain.domain}`,
+    lnurl: sessionLnurl ?? encodeLnurl(`${proto}://${domain.domain}/.well-known/lnurlp/${a.username}`),
+    username: nameless ? null : a.username,
+    handle: nameless ? a.sessionId! : a.username,
+    domain: domain.domain,
+    status: a.status,
+    nameless,
+    sessionLnurl,
+  };
+}
+
 // Shared core: validate amount range, ensure session online, request bolt11, respond.
 async function requestInvoiceAndRespond(args: {
   sessions: SessionManager;
@@ -272,6 +293,247 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     registrationRateLimitPerMin: 10,
   });
   let offlineQuotes = 0;
+
+  const serveAddressPayRequest = (res: express.Response, domain: DomainRow, address: AddressRow, callbackUrl: string): void => {
+    const railAddress = { arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, boardingAddress: address.boardingAddress, disabledRails: address.disabledRails };
+    const base: Bounds = {
+      min: domain.minSendable ?? settings.minSendable(),
+      max: domain.maxSendable ?? settings.maxSendable(),
+    };
+    const railCaps = currentRailCaps();
+    const options = advertisedRailOptions(railAddress, railCaps, base);
+    const advertised = advertisedBounds(railAddress, railCaps, base);
+    const units = quoteProvider?.units() ?? [];
+    const response: LnurlPayMetadata = {
+      tag: "payRequest",
+      callback: callbackUrl,
+      minSendable: advertised.min,
+      maxSendable: advertised.max,
+      metadata: buildMetadata(isNameless(address) ? undefined : `${address.username}@${domain.domain}`),
+      commentAllowed: 140,
+      ...(options.length ? { paymentOptions: options } : {}),
+      ...(units.length ? { units } : {}),
+    };
+    res.json(response);
+  };
+
+  const serveAddressCallback = async (req: express.Request, res: express.Response, domain: DomainRow, address: AddressRow): Promise<void> => {
+    const offlineReason = isNameless(address) ? "This LNURL is currently offline" : `${address.username}@${domain.domain} is currently offline`;
+    const amountStr = strParam(req.query.amount);
+    const comment = strParam(req.query.comment);
+    if (!amountStr || isNaN(Number(amountStr))) {
+      res.json({ status: "ERROR", reason: "Missing or invalid amount parameter" } satisfies LnurlErrorResponse);
+      return;
+    }
+    let amountMsat = Number(amountStr);
+    // The envelope only. Each branch below narrows it to what its own rail can
+    // carry, because the rail that serves decides the real bound.
+    const base: Bounds = {
+      min: domain.minSendable ?? settings.minSendable(),
+      max: domain.maxSendable ?? settings.maxSendable(),
+    };
+    const { min, max } = base;
+    const railAddress = { arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, boardingAddress: address.boardingAddress, disabledRails: address.disabledRails };
+    const paymentOptionId = strParam(req.query.paymentOption);
+    // Non-positive amounts are refused before the quote/provider path.
+    if (amountMsat <= 0) {
+      res.json({ status: "ERROR", reason: `Amount must be between ${min} and ${max} millisats` } satisfies LnurlErrorResponse);
+      return;
+    }
+
+    // LUD-XX paymentOptions: resolve the wallet's selected rail. "lightning" (or absent)
+    // falls through to the BOLT11 flow below; a destination rail (arkade) returns the
+    // registered address + a non-`pr` verify record.
+    const resolved = resolvePaymentOption(paymentOptionId, address);
+    if (resolved.kind === "error") {
+      res.json({ status: "ERROR", reason: resolved.reason } satisfies LnurlErrorResponse);
+      return;
+    }
+    // Per-address rail policy: a disabled rail fails loudly instead of serving.
+    const railCaps = currentRailCaps();
+    const railStates = railStatesFor(address, railCaps);
+    if (resolved.kind === "destination" && railStates.get("arkade")?.enabled === false) {
+      res.json({ status: "ERROR", reason: "paymentOption arkade is disabled for this address" } satisfies LnurlErrorResponse);
+      return;
+    }
+
+    // LUD-XX paymentQuote: a unit-denominated request is quoted to a msat amount by the
+    // injected provider (lightning path only). Absent unit ⇒ amount stays msat.
+    const unit = strParam(req.query.unit);
+    const receiveUnit = strParam(req.query.receiveUnit);
+    let paymentQuote: PaymentQuote | undefined;
+    if (unit !== undefined || receiveUnit !== undefined) {
+      if (resolved.kind === "destination") {
+        res.json({ status: "ERROR", reason: "unit is not supported for this paymentOption" } satisfies LnurlErrorResponse);
+        return;
+      }
+      const q = applyQuote(quoteProvider, { amount: amountMsat, unit, receiveUnit, paymentOption: paymentOptionId });
+      if (!q.ok) {
+        res.json({ status: "ERROR", reason: q.reason } satisfies LnurlErrorResponse);
+        return;
+      }
+      amountMsat = q.amountMsat;
+      paymentQuote = q.paymentQuote;
+    }
+
+    if (resolved.kind === "destination") {
+      // Unauthed store-writing branch — same per-IP guard as the offline-swap branch.
+      if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) {
+        res.status(429).json({ status: "ERROR", reason: "Too many requests" } satisfies LnurlErrorResponse);
+        return;
+      }
+      const arkadeBounds = optionBounds("arkade", railAddress, railCaps, base) ?? base;
+      if (amountMsat < arkadeBounds.min || amountMsat > arkadeBounds.max) {
+        res.json({ status: "ERROR", reason: `Amount must be between ${arkadeBounds.min} and ${arkadeBounds.max} millisats` } satisfies LnurlErrorResponse);
+        return;
+      }
+      // LUD-XX (lnurl/luds#303): a non-pr option MUST honor the requested amount
+      // exactly and MUST NOT round — a sub-satoshi amount is not exactly
+      // representable in a whole-sat destination payment, so reject it.
+      if (amountMsat % 1000 !== 0) {
+        res.json({ status: "ERROR", reason: "Amount must be a whole number of satoshis" } satisfies LnurlErrorResponse);
+        return;
+      }
+      // The payer pays the destination directly, so the server isn't in the payment path:
+      // `verify` records the agreed amount, but `settled` only flips once an Arkade watcher
+      // observes the payment (follow-up). Keyed by an opaque verify id (not a payment hash).
+      // No SSE session needed on a destination rail — the record keeps one only for shape.
+      const verifyId = randomBytes(16).toString("hex");
+      // The script identifies the payment outright. On failure fall back to the
+      // static address: ambiguous, but being paid beats refusing.
+      let derived: DerivedDestination | undefined;
+      // Only the arkade rail: a covenant address is an Arkade destination, so
+      // deriving one for any other destination rail replaces that rail's own
+      // address with one on the wrong chain. The onchain rail pays a boarding
+      // address and must keep it.
+      if (
+        resolved.paymentOption === "arkade" &&
+        covenantDestinations && railStates.get("covenant")?.available && address.arkadeAddress && address.claimPublicKey
+      ) {
+        try {
+          derived = await covenantDestinations.derive({
+            arkadeAddress: address.arkadeAddress,
+            claimPublicKey: address.claimPublicKey,
+          });
+        } catch (err) {
+          console.warn(`covenant destination: derivation failed, using the static address:`, err);
+        }
+      }
+      store.create({
+        paymentHash: verifyId,
+        pr: "",
+        sessionId: address.sessionId ?? `addr:${address.id}`,
+        addressId: address.id,
+        paymentOption: resolved.paymentOption,
+        paymentDestination: derived?.address ?? resolved.paymentDestination,
+        amountMsat,
+        // The script alone: it is the attribution key, and the contract registered
+        // at derivation owns the preimage, the taptree and the payout script.
+        ...(derived ? { covenantScript: derived.script } : {}),
+      });
+      // Only the static rail: a covenant destination is watched as a contract.
+      if (resolved.paymentOption === "arkade" && !derived) {
+        deps?.onDestinationIssued?.(resolved.paymentDestination);
+      }
+      const destination = derived?.address ?? resolved.paymentDestination;
+      res.json({
+        status: "OK",
+        paymentOption: resolved.paymentOption,
+        paymentDestination: destination,
+        ...(destination ? { paymentURI: destinationUri(resolved.paymentOption, destination, amountMsat) } : {}),
+        // Only for rails this server watches. The onchain rail is a static
+        // boarding address nothing here observes, so it has no window to end.
+        ...(resolved.paymentOption === "onchain"
+          ? {}
+          : { expiresAt: Math.floor((Date.now() + (config.destinationWatchMs ?? DEFAULT_DESTINATION_WATCH_MS)) / 1000) }),
+        // Only when the destination identifies the payment. A covenant script
+        // does; the static fallback is one address reused for every payment and
+        // settled by amount/window correlation, so two concurrent payments of
+        // the same size cannot be told apart and a payer polling verify could
+        // be told someone else's arrived. The record is still written — the
+        // watcher settles it and the activity list shows it — but the payer is
+        // not handed a URL whose answer the server cannot stand behind.
+        ...(derived ? { verify: `${settings.baseUrl()}/lnurl/verify/${verifyId}`, verifyBatch: `${settings.baseUrl()}${BATCH_PATH}` } : {}),
+      } satisfies LnurlPayDestinationResponse);
+      return;
+    }
+
+    // Offline receive: no live SSE session for this address, but it opted in with an
+    // Arkade identity, so the server quotes a corridor swap paying it (covclaimd claims it).
+    // The corridor never touches the session, so a sessionless address is served too.
+    if (creator && address.arkadeAddress && address.claimPublicKey && (!address.sessionId || !sessions.isActive(address.sessionId))) {
+      // Sessionless receive is the offline-swap rail: a disabled policy or an
+      // unready discovery fails loudly per request while the process keeps
+      // serving interactive sessions (never a silent stall).
+      if (railStates.get("offline-swap")?.enabled === false) {
+        res.json({ status: "ERROR", reason: "offline receive is disabled for this address" } satisfies LnurlErrorResponse);
+        return;
+      }
+      if (!railCaps.discoveryReady) {
+        res.json({ status: "ERROR", reason: `offline receive unavailable: ${railCaps.discoveryReason ?? "no usable lightning-receive solver cards"}` } satisfies LnurlErrorResponse);
+        return;
+      }
+      if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) {
+        res.status(429).json({ status: "ERROR", reason: "Too many requests" } satisfies LnurlErrorResponse);
+        return;
+      }
+      const swapBounds = railBounds("offline-swap", railCaps, base);
+      if (amountMsat < swapBounds.min || amountMsat > swapBounds.max) {
+        res.json({ status: "ERROR", reason: `Amount must be between ${swapBounds.min} and ${swapBounds.max} millisats` } satisfies LnurlErrorResponse);
+        return;
+      }
+      // The corridor deals in whole sats; reject before reserving capacity.
+      if (amountMsat % 1000 !== 0) {
+        res.json({ status: "ERROR", reason: "Amount must be a whole number of satoshis" } satisfies LnurlErrorResponse);
+        return;
+      }
+      if (offlineQuotes >= (config.maxConcurrentOfflineQuotes ?? 20)) {
+        res.status(429).json({ status: "ERROR", reason: "Offline quote capacity reached" } satisfies LnurlErrorResponse);
+        return;
+      }
+      offlineQuotes++;
+      try {
+        await createOfflineSwapAndRespond({
+          creator, store, offlineSwaps: deps?.offlineSwaps, baseUrl: settings.baseUrl(), amountMsat,
+          receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, paymentQuote,
+          echoLightningOption: Boolean(paymentOptionId), res,
+          logger, requestId: res.locals.requestId as string,
+        });
+      } finally {
+        offlineQuotes--;
+      }
+      return;
+    }
+
+    // The lightning relay needs a live session to request the invoice from.
+    if (!address.sessionId) {
+      res.json({ status: "ERROR", reason: offlineReason } satisfies LnurlErrorResponse);
+      return;
+    }
+
+    if (railStates.get("interactive-lightning")?.enabled === false) {
+      res.json({ status: "ERROR", reason: "lightning receive is disabled for this address" } satisfies LnurlErrorResponse);
+      return;
+    }
+
+    const interactiveBounds = railBounds("interactive-lightning", railCaps, base);
+    await requestInvoiceAndRespond({
+      sessions, sessionId: address.sessionId, addressId: address.id, amountMsat, comment,
+      min: interactiveBounds.min, max: interactiveBounds.max, timeoutMs: settings.invoiceTimeoutMs(),
+      offlineReason,
+      store, baseUrl: settings.baseUrl(), paymentQuote, echoLightningOption: Boolean(paymentOptionId), res,
+    });
+  };
+
+  // Only an active flagged row on the Host's enabled domain; anything else stays a plain session LNURL.
+  const sessionLnurlRow = (req: express.Request, id: string): { domain: DomainRow; address: AddressRow } | undefined => {
+    if (!deps?.repos) return undefined;
+    const domainName = domainFromHost(req.get("host") ?? undefined);
+    const domain = domainName ? deps.repos.domains.getByDomain(domainName) : undefined;
+    if (!domain || !domain.enabled) return undefined;
+    const address = deps.repos.addresses.getSessionLnurl(domain.id, id);
+    return address ? { domain, address } : undefined;
+  };
 
   // Default: trust exactly one proxy hop so req.ip reflects the real client IP behind
   // a single LB/CDN. Set trustProxy to a higher number for deeper proxy stacks, or false
@@ -391,14 +653,23 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
     if (!token) { res.status(401).json({ error: "Unauthorized" }); return; }
     const list = addressService.listByToken(token).map((a) => {
       const domain = deps!.repos.domains.getById(a.domainId)!;
-      return {
-        username: a.username, domain: domain.domain, status: a.status, createdAt: a.createdAt,
-        lightningAddress: `${a.username}@${domain.domain}`,
-        // Build from the address's own domain (scheme from the trusted proxy), never the raw Host header.
-        lnurl: encodeLnurl(`${req.protocol}://${domain.domain}/.well-known/lnurlp/${a.username}`),
-      };
+      return { ...addressView(domain, a, req.protocol), createdAt: a.createdAt };
     });
     res.json(list);
+  });
+
+  // Public + unauthed. Registered before /lnurl/:id or "domain" is captured as a session id.
+  app.get("/lnurl/domain", (req, res) => {
+    if (!deps?.repos) { res.status(404).json({ error: "Not found" }); return; }
+    const domainName = domainFromHost(strParam(req.query.domain) ?? req.get("host") ?? undefined);
+    const domain = domainName ? deps.repos.domains.getByDomain(domainName) : undefined;
+    if (!domain || !domain.enabled) { res.status(404).json({ error: "Unknown or disabled domain" }); return; }
+    res.json({
+      domain: domain.domain,
+      allocationModes: domain.allocationModes,
+      usernameRules: { minLen: domain.usernameMinLen, maxLen: domain.usernameMaxLen, pattern: domain.usernamePattern },
+      requireApiKey: domain.requireApiKey,
+    });
   });
 
   // ─── GET /lnurl/verify/:paymentHash ──────────────────────────────────
@@ -448,6 +719,11 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
   // LNURL-pay first call (LUD-06). Returns pay metadata.
   app.get("/lnurl/:id", (req, res) => {
     const { id } = req.params;
+    const flagged = sessionLnurlRow(req, id);
+    if (flagged) {
+      serveAddressPayRequest(res, flagged.domain, flagged.address, `${originOf(req, flagged.domain)}/lnurl/${id}/callback`);
+      return;
+    }
 
     if (!sessions.isActive(id)) {
       const err: LnurlErrorResponse = {
@@ -474,6 +750,11 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
   // LNURL-pay callback (LUD-06). Requests bolt11 from wallet via SSE.
   app.get("/lnurl/:id/callback", async (req, res) => {
     const { id } = req.params;
+    const flagged = sessionLnurlRow(req, id);
+    if (flagged) {
+      await serveAddressCallback(req, res, flagged.domain, flagged.address);
+      return;
+    }
     const amountStr = strParam(req.query.amount);
     const comment = strParam(req.query.comment);
 
@@ -575,31 +856,11 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       }
       const username = req.params.username.toLowerCase();
       const address = repos.addresses.getByDomainAndUsername(domain.id, username);
-      if (!address || address.status !== "active") {
+      if (!address || address.status !== "active" || isNameless(address)) {
         res.json({ status: "ERROR", reason: "Unknown LN address" } satisfies LnurlErrorResponse);
         return;
       }
-      const origin = `${req.protocol}://${domain.domain}`;
-      const railAddress = { arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, boardingAddress: address.boardingAddress, disabledRails: address.disabledRails };
-      const base: Bounds = {
-        min: domain.minSendable ?? settings.minSendable(),
-        max: domain.maxSendable ?? settings.maxSendable(),
-      };
-      const railCaps = currentRailCaps();
-      const options = advertisedRailOptions(railAddress, railCaps, base);
-      const advertised = advertisedBounds(railAddress, railCaps, base);
-      const units = quoteProvider?.units() ?? [];
-      const response: LnurlPayMetadata = {
-        tag: "payRequest",
-        callback: `${origin}/.well-known/lnurlp/${username}/callback`,
-        minSendable: advertised.min,
-        maxSendable: advertised.max,
-        metadata: buildMetadata(`${username}@${domain.domain}`),
-        commentAllowed: 140,
-        ...(options.length ? { paymentOptions: options } : {}),
-        ...(units.length ? { units } : {}),
-      };
-      res.json(response);
+      serveAddressPayRequest(res, domain, address, `${originOf(req, domain)}/.well-known/lnurlp/${username}/callback`);
     });
 
     app.get("/.well-known/lnurlp/:username/callback", async (req, res) => {
@@ -611,214 +872,11 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
       }
       const username = req.params.username.toLowerCase();
       const address = repos.addresses.getByDomainAndUsername(domain.id, username);
-      if (!address || address.status !== "active") {
+      if (!address || address.status !== "active" || isNameless(address)) {
         res.json({ status: "ERROR", reason: "Unknown LN address" } satisfies LnurlErrorResponse);
         return;
       }
-      const amountStr = strParam(req.query.amount);
-      const comment = strParam(req.query.comment);
-      if (!amountStr || isNaN(Number(amountStr))) {
-        res.json({ status: "ERROR", reason: "Missing or invalid amount parameter" } satisfies LnurlErrorResponse);
-        return;
-      }
-      let amountMsat = Number(amountStr);
-      // The envelope only. Each branch below narrows it to what its own rail can
-      // carry, because the rail that serves decides the real bound.
-      const base: Bounds = {
-        min: domain.minSendable ?? settings.minSendable(),
-        max: domain.maxSendable ?? settings.maxSendable(),
-      };
-      const { min, max } = base;
-      const railAddress = { arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, boardingAddress: address.boardingAddress, disabledRails: address.disabledRails };
-      const paymentOptionId = strParam(req.query.paymentOption);
-      // Non-positive amounts are refused before the quote/provider path.
-      if (amountMsat <= 0) {
-        res.json({ status: "ERROR", reason: `Amount must be between ${min} and ${max} millisats` } satisfies LnurlErrorResponse);
-        return;
-      }
-
-      // LUD-XX paymentOptions: resolve the wallet's selected rail. "lightning" (or absent)
-      // falls through to the BOLT11 flow below; a destination rail (arkade) returns the
-      // registered address + a non-`pr` verify record.
-      const resolved = resolvePaymentOption(paymentOptionId, address);
-      if (resolved.kind === "error") {
-        res.json({ status: "ERROR", reason: resolved.reason } satisfies LnurlErrorResponse);
-        return;
-      }
-      // Per-address rail policy: a disabled rail fails loudly instead of serving.
-      const railCaps = currentRailCaps();
-      const railStates = railStatesFor(address, railCaps);
-      if (resolved.kind === "destination" && railStates.get("arkade")?.enabled === false) {
-        res.json({ status: "ERROR", reason: "paymentOption arkade is disabled for this address" } satisfies LnurlErrorResponse);
-        return;
-      }
-
-      // LUD-XX paymentQuote: a unit-denominated request is quoted to a msat amount by the
-      // injected provider (lightning path only). Absent unit ⇒ amount stays msat.
-      const unit = strParam(req.query.unit);
-      const receiveUnit = strParam(req.query.receiveUnit);
-      let paymentQuote: PaymentQuote | undefined;
-      if (unit !== undefined || receiveUnit !== undefined) {
-        if (resolved.kind === "destination") {
-          res.json({ status: "ERROR", reason: "unit is not supported for this paymentOption" } satisfies LnurlErrorResponse);
-          return;
-        }
-        const q = applyQuote(quoteProvider, { amount: amountMsat, unit, receiveUnit, paymentOption: paymentOptionId });
-        if (!q.ok) {
-          res.json({ status: "ERROR", reason: q.reason } satisfies LnurlErrorResponse);
-          return;
-        }
-        amountMsat = q.amountMsat;
-        paymentQuote = q.paymentQuote;
-      }
-
-      if (resolved.kind === "destination") {
-        // Unauthed store-writing branch — same per-IP guard as the offline-swap branch.
-        if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) {
-          res.status(429).json({ status: "ERROR", reason: "Too many requests" } satisfies LnurlErrorResponse);
-          return;
-        }
-        const arkadeBounds = optionBounds("arkade", railAddress, railCaps, base) ?? base;
-        if (amountMsat < arkadeBounds.min || amountMsat > arkadeBounds.max) {
-          res.json({ status: "ERROR", reason: `Amount must be between ${arkadeBounds.min} and ${arkadeBounds.max} millisats` } satisfies LnurlErrorResponse);
-          return;
-        }
-        // LUD-XX (lnurl/luds#303): a non-pr option MUST honor the requested amount
-        // exactly and MUST NOT round — a sub-satoshi amount is not exactly
-        // representable in a whole-sat destination payment, so reject it.
-        if (amountMsat % 1000 !== 0) {
-          res.json({ status: "ERROR", reason: "Amount must be a whole number of satoshis" } satisfies LnurlErrorResponse);
-          return;
-        }
-        // The payer pays the destination directly, so the server isn't in the payment path:
-        // `verify` records the agreed amount, but `settled` only flips once an Arkade watcher
-        // observes the payment (follow-up). Keyed by an opaque verify id (not a payment hash).
-        // No SSE session needed on a destination rail — the record keeps one only for shape.
-        const verifyId = randomBytes(16).toString("hex");
-        // The script identifies the payment outright. On failure fall back to the
-        // static address: ambiguous, but being paid beats refusing.
-        let derived: DerivedDestination | undefined;
-        // Only the arkade rail: a covenant address is an Arkade destination, so
-        // deriving one for any other destination rail replaces that rail's own
-        // address with one on the wrong chain. The onchain rail pays a boarding
-        // address and must keep it.
-        if (
-          resolved.paymentOption === "arkade" &&
-          covenantDestinations && railStates.get("covenant")?.available && address.arkadeAddress && address.claimPublicKey
-        ) {
-          try {
-            derived = await covenantDestinations.derive({
-              arkadeAddress: address.arkadeAddress,
-              claimPublicKey: address.claimPublicKey,
-            });
-          } catch (err) {
-            console.warn(`covenant destination: derivation failed, using the static address:`, err);
-          }
-        }
-        store.create({
-          paymentHash: verifyId,
-          pr: "",
-          sessionId: address.sessionId ?? `addr:${address.id}`,
-          addressId: address.id,
-          paymentOption: resolved.paymentOption,
-          paymentDestination: derived?.address ?? resolved.paymentDestination,
-          amountMsat,
-          // The script alone: it is the attribution key, and the contract registered
-          // at derivation owns the preimage, the taptree and the payout script.
-          ...(derived ? { covenantScript: derived.script } : {}),
-        });
-        // Only the static rail: a covenant destination is watched as a contract.
-        if (resolved.paymentOption === "arkade" && !derived) {
-          deps?.onDestinationIssued?.(resolved.paymentDestination);
-        }
-        const destination = derived?.address ?? resolved.paymentDestination;
-        res.json({
-          status: "OK",
-          paymentOption: resolved.paymentOption,
-          paymentDestination: destination,
-          ...(destination ? { paymentURI: destinationUri(resolved.paymentOption, destination, amountMsat) } : {}),
-          // Only for rails this server watches. The onchain rail is a static
-          // boarding address nothing here observes, so it has no window to end.
-          ...(resolved.paymentOption === "onchain"
-            ? {}
-            : { expiresAt: Math.floor((Date.now() + (config.destinationWatchMs ?? DEFAULT_DESTINATION_WATCH_MS)) / 1000) }),
-          // Only when the destination identifies the payment. A covenant script
-          // does; the static fallback is one address reused for every payment and
-          // settled by amount/window correlation, so two concurrent payments of
-          // the same size cannot be told apart and a payer polling verify could
-          // be told someone else's arrived. The record is still written — the
-          // watcher settles it and the activity list shows it — but the payer is
-          // not handed a URL whose answer the server cannot stand behind.
-          ...(derived ? { verify: `${settings.baseUrl()}/lnurl/verify/${verifyId}`, verifyBatch: `${settings.baseUrl()}${BATCH_PATH}` } : {}),
-        } satisfies LnurlPayDestinationResponse);
-        return;
-      }
-
-      // Offline receive: no live SSE session for this address, but it opted in with an
-      // Arkade identity, so the server quotes a corridor swap paying it (covclaimd claims it).
-      // The corridor never touches the session, so a sessionless address is served too.
-      if (creator && address.arkadeAddress && address.claimPublicKey && (!address.sessionId || !sessions.isActive(address.sessionId))) {
-        // Sessionless receive is the offline-swap rail: a disabled policy or an
-        // unready discovery fails loudly per request while the process keeps
-        // serving interactive sessions (never a silent stall).
-        if (railStates.get("offline-swap")?.enabled === false) {
-          res.json({ status: "ERROR", reason: "offline receive is disabled for this address" } satisfies LnurlErrorResponse);
-          return;
-        }
-        if (!railCaps.discoveryReady) {
-          res.json({ status: "ERROR", reason: `offline receive unavailable: ${railCaps.discoveryReason ?? "no usable lightning-receive solver cards"}` } satisfies LnurlErrorResponse);
-          return;
-        }
-        if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) {
-          res.status(429).json({ status: "ERROR", reason: "Too many requests" } satisfies LnurlErrorResponse);
-          return;
-        }
-        const swapBounds = railBounds("offline-swap", railCaps, base);
-        if (amountMsat < swapBounds.min || amountMsat > swapBounds.max) {
-          res.json({ status: "ERROR", reason: `Amount must be between ${swapBounds.min} and ${swapBounds.max} millisats` } satisfies LnurlErrorResponse);
-          return;
-        }
-        // The corridor deals in whole sats; reject before reserving capacity.
-        if (amountMsat % 1000 !== 0) {
-          res.json({ status: "ERROR", reason: "Amount must be a whole number of satoshis" } satisfies LnurlErrorResponse);
-          return;
-        }
-        if (offlineQuotes >= (config.maxConcurrentOfflineQuotes ?? 20)) {
-          res.status(429).json({ status: "ERROR", reason: "Offline quote capacity reached" } satisfies LnurlErrorResponse);
-          return;
-        }
-        offlineQuotes++;
-        try {
-          await createOfflineSwapAndRespond({
-            creator, store, offlineSwaps: deps.offlineSwaps, baseUrl: settings.baseUrl(), amountMsat,
-            receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, paymentQuote,
-            echoLightningOption: Boolean(paymentOptionId), res,
-            logger, requestId: res.locals.requestId as string,
-          });
-        } finally {
-          offlineQuotes--;
-        }
-        return;
-      }
-
-      // The lightning relay needs a live session to request the invoice from.
-      if (!address.sessionId) {
-        res.json({ status: "ERROR", reason: `${username}@${domain.domain} is currently offline` } satisfies LnurlErrorResponse);
-        return;
-      }
-
-      if (railStates.get("interactive-lightning")?.enabled === false) {
-        res.json({ status: "ERROR", reason: "lightning receive is disabled for this address" } satisfies LnurlErrorResponse);
-        return;
-      }
-
-      const interactiveBounds = railBounds("interactive-lightning", railCaps, base);
-      await requestInvoiceAndRespond({
-        sessions, sessionId: address.sessionId, addressId: address.id, amountMsat, comment,
-        min: interactiveBounds.min, max: interactiveBounds.max, timeoutMs: settings.invoiceTimeoutMs(),
-        offlineReason: `${username}@${domain.domain} is currently offline`,
-        store, baseUrl: settings.baseUrl(), paymentQuote, echoLightningOption: Boolean(paymentOptionId), res,
-      });
+      await serveAddressCallback(req, res, domain, address);
     });
 
     const addressService = deps.addressService;
@@ -839,34 +897,58 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           if (!key || !deps.repos.apiKeys.verify(key, domain.id)) { res.status(401).json({ error: "Valid X-API-Key required" }); return; }
         }
 
-        const { token, username, claimCode } = (req.body ?? {}) as { token?: string; username?: string; claimCode?: string };
+        const { token, username, claimCode, nameless } = (req.body ?? {}) as { token?: string; username?: string; claimCode?: string; nameless?: boolean };
         if (!token) { res.status(400).json({ error: "Missing token" }); return; }
+        if (nameless && (username || claimCode)) { res.status(400).json({ error: "nameless cannot be combined with username or claimCode", code: "invalid_username" }); return; }
 
         try {
-          const { address, lightningAddress } = addressService.register({ domain, username, token, claimCode });
-          const lnurl = encodeLnurl(`${req.protocol}://${domain.domain}/.well-known/lnurlp/${address.username}`);
-          res.status(201).json({ lightningAddress, lnurl, username: address.username, domain: domain.domain, status: address.status });
+          if (nameless) {
+            const { address, created } = addressService.registerNameless({ domain, token });
+            res.status(created ? 201 : 200).json(addressView(domain, address, req.protocol));
+            return;
+          }
+          const { address } = addressService.register({ domain, username, token, claimCode });
+          res.status(201).json(addressView(domain, address, req.protocol));
         } catch (err) {
           if (err instanceof ProvisioningError) { res.status(PROVISIONING_STATUS[err.code] ?? 400).json({ error: err.message, code: err.code }); return; }
           throw err;
         }
       });
 
-      app.delete("/lnurl/address/:username", (req, res) => {
+      app.patch("/lnurl/address/:handle", (req, res) => {
+        const domainName = domainFromHost(strParam(req.query.domain) ?? (req.body?.domain as string | undefined) ?? req.get("host") ?? undefined);
+        const domain = domainName ? deps.repos.domains.getByDomain(domainName) : undefined;
+        if (!domain || !domain.enabled) { res.status(404).json({ error: "Unknown or disabled domain" }); return; }
+        if (limiter && !limiter.allow(req.ip ?? "unknown")) { res.status(429).json({ error: "Too many requests" }); return; }
+        const auth = req.headers.authorization;
+        const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
+        // isValidToken, not just a presence check: see the payments route's `<token>zz` comment.
+        if (!isValidToken(token)) { res.status(401).json({ error: "Unauthorized" }); return; }
+        const { username, claimCode } = (req.body ?? {}) as { username?: string; claimCode?: string };
+        try {
+          const address = addressService.upgrade({ domain, handle: req.params.handle, token, username, claimCode });
+          res.json(addressView(domain, address, req.protocol));
+        } catch (err) {
+          if (err instanceof ProvisioningError) { res.status(PROVISIONING_STATUS[err.code] ?? 400).json({ error: err.message, code: err.code }); return; }
+          throw err;
+        }
+      });
+
+      app.delete("/lnurl/address/:handle", (req, res) => {
         const domainName = domainFromHost((req.query.domain as string | undefined) ?? req.get("host") ?? undefined);
         const domain = domainName ? deps.repos.domains.getByDomain(domainName) : undefined;
         if (!domain) { res.status(404).json({ error: "Unknown domain" }); return; }
         const auth = req.headers.authorization;
         const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
         if (!isValidToken(token)) { res.status(401).json({ error: "Unauthorized" }); return; }
-        const ok = addressService.revokeOwn(domain, req.params.username, token);
+        const ok = addressService.revokeOwn(domain, req.params.handle, token);
         if (!ok) { res.status(404).json({ error: "Address not found or not owned by this token" }); return; }
         res.json({ ok: true });
       });
 
-      // ─── POST /lnurl/address/:username/arkade ──────────────────────────
+      // ─── POST /lnurl/address/:handle/arkade ────────────────────────────
       // Register the Arkade receive identity for offline receive on an owned address.
-      app.post("/lnurl/address/:username/arkade", (req, res) => {
+      app.post("/lnurl/address/:handle/arkade", (req, res) => {
         const domainName = domainFromHost((req.body?.domain as string | undefined) ?? req.get("host") ?? undefined);
         const domain = domainName ? deps.repos.domains.getByDomain(domainName) : undefined;
         if (!domain) { res.status(404).json({ error: "Unknown domain" }); return; }
@@ -893,7 +975,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
           res.status(400).json({ error: "boardingAddress must be a non-empty string when provided" });
           return;
         }
-        const ok = addressService.setOfflineReceive(domain, req.params.username, token, {
+        const ok = addressService.setOfflineReceive(domain, req.params.handle, token, {
           arkadeAddress,
           claimPublicKey,
           ...(boardingAddress !== undefined ? { boardingAddress } : {}),
@@ -902,9 +984,9 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         res.json({ ok: true });
       });
 
-      // GET /lnurl/address/:username/payments: owner payment activity as a sync
+      // GET /lnurl/address/:handle/payments: owner payment activity as a sync
       // source, oldest first with an inclusive nextSince cursor.
-      app.get("/lnurl/address/:username/payments", (req, res) => {
+      app.get("/lnurl/address/:handle/payments", (req, res) => {
         const domainName = domainFromHost(strParam(req.query.domain) ?? req.get("host") ?? undefined);
         const domain = domainName ? deps.repos.domains.getByDomain(domainName) : undefined;
         if (!domain || !domain.enabled) { res.status(404).json({ error: "Unknown or disabled domain" }); return; }
@@ -913,8 +995,8 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         // isValidToken, not just a presence check: Buffer.from(hex) truncates at
         // the first invalid pair, so `<token>zz` would derive the owner's id.
         if (!isValidToken(token)) { res.status(401).json({ error: "Unauthorized" }); return; }
-        const address = deps.repos.addresses.getByDomainAndUsername(domain.id, req.params.username.toLowerCase());
-        if (!address || address.sessionId !== deriveSessionId(token) || address.status !== "active") {
+        const address = addressService.ownedByHandle(domain, req.params.handle, token);
+        if (!address || address.status !== "active") {
           res.status(404).json({ error: "Address not found or not owned by this token" });
           return;
         }
@@ -924,8 +1006,13 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
         const limit = Number.isFinite(limitNum) ? Math.min(200, Math.max(1, Math.floor(limitNum))) : 50;
         const payments = store.listByAddress(address.id, limit, since === undefined ? undefined : { since });
         const last = payments[payments.length - 1];
+        const nameless = isNameless(address);
         res.json({
-          source: { domain: domain.domain, lightningAddress: `${address.username}@${domain.domain}` },
+          source: {
+            domain: domain.domain,
+            lightningAddress: nameless ? null : `${address.username}@${domain.domain}`,
+            handle: nameless ? address.sessionId! : address.username,
+          },
           payments,
           nextSince: last ? last.createdAt : (since ?? 0),
         });
