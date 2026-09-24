@@ -1,5 +1,5 @@
-import type { SettingsRepo } from "./db/repositories/settings.js";
-import { SettingsError } from "./errors.js";
+import type { SettingsRepo } from "../db/repositories/settings.js";
+import { SettingsError } from "../errors.js";
 
 /** The runtime-soft settings the server reads per request (so DB overrides take effect live). */
 export interface RuntimeSettings {

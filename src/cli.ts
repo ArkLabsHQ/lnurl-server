@@ -1,7 +1,7 @@
 import { createServer } from "./server.js";
 import { loadConfig } from "./config.js";
 import { VERSION } from "./version.js";
-import { SessionManager } from "./session-manager.js";
+import { SessionManager } from "./services/sessions.js";
 import type { Db } from "./db/connection.js";
 import { pathToFileURL } from "node:url";
 import { ConfigError, UpstreamError } from "./errors.js";
@@ -45,13 +45,13 @@ async function main(): Promise<void> {
     health.register("persistence", () => ({ ok: runtime.resources().dbOpen, detail: "SQLite open" }));
   }
   let deps: import("./server.js").ServerDeps | undefined;
-  let solverDiscovery: import("./solver-discovery.js").DiscoveryService | undefined;
+  let solverDiscovery: import("./services/solver-discovery.js").DiscoveryService | undefined;
 
   if (db) {
     const { createRepositories } = await import("./db/repositories/index.js");
-    const { AddressService } = await import("./address-service.js");
+    const { AddressService } = await import("./services/addresses.js");
     const { RateLimiter } = await import("./rate-limit.js");
-    const { SettingsService } = await import("./settings.js");
+    const { SettingsService } = await import("./services/settings.js");
     const { hashSecret } = await import("./crypto.js");
     const { DbSettlementStore } = await import("./settlement-store.js");
     const repos = createRepositories(db);
@@ -126,11 +126,11 @@ async function main(): Promise<void> {
       const dust = Number(arkInfo.dust);
       if (Number.isSafeInteger(dust) && dust > 0) arkDustSat = dust;
     }
-    let offlineSwapCreator: import("./intent-swap.js").OfflineSwapCreator | undefined;
+    let offlineSwapCreator: import("./services/offline-swaps.js").OfflineSwapCreator | undefined;
     if (off.enabled) {
-      const { createOfflineSwapCoordinator } = await import("./intent-swap.js");
+      const { createOfflineSwapCoordinator } = await import("./services/offline-swaps.js");
       const { OfflineSwapStore } = await import("./offline-swap-store.js");
-      const { DiscoveryService } = await import("./solver-discovery.js");
+      const { DiscoveryService } = await import("./services/solver-discovery.js");
       const { isNetwork } = await import("@arkade-os/solver-discovery");
       const network = arkNetwork;
       if (!isNetwork(network)) throw new ConfigError(`Arkade info endpoint returned unsupported network ${String(network)}`);

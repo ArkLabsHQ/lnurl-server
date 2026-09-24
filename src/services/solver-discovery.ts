@@ -11,9 +11,9 @@ import {
   type SourceReport,
 } from "@arkade-os/solver-discovery";
 import { solverLightningRendezvous } from "@arkade-os/swap";
-import type { SolverCardsRepo } from "./db/repositories/solver-cards.js";
-import type { SolverRegistryCacheRepo } from "./db/repositories/solver-registry-cache.js";
-import { UpstreamError } from "./errors.js";
+import type { SolverCardsRepo } from "../db/repositories/solver-cards.js";
+import type { SolverRegistryCacheRepo } from "../db/repositories/solver-registry-cache.js";
+import { UpstreamError } from "../errors.js";
 
 const DEFAULT_REFRESH_MS = 10 * 60_000;
 const MAX_CACHE_AGE_MS = DEFAULT_MAX_AGE_SECONDS * 1000;

@@ -1,5 +1,5 @@
 import type { Db } from "./db/connection.js";
-import type { OfflineSwapRecoveryV1 } from "./intent-swap.js";
+import type { OfflineSwapRecoveryV1 } from "./services/offline-swaps.js";
 import { MalformedRecordError } from "./errors.js";
 
 export interface AcceptedOfflineSwap {

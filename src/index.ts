@@ -1,5 +1,5 @@
 export { createServer } from "./server.js";
-export { SessionManager } from "./session-manager.js";
+export { SessionManager } from "./services/sessions.js";
 export type {
   LnurlServiceConfig,
   SessionEvent,

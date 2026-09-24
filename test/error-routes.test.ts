@@ -5,7 +5,7 @@ import { openDb } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories } from "../src/db/repositories/index.js";
 import { createServer } from "../src/server.js";
-import { SessionManager } from "../src/session-manager.js";
+import { SessionManager } from "../src/services/sessions.js";
 
 const logger: Logger = { info() {}, warn() {}, error() {} };
 

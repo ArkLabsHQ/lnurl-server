@@ -1,5 +1,5 @@
 import type { SettlementStore } from "./settlement-store.js";
-import type { OfflineSwapCreator } from "./intent-swap.js";
+import type { OfflineSwapCreator } from "./services/offline-swaps.js";
 import type { OfflineSwapStore } from "./offline-swap-store.js";
 import { createLogger, type Logger } from "./logger.js";
 
@@ -15,7 +15,7 @@ export async function settleOfflineSwaps(
   logger: Logger = createLogger(),
 ): Promise<number> {
   let settled = 0;
-  const pending: Array<{ swapId: string; paymentHash: string; preimage: string; recovery?: import("./intent-swap.js").OfflineSwapRecoveryV1 }> = recovered
+  const pending: Array<{ swapId: string; paymentHash: string; preimage: string; recovery?: import("./services/offline-swaps.js").OfflineSwapRecoveryV1 }> = recovered
     ? recovered.listPending().map((row) => ({ ...row, swapId: row.recovery.rfqId }))
     : store.listPendingSwaps();
   await creator.prune?.(pending.map((row) => row.swapId));

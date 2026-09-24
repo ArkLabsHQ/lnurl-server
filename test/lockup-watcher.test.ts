@@ -7,7 +7,7 @@ import { startLockupWatcher } from "../src/lockup-watcher.js";
 import { startOfflineSettlementPoller } from "../src/offline-poller.js";
 import { DbSettlementStore } from "../src/settlement-store.js";
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
-import type { OfflineSwapCreator } from "../src/intent-swap.js";
+import type { OfflineSwapCreator } from "../src/services/offline-swaps.js";
 import { openDb } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 

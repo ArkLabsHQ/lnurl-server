@@ -5,7 +5,7 @@ import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
 import { MemorySettlementStore } from "../src/settlement-store.js";
-import type { OfflineSwapCreator } from "../src/intent-swap.js";
+import type { OfflineSwapCreator } from "../src/services/offline-swaps.js";
 import type { LnurlServiceConfig } from "../src/types/index.js";
 import type { CovenantDestinationProvider } from "../src/covenant-destination.js";
 

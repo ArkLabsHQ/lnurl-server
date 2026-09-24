@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { DbSettlementStore, MemorySettlementStore } from "../src/settlement-store.js";
 import { settleOfflineSwaps, startOfflineSettlementPoller } from "../src/offline-poller.js";
-import type { OfflineSwapCreator } from "../src/intent-swap.js";
+import type { OfflineSwapCreator } from "../src/services/offline-swaps.js";
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
 import { openDb } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";

@@ -7,12 +7,12 @@ import { createServer } from "../src/server.js";
 import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
-import { AddressService } from "../src/address-service.js";
+import { AddressService } from "../src/services/addresses.js";
 import { DbSettlementStore, MemorySettlementStore, type SettlementStore } from "../src/settlement-store.js";
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
 import { encryptToken } from "../src/crypto.js";
 import { deriveSessionId } from "../src/session-token.js";
-import type { OfflineSwapCreator, OfflineSwapParams, OfflineSwapResult } from "../src/intent-swap.js";
+import type { OfflineSwapCreator, OfflineSwapParams, OfflineSwapResult } from "../src/services/offline-swaps.js";
 import { RailRefusedError } from "../src/errors.js";
 import type { LnurlServiceConfig } from "../src/types/index.js";
 

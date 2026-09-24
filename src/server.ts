@@ -1,12 +1,12 @@
 import express from "express";
 import cors from "cors";
 import { randomUUID } from "node:crypto";
-import { SessionManager } from "./session-manager.js";
+import { SessionManager } from "./services/sessions.js";
 import { MemorySettlementStore } from "./settlement-store.js";
 import { HealthRegistry } from "./health.js";
 import { createLogger } from "./logger.js";
 import { currentRailCaps } from "./rails.js";
-import { staticSettings, type RuntimeSettings } from "./settings.js";
+import { staticSettings, type RuntimeSettings } from "./services/settings.js";
 import { requestTraceMiddleware } from "./request-trace.js";
 import type { LnurlServiceConfig } from "./types/index.js";
 import { httpErrorHandler, lnurlErrorHandler } from "./http-errors.js";

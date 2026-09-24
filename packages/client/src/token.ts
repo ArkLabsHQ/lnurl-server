@@ -9,7 +9,7 @@ const MESSAGE_PREFIX = "lnurl-session:";
  *
  * The domain is in the message, and leaving it out is a vulnerability rather
  * than a simplification. The token is a bearer credential that servers both
- * receive and persist (`address-service.ts:41,48,55,75` store it encrypted at
+ * receive and persist (`services/addresses.ts:41,48,55,75` store it encrypted at
  * rest), so a domain-independent token would authenticate its holder at every
  * lnurl-server the user has ever touched — letting a malicious or breached
  * server repoint the victim's Arkade receive identity elsewhere, which the

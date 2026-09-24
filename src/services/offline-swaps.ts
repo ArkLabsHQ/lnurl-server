@@ -17,7 +17,7 @@
 // solver settled the payer's hold invoice, not merely that a lockup exists.
 
 import { base64, hex } from "@scure/base";
-import { encodeClientClaimPacket } from "./claim-packet.js";
+import { encodeClientClaimPacket } from "../claim-packet.js";
 import { ArkAddress, RestArkProvider, VHTLCV2ContractHandler, getNetwork, toXOnly, type NetworkName } from "@arkade-os/sdk";
 import {
   assertReceivable,
@@ -33,13 +33,13 @@ import {
   type RfqTransport,
 } from "@arkade-os/swap";
 import { nostrRfqTransport } from "@arkade-os/swap/nostr";
-import { invoiceFactsFromBolt11 } from "./bolt11.js";
-import { MalformedRecordError, RailRefusedError, SolverQuoteError, UpstreamError } from "./errors.js";
-import { checkedPreimage, randomEntropy, type EntropyProvider } from "./entropy.js";
-import { createLogger, type Logger } from "./logger.js";
+import { invoiceFactsFromBolt11 } from "../bolt11.js";
+import { MalformedRecordError, RailRefusedError, SolverQuoteError, UpstreamError } from "../errors.js";
+import { checkedPreimage, randomEntropy, type EntropyProvider } from "../entropy.js";
+import { createLogger, type Logger } from "../logger.js";
 import type { DiscoveryService, SolverCandidate } from "./solver-discovery.js";
-import type { SelfClaimer, SelfClaimOutcome } from "./self-claim.js";
-import { deserializeSelfClaim } from "./self-claim-codec.js";
+import type { SelfClaimer, SelfClaimOutcome } from "../self-claim.js";
+import { deserializeSelfClaim } from "../self-claim-codec.js";
 
 export interface OfflineSwapParams {
   /** Invoice amount in satoshis — the payer pays exactly this (`amountSide: "from"`). */

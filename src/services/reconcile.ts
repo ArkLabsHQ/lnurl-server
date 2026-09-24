@@ -1,6 +1,6 @@
 import { hex } from "@scure/base";
 import { ArkAddress, type IndexerProvider } from "@arkade-os/sdk";
-import type { SettlementStore } from "./settlement-store.js";
+import type { SettlementStore } from "../settlement-store.js";
 
 /** Scripts per indexer query, matching src/arkade-watcher.ts. Reconciling a
  *  hundred addresses is a sweep, and one read per address would make the

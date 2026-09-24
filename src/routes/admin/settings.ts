@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { isSettingKey } from "../../settings.js";
+import { isSettingKey } from "../../services/settings.js";
 import { BadRequest } from "../../http-errors.js";
 import type { AdminDeps } from "../../admin-context.js";
 

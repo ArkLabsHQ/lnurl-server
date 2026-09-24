@@ -8,9 +8,9 @@ import { loadConfig } from "../src/config.js";
 import { openDb } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories } from "../src/db/repositories/index.js";
-import { AddressService } from "../src/address-service.js";
-import { SessionManager } from "../src/session-manager.js";
-import { SettingsService } from "../src/settings.js";
+import { AddressService } from "../src/services/addresses.js";
+import { SessionManager } from "../src/services/sessions.js";
+import { SettingsService } from "../src/services/settings.js";
 import type { Logger } from "../src/logger.js";
 
 type LogLine = { event: string; fields: Record<string, unknown> };

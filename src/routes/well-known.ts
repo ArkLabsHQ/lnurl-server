@@ -18,9 +18,9 @@ import type { DerivedDestination } from "../covenant-destination.js";
 import type { AddressRow, DomainRow, LnurlPayDestinationResponse, LnurlPayMetadata } from "../types/index.js";
 import { LnurlError } from "../http-errors.js";
 import { domainFor, originOf, strParam } from "../http-params.js";
-import { buildMetadata, createOfflineSwapInvoice, destinationUri, requestSessionInvoice } from "../pay-flow.js";
+import { buildMetadata, createOfflineSwapInvoice, destinationUri, requestSessionInvoice } from "../services/pay-flow.js";
 import type { ServerContext } from "../server-context.js";
-import { isNameless } from "../address-service.js";
+import { isNameless } from "../services/addresses.js";
 import { BATCH_PATH } from "../verify-batch.js";
 
 const DEFAULT_DESTINATION_WATCH_MS = 604_800_000;

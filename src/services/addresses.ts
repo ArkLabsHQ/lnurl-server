@@ -1,11 +1,11 @@
 import { randomBytes } from "node:crypto";
-import type { Repositories } from "./db/repositories/index.js";
-import type { AddressRow, DomainRow } from "./types/index.js";
-import { encryptToken, hashSecret } from "./crypto.js";
-import { deriveSessionId, isValidToken } from "./session-token.js";
-import { validateUsername, randomUsername } from "./usernames.js";
-import { normalizeDisabledRails } from "./rails.js";
-import { InvalidRailPolicyError, ProvisioningError } from "./errors.js";
+import type { Repositories } from "../db/repositories/index.js";
+import type { AddressRow, DomainRow } from "../types/index.js";
+import { encryptToken, hashSecret } from "../crypto.js";
+import { deriveSessionId, isValidToken } from "../session-token.js";
+import { validateUsername, randomUsername } from "../usernames.js";
+import { normalizeDisabledRails } from "../rails.js";
+import { InvalidRailPolicyError, ProvisioningError } from "../errors.js";
 
 const MAX_RANDOM_ATTEMPTS = 20;
 const HEX_HANDLE = /^[0-9a-f]{32}$/;

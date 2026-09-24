@@ -1,16 +1,16 @@
 import type { Repositories } from "./db/repositories/index.js";
-import type { AddressService } from "./address-service.js";
+import type { AddressService } from "./services/addresses.js";
 import type { RateLimiter } from "./rate-limit.js";
-import type { SessionManager } from "./session-manager.js";
+import type { SessionManager } from "./services/sessions.js";
 import type { SettlementStore } from "./settlement-store.js";
-import type { OfflineSwapCreator } from "./intent-swap.js";
+import type { OfflineSwapCreator } from "./services/offline-swaps.js";
 import type { OfflineSwapStore } from "./offline-swap-store.js";
 import type { HealthRegistry } from "./health.js";
 import type { Logger } from "./logger.js";
 import type { ServerRailCaps } from "./rails.js";
 import type { QuoteProvider } from "./quote-provider.js";
 import type { CovenantDestinationProvider } from "./covenant-destination.js";
-import type { RuntimeSettings } from "./settings.js";
+import type { RuntimeSettings } from "./services/settings.js";
 import type { LnurlServiceConfig } from "./types/index.js";
 
 export interface ServerDeps {

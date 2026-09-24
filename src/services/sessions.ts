@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
 import type { Response } from "express";
-import type { Session, SessionEvent, SessionInfo } from "./types/index.js";
-import { InvoiceRequestError } from "./errors.js";
-import { deriveSessionId, newSessionToken, tokensEqual } from "./session-token.js";
+import type { Session, SessionEvent, SessionInfo } from "../types/index.js";
+import { InvoiceRequestError } from "../errors.js";
+import { deriveSessionId, newSessionToken, tokensEqual } from "../session-token.js";
 
 export class SessionManager {
   private sessions = new Map<string, Session>();

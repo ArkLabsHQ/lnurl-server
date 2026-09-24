@@ -8,11 +8,11 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
-import { AddressService } from "../src/address-service.js";
-import { SessionManager } from "../src/session-manager.js";
+import { AddressService } from "../src/services/addresses.js";
+import { SessionManager } from "../src/services/sessions.js";
 import { createAdminApi } from "../src/routes/admin/index.js";
 import { loadConfig } from "../src/config.js";
-import { SettingsService } from "../src/settings.js";
+import { SettingsService } from "../src/services/settings.js";
 import { DbSettlementStore } from "../src/settlement-store.js";
 
 const xonly = (f: number) => secp256k1.getPublicKey(new Uint8Array(32).fill(f), true).subarray(1);
