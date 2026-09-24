@@ -27,9 +27,9 @@
     "test:bench:local": "cross-env NODE_OPTIONS=\"--experimental-sqlite --experimental-eventsource\" pnpm --filter @arkade-os/lnurl-demo-wallet test:e2e:bench"
   },
   "dependencies": {
-    "@arkade-os/sdk": "0.4.74",
+    "@arkade-os/sdk": "0.4.75",
     "@arkade-os/solver-discovery": "0.2.7",
-    "@arkade-os/swap": "0.0.20",
+    "@arkade-os/swap": "0.0.21",
     "@noble/ciphers": "2.1.1",
     "@noble/curves": "2.0.1",
     "@noble/hashes": "2.0.1",
@@ -62,7 +62,7 @@
     "overrides": {
       "esbuild": "^0.28.1",
       "form-data": "^4.0.6",
-      "@arkade-os/sdk": "0.4.74"
+      "@arkade-os/sdk": "0.4.75"
     }
   },
   "engines": {
