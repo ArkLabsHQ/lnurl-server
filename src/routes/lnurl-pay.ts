@@ -3,7 +3,7 @@ import { RateLimiter } from "../rate-limit.js";
 import type { LnurlPayMetadata } from "../types/index.js";
 import { LnurlError } from "../http-responses.js";
 import { strParam } from "../http-params.js";
-import { buildMetadata, requestInvoiceAndRespond } from "../pay-flow.js";
+import { buildMetadata, requestSessionInvoice } from "../pay-flow.js";
 import type { ServerContext } from "../server-context.js";
 import { attachVerifyBatchRoute, BATCH_PATH } from "../verify-batch.js";
 
@@ -64,11 +64,12 @@ export function lnurlPayRoutes({ config, sessions, store, settings, logger }: Se
     if (Number(amountStr) <= 0) {
       throw new LnurlError(`Amount must be between ${settings.minSendable()} and ${settings.maxSendable()} millisats`);
     }
-    await requestInvoiceAndRespond({
+    res.json(await requestSessionInvoice({
       sessions, sessionId: id, amountMsat: Number(amountStr), comment,
       min: settings.minSendable(), max: settings.maxSendable(), timeoutMs: settings.invoiceTimeoutMs(),
-      offlineReason: "This LNURL is no longer active", store, baseUrl: settings.baseUrl(), res, logger,
-    });
+      offlineReason: "This LNURL is no longer active", store, baseUrl: settings.baseUrl(),
+      logger, requestId: res.locals.requestId as string,
+    }));
   });
 
   return r;

@@ -18,7 +18,7 @@ import type { DerivedDestination } from "../covenant-destination.js";
 import type { AddressRow, DomainRow, LnurlPayDestinationResponse, LnurlPayMetadata } from "../types/index.js";
 import { LnurlError } from "../http-responses.js";
 import { domainFor, originOf, strParam } from "../http-params.js";
-import { buildMetadata, createOfflineSwapAndRespond, destinationUri, requestInvoiceAndRespond } from "../pay-flow.js";
+import { buildMetadata, createOfflineSwapInvoice, destinationUri, requestSessionInvoice } from "../pay-flow.js";
 import type { ServerContext } from "../server-context.js";
 import { isNameless } from "../address-service.js";
 import { BATCH_PATH } from "../verify-batch.js";
@@ -216,12 +216,12 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       if (offlineQuotes >= (config.maxConcurrentOfflineQuotes ?? 20)) throw new LnurlError("Offline quote capacity reached", 429);
       offlineQuotes++;
       try {
-        await createOfflineSwapAndRespond({
+        res.json(await createOfflineSwapInvoice({
           creator, store, offlineSwaps: deps?.offlineSwaps, baseUrl: settings.baseUrl(), amountMsat,
           receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, paymentQuote,
-          echoLightningOption: Boolean(paymentOptionId), res,
+          echoLightningOption: Boolean(paymentOptionId),
           logger, requestId: res.locals.requestId as string,
-        });
+        }));
       } finally {
         offlineQuotes--;
       }
@@ -233,12 +233,13 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     if (railStates.get("interactive-lightning")?.enabled === false) throw new LnurlError("lightning receive is disabled for this address");
 
     const interactiveBounds = railBounds("interactive-lightning", railCaps, base);
-    await requestInvoiceAndRespond({
+    res.json(await requestSessionInvoice({
       sessions, sessionId: address.sessionId, addressId: address.id, amountMsat, comment,
       min: interactiveBounds.min, max: interactiveBounds.max, timeoutMs: settings.invoiceTimeoutMs(),
       offlineReason,
-      store, baseUrl: settings.baseUrl(), paymentQuote, echoLightningOption: Boolean(paymentOptionId), res, logger,
-    });
+      store, baseUrl: settings.baseUrl(), paymentQuote, echoLightningOption: Boolean(paymentOptionId),
+      logger, requestId: res.locals.requestId as string,
+    }));
   };
 
   r.get("/.well-known/lnurlp/:username", (req, res) => {

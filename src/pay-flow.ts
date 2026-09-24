@@ -1,4 +1,3 @@
-import type express from "express";
 import { BIP21 } from "@arkade-os/sdk";
 import type { SessionManager } from "./session-manager.js";
 import type { SettlementStore } from "./settlement-store.js";
@@ -30,8 +29,8 @@ export function destinationUri(paymentOption: string, destination: string, amoun
     : BIP21.create({ ark: destination, amount });
 }
 
-// Shared core: validate amount range, ensure session online, request bolt11, respond.
-export async function requestInvoiceAndRespond(args: {
+/** Ask the wallet behind a live session for a bolt11 and record it for LUD-21 verify. */
+export async function requestSessionInvoice(args: {
   sessions: SessionManager;
   sessionId: string;
   addressId?: number;
@@ -46,10 +45,10 @@ export async function requestInvoiceAndRespond(args: {
   paymentQuote?: PaymentQuote;
   /** LUD-XX: echo the explicitly-selected lightning option on the pr response. */
   echoLightningOption?: boolean;
-  res: express.Response;
   logger: Logger;
-}): Promise<void> {
-  const { sessions, sessionId, addressId, amountMsat, comment, min, max, timeoutMs, offlineReason, store, baseUrl, paymentQuote, echoLightningOption, res, logger } = args;
+  requestId: string;
+}): Promise<LnurlPayCallbackResponse> {
+  const { sessions, sessionId, addressId, amountMsat, comment, min, max, timeoutMs, offlineReason, store, baseUrl, paymentQuote, echoLightningOption, logger, requestId } = args;
   if (amountMsat < min || amountMsat > max) {
     throw new LnurlError(`Amount must be between ${min} and ${max} millisats`);
   }
@@ -61,26 +60,27 @@ export async function requestInvoiceAndRespond(args: {
     // LUD-21: record the invoice and hand the payer a verify URL. If the bolt11 can't be
     // decoded we can't key a record, so we omit verify but still return the pr.
     const paymentHash = paymentHashFromBolt11(pr);
-    const echo = echoLightningOption ? { paymentOption: "lightning" } : {};
-    if (paymentHash) {
-      store.create({ paymentHash, pr, sessionId, amountMsat, addressId });
-      res.json({ pr, routes: [], verify: `${baseUrl}/lnurl/verify/${paymentHash}`, verifyBatch: `${baseUrl}${BATCH_PATH}`, ...(paymentQuote ? { paymentQuote } : {}), ...echo } satisfies LnurlPayCallbackResponse);
-    } else {
-      res.json({ pr, routes: [], ...(paymentQuote ? { paymentQuote } : {}), ...echo } satisfies LnurlPayCallbackResponse);
-    }
+    if (paymentHash) store.create({ paymentHash, pr, sessionId, amountMsat, addressId });
+    return {
+      pr,
+      routes: [],
+      ...(paymentHash ? { verify: `${baseUrl}/lnurl/verify/${paymentHash}`, verifyBatch: `${baseUrl}${BATCH_PATH}` } : {}),
+      ...(paymentQuote ? { paymentQuote } : {}),
+      ...(echoLightningOption ? { paymentOption: "lightning" } : {}),
+    };
   } catch (err) {
     if (err instanceof InvoiceRequestError) throw new LnurlError(err.message);
-    logger.error("invoice_request_failed", { requestId: res.locals.requestId, error: err });
+    logger.error("invoice_request_failed", { requestId, error: err });
     throw new LnurlError("Failed to get invoice");
   }
 }
 
-// Create a solver-mediated receive swap for an offline receiver and return the hold
-// invoice + a LUD-21 verify URL. The preimage is held in the store (unrevealed until
+// Create a solver-mediated receive swap for an offline receiver: the hold invoice + a
+// LUD-21 verify URL. The preimage is held in the store (unrevealed until
 // the settlement poller flips it) keyed by the swap's payment hash. It is safe at
 // rest because the covenant's `enforcePayTo` pins the claim to the user's address —
 // learning the preimage cannot redirect funds.
-export async function createOfflineSwapAndRespond(args: {
+export async function createOfflineSwapInvoice(args: {
   creator: OfflineSwapCreator;
   store: SettlementStore;
   offlineSwaps?: OfflineSwapStore;
@@ -92,11 +92,10 @@ export async function createOfflineSwapAndRespond(args: {
   paymentQuote?: PaymentQuote;
   /** LUD-XX: echo the explicitly-selected lightning option on the pr response. */
   echoLightningOption?: boolean;
-  res: express.Response;
   logger: Logger;
   requestId: string;
-}): Promise<void> {
-  const { creator, store, offlineSwaps, baseUrl, amountMsat, receiveAddress, claimPublicKey, addressId, paymentQuote, echoLightningOption, res, logger, requestId } = args;
+}): Promise<LnurlPayCallbackResponse> {
+  const { creator, store, offlineSwaps, baseUrl, amountMsat, receiveAddress, claimPublicKey, addressId, paymentQuote, echoLightningOption, logger, requestId } = args;
   try {
     // Caller guarantees whole satoshis (rejected at the route otherwise).
     const swap = await creator.create({ amountSat: amountMsat / 1000, receiveAddress, claimPublicKey });
@@ -105,14 +104,14 @@ export async function createOfflineSwapAndRespond(args: {
     // it writes both settlement and restart recovery rows in one transaction.
     if (offlineSwaps) offlineSwaps.createAccepted({ ...accepted, recovery: swap.recovery });
     else store.create({ ...accepted, swapId: swap.swapId });
-    res.json({
+    return {
       pr: swap.invoice,
       routes: [],
       verify: `${baseUrl}/lnurl/verify/${swap.preimageHash}`,
       verifyBatch: `${baseUrl}${BATCH_PATH}`,
       ...(paymentQuote ? { paymentQuote } : {}),
       ...(echoLightningOption ? { paymentOption: "lightning" } : {}),
-    } satisfies LnurlPayCallbackResponse);
+    };
   } catch (err) {
     logger.warn("offline_quote_failed", { requestId, error: err });
     const reason = err instanceof RailRefusedError ? err.message : "Unable to create offline invoice";
