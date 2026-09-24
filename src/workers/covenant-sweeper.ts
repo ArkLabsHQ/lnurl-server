@@ -36,6 +36,7 @@ import {
 import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler } from "../covenant/contract.js";
 import type { SettlementStore } from "../settlement-store.js";
 import { COVENANT_V1, COVENANT_V2, SWEEP_LEAF, enforcePayTo, enforcePayToWithAssets } from "../covenant/destination.js";
+import { startCatchUpLoop } from "./catch-up-loop.js";
 
 interface EmulatorSubmit {
   submitTx(arkTx: string, checkpointTxs: string[]): Promise<{ signedArkTx: string; signedCheckpointTxs: string[] }>;
@@ -155,45 +156,9 @@ export interface CovenantSweeperHandle {
  * already learns the moment one is funded.
  */
 export function startCovenantSweeper(sweeper: CovenantSweeper, catchUpIntervalMs: number): CovenantSweeperHandle {
-  let inFlight = false;
-  let queued = false;
-  let stopped = false;
-  let next: ReturnType<typeof setTimeout> | undefined;
-  const schedule = (): void => {
-    if (stopped) return;
-    next = setTimeout(() => pass(), catchUpIntervalMs);
-    next.unref?.();
-  };
-  const pass = (): void => {
-    if (stopped) return;
-    inFlight = true;
-    void sweeper.sweep().finally(() => {
-      inFlight = false;
-      if (queued && !stopped) {
-        queued = false;
-        pass();
-        return;
-      }
-      schedule();
-    });
-  };
-  const trigger = (): void => {
-    if (stopped) return;
-    // Queued rather than dropped: the running pass may have listed the contracts
-    // before this one was funded.
-    if (inFlight) queued = true;
-    else {
-      if (next) clearTimeout(next);
-      pass();
-    }
-  };
-  schedule();
-  return {
-    trigger,
-    stop: () => {
-      stopped = true;
-      queued = false;
-      if (next) clearTimeout(next);
-    },
-  };
+  return startCatchUpLoop({
+    pass: () => sweeper.sweep(),
+    intervalMs: catchUpIntervalMs,
+    onError: (err) => console.warn("covenant sweeper: sweep failed; retrying:", err),
+  });
 }

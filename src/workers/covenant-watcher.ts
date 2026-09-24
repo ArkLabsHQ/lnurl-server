@@ -8,6 +8,7 @@
 import { isContractVtxoEvent, type IContractManager } from "@arkade-os/sdk";
 import type { SettlementStore } from "../settlement-store.js";
 import { COVENANT_CONTRACT_TYPE } from "../covenant/contract.js";
+import { startCatchUpLoop } from "./catch-up-loop.js";
 
 /** Settle `record` from any output at its script that covers the agreed amount. */
 function settleFrom(
@@ -52,23 +53,15 @@ export function startCovenantWatcher(
     onFunded();
   });
 
-  let stopped = false;
-  let next: ReturnType<typeof setTimeout> | undefined;
-  const runCatchUp = async (): Promise<void> => {
-    try {
-      await catchUp(store, contracts);
-    } catch (err) {
-      console.warn("covenant watcher: catch-up pass failed; retrying:", err);
-    }
-    if (stopped) return;
-    next = setTimeout(() => void runCatchUp(), catchUpIntervalMs);
-    next.unref?.();
-  };
-  void runCatchUp();
+  const loop = startCatchUpLoop({
+    pass: () => catchUp(store, contracts),
+    intervalMs: catchUpIntervalMs,
+    onError: (err) => console.warn("covenant watcher: catch-up pass failed; retrying:", err),
+    immediate: true,
+  });
 
   return () => {
-    stopped = true;
-    if (next) clearTimeout(next);
+    loop.stop();
     unsubscribe();
   };
 }

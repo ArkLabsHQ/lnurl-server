@@ -2,6 +2,7 @@ import type { SettlementStore } from "../settlement-store.js";
 import type { OfflineSwapCreator } from "../services/offline-swaps.js";
 import type { OfflineSwapStore } from "../offline-swap-store.js";
 import { createLogger, type Logger } from "../logger.js";
+import { startCatchUpLoop } from "./catch-up-loop.js";
 
 /** One settlement pass: mark any pending offline swap settled once the solver reports
  *  its invoice settled. The server already holds the preimage, so `verify` can then
@@ -76,46 +77,10 @@ export function startOfflineSettlementPoller(
   recovered?: OfflineSwapStore,
   logger: Logger = createLogger(),
 ): OfflineSettlementPoller {
-  let inFlight = false;
-  let queued = false;
-  let stopped = false;
-  let next: ReturnType<typeof setTimeout> | undefined;
-  const schedule = (): void => {
-    if (stopped) return;
-    next = setTimeout(() => pass(), catchUpIntervalMs);
-    // Don't keep the process alive just for the catch-up.
-    next.unref?.();
-  };
-  const pass = (): void => {
-    if (stopped) return;
-    inFlight = true;
-    void settleOfflineSwaps(store, creator, recovered, logger).finally(() => {
-      inFlight = false;
-      if (queued && !stopped) {
-        queued = false;
-        pass();
-        return;
-      }
-      schedule();
-    });
-  };
-  const trigger = (): void => {
-    if (stopped) return;
-    // Queued rather than dropped: the running pass may already have looked at this
-    // swap and found it unfunded, and the catch-up is a whole interval away.
-    if (inFlight) queued = true;
-    else {
-      if (next) clearTimeout(next);
-      pass();
-    }
-  };
-  trigger();
-  return {
-    trigger,
-    stop: () => {
-      stopped = true;
-      queued = false;
-      if (next) clearTimeout(next);
-    },
-  };
+  return startCatchUpLoop({
+    pass: () => settleOfflineSwaps(store, creator, recovered, logger),
+    intervalMs: catchUpIntervalMs,
+    onError: (error) => logger.warn("offline_settlement_pass_failed", { error }),
+    immediate: true,
+  });
 }

@@ -7,6 +7,7 @@
 import { hex } from "@scure/base";
 import { ArkAddress, RestIndexerProvider, isContractVtxoEvent, type IContractManager, type IndexerProvider } from "@arkade-os/sdk";
 import type { SettlementStore } from "../settlement-store.js";
+import { startCatchUpLoop } from "./catch-up-loop.js";
 
 /** One watch pass: flip any pending destination record whose payment is visible at
  *  the indexer. Matching is oldest-record-first with each VTXO assigned at most once;
@@ -162,7 +163,6 @@ export function startArkadeWatcher(
   opts: ArkadeWatcherOptions = {},
 ): ArkadeWatcherHandle {
   const indexer = opts.indexer ?? new RestIndexerProvider(arkServerUrl);
-  let inFlight = false;
   // Deduped: a down indexer fails identically every tick, and a line every
   // intervalMs would bury the first one. Cleared on a clean pass, so a
   // recurrence says so again.
@@ -173,44 +173,20 @@ export function startArkadeWatcher(
     lastReported = msg;
     console.warn(`arkade watcher: ${msg}`);
   };
-  let queued = false;
   let stopped = false;
-  let next: ReturnType<typeof setTimeout> | undefined;
-
-  const schedule = (): void => {
-    if (stopped) return;
-    next = setTimeout(() => pass(), catchUpIntervalMs);
-    // Don't keep the process alive just for the catch-up.
-    next.unref?.();
-  };
-  const pass = (): void => {
-    if (stopped) return;
-    inFlight = true;
-    let failed = false;
-    void settleDestinationPayments(store, indexer, (stage, err) => {
-      failed = true;
-      onFailure(stage, err);
-    }).finally(() => {
+  const loop = startCatchUpLoop({
+    pass: async () => {
+      let failed = false;
+      await settleDestinationPayments(store, indexer, (stage, err) => {
+        failed = true;
+        onFailure(stage, err);
+      });
       if (!failed) lastReported = undefined;
-      inFlight = false;
-      if (queued && !stopped) {
-        queued = false;
-        pass();
-        return;
-      }
-      schedule();
-    });
-  };
-  const trigger = (): void => {
-    if (stopped) return;
-    // Queued rather than dropped: the running pass may have read the indexer
-    // before this payment landed.
-    if (inFlight) queued = true;
-    else {
-      if (next) clearTimeout(next);
-      pass();
-    }
-  };
+    },
+    intervalMs: catchUpIntervalMs,
+    onError: (err) => onFailure("settlement pass", err),
+  });
+  const trigger = loop.trigger;
 
   const watching = new Set<string>();
   const contracts = opts.contracts;
@@ -274,14 +250,13 @@ export function startArkadeWatcher(
   resync?.unref?.();
   void syncWatched();
 
-  pass();
+  trigger();
   return {
     trigger,
     watch,
     stop: () => {
       stopped = true;
-      queued = false;
-      if (next) clearTimeout(next);
+      loop.stop();
       if (resync) clearInterval(resync);
       unsubscribe?.();
     },

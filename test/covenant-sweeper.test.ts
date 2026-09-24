@@ -188,6 +188,21 @@ describe("createCovenantSweeper", () => {
     }
   });
 
+  it("survives a sweep that rejects, and sweeps again on the next trigger", async () => {
+    let passes = 0;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const handle = startCovenantSweeper({ sweep: async () => { passes++; throw new Error("contract manager unavailable"); } }, 600_000);
+    try {
+      handle.trigger();
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+      handle.trigger();
+      await vi.waitFor(() => expect(passes).toBe(2));
+    } finally {
+      handle.stop();
+      warn.mockRestore();
+    }
+  });
+
   it("runs no further passes once stopped", async () => {
     let passes = 0;
     const handle = startCovenantSweeper({ sweep: async () => { passes++; return 0; } }, 600_000);
