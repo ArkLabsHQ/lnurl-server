@@ -2,7 +2,7 @@ import { Router } from "express";
 import { RateLimiter } from "../../rate-limit.js";
 import type { LnurlPayMetadata } from "../../types/index.js";
 import { LnurlError } from "../errors.js";
-import { strParam } from "../params.js";
+import { msatParam, strParam } from "../params.js";
 import { buildMetadata, requestSessionInvoice } from "../../services/pay-flow.js";
 import type { ServerContext } from "../server-context.js";
 import { attachVerifyBatchRoute, BATCH_PATH } from "../../verify-batch.js";
@@ -58,14 +58,14 @@ export function lnurlPayRoutes({ config, sessions, store, settings, logger }: Se
   // Requests the bolt11 from the wallet over SSE.
   r.get("/lnurl/:id/callback", async (req, res) => {
     const { id } = req.params;
-    const amountStr = strParam(req.query.amount);
+    const amountMsat = msatParam(req.query.amount);
     const comment = strParam(req.query.comment);
-    if (!amountStr || !Number.isSafeInteger(Number(amountStr))) throw new LnurlError("Missing or invalid amount parameter");
-    if (Number(amountStr) <= 0) {
+    if (amountMsat === undefined) throw new LnurlError("Missing or invalid amount parameter");
+    if (amountMsat <= 0) {
       throw new LnurlError(`Amount must be between ${settings.minSendable()} and ${settings.maxSendable()} millisats`);
     }
     res.json(await requestSessionInvoice({
-      sessions, sessionId: id, amountMsat: Number(amountStr), comment,
+      sessions, sessionId: id, amountMsat, comment,
       min: settings.minSendable(), max: settings.maxSendable(), timeoutMs: settings.invoiceTimeoutMs(),
       offlineReason: "This LNURL is no longer active", store, baseUrl: settings.baseUrl(),
       logger, requestId: res.locals.requestId as string,

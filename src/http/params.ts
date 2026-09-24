@@ -7,6 +7,14 @@ import { domainFromHost } from "./origin.js";
  *  is never meaningful for our params — take them only when they're a string. */
 export const strParam = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 
+/** A millisat amount written as a plain integer. `Number()` alone would take "1e3",
+ *  "0x3e8", " 1000 " and "1000.0"; the sign is left to the caller's range check. */
+export const msatParam = (v: unknown): number | undefined => {
+  if (typeof v !== "string" || !/^-?\d+$/.test(v)) return undefined;
+  const n = Number(v);
+  return Number.isSafeInteger(n) ? n : undefined;
+};
+
 export const bearerToken = (req: Request): string => {
   const auth = req.headers.authorization;
   return auth?.startsWith("Bearer ") ? auth.slice(7) : "";

@@ -17,7 +17,7 @@ import { applyQuote, type PaymentQuote } from "../../quote-provider.js";
 import type { DerivedDestination } from "../../covenant/destination.js";
 import type { AddressRow, DomainRow, LnurlPayDestinationResponse, LnurlPayMetadata } from "../../types/index.js";
 import { LnurlError } from "../errors.js";
-import { domainFor, originOf, strParam } from "../params.js";
+import { domainFor, msatParam, originOf, strParam } from "../params.js";
 import { buildMetadata, createOfflineSwapInvoice, destinationUri, requestSessionInvoice } from "../../services/pay-flow.js";
 import type { ServerContext } from "../server-context.js";
 import { isNameless } from "../../services/addresses.js";
@@ -87,10 +87,10 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     // can carry, because the rail that serves decides the real bound.
     const { railAddress, base } = envelope(domain, address);
     const offlineReason = isNameless(address) ? "This LNURL is currently offline" : `${address.username}@${domain.domain} is currently offline`;
-    const amountStr = strParam(req.query.amount);
+    const requested = msatParam(req.query.amount);
     const comment = strParam(req.query.comment);
-    if (!amountStr || !Number.isSafeInteger(Number(amountStr))) throw new LnurlError("Missing or invalid amount parameter");
-    let amountMsat = Number(amountStr);
+    if (requested === undefined) throw new LnurlError("Missing or invalid amount parameter");
+    let amountMsat = requested;
     const paymentOptionId = strParam(req.query.paymentOption);
     // Non-positive amounts are refused before the quote/provider path.
     if (amountMsat <= 0) throw new LnurlError(`Amount must be between ${base.min} and ${base.max} millisats`);

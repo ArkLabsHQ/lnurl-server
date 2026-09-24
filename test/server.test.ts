@@ -609,6 +609,18 @@ describe("LNURL Service", () => {
       }
     });
 
+    it("should return error for an amount that is not a plain integer", async () => {
+      const session = await openSession(ctx.baseUrl);
+      try {
+        for (const amount of ["1e6", "0x3e8", "%201000%20", "1000.0"]) {
+          const res = await jsonRequest(`${ctx.baseUrl}/lnurl/${session.sessionId}/callback?amount=${amount}`);
+          expect(res.body.reason, amount).toMatch(/missing|invalid/i);
+        }
+      } finally {
+        session.abort();
+      }
+    });
+
     it("should return error for negative amount", async () => {
       const session = await openSession(ctx.baseUrl);
       try {

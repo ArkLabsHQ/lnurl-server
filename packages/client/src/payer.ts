@@ -63,8 +63,11 @@ export async function requestInvoice(
     : undefined;
   const min = selected?.minSendable ?? payRequest.minSendable;
   const max = selected?.maxSendable ?? payRequest.maxSendable;
-  if (!Number.isSafeInteger(amountMsat) || amountMsat < min || amountMsat > max) {
-    throw new LnurlError(`Amount must be an integer between ${min} and ${max} millisats`);
+  if (!Number.isSafeInteger(amountMsat)) {
+    throw new LnurlError("Amount must be a whole number of millisats");
+  }
+  if (amountMsat < min || amountMsat > max) {
+    throw new LnurlError(`Amount must be between ${min} and ${max} millisats`);
   }
   // Checked locally for the same reason the amount is: the server would reject
   // it anyway, but a round trip later and with a less specific message. LUD-12
