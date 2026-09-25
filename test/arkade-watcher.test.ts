@@ -4,13 +4,13 @@ import { randomBytes } from "node:crypto";
 import { hex } from "@scure/base";
 import { ArkAddress, RestIndexerProvider } from "@arkade-os/sdk";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
-import { settleDestinationPayments, startArkadeWatcher, SETTLEMENT_SKEW_MS } from "../src/arkade-watcher.js";
+import { settleDestinationPayments, startArkadeWatcher, SETTLEMENT_SKEW_MS } from "../src/workers/arkade-watcher.js";
 import { MemorySettlementStore } from "../src/settlement-store.js";
-import { createServer } from "../src/server.js";
+import { createServer } from "../src/http/server.js";
 import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
-import type { LnurlServiceConfig } from "../src/types.js";
+import type { LnurlServiceConfig } from "../src/types/index.js";
 
 // The watcher against a fake Arkade indexer over real HTTP (repo style). The wire
 // vtxo shape mirrors the indexer's (amount in string-sats, createdAt in string-secs).

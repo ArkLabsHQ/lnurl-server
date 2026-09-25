@@ -1,9 +1,10 @@
-import { createServer } from "./server.js";
+import { createServer } from "./http/server.js";
 import { loadConfig } from "./config.js";
 import { VERSION } from "./version.js";
-import { SessionManager } from "./session-manager.js";
+import { SessionManager } from "./services/sessions.js";
 import type { Db } from "./db/connection.js";
 import { pathToFileURL } from "node:url";
+import { ConfigError, UpstreamError } from "./errors.js";
 
 /** Ceiling on the dependency probes boot makes. Generous next to the in-request
  *  timeouts: a cold arkd is slower than a warm one, and failing here refuses to
@@ -36,21 +37,21 @@ async function main(): Promise<void> {
   const logger = createLogger();
 
   const db = await initPersistence({ dbPath: config.dbPath, bootstrapDomain: config.bootstrapDomain, verifyTtlMs: config.verifyTtlMs });
-  if (config.offlineReceive.enabled && !db) throw new Error("offline receive requires DB_PATH for durable accepted-swap recovery");
+  if (config.offlineReceive.enabled && !db) throw new ConfigError("offline receive requires DB_PATH for durable accepted-swap recovery");
   const sessions = new SessionManager();
   runtime.addStop(() => sessions.shutdown("service shutdown"));
   if (db) {
     runtime.setDatabase(db);
     health.register("persistence", () => ({ ok: runtime.resources().dbOpen, detail: "SQLite open" }));
   }
-  let deps: import("./server.js").ServerDeps | undefined;
-  let solverDiscovery: import("./solver-discovery.js").DiscoveryService | undefined;
+  let deps: import("./http/server.js").ServerDeps | undefined;
+  let solverDiscovery: import("./services/solver-discovery.js").DiscoveryService | undefined;
 
   if (db) {
     const { createRepositories } = await import("./db/repositories/index.js");
-    const { AddressService } = await import("./address-service.js");
+    const { AddressService } = await import("./services/addresses.js");
     const { RateLimiter } = await import("./rate-limit.js");
-    const { SettingsService } = await import("./settings.js");
+    const { SettingsService } = await import("./services/settings.js");
     const { hashSecret } = await import("./crypto.js");
     const { DbSettlementStore } = await import("./settlement-store.js");
     const repos = createRepositories(db);
@@ -76,7 +77,7 @@ async function main(): Promise<void> {
       const { ContractManager, RestIndexerProvider, contractHandlers } = await import("@arkade-os/sdk");
       const { sqliteContractStores } = await import("./contract-store.js");
       if (off.covenantDestinations) {
-        const { covenantDestinationHandler } = await import("./covenant-contract.js");
+        const { covenantDestinationHandler } = await import("./covenant/contract.js");
         // The SDK tracks, watches and spends these; registering the handler is what
         // lets it build the script and pick a leaf without us restating either. Must
         // precede create(), which re-adds every stored contract.
@@ -119,20 +120,20 @@ async function main(): Promise<void> {
       // Bounded: an unreachable arkd that accepts the connection and never answers
       // would otherwise hang boot forever, with no listener and nothing in the log.
       const infoResponse = await fetch(`${off.arkServerUrl}/v1/info`, { signal: AbortSignal.timeout(BOOT_PROBE_TIMEOUT_MS) });
-      if (!infoResponse.ok) throw new Error(`Arkade info endpoint: HTTP ${infoResponse.status}`);
+      if (!infoResponse.ok) throw new UpstreamError("Arkade info endpoint", infoResponse.status);
       const arkInfo = await infoResponse.json() as { network?: unknown; dust?: unknown };
       arkNetwork = arkInfo.network;
       const dust = Number(arkInfo.dust);
       if (Number.isSafeInteger(dust) && dust > 0) arkDustSat = dust;
     }
-    let offlineSwapCreator: import("./intent-swap.js").OfflineSwapCreator | undefined;
+    let offlineSwapCreator: import("./services/offline-swaps.js").OfflineSwapCreator | undefined;
     if (off.enabled) {
-      const { createOfflineSwapCoordinator } = await import("./intent-swap.js");
+      const { createOfflineSwapCoordinator } = await import("./services/offline-swaps.js");
       const { OfflineSwapStore } = await import("./offline-swap-store.js");
-      const { DiscoveryService } = await import("./solver-discovery.js");
+      const { DiscoveryService } = await import("./services/solver-discovery.js");
       const { isNetwork } = await import("@arkade-os/solver-discovery");
       const network = arkNetwork;
-      if (!isNetwork(network)) throw new Error(`Arkade info endpoint returned unsupported network ${String(network)}`);
+      if (!isNetwork(network)) throw new ConfigError(`Arkade info endpoint returned unsupported network ${String(network)}`);
       const discovery = new DiscoveryService({
         network,
         registryUrls: off.registryUrls,
@@ -153,11 +154,11 @@ async function main(): Promise<void> {
       const covclaimdProbe = off.covclaimdUrl
         ? await fetch(`${off.covclaimdUrl}/v1/preimage/covclaimd-pubkey`, { signal: AbortSignal.timeout(BOOT_PROBE_TIMEOUT_MS) })
         : null;
-      if (covclaimdProbe && !covclaimdProbe.ok) throw new Error(`covclaimd pubkey endpoint: HTTP ${covclaimdProbe.status}`);
+      if (covclaimdProbe && !covclaimdProbe.ok) throw new UpstreamError("covclaimd pubkey endpoint", covclaimdProbe.status);
       offlineSwaps = new OfflineSwapStore(db, config.verifyTtlMs);
-      let selfClaimer: import("./self-claim.js").SelfClaimer | undefined;
+      let selfClaimer: import("./covenant/self-claim.js").SelfClaimer | undefined;
       if (off.selfClaim) {
-        const { createSelfClaimer, checkEmulatorPairing } = await import("./self-claim.js");
+        const { createSelfClaimer, checkEmulatorPairing } = await import("./covenant/self-claim.js");
         selfClaimer = createSelfClaimer({ arkServerUrl: off.arkServerUrl!, emulatorUrl: off.emulatorUrl! });
         console.log(`offline self-claim: enabled (emulator=${off.emulatorUrl}${off.covclaimdUrl ? "" : ", no covclaimd — RFQ omits the claim packet"})`);
         if (off.covclaimdUrl) {
@@ -179,9 +180,9 @@ async function main(): Promise<void> {
       });
       if (offlineSwapCreator.close) runtime.addTransport({ close: offlineSwapCreator.close });
     }
-    let covenantDestinations: import("./covenant-destination.js").CovenantDestinationProvider | undefined;
+    let covenantDestinations: import("./covenant/destination.js").CovenantDestinationProvider | undefined;
     if (off.covenantDestinations && contracts) {
-      const { createCovenantDestinationProvider } = await import("./covenant-destination.js");
+      const { createCovenantDestinationProvider } = await import("./covenant/destination.js");
       covenantDestinations = createCovenantDestinationProvider({
         arkServerUrl: off.arkServerUrl!,
         ...(off.covclaimdUrl ? { covclaimdUrl: off.covclaimdUrl } : {}),
@@ -191,8 +192,8 @@ async function main(): Promise<void> {
       });
       // Event-driven, with the repeating catch-up behind it as the dropped-subscription
       // backstop OFFLINE_POLL_INTERVAL_MS is already documented to size.
-      const { startCovenantWatcher } = await import("./covenant-watcher.js");
-      const { createCovenantSweeper, startCovenantSweeper } = await import("./covenant-sweeper.js");
+      const { startCovenantWatcher } = await import("./workers/covenant-watcher.js");
+      const { createCovenantSweeper, startCovenantSweeper } = await import("./workers/covenant-sweeper.js");
       // Built before the watcher so its trigger can be handed over: the event that
       // settles a covenant payment is the same event that makes it sweepable.
       const sweeper = startCovenantSweeper(
@@ -225,8 +226,8 @@ async function main(): Promise<void> {
     // Every background scheduler registers its stop hook before the listeners
     // begin accepting traffic.
     if (offlineSwapCreator) {
-      const { startOfflineSettlementPoller } = await import("./offline-poller.js");
-      const { startLockupWatcher } = await import("./lockup-watcher.js");
+      const { startOfflineSettlementPoller } = await import("./workers/offline-poller.js");
+      const { startLockupWatcher } = await import("./workers/lockup-watcher.js");
       const poller = startOfflineSettlementPoller(settlements, offlineSwapCreator, off.pollIntervalMs, offlineSwaps, logger);
       runtime.addStop(poller.stop);
       if (contracts && offlineSwaps) runtime.addStop(startLockupWatcher(contracts, offlineSwaps, poller.trigger, logger));
@@ -237,7 +238,7 @@ async function main(): Promise<void> {
     // The destination rail (paymentOptions: arkade) settles by observation, not by
     // preimage: watch the indexer for payments to registered Arkade addresses.
     if (config.offlineReceive.arkServerUrl) {
-      const { startArkadeWatcher } = await import("./arkade-watcher.js");
+      const { startArkadeWatcher } = await import("./workers/arkade-watcher.js");
       // Shares the contract manager's subscription: a second one loses the race
       // for arkd's stream and reports an EventSource error for the process's life.
       const arkadeWatcher = startArkadeWatcher(settlements, config.offlineReceive.arkServerUrl, 15_000, {
@@ -249,7 +250,7 @@ async function main(): Promise<void> {
     }
     console.log(`persistence: enabled at ${config.dbPath} (${deps.repos.domains.list().length} domain(s))`);
 
-    const { createAdminServer } = await import("./admin-server.js");
+    const { createAdminServer } = await import("./http/admin-server.js");
     // Its own indexer client rather than a shared one: the reconcile route is an
     // operator-triggered read, and giving it the contract manager's would let a
     // support query contend with the watchers for the same connection.
@@ -321,7 +322,7 @@ async function main(): Promise<void> {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((err) => {
-    console.error(err);
+    console.error(err instanceof ConfigError ? `config: ${err.message}` : err);
     process.exit(1);
   });
 }

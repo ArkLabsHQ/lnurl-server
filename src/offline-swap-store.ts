@@ -1,5 +1,6 @@
 import type { Db } from "./db/connection.js";
-import type { OfflineSwapRecoveryV1 } from "./intent-swap.js";
+import type { OfflineSwapRecoveryV1 } from "./services/offline-swaps.js";
+import { MalformedRecordError } from "./errors.js";
 
 export interface AcceptedOfflineSwap {
   paymentHash: string;
@@ -46,10 +47,10 @@ function isRelayUrl(value: unknown): value is string {
 function recoveryOf(row: PendingRow): OfflineSwapRecoveryV1 {
   const relays = JSON.parse(row.relays_json) as unknown;
   const body = JSON.parse(row.recovery_json) as { script?: unknown };
-  if (row.recovery_version !== 1) throw new Error(`unsupported offline swap recovery version ${row.recovery_version}`);
-  if (!Array.isArray(relays) || relays.length === 0 || !relays.every(isRelayUrl)) throw new Error("invalid offline swap relays");
-  if (!body.script || typeof body.script !== "object" || Array.isArray(body.script)) throw new Error("invalid offline swap script recovery");
-  if (!Object.values(body.script).every((value) => typeof value === "string")) throw new Error("invalid offline swap script parameter");
+  if (row.recovery_version !== 1) throw new MalformedRecordError(`unsupported offline swap recovery version ${row.recovery_version}`);
+  if (!Array.isArray(relays) || relays.length === 0 || !relays.every(isRelayUrl)) throw new MalformedRecordError("invalid offline swap relays");
+  if (!body.script || typeof body.script !== "object" || Array.isArray(body.script)) throw new MalformedRecordError("invalid offline swap script recovery");
+  if (!Object.values(body.script).every((value) => typeof value === "string")) throw new MalformedRecordError("invalid offline swap script parameter");
   return {
     version: 1,
     solverName: row.solver_name,

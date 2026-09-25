@@ -1,6 +1,6 @@
 import type { Db } from "../connection.js";
 import type { EncryptedToken } from "../../crypto.js";
-import type { AddressRow, AddressStatus, CreateAddressParams } from "../types.js";
+import type { AddressRow, AddressStatus, CreateAddressParams } from "../../types/index.js";
 import { parseDisabledRails, serializeDisabledRails, type RailId } from "../../rails.js";
 
 interface AddressRecord {

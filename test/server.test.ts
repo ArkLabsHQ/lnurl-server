@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import http from "node:http";
-import { createServer } from "../src/server.js";
-import type { LnurlServiceConfig } from "../src/types.js";
+import { createServer } from "../src/http/server.js";
+import type { LnurlServiceConfig } from "../src/types/index.js";
 
 const CONFIG: LnurlServiceConfig = {
   port: 0,
@@ -208,6 +208,11 @@ describe("LNURL Service", () => {
       } finally {
         session.abort();
       }
+    });
+
+    it("rejects an odd-length token", async () => {
+      const res = await jsonRequest(`${ctx.baseUrl}/lnurl/session`, "POST", { token: "ab".repeat(16) + "a" });
+      expect(res.status).toBe(400);
     });
   });
 
@@ -416,6 +421,18 @@ describe("LNURL Service", () => {
       }
     });
 
+    it("should return 400 for a rejection reason that is not short text", async () => {
+      const session = await openSession(ctx.baseUrl);
+      try {
+        for (const error of ["x".repeat(501), 42, { nested: true }]) {
+          const res = await jsonRequest(`${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`, "POST", { error }, session.token);
+          expect(res.status, JSON.stringify(error).slice(0, 20)).toBe(400);
+        }
+      } finally {
+        session.abort();
+      }
+    });
+
     it("should return 400 when pr is missing", async () => {
       const session = await openSession(ctx.baseUrl);
       try {
@@ -599,6 +616,18 @@ describe("LNURL Service", () => {
         );
         expect(res.body.status).toBe("ERROR");
         expect(res.body.reason).toMatch(/missing|invalid/i);
+      } finally {
+        session.abort();
+      }
+    });
+
+    it("should return error for an amount that is not a plain integer", async () => {
+      const session = await openSession(ctx.baseUrl);
+      try {
+        for (const amount of ["1e6", "0x3e8", "%201000%20", "1000.0"]) {
+          const res = await jsonRequest(`${ctx.baseUrl}/lnurl/${session.sessionId}/callback?amount=${amount}`);
+          expect(res.body.reason, amount).toMatch(/missing|invalid/i);
+        }
       } finally {
         session.abort();
       }

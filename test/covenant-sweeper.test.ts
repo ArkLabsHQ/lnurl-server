@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { MultisigTapscript, VtxoScript, type IContractManager } from "@arkade-os/sdk";
-import { createCovenantSweeper, startCovenantSweeper } from "../src/covenant-sweeper.js";
-import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler as handler } from "../src/covenant-contract.js";
-import { COLLABORATIVE_LEAF, COVENANT_V1, RECOVERY_LEAF, SWEEP_LEAF } from "../src/covenant-destination.js";
+import { createCovenantSweeper, startCovenantSweeper } from "../src/workers/covenant-sweeper.js";
+import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler as handler } from "../src/covenant/contract.js";
+import { COLLABORATIVE_LEAF, COVENANT_V1, RECOVERY_LEAF, SWEEP_LEAF } from "../src/covenant/destination.js";
 
 /** Real params, so the leaves the sweeper matches against are the real ones. */
 const xonly = (fill: number) => secp256k1.getPublicKey(new Uint8Array(32).fill(fill), true).subarray(1);
@@ -185,6 +185,21 @@ describe("createCovenantSweeper", () => {
       await vi.waitFor(() => expect(passes).toBe(2));
     } finally {
       handle.stop();
+    }
+  });
+
+  it("survives a sweep that rejects, and sweeps again on the next trigger", async () => {
+    let passes = 0;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const handle = startCovenantSweeper({ sweep: async () => { passes++; throw new Error("contract manager unavailable"); } }, 600_000);
+    try {
+      handle.trigger();
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+      handle.trigger();
+      await vi.waitFor(() => expect(passes).toBe(2));
+    } finally {
+      handle.stop();
+      warn.mockRestore();
     }
   });
 

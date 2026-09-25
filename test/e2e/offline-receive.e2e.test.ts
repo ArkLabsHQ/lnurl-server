@@ -29,22 +29,22 @@ import { hex, base64 } from "@scure/base";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { MnemonicIdentity, Wallet, RestIndexerProvider, ArkAddress, Extension, Transaction } from "@arkade-os/sdk";
-import { CLAIM_PACKET_TYPE } from "../../src/claim-packet.js";
-import { deriveSessionId } from "../../src/session-id.js";
-import { createServer } from "../../src/server.js";
+import { CLAIM_PACKET_TYPE } from "../../src/covenant/claim-packet.js";
+import { deriveSessionId } from "../../src/session-token.js";
+import { createServer } from "../../src/http/server.js";
 import { openDb, type Db } from "../../src/db/connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
 import { bootstrap } from "../../src/bootstrap.js";
 import { createRepositories } from "../../src/db/repositories/index.js";
-import { AddressService } from "../../src/address-service.js";
+import { AddressService } from "../../src/services/addresses.js";
 import { DbSettlementStore } from "../../src/settlement-store.js";
 import { OfflineSwapStore } from "../../src/offline-swap-store.js";
-import { staticSettings } from "../../src/settings.js";
-import { createOfflineSwapCoordinator, type OfflineSwapCreator } from "../../src/intent-swap.js";
-import { createSelfClaimer } from "../../src/self-claim.js";
+import { staticSettings } from "../../src/services/settings.js";
+import { createOfflineSwapCoordinator, type OfflineSwapCreator } from "../../src/services/offline-swaps.js";
+import { createSelfClaimer } from "../../src/covenant/self-claim.js";
 import { httpTransport } from "@arkade-os/swap";
 import { solverCard } from "../fixtures/solver-cards.js";
-import { startOfflineSettlementPoller } from "../../src/offline-poller.js";
+import { startOfflineSettlementPoller } from "../../src/workers/offline-poller.js";
 import {
   ensureStack,
   fundSolverFloat,

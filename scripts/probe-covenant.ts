@@ -8,7 +8,7 @@
 import { hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { ArkAddress, getNetwork, resolveEmulatorPubkey, MultisigTapscript, VtxoScript } from "@arkade-os/sdk";
-import { deriveCovenantDestination, toXOnly } from "../src/covenant-destination.js";
+import { deriveCovenantDestination, toXOnly } from "../src/covenant/destination.js";
 import { loadConfig } from "../src/config.js";
 
 const arkServerUrl = process.argv[2] ?? "https://mutinynet.arkade.sh";

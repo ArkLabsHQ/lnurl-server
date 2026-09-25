@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DiscoveryService } from "../src/solver-discovery.js";
+import { DiscoveryService } from "../src/services/solver-discovery.js";
 import { legacyAssetSolverCard, legacyBtcSolverCard, registryIndex, solverCard } from "./fixtures/solver-cards.js";
 
 const registryUrl = "https://registry.test/bitcoin.json";

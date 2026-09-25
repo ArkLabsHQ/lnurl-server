@@ -4,9 +4,9 @@ import { createHash } from "node:crypto";
 import { base64, hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { ArkAddress, toXOnly } from "@arkade-os/sdk";
-import { createOfflineSwapCoordinator, type IntentSwapSettings, type OfflineSwapCreator } from "../src/intent-swap.js";
+import { createOfflineSwapCoordinator, type IntentSwapSettings, type OfflineSwapCreator } from "../src/services/offline-swaps.js";
 import { httpTransport, receiveVtxoScript, unilateralClaimDelay } from "@arkade-os/swap";
-import type { SolverCandidate } from "../src/solver-discovery.js";
+import type { SolverCandidate } from "../src/services/solver-discovery.js";
 import { buildInvoice } from "./helpers/bolt11.js";
 import { solverCard } from "./fixtures/solver-cards.js";
 

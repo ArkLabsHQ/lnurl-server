@@ -5,11 +5,11 @@ import { randomBytes } from "node:crypto";
 import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
-import { AddressService } from "../src/address-service.js";
-import { SessionManager } from "../src/session-manager.js";
-import { createAdminApi } from "../src/admin-api.js";
+import { AddressService } from "../src/services/addresses.js";
+import { SessionManager } from "../src/services/sessions.js";
+import { createAdminApi } from "../src/http/routes/admin/index.js";
 import { loadConfig } from "../src/config.js";
-import { SettingsService } from "../src/settings.js";
+import { SettingsService } from "../src/services/settings.js";
 import { DbSettlementStore } from "../src/settlement-store.js";
 
 const ARK = "ark1qexampledestination";

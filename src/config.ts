@@ -1,3 +1,5 @@
+import { ConfigError } from "./errors.js";
+
 /** Server-orchestrated offline receive over the Arkade intents corridor. */
 export interface OfflineReceiveConfig {
   enabled: boolean;
@@ -34,7 +36,7 @@ export interface OfflineReceiveConfig {
   covenantDestinations: boolean;
   /** CSV delay, seconds, before the user may sweep a covenant destination alone. */
   covenantRecoveryDelaySeconds: number;
-  /** Settlement-pass interval, ms. Not what claims a lockup — src/lockup-watcher.ts
+  /** Settlement-pass interval, ms. Not what claims a lockup — src/workers/lockup-watcher.ts
    *  does that on the funding event — so what is left on it is the backstop for a
    *  dropped subscription and the solver status check the RFQ transport cannot push. */
   pollIntervalMs: number;
@@ -78,7 +80,7 @@ function integer(env: Env, name: string, fallback: number, opts: { min: number; 
   const value = Number(raw);
   if (!Number.isInteger(value) || value < opts.min || (opts.max !== undefined && value > opts.max)) {
     const range = opts.max === undefined ? `>= ${opts.min}` : `${opts.min}..${opts.max}`;
-    throw new Error(`${name} must be an integer in ${range}`);
+    throw new ConfigError(`${name} must be an integer in ${range}`);
   }
   return value;
 }
@@ -88,10 +90,10 @@ function httpUrl(raw: string, name: string): string {
   try {
     value = new URL(raw);
   } catch {
-    throw new Error(`${name} must be an absolute http(s) URL`);
+    throw new ConfigError(`${name} must be an absolute http(s) URL`);
   }
   if (!/^https?:$/.test(value.protocol) || value.username || value.password) {
-    throw new Error(`${name} must be an absolute http(s) URL without credentials`);
+    throw new ConfigError(`${name} must be an absolute http(s) URL without credentials`);
   }
   return raw;
 }
@@ -103,13 +105,13 @@ function csvHttpUrls(raw: string | undefined, name: string): string[] {
 
 function rejectRemovedSolverConfig(env: Env): void {
   for (const name of REMOVED_SOLVER_CONFIG) {
-    if (env[name] !== undefined) throw new Error(`${name} has been removed; configure solver cards instead`);
+    if (env[name] !== undefined) throw new ConfigError(`${name} has been removed; configure solver cards instead`);
   }
 }
 
 function parseKey(raw: string): Buffer {
   const buf = /^[0-9a-fA-F]+$/.test(raw) && raw.length % 2 === 0 ? Buffer.from(raw, "hex") : Buffer.from(raw, "base64");
-  if (buf.length !== 32) throw new Error("TOKEN_ENCRYPTION_KEY must decode to 32 bytes (hex or base64)");
+  if (buf.length !== 32) throw new ConfigError("TOKEN_ENCRYPTION_KEY must decode to 32 bytes (hex or base64)");
   return buf;
 }
 
@@ -126,12 +128,12 @@ export function loadConfig(env: Env = process.env): AppConfig {
     tokenEncryptionKey = parseKey(env.TOKEN_ENCRYPTION_KEY);
   }
   if (dbPath && !tokenEncryptionKey && !allowInsecureTokenStorage) {
-    throw new Error(
+    throw new ConfigError(
       "TOKEN_ENCRYPTION_KEY is required when DB_PATH is set (or set ALLOW_INSECURE_TOKEN_STORAGE=1 for dev)",
     );
   }
   if (offlineReceive.covenantDestinations && (!dbPath || dbPath === ":memory:")) {
-    throw new Error("OFFLINE_COVENANT_DESTINATIONS=true requires a file-backed DB_PATH (contracts and settlement attribution must survive restart)");
+    throw new ConfigError("OFFLINE_COVENANT_DESTINATIONS=true requires a file-backed DB_PATH (contracts and settlement attribution must survive restart)");
   }
 
   // Sats, and policy rather than protocol: arkd's dust says what it will accept,
@@ -142,10 +144,10 @@ export function loadConfig(env: Env = process.env): AppConfig {
   const onchainMinSendableSats = integer(env, "ONCHAIN_MIN_SENDABLE_SATS", 10_000, { min: 1 });
   const minSendable = integer(env, "MIN_SENDABLE", 1_000, { min: 1 });
   const maxSendable = integer(env, "MAX_SENDABLE", 100_000_000_000, { min: 1 });
-  if (maxSendable < minSendable) throw new Error("MAX_SENDABLE must be greater than or equal to MIN_SENDABLE");
+  if (maxSendable < minSendable) throw new ConfigError("MAX_SENDABLE must be greater than or equal to MIN_SENDABLE");
   const baseUrl = env.BASE_URL ? httpUrl(env.BASE_URL, "BASE_URL") : `http://localhost:${port}`;
   const adminPort = integer(env, "ADMIN_PORT", 3001, { min: 1, max: 65_535 });
-  if (dbPath && adminPort === port) throw new Error("ADMIN_PORT must differ from PORT when DB_PATH is set");
+  if (dbPath && adminPort === port) throw new ConfigError("ADMIN_PORT must differ from PORT when DB_PATH is set");
 
   return {
     port,
@@ -180,7 +182,7 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   const cardsFile = env.SOLVER_CARDS_FILE?.trim() || undefined;
   const nostrSecretKey = env.NOSTR_SECRET_KEY || undefined;
   if (nostrSecretKey && !/^[0-9a-f]{64}$/i.test(nostrSecretKey)) {
-    throw new Error("NOSTR_SECRET_KEY must be 64-char hex");
+    throw new ConfigError("NOSTR_SECRET_KEY must be 64-char hex");
   }
   const covclaimdUrl = env.COVCLAIMD_URL ? httpUrl(env.COVCLAIMD_URL, "COVCLAIMD_URL") : undefined;
   const arkServerUrl = env.ARK_SERVER_URL ? httpUrl(env.ARK_SERVER_URL, "ARK_SERVER_URL") : undefined;
@@ -197,10 +199,10 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   const stampClaimPacket = env.OFFLINE_STAMP_CLAIM_PACKET === "true";
   const covenantDestinations = env.OFFLINE_COVENANT_DESTINATIONS === "true";
   if (selfClaim && !emulatorUrl) {
-    throw new Error("OFFLINE_SELF_CLAIM=true requires OFFLINE_EMULATOR_URL (the emulator co-signs the covenant claim)");
+    throw new ConfigError("OFFLINE_SELF_CLAIM=true requires OFFLINE_EMULATOR_URL (the emulator co-signs the covenant claim)");
   }
   if (emulatorUrl && !selfClaim && !covenantDestinations) {
-    throw new Error("OFFLINE_EMULATOR_URL requires OFFLINE_SELF_CLAIM=true or OFFLINE_COVENANT_DESTINATIONS=true");
+    throw new ConfigError("OFFLINE_EMULATOR_URL requires OFFLINE_SELF_CLAIM=true or OFFLINE_COVENANT_DESTINATIONS=true");
   }
   const anyOfflineSetting = hasCards || covclaimdUrl || arkServerUrl || nostrSecretKey || selfClaim || emulatorUrl || stampClaimPacket || covenantDestinations || rfqHttpUrl;
   // The claim packet is optional on the wire (solver funds without covclaimd and
@@ -212,21 +214,21 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   const offlineSwapRequested =
     hasCards || Boolean(covclaimdUrl) || Boolean(rfqHttpUrl) || Boolean(nostrSecretKey) || env.OFFLINE_SELF_CLAIM === "true";
   if (stampClaimPacket && !covclaimdUrl) {
-    throw new Error("OFFLINE_STAMP_CLAIM_PACKET=true requires COVCLAIMD_URL (there is no packet to stamp without one)");
+    throw new ConfigError("OFFLINE_STAMP_CLAIM_PACKET=true requires COVCLAIMD_URL (there is no packet to stamp without one)");
   }
   if (anyOfflineSetting && !arkServerUrl) {
-    throw new Error("offline receive requires ARK_SERVER_URL; cards may come from env, file, or the admin database (COVCLAIMD_URL may be omitted with OFFLINE_SELF_CLAIM=true + OFFLINE_EMULATOR_URL)");
+    throw new ConfigError("offline receive requires ARK_SERVER_URL; cards may come from env, file, or the admin database (COVCLAIMD_URL may be omitted with OFFLINE_SELF_CLAIM=true + OFFLINE_EMULATOR_URL)");
   }
   if ((hasCards || nostrSecretKey || stampClaimPacket) && !covclaimdUrl && !selfClaimMode) {
-    throw new Error("offline receive requires COVCLAIMD_URL (or OFFLINE_SELF_CLAIM=true with OFFLINE_EMULATOR_URL to run without covclaimd); cards may come from env, file, or the admin database");
+    throw new ConfigError("offline receive requires COVCLAIMD_URL (or OFFLINE_SELF_CLAIM=true with OFFLINE_EMULATOR_URL to run without covclaimd); cards may come from env, file, or the admin database");
   }
   // Same reasoning as selfClaim: a payer must never be handed an address nothing
   // can sweep, and by then their money is already at it.
   if (covenantDestinations && !emulatorUrl) {
-    throw new Error("OFFLINE_COVENANT_DESTINATIONS=true requires OFFLINE_EMULATOR_URL (the emulator co-signs the sweep)");
+    throw new ConfigError("OFFLINE_COVENANT_DESTINATIONS=true requires OFFLINE_EMULATOR_URL (the emulator co-signs the sweep)");
   }
   if (covenantDestinations && !(arkServerUrl && emulatorUrl)) {
-    throw new Error("OFFLINE_COVENANT_DESTINATIONS=true requires ARK_SERVER_URL and OFFLINE_EMULATOR_URL (the covenant commits to their keys; COVCLAIMD_URL is only needed alongside the lightning offline swap)");
+    throw new ConfigError("OFFLINE_COVENANT_DESTINATIONS=true requires ARK_SERVER_URL and OFFLINE_EMULATOR_URL (the covenant commits to their keys; COVCLAIMD_URL is only needed alongside the lightning offline swap)");
   }
   const recoveryRaw = env.OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS;
   // 512-second granularity, and 24h is not a multiple of it. Rejected here rather
@@ -235,11 +237,11 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   // the payer the ambiguity this flag exists to remove.
   const covenantRecoveryDelaySeconds = recoveryRaw ? Number(recoveryRaw) : 86_528;
   if (!Number.isInteger(covenantRecoveryDelaySeconds) || covenantRecoveryDelaySeconds <= 0) {
-    throw new Error(`OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS must be a positive integer (got "${recoveryRaw}")`);
+    throw new ConfigError(`OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS must be a positive integer (got "${recoveryRaw}")`);
   }
   if (covenantRecoveryDelaySeconds % 512 !== 0) {
     const near = Math.round(covenantRecoveryDelaySeconds / 512) * 512;
-    throw new Error(
+    throw new ConfigError(
       `OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS must be a multiple of 512 (BIP68 encodes seconds in 512s units); got ${covenantRecoveryDelaySeconds}, nearest is ${near}`,
     );
   }
@@ -267,6 +269,6 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
 function parseTrustProxy(raw: string | undefined): number | boolean {
   if (raw === undefined || raw === "") return 1;
   if (raw === "false") return false;
-  if (!/^\d+$/.test(raw)) throw new Error("TRUST_PROXY must be false or a non-negative integer");
+  if (!/^\d+$/.test(raw)) throw new ConfigError("TRUST_PROXY must be false or a non-negative integer");
   return Number(raw);
 }

@@ -11,11 +11,11 @@ import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { createLnurlClient, LnurlError } from "@arkade-os/lnurl-client";
 import { LNURL_ARKADE_RAIL, LNURL_LIGHTNING_RAIL, lnurlRails } from "@arkade-os/lnurl-client/arkade";
-import { createServer } from "../../../src/server.js";
+import { createServer } from "../../../src/http/server.js";
 import { openDb, type Db } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../../../src/db/repositories/index.js";
-import { AddressService } from "../../../src/address-service.js";
+import { AddressService } from "../../../src/services/addresses.js";
 import { RateLimiter } from "../../../src/rate-limit.js";
 import type { ArkadeSigner } from "@arkade-os/lnurl-client/arkade";
 import { claimOrAdopt, receiverAt } from "../src/lnurl.js";
@@ -51,7 +51,7 @@ let server: http.Server;
 let baseUrl: string;
 
 /** The server builds payRequest callbacks and LNURLs from the registered domain
- *  with no port, because a real LUD-16 address lives on 443 (src/server.ts). The
+ *  with no port, because a real LUD-16 address lives on 443 (src/http/server.ts). The
  *  test server is http on an ephemeral port, so every such URL is redirected
  *  back to it — the only hop faked anywhere in this file. */
 const toTestUrl = (u: string) => u.replace(/^https?:\/\/127\.0\.0\.1(?!:\d)/, baseUrl);

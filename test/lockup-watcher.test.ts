@@ -3,11 +3,11 @@ import { ArkAddress, type IContractManager } from "@arkade-os/sdk";
 import { SWAP_LOCKUP_CONTRACT_TYPE } from "@arkade-os/swap";
 import { hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
-import { startLockupWatcher } from "../src/lockup-watcher.js";
-import { startOfflineSettlementPoller } from "../src/offline-poller.js";
+import { startLockupWatcher } from "../src/workers/lockup-watcher.js";
+import { startOfflineSettlementPoller } from "../src/workers/offline-poller.js";
 import { DbSettlementStore } from "../src/settlement-store.js";
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
-import type { OfflineSwapCreator } from "../src/intent-swap.js";
+import type { OfflineSwapCreator } from "../src/services/offline-swaps.js";
 import { openDb } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 

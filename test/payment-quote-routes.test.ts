@@ -1,15 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import http from "node:http";
-import { createServer, type ServerDeps } from "../src/server.js";
+import { createServer, type ServerDeps } from "../src/http/server.js";
 import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
-import { QuoteError, type QuoteProvider, type PaymentQuote } from "../src/quote-provider.js";
-import type { OfflineSwapCreator, OfflineSwapParams } from "../src/intent-swap.js";
-import { SessionManager } from "../src/session-manager.js";
-import { deriveSessionId } from "../src/session-id.js";
+import type { QuoteProvider, PaymentQuote } from "../src/quote-provider.js";
+import { QuoteError } from "../src/errors.js";
+import type { OfflineSwapCreator, OfflineSwapParams } from "../src/services/offline-swaps.js";
+import { SessionManager } from "../src/services/sessions.js";
+import { deriveSessionId } from "../src/session-token.js";
 import { buildInvoice } from "./helpers/bolt11.js";
-import type { LnurlServiceConfig } from "../src/types.js";
+import type { LnurlServiceConfig } from "../src/types/index.js";
 
 const CONFIG: LnurlServiceConfig = { port: 0, baseUrl: "", minSendable: 1000, maxSendable: 100_000_000, invoiceTimeoutMs: 3000 };
 const ARK = "ark1qexampledestination";
