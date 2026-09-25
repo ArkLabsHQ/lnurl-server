@@ -7,6 +7,8 @@ import { BadRequest, Conflict, NotFound, TooManyRequests, Unauthorized } from ".
 import { bearerToken } from "../params.js";
 import type { ServerContext } from "../server-context.js";
 
+const MAX_REJECT_REASON = 500;
+
 /** The wallet's side of an interactive session: the SSE stream and its two replies. */
 export function lnurlSessionRoutes({ config, sessions, store, settings }: ServerContext): Router {
   const r = Router();
@@ -57,9 +59,13 @@ export function lnurlSessionRoutes({ config, sessions, store, settings }: Server
     const token = bearerToken(req);
     if (!token || !sessions.verifyToken(id, token)) throw new Unauthorized();
 
-    const body = req.body as (InvoiceResponse & { error?: string }) | undefined;
+    const body = req.body as (InvoiceResponse & { error?: unknown }) | undefined;
 
     if (body?.error) {
+      // Relayed verbatim to the payer's wallet, so bounded like any other text we show.
+      if (typeof body.error !== "string" || body.error.length > MAX_REJECT_REASON) {
+        throw new BadRequest(`error must be a string of at most ${MAX_REJECT_REASON} characters`);
+      }
       if (!sessions.rejectInvoice(id, body.error)) throw new NotFound("No pending invoice request for this session");
       res.json({ ok: true });
       return;

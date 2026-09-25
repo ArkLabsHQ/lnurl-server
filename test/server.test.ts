@@ -421,6 +421,18 @@ describe("LNURL Service", () => {
       }
     });
 
+    it("should return 400 for a rejection reason that is not short text", async () => {
+      const session = await openSession(ctx.baseUrl);
+      try {
+        for (const error of ["x".repeat(501), 42, { nested: true }]) {
+          const res = await jsonRequest(`${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`, "POST", { error }, session.token);
+          expect(res.status, JSON.stringify(error).slice(0, 20)).toBe(400);
+        }
+      } finally {
+        session.abort();
+      }
+    });
+
     it("should return 400 when pr is missing", async () => {
       const session = await openSession(ctx.baseUrl);
       try {
