@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import type { IContractManager } from "@arkade-os/sdk";
 import { MemorySettlementStore } from "../src/settlement-store.js";
-import { startCovenantWatcher, catchUp } from "../src/covenant-watcher.js";
-import { COVENANT_CONTRACT_TYPE } from "../src/covenant-contract.js";
+import { startCovenantWatcher, catchUp } from "../src/workers/covenant-watcher.js";
+import { COVENANT_CONTRACT_TYPE } from "../src/covenant/contract.js";
 
 // Ported from the polled watcher: the properties are the rail's, not the mechanism's,
 // so they must hold the same way now that settlement arrives as an event.

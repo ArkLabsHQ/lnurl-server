@@ -3,9 +3,10 @@ import { randomBytes } from "node:crypto";
 import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
-import { AddressService, ProvisioningError, isNameless } from "../src/address-service.js";
-import { deriveSessionId } from "../src/session-id.js";
-import type { DomainRow } from "../src/db/types.js";
+import { AddressService, isNameless } from "../src/services/addresses.js";
+import { ProvisioningError } from "../src/errors.js";
+import { deriveSessionId } from "../src/session-token.js";
+import type { DomainRow } from "../src/types/index.js";
 
 const KEY = randomBytes(32);
 let db: Db; let repos: Repositories; let svc: AddressService; let domainId: number;

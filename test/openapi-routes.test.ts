@@ -4,15 +4,15 @@ import { randomBytes } from "node:crypto";
 import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
-import { AddressService } from "../src/address-service.js";
-import { SessionManager } from "../src/session-manager.js";
-import { SettingsService } from "../src/settings.js";
+import { AddressService } from "../src/services/addresses.js";
+import { SessionManager } from "../src/services/sessions.js";
+import { SettingsService } from "../src/services/settings.js";
 import { loadConfig } from "../src/config.js";
 import { DbSettlementStore } from "../src/settlement-store.js";
-import { createServer } from "../src/server.js";
-import { createAdminServer } from "../src/admin-server.js";
-import { openApiSpec } from "../src/openapi.js";
-import { adminOpenApiSpec } from "../src/admin-openapi.js";
+import { createServer } from "../src/http/server.js";
+import { createAdminServer } from "../src/http/admin-server.js";
+import { openApiSpec } from "../src/http/openapi.js";
+import { adminOpenApiSpec } from "../src/http/admin-openapi.js";
 
 /**
  * Endpoints that serve the specs/docs themselves and are deliberately absent from them:

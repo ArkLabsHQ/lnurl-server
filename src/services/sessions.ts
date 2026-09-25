@@ -1,0 +1,221 @@
+import { randomBytes } from "node:crypto";
+import type { Response } from "express";
+import type { Session, SessionEvent, SessionInfo } from "../types/index.js";
+import { InvoiceRequestError } from "../errors.js";
+import { deriveSessionId, newSessionToken, tokensEqual } from "../session-token.js";
+
+export class SessionManager {
+  private sessions = new Map<string, Session>();
+
+  canAccept(ip: string | undefined, maxSessions: number, maxPerIp: number, replacingToken?: string): boolean {
+    const replacing = replacingToken ? this.sessions.get(deriveSessionId(replacingToken)) : undefined;
+    const replacesExisting = Boolean(replacing && tokensEqual(replacing.token, replacingToken!));
+    if (this.sessions.size - (replacesExisting ? 1 : 0) >= maxSessions) return false;
+    let fromIp = 0;
+    // Intentionally O(n): MAX_SESSIONS bounds this scan (5,000 by default).
+    // Add per-IP counters only if production profiling shows this is material.
+    for (const session of this.sessions.values()) if (session.ip === ip && session !== replacing) fromIp++;
+    return fromIp < maxPerIp;
+  }
+
+  /** Create a new session and wire up the SSE response.
+   *  When `providedToken` is supplied the sessionId is derived from it
+   *  deterministically, so reconnecting produces the same LNURL.
+   *  `ip` is the client address (post-`trust proxy`) recorded for admin visibility. */
+  create(sseRes: Response, providedToken?: string, ip?: string): Session | null {
+    const token = providedToken || newSessionToken();
+    const id = providedToken
+      ? deriveSessionId(providedToken)
+      : randomBytes(16).toString("hex");
+
+    const existing = this.sessions.get(id);
+    if (existing) {
+      if (!tokensEqual(existing.token, token)) return null;
+      this.destroy(id);
+    }
+
+    const session: Session = {
+      id,
+      token,
+      createdAt: Date.now(),
+      ip,
+      reusable: !!providedToken,
+      invoicesIssued: 0,
+      sseRes,
+      pendingInvoice: null,
+    };
+
+    this.sessions.set(id, session);
+
+    // Clean up on disconnect
+    sseRes.on("close", () => {
+      this.destroy(id);
+    });
+
+    return session;
+  }
+
+  get(id: string): Session | undefined {
+    return this.sessions.get(id);
+  }
+
+  /** Check if a session is still active (SSE connected) */
+  isActive(id: string): boolean {
+    return this.sessions.has(id);
+  }
+
+  /** Verify the auth token for a session (constant-time). */
+  verifyToken(id: string, token: string): boolean {
+    const session = this.sessions.get(id);
+    return !!session && tokensEqual(session.token, token);
+  }
+
+  /** True iff a session already exists for this token's derived id but with a different
+   *  token. Checked before committing the SSE 200 so a collision returns a clean 409
+   *  rather than an in-stream error. (A real collision is a SHA-256 break — unreachable.) */
+  peekCollision(token: string): boolean {
+    const existing = this.sessions.get(deriveSessionId(token));
+    return !!existing && !tokensEqual(existing.token, token);
+  }
+
+  /** Send an SSE event to the wallet */
+  sendEvent(id: string, event: SessionEvent): boolean {
+    const session = this.sessions.get(id);
+    if (!session) return false;
+
+    const { sseRes } = session;
+    sseRes.write(`event: ${event.type}\n`);
+    sseRes.write(`data: ${JSON.stringify(event.data)}\n\n`);
+    return true;
+  }
+
+  /**
+   * Request an invoice from the wallet and wait for it.
+   * Returns a promise that resolves with the bolt11 string,
+   * or rejects on timeout / session disconnect.
+   */
+  requestInvoice(
+    id: string,
+    amountMsat: number,
+    comment: string | undefined,
+    timeoutMs: number,
+  ): Promise<string> {
+    const session = this.sessions.get(id);
+    if (!session) {
+      return Promise.reject(new InvoiceRequestError("Session not found"));
+    }
+    if (session.pendingInvoice) {
+      return Promise.reject(
+        new InvoiceRequestError("Another invoice request is already pending"),
+      );
+    }
+
+    return new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        session.pendingInvoice = null;
+        reject(new InvoiceRequestError("Invoice request timed out"));
+      }, timeoutMs);
+
+      session.pendingInvoice = {
+        amountMsat,
+        comment,
+        since: Date.now(),
+        resolve: (pr: string) => {
+          clearTimeout(timer);
+          session.pendingInvoice = null;
+          session.invoicesIssued += 1;
+          session.lastInvoiceAt = Date.now();
+          resolve(pr);
+        },
+        reject: (err: Error) => {
+          clearTimeout(timer);
+          session.pendingInvoice = null;
+          reject(err);
+        },
+      };
+
+      // Notify wallet via SSE
+      this.sendEvent(id, {
+        type: "invoice_request",
+        data: { amountMsat, comment },
+      });
+    });
+  }
+
+  /** Wallet provides the bolt11 — resolves the pending payer request */
+  resolveInvoice(id: string, pr: string): boolean {
+    const session = this.sessions.get(id);
+    if (!session?.pendingInvoice) return false;
+    session.pendingInvoice.resolve(pr);
+    return true;
+  }
+
+  /** Wallet rejects the invoice request — fails the pending payer request */
+  rejectInvoice(id: string, reason: string): boolean {
+    const session = this.sessions.get(id);
+    if (!session?.pendingInvoice) return false;
+    session.pendingInvoice.reject(new InvoiceRequestError(reason));
+    return true;
+  }
+
+  /** Destroy a session and reject any pending invoice request */
+  destroy(id: string): void {
+    const session = this.sessions.get(id);
+    if (!session) return;
+
+    if (session.pendingInvoice) {
+      session.pendingInvoice.reject(new InvoiceRequestError("Session closed"));
+    }
+
+    this.sessions.delete(id);
+  }
+
+  /** Admin-initiated close: notify the wallet, end its SSE stream, and drop the session.
+   *  Returns false if no such session is live. */
+  disconnect(id: string): boolean {
+    const session = this.sessions.get(id);
+    if (!session) return false;
+    // Best-effort heads-up to the wallet before we tear down (socket may already be dead).
+    try {
+      this.sendEvent(id, { type: "error", data: { error: "Session closed by admin" } });
+    } catch {
+      /* socket already gone */
+    }
+    this.destroy(id);
+    try {
+      session.sseRes.end();
+    } catch {
+      /* already closed */
+    }
+    return true;
+  }
+
+  /** All currently-connected session ids. */
+  activeSessionIds(): string[] {
+    return Array.from(this.sessions.keys());
+  }
+
+  /** Safe snapshot of every live session for the admin API (no tokens, no sockets). */
+  listSessions(): SessionInfo[] {
+    return Array.from(this.sessions.values()).map((s) => ({
+      id: s.id,
+      createdAt: s.createdAt,
+      ip: s.ip,
+      reusable: s.reusable,
+      invoicesIssued: s.invoicesIssued,
+      lastInvoiceAt: s.lastInvoiceAt,
+      pending: s.pendingInvoice
+        ? { amountMsat: s.pendingInvoice.amountMsat, comment: s.pendingInvoice.comment, since: s.pendingInvoice.since }
+        : null,
+    }));
+  }
+
+  shutdown(reason: string): void {
+    for (const id of this.activeSessionIds()) {
+      const session = this.sessions.get(id)!;
+      try { this.sendEvent(id, { type: "error", data: { error: `Service shutting down: ${reason}` } }); } catch {}
+      this.destroy(id);
+      try { session.sseRes.end(); } catch {}
+    }
+  }
+}

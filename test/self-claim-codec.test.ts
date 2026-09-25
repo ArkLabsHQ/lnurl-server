@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { receiveVtxoScript, unilateralClaimDelay } from "@arkade-os/swap";
-import { deserializeSelfClaim, serializeSelfClaim } from "../src/self-claim-codec.js";
+import { deserializeSelfClaim, serializeSelfClaim } from "../src/covenant/self-claim-codec.js";
 
 describe("self-claim recovery codec", () => {
   it("round-trips the exact VHTLC v2 script", () => {

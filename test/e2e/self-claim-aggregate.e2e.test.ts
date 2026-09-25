@@ -22,7 +22,7 @@ import {
   type NetworkName,
 } from "@arkade-os/sdk";
 import { paymentHashOf, receiveVtxoScript, unilateralClaimDelay } from "@arkade-os/swap";
-import { createSelfClaimer } from "../../src/self-claim.js";
+import { createSelfClaimer } from "../../src/covenant/self-claim.js";
 import { ensureStack, pollUntil, mine, faucet, nodeSqliteStorage, ARKD_URL, EMULATOR_URL } from "./support/regtest.js";
 
 const FIRST_SATS = 2_000;

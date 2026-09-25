@@ -17,20 +17,20 @@ import { hex } from "@scure/base";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { MnemonicIdentity, Wallet, RestIndexerProvider, ArkAddress, ContractManager, contractHandlers, type IContractManager } from "@arkade-os/sdk";
-import { createServer } from "../../src/server.js";
+import { createServer } from "../../src/http/server.js";
 import { openDb, type Db } from "../../src/db/connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
 import { bootstrap } from "../../src/bootstrap.js";
 import { createRepositories } from "../../src/db/repositories/index.js";
-import { AddressService } from "../../src/address-service.js";
+import { AddressService } from "../../src/services/addresses.js";
 import { DbSettlementStore } from "../../src/settlement-store.js";
-import { staticSettings } from "../../src/settings.js";
-import { createCovenantDestinationProvider } from "../../src/covenant-destination.js";
-import { covenantDestinationHandler, COVENANT_CONTRACT_TYPE } from "../../src/covenant-contract.js";
+import { staticSettings } from "../../src/services/settings.js";
+import { createCovenantDestinationProvider } from "../../src/covenant/destination.js";
+import { covenantDestinationHandler, COVENANT_CONTRACT_TYPE } from "../../src/covenant/contract.js";
 import { sqliteContractStores } from "../../src/contract-store.js";
 import { loadConfig } from "../../src/config.js";
-import { createCovenantSweeper, startCovenantSweeper } from "../../src/covenant-sweeper.js";
-import { startCovenantWatcher } from "../../src/covenant-watcher.js";
+import { createCovenantSweeper, startCovenantSweeper } from "../../src/workers/covenant-sweeper.js";
+import { startCovenantWatcher } from "../../src/workers/covenant-watcher.js";
 import { ensureStack, pollUntil, mine, faucet, nodeSqliteStorage, ARKD_URL, COVCLAIMD_URL } from "./support/regtest.js";
 
 const AMOUNT_SATS = 3000;
@@ -100,7 +100,7 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
   let baseUrl: string;
   let payer: Wallet;
   let stopWatcher: () => void;
-  let sweeper: import("../../src/covenant-sweeper.js").CovenantSweeperHandle;
+  let sweeper: import("../../src/workers/covenant-sweeper.js").CovenantSweeperHandle;
   let receiver: { arkadeAddress: string; claimPublicKey: string };
   const token = randomBytes(32).toString("hex");
 

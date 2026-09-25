@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import http from "node:http";
-import { checkEmulatorPairing } from "../src/self-claim.js";
+import { checkEmulatorPairing } from "../src/covenant/self-claim.js";
 
 const EMULATOR_KEY = "02999413c46fa10ada5cbc4bcc79a1d09160c2ba3cfc812705d7a13e5e545fb2a9";
 const OTHER_KEY = "03aa11787d87ee1d23ff47b61456d0159572abf1ae6f43ec816a9d605199b0b49";

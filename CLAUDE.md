@@ -59,19 +59,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/):
 
 ## Architecture
 
-- `src/server.ts` — Express app with SSE session endpoints and LNURL-pay protocol
-- `src/session-manager.ts` — Session lifecycle, SSE streaming, invoice request/response flow
-- `src/types.ts` — Shared TypeScript types
+- Layout: `src/http/` (Express apps, routes, HTTP errors), `src/services/` (domain logic routes call), `src/workers/` (background loops), `src/covenant/` (covenant scripts, claim packets, self-claim); cross-cutting modules stay in `src/`
+- `src/http/server.ts` — Composes the public Express app: middleware, `ServerContext` (`src/http/server-context.ts`), routers, error handlers
+- `src/http/routes/` — Routers only, one file per URL group: `lnurl-session` (wallet SSE), `lnurl-pay` (LUD-06/21 for a session), `well-known` (LUD-16), `lnurl-address` (owner REST), `verify-batch` (LUD-XX verifyBatch), `health`, `docs`, and `admin/` (mounted by `src/http/admin-server.ts`). Shared logic lives outside: `src/services/pay-flow.ts`, `src/services/reconcile.ts`, `src/http/params.ts`
+- `src/errors.ts` — Domain errors, each with a `kind`; none knows HTTP
+- `src/http/errors.ts` — HTTP errors (`LnurlError` → LUD-06 body; `BadRequest`/`NotFound`/… → `{ error }`), the exhaustive domain `kind` → status map, and the handlers that answer both
+- `src/services/sessions.ts` — Session lifecycle, SSE streaming, invoice request/response flow
+- `src/types/` — Shared TypeScript types by topic (config, session, lnurl, db) behind `index.ts`
 - `src/cli.ts` — CLI entrypoint reading config from env vars
-- `src/intent-swap.ts` — Offline receive: card-discovered `lightning:BTC -> arkade:BTC` corridor swaps via the published `@arkade-os/swap` package (`SOLVER_REGISTRY_URLS` / `SOLVER_CARDS_FILE`, plus `COVCLAIMD_URL` + `ARK_SERVER_URL`)
-- `src/self-claim.ts` — Optional server-side lockup claim (`OFFLINE_SELF_CLAIM` + `OFFLINE_EMULATOR_URL`): pushes the covenant's `nonInteractiveClaim` leaf — operator + emulator signatures, gated on the preimage we hold — so covclaimd isn't a single point of failure. Needs no key; the covenant pins the payout to the user. Never the collaborative `claim` leaf, which has no output constraint
-- `src/covenant-destination.ts` + `src/covenant-sweeper.ts` — Per-payment arkade-rail addresses (`OFFLINE_COVENANT_DESTINATIONS`): three leaves (covenant sweep pinned to the user's static address, user+operator, user-alone CSV), so the script identifies the payment instead of amount/arrival guesswork. Every leaf must be a valid vtxo script — arkd rejects a taptree containing anything else, which is why the per-payment nonce rides in the condition
-- `src/arkade-watcher.ts` — Static-address destination-rail watcher: those payments land at an address the server does not control, so amount/window correlation is all there is. Covenant destinations do not come through here
-- `src/covenant-contract.ts` + `src/contract-store.ts` — The covenant as an SDK contract type. Registering a `ContractHandler` is what lets `ContractManager` track, watch and spend it, so the subscription, the one-shot `awaiting-funds` lifecycle and leaf selection are the SDK's rather than ours
-- `src/covenant-watcher.ts` — Settlement for covenant destinations, from contract events. Nothing polls; a catch-up pass at subscribe time covers payments made while the process was down
+- `src/services/offline-swaps.ts` — Offline receive: card-discovered `lightning:BTC -> arkade:BTC` corridor swaps via the published `@arkade-os/swap` package (`SOLVER_REGISTRY_URLS` / `SOLVER_CARDS_FILE`, plus `COVCLAIMD_URL` + `ARK_SERVER_URL`)
+- `src/covenant/self-claim.ts` — Optional server-side lockup claim (`OFFLINE_SELF_CLAIM` + `OFFLINE_EMULATOR_URL`): pushes the covenant's `nonInteractiveClaim` leaf — operator + emulator signatures, gated on the preimage we hold — so covclaimd isn't a single point of failure. Needs no key; the covenant pins the payout to the user. Never the collaborative `claim` leaf, which has no output constraint
+- `src/covenant/destination.ts` + `src/workers/covenant-sweeper.ts` — Per-payment arkade-rail addresses (`OFFLINE_COVENANT_DESTINATIONS`): three leaves (covenant sweep pinned to the user's static address, user+operator, user-alone CSV), so the script identifies the payment instead of amount/arrival guesswork. Every leaf must be a valid vtxo script — arkd rejects a taptree containing anything else, which is why the per-payment nonce rides in the condition
+- `src/workers/arkade-watcher.ts` — Static-address destination-rail watcher: those payments land at an address the server does not control, so amount/window correlation is all there is. Covenant destinations do not come through here
+- `src/covenant/contract.ts` + `src/contract-store.ts` — The covenant as an SDK contract type. Registering a `ContractHandler` is what lets `ContractManager` track, watch and spend it, so the subscription, the one-shot `awaiting-funds` lifecycle and leaf selection are the SDK's rather than ours
+- `src/workers/covenant-watcher.ts` — Settlement for covenant destinations, from contract events. Nothing polls; a catch-up pass at subscribe time covers payments made while the process was down
 - `src/payment-options.ts` — LUD-XX paymentOptions rail registry (advertise + resolve)
 - `src/quote-provider.ts` — LUD-XX paymentQuote framework (injected rate oracle seam)
-- `src/settlement-store.ts` + `src/offline-poller.ts` — LUD-21 settlement records (memory/SQLite) and the offline-swap status poller
+- `src/settlement-store.ts` + `src/workers/offline-poller.ts` — LUD-21 settlement records (memory/SQLite) and the offline-swap status poller
 - `scripts/probe-solver.ts` — live solver quote probe (operator diagnostic; funds nothing)
 - `scripts/probe-covenant.ts` — the same for the covenant rail: derives a destination from a network's real operator + emulator keys, so a config that would silently fall back to the static address fails here instead of on a payer's money
 - `scripts/inspect-funding.ts` — why a funded lockup never claimed: reports the claim packet and output taptree covclaimd needs, both of which it declines at debug level

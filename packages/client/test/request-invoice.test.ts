@@ -33,6 +33,13 @@ describe("requestInvoice", () => {
     await expect(requestInvoice(addressPr, { amountSat: 999999999 }, fetchImpl as never)).rejects.toBeInstanceOf(LnurlError);
   });
 
+  it("refuses a fraction of a millisat before hitting the network", async () => {
+    const fetchImpl = async () => { throw new Error("must not be called"); };
+    await expect(requestInvoice(addressPr, { amountSat: 1.0001 }, fetchImpl as never)).rejects.toThrow(
+      "Amount must be a whole number of millisats",
+    );
+  });
+
   it("omits an empty comment rather than sending one a payRequest forbids", async () => {
     let seen = "";
     const fetchImpl = async (url: string) => {

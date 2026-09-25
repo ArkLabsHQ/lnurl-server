@@ -1,5 +1,5 @@
 import type { Db } from "../connection.js";
-import type { SolverCardRow } from "../types.js";
+import type { SolverCardRow } from "../../types/index.js";
 
 interface Row {
   id: number;
