@@ -135,6 +135,26 @@ describe("startLockupWatcher", () => {
     db.close();
   });
 
+  it("cancels pending spend rechecks when unsubscribed", () => {
+    vi.useFakeTimers();
+    const lockup = address();
+    const { db, swaps } = storeWith([lockup]);
+    try {
+      const { manager, push } = fakeManager();
+      const trigger = vi.fn();
+      const stop = startLockupWatcher(manager, swaps, trigger);
+      push("vtxo_spent", scriptOf(lockup));
+      expect(trigger).toHaveBeenCalledTimes(1);
+
+      stop();
+      vi.advanceTimersByTime(3000);
+      expect(trigger).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      db.close();
+    }
+  });
+
   it("still matches other swaps when one row carries an address it cannot decode", () => {
     const lockup = address();
     const { db, swaps } = storeWith([lockup]);

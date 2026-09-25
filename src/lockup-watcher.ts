@@ -38,7 +38,8 @@ export function startLockupWatcher(
   trigger: () => void,
   logger: Logger = createLogger(),
 ): () => void {
-  return contracts.onContractEvent((event) => {
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+  const unsubscribe = contracts.onContractEvent((event) => {
     const spent = event.type === "vtxo_spent";
     if ((event.type !== "vtxo_received" && !spent) || !isContractVtxoEvent(event) || event.contract.type !== SWAP_LOCKUP_CONTRACT_TYPE) return;
     try {
@@ -50,6 +51,18 @@ export function startLockupWatcher(
     }
     logger.info(spent ? "offline_lockup_spent" : "offline_lockup_funded", { script: event.contractScript });
     trigger();
-    if (spent) for (const ms of SPENT_RECHECK_MS) setTimeout(trigger, ms).unref?.();
+    if (spent) for (const ms of SPENT_RECHECK_MS) {
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        trigger();
+      }, ms);
+      timer.unref?.();
+      timers.add(timer);
+    }
   });
+  return () => {
+    unsubscribe();
+    for (const timer of timers) clearTimeout(timer);
+    timers.clear();
+  };
 }
