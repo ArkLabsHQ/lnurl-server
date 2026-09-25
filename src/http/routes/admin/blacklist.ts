@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { BadRequest } from "../../errors.js";
 import type { AdminDeps } from "../../admin-context.js";
+import { idParam } from "../../params.js";
 
 export function adminBlacklistRoutes({ repos }: AdminDeps): Router {
   const r = Router();
@@ -12,6 +13,6 @@ export function adminBlacklistRoutes({ repos }: AdminDeps): Router {
     if (!username) throw new BadRequest("username required");
     res.status(201).json(repos.blacklist.add({ domainId: domainId ?? null, username, reason }));
   });
-  r.delete("/blacklist/:id", (req, res) => { repos.blacklist.remove(Number(req.params.id)); res.json({ ok: true }); });
+  r.delete("/blacklist/:id", (req, res) => { repos.blacklist.remove(idParam(req.params.id)); res.json({ ok: true }); });
   return r;
 }

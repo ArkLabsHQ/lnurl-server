@@ -1,5 +1,6 @@
 import { Router } from "express";
 import type { AdminDeps } from "../../admin-context.js";
+import { idParam } from "../../params.js";
 
 export function adminApiKeyRoutes({ repos }: AdminDeps): Router {
   const r = Router();
@@ -9,6 +10,6 @@ export function adminApiKeyRoutes({ repos }: AdminDeps): Router {
     const { raw, row } = repos.apiKeys.create({ label, domainId: domainId ?? null });
     res.status(201).json({ ...row, key: raw });
   });
-  r.delete("/api-keys/:id", (req, res) => { repos.apiKeys.revoke(Number(req.params.id)); res.json({ ok: true }); });
+  r.delete("/api-keys/:id", (req, res) => { repos.apiKeys.revoke(idParam(req.params.id)); res.json({ ok: true }); });
   return r;
 }

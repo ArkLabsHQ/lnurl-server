@@ -2,6 +2,7 @@ import { Router } from "express";
 import { BadRequest, HttpError, NotFound, NotImplemented } from "../../errors.js";
 import { RECONCILE_MAX, reconcileAddresses } from "../../../services/reconcile.js";
 import type { AdminDeps } from "../../admin-context.js";
+import { idParam } from "../../params.js";
 
 /** @see reconcileAddresses */
 export function adminReconcileRoutes({ repos, indexer, settlements }: AdminDeps): Router {
@@ -38,7 +39,7 @@ export function adminReconcileRoutes({ repos, indexer, settlements }: AdminDeps)
 
   r.get("/addresses/:id/reconcile", async (req, res) => {
     const source = requireIndexer();
-    const address = repos.addresses.getById(Number(req.params.id));
+    const address = repos.addresses.getById(idParam(req.params.id));
     if (!address) throw new NotFound("address not found");
     const [result] = await reconcileAddresses(source, settlements, [{ id: address.id, arkadeAddress: address.arkadeAddress ?? null }]);
     if (result!.error) throw new HttpError(String(result!.error).includes("indexer") ? 502 : 400, String(result!.error));

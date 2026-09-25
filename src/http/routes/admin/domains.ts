@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { BadRequest, NotFound } from "../../errors.js";
 import type { AdminDeps } from "../../admin-context.js";
+import { idParam } from "../../params.js";
 
 const VALID_ALLOCATION_MODES = new Set(["self", "random", "admin", "session"]);
 
@@ -17,7 +18,7 @@ export function adminDomainRoutes({ repos }: AdminDeps): Router {
     res.status(201).json(repos.domains.create(b));
   });
   r.patch("/domains/:id", (req, res) => {
-    const id = Number(req.params.id);
+    const id = idParam(req.params.id);
     if (!repos.domains.getById(id)) throw new NotFound("domain not found");
     const body = req.body ?? {};
     if (body.allocationModes !== undefined && !isValidAllocationModes(body.allocationModes)) {
@@ -26,6 +27,6 @@ export function adminDomainRoutes({ repos }: AdminDeps): Router {
     repos.domains.update(id, body);
     res.json(repos.domains.getById(id));
   });
-  r.delete("/domains/:id", (req, res) => { repos.domains.delete(Number(req.params.id)); res.json({ ok: true }); });
+  r.delete("/domains/:id", (req, res) => { repos.domains.delete(idParam(req.params.id)); res.json({ ok: true }); });
   return r;
 }

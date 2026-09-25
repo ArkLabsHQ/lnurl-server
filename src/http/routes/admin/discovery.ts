@@ -3,6 +3,7 @@ import { validateCard } from "@arkade-os/solver-discovery";
 import { describeServerRails } from "../../../rails.js";
 import { BadRequest, NotFound, ServiceUnavailable } from "../../errors.js";
 import { adminRailCaps, type AdminDeps } from "../../admin-context.js";
+import { idParam } from "../../params.js";
 
 /** Rails, solver discovery, and the solver cards discovery reads. */
 export function adminDiscoveryRoutes(deps: AdminDeps): Router {
@@ -59,7 +60,7 @@ export function adminDiscoveryRoutes(deps: AdminDeps): Router {
     res.status(202).json({ persisted: true, active, card: cardResponse(row) });
   });
   r.put("/solver-cards/:id", async (req, res) => {
-    const id = Number(req.params.id);
+    const id = idParam(req.params.id);
     if (!repos.solverCards.get(id)) throw new NotFound("solver card not found");
     const row = repos.solverCards.replace(id, cardInput(req.body))!;
     res.status(202).json({ persisted: true, active: await refreshDiscovery(row.id), card: cardResponse(row) });
@@ -67,13 +68,13 @@ export function adminDiscoveryRoutes(deps: AdminDeps): Router {
   r.patch("/solver-cards/:id", async (req, res) => {
     const enabled = (req.body ?? {}).enabled;
     if (typeof enabled !== "boolean") throw new BadRequest("enabled must be boolean");
-    const row = repos.solverCards.setEnabled(Number(req.params.id), enabled);
+    const row = repos.solverCards.setEnabled(idParam(req.params.id), enabled);
     if (!row) throw new NotFound("solver card not found");
     const active = await refreshDiscovery(enabled ? row.id : undefined);
     res.status(202).json({ persisted: true, active: enabled && active, card: cardResponse(row) });
   });
   r.delete("/solver-cards/:id", async (req, res) => {
-    if (!repos.solverCards.delete(Number(req.params.id))) throw new NotFound("solver card not found");
+    if (!repos.solverCards.delete(idParam(req.params.id))) throw new NotFound("solver card not found");
     res.status(202).json({ persisted: false, active: await refreshDiscovery() });
   });
 

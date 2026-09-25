@@ -3,6 +3,7 @@ import type { AddressStatus } from "../../../types/index.js";
 import { effectiveRails } from "../../../rails.js";
 import { BadRequest, NotFound } from "../../errors.js";
 import { adminRailCaps, type AdminDeps } from "../../admin-context.js";
+import { idParam } from "../../params.js";
 
 export function adminAddressRoutes(deps: AdminDeps): Router {
   const { repos, addressService, sessions } = deps;
@@ -42,11 +43,13 @@ export function adminAddressRoutes(deps: AdminDeps): Router {
   r.patch("/addresses/:id", (req, res) => {
     const status = (req.body ?? {}).status as AddressStatus | undefined;
     if (status !== "active" && status !== "revoked") throw new BadRequest("status must be active or revoked");
-    repos.addresses.updateStatus(Number(req.params.id), status);
+    const id = idParam(req.params.id);
+    if (!repos.addresses.getById(id)) throw new NotFound("address not found");
+    repos.addresses.updateStatus(id, status);
     res.json({ ok: true });
   });
   r.patch("/addresses/:id/rails", (req, res) => {
-    const id = Number(req.params.id);
+    const id = idParam(req.params.id);
     if (!repos.addresses.getById(id)) throw new NotFound("address not found");
     addressService.setRailPolicy(id, (req.body ?? {}).disabledRails);
     const updated = repos.addresses.getById(id)!;
@@ -56,7 +59,7 @@ export function adminAddressRoutes(deps: AdminDeps): Router {
       rails: effectiveRails({ arkadeAddress: updated.arkadeAddress, claimPublicKey: updated.claimPublicKey, boardingAddress: updated.boardingAddress, disabledRails: updated.disabledRails }, adminRailCaps(deps)),
     });
   });
-  r.delete("/addresses/:id", (req, res) => { repos.addresses.delete(Number(req.params.id)); res.json({ ok: true }); });
+  r.delete("/addresses/:id", (req, res) => { repos.addresses.delete(idParam(req.params.id)); res.json({ ok: true }); });
 
   return r;
 }
