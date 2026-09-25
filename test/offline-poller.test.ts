@@ -209,6 +209,49 @@ describe("startOfflineSettlementPoller", () => {
     poller.stop();
   });
 
+  it("claims the funded swap while a different catch-up row is waiting on the solver", async () => {
+    const store = pendingStore();
+    store.create({ paymentHash: "bb", pr: "lnbc2", sessionId: "offline:2", preimage: "feed", swapId: "swap-2" });
+    let releaseFirst!: () => void;
+    const first = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const entered = vi.fn();
+    const creator: OfflineSwapCreator = {
+      create: async () => { throw new Error("not used"); },
+      isSettled: async (swapId) => {
+        if (swapId === "swap-1") { entered(); await first; return false; }
+        return true;
+      },
+    };
+
+    const poller = startOfflineSettlementPoller(store, creator, 15_000);
+    try {
+      await vi.waitFor(() => expect(entered).toHaveBeenCalledOnce());
+      poller.trigger("swap-2");
+      await vi.waitFor(() => expect(store.get("bb")!.settled).toBe(true));
+      expect(store.get("aa")!.settled).toBe(false);
+    } finally {
+      releaseFirst();
+      poller.stop();
+    }
+  });
+
+  it("retries a funding event after the same swap's in-flight check finishes", async () => {
+    const store = pendingStore();
+    const { creator, gates, release } = gatedCreator();
+    const isSettled = vi.spyOn(creator, "isSettled");
+    const poller = startOfflineSettlementPoller(store, creator, 15_000);
+    try {
+      await vi.waitFor(() => expect(gates).toHaveLength(1));
+      poller.trigger("swap-1");
+      expect(isSettled).toHaveBeenCalledTimes(1);
+      gates.shift()!();
+      await vi.waitFor(() => expect(isSettled).toHaveBeenCalledTimes(2));
+    } finally {
+      release();
+      poller.stop();
+    }
+  });
+
   // Two concurrent passes would each see an unspent lockup and push the same claim.
   it("never runs two passes at once", async () => {
     const store = pendingStore();

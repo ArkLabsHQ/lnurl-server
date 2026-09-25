@@ -12,11 +12,14 @@ import type { OfflineSwapStore } from "../offline-swap-store.js";
 import { createLogger, type Logger } from "../logger.js";
 
 /** Pending lockups keyed the way contract rows and events are: by pkScript hex. */
-function pendingScripts(swaps: OfflineSwapStore): Set<string> {
-  const scripts = new Set<string>();
+function pendingScripts(swaps: OfflineSwapStore): Map<string, string[]> {
+  const scripts = new Map<string, string[]>();
   for (const row of swaps.listPending()) {
     try {
-      scripts.add(hex.encode(ArkAddress.decode(row.recovery.lockupAddress).pkScript));
+      const script = hex.encode(ArkAddress.decode(row.recovery.lockupAddress).pkScript);
+      const ids = scripts.get(script) ?? [];
+      ids.push(row.recovery.rfqId);
+      scripts.set(script, ids);
     } catch {
       // Only costs this row its fast path; the poller still claims it by script.
     }
@@ -35,26 +38,28 @@ const SPENT_RECHECK_MS = [1000, 3000];
 export function startLockupWatcher(
   contracts: IContractManager,
   swaps: OfflineSwapStore,
-  trigger: () => void,
+  trigger: (swapId: string) => void,
   logger: Logger = createLogger(),
 ): () => void {
   const timers = new Set<ReturnType<typeof setTimeout>>();
   const unsubscribe = contracts.onContractEvent((event) => {
     const spent = event.type === "vtxo_spent";
     if ((event.type !== "vtxo_received" && !spent) || !isContractVtxoEvent(event) || event.contract.type !== SWAP_LOCKUP_CONTRACT_TYPE) return;
+    let swapIds: string[] | undefined;
     try {
-      if (!pendingScripts(swaps).has(event.contractScript)) return;
+      swapIds = pendingScripts(swaps).get(event.contractScript);
+      if (!swapIds) return;
     } catch (error) {
       // Throwing here would drop the event for every swap, and the SDK would only log it.
       logger.warn("offline_lockup_match_failed", { script: event.contractScript, error });
       return;
     }
-    logger.info(spent ? "offline_lockup_spent" : "offline_lockup_funded", { script: event.contractScript });
-    trigger();
+    logger.info(spent ? "offline_lockup_spent" : "offline_lockup_funded", { script: event.contractScript, swapRefs: swapIds.map((id) => id.slice(0, 12)) });
+    for (const swapId of swapIds) trigger(swapId);
     if (spent) for (const ms of SPENT_RECHECK_MS) {
       const timer = setTimeout(() => {
         timers.delete(timer);
-        trigger();
+        for (const swapId of swapIds) trigger(swapId);
       }, ms);
       timer.unref?.();
       timers.add(timer);
