@@ -24,8 +24,11 @@ function pendingScripts(swaps: OfflineSwapStore): Set<string> {
   return scripts;
 }
 
+/** After a claim, the solver settles a moment later; re-asking beats waiting out the catch-up. */
+const SPENT_RECHECK_MS = [1000, 3000];
+
 /**
- * Subscribe for solver funding of a pending swap's lockup, calling `trigger` — a
+ * Subscribe for solver funding or claim of a pending swap's lockup, calling `trigger` — a
  * settlement pass — as soon as one lands. Returns an unsubscribe function. The poller
  * stays the net under a subscription that drops or never starts: faster, not instead.
  */
@@ -36,7 +39,8 @@ export function startLockupWatcher(
   logger: Logger = createLogger(),
 ): () => void {
   return contracts.onContractEvent((event) => {
-    if (event.type !== "vtxo_received" || !isContractVtxoEvent(event) || event.contract.type !== SWAP_LOCKUP_CONTRACT_TYPE) return;
+    const spent = event.type === "vtxo_spent";
+    if ((event.type !== "vtxo_received" && !spent) || !isContractVtxoEvent(event) || event.contract.type !== SWAP_LOCKUP_CONTRACT_TYPE) return;
     try {
       if (!pendingScripts(swaps).has(event.contractScript)) return;
     } catch (error) {
@@ -44,7 +48,8 @@ export function startLockupWatcher(
       logger.warn("offline_lockup_match_failed", { script: event.contractScript, error });
       return;
     }
-    logger.info("offline_lockup_funded", { script: event.contractScript });
+    logger.info(spent ? "offline_lockup_spent" : "offline_lockup_funded", { script: event.contractScript });
     trigger();
+    if (spent) for (const ms of SPENT_RECHECK_MS) setTimeout(trigger, ms).unref?.();
   });
 }
