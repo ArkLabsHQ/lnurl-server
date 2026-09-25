@@ -62,6 +62,7 @@ describe("startLockupWatcher", () => {
     push("vtxo_received", scriptOf(lockup));
 
     expect(trigger).toHaveBeenCalledTimes(1);
+    expect(trigger).toHaveBeenCalledWith("00".repeat(32));
     db.close();
   });
 

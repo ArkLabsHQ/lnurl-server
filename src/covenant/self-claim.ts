@@ -25,6 +25,7 @@ import {
 } from "@arkade-os/sdk";
 import { LOCKTIME_THRESHOLD } from "@arkade-os/swap";
 import { UpstreamError } from "../errors.js";
+import { createLogger, type Logger } from "../logger.js";
 
 export interface SelfClaimRegistration {
   swapId: string;
@@ -100,10 +101,12 @@ export function createSelfClaimer(opts: {
   arkProvider?: ArkProvider;
   indexer?: IndexerProvider;
   emulator?: EmulatorSubmit;
+  logger?: Logger;
 }): SelfClaimer {
   const arkProvider = opts.arkProvider ?? new RestArkProvider(opts.arkServerUrl);
   const indexer = opts.indexer ?? new RestIndexerProvider(opts.arkServerUrl);
   const emulator = opts.emulator ?? new RestEmulatorProvider(opts.emulatorUrl);
+  const logger = opts.logger ?? createLogger();
   const registry = new Map<string, SelfClaimRegistration>();
 
   return {
@@ -112,6 +115,7 @@ export function createSelfClaimer(opts: {
     },
 
     async claim(swapId, preimage) {
+      const started = performance.now();
       const reg = registry.get(swapId);
       if (!reg) return { state: "skipped", reason: "unregistered" };
       // Publishing P inside the solver's live refund window risks losing the race and giving it
@@ -122,6 +126,7 @@ export function createSelfClaimer(opts: {
       }
       const lockupScript = hex.encode(reg.script.pkScript);
       const { vtxos } = await indexer.getVtxos({ scripts: [lockupScript], spendableOnly: true });
+      const lookupMs = Math.round(performance.now() - started);
       // "Not funded yet" and "already spent" are the same no-op: retries are safe.
       if (vtxos.length === 0) return { state: "skipped", reason: "unfunded" };
       // A sum, not one outpoint: `spendableOnly` dropped what is not live, and this one tx spends all the rest.
@@ -132,7 +137,10 @@ export function createSelfClaimer(opts: {
       const payTo = reg.script.options.nonInteractiveParameters?.receiverPkScript;
       if (!payTo) throw new Error(`self-claim: registration for ${swapId} carries no nonInteractiveParameters`);
       const packet = EmulatorPacket.create(vtxos.map((_, vin) => ({ vin, script: arkadeScript, witness: RawWitness.encode([]) })));
+      let stage = performance.now();
       const info = await arkProvider.getInfo();
+      const infoMs = Math.round(performance.now() - stage);
+      stage = performance.now();
       const tapTree = reg.script.encode();
       // The covenant checks output[i] against input[i]: one payout per input, in order, packet last.
       const { arkTx, checkpoints } = buildOffchainTx(
@@ -140,15 +148,24 @@ export function createSelfClaimer(opts: {
         [...vtxos.map((v) => ({ script: payTo, amount: BigInt(v.value) })), Extension.create([packet]).txOut()],
         CSVMultisigTapscript.decode(hex.decode(info.checkpointTapscript)),
       );
+      const buildMs = Math.round(performance.now() - stage);
+      stage = performance.now();
       // The emulator resolves the spent input's prevout from its creating ark tx.
       await attachPrevArkTxs(arkTx, vtxos.map((v) => v.txid), indexer);
+      const prevTxMs = Math.round(performance.now() - stage);
       vtxos.forEach((_, i) => setArkPsbtField(arkTx, i, ConditionWitness, [hex.decode(preimage)]));
       for (const checkpoint of checkpoints) setArkPsbtField(checkpoint, 0, ConditionWitness, [hex.decode(preimage)]);
 
+      stage = performance.now();
       await emulator.submitTx(
         base64.encode(arkTx.toPSBT()),
         checkpoints.map((c) => base64.encode(c.toPSBT())),
       );
+      const submitMs = Math.round(performance.now() - stage);
+      logger.info("offline_swap_self_claim_timing", {
+        swapRef: swapId.slice(0, 12), lookupMs, infoMs, buildMs, prevTxMs, submitMs,
+        totalMs: Math.round(performance.now() - started), inputs: vtxos.length,
+      });
       registry.delete(swapId);
       // Not read back from the reply: a txid commits to no witness data, so the
       // emulator's signatures cannot change it. Sound while this input stays

@@ -159,7 +159,7 @@ async function main(): Promise<void> {
       let selfClaimer: import("./covenant/self-claim.js").SelfClaimer | undefined;
       if (off.selfClaim) {
         const { createSelfClaimer, checkEmulatorPairing } = await import("./covenant/self-claim.js");
-        selfClaimer = createSelfClaimer({ arkServerUrl: off.arkServerUrl!, emulatorUrl: off.emulatorUrl! });
+        selfClaimer = createSelfClaimer({ arkServerUrl: off.arkServerUrl!, emulatorUrl: off.emulatorUrl!, logger });
         console.log(`offline self-claim: enabled (emulator=${off.emulatorUrl}${off.covclaimdUrl ? "" : ", no covclaimd — RFQ omits the claim packet"})`);
         if (off.covclaimdUrl) {
           void checkEmulatorPairing({ covclaimdUrl: off.covclaimdUrl!, emulatorUrl: off.emulatorUrl! });
