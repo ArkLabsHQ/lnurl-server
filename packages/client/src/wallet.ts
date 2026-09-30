@@ -21,7 +21,7 @@ import type { PayRequest, PaymentPage } from "./types.js";
 
 /** The 1023 limit is LUD-01's, not bech32's default 90. */
 export function encodeLnurl(url: string): string {
-  return bech32.encode("lnurl", bech32.toWords(new TextEncoder().encode(url)), 1023);
+  return bech32.encode("lnurl", bech32.toWords(new TextEncoder().encode(url)), 1023).toUpperCase();
 }
 
 /** A wallet supplies the signer and both addresses. Without one — a script, a
