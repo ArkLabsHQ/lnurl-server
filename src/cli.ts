@@ -110,6 +110,7 @@ async function main(): Promise<void> {
     }
     let offlineSwaps: import("./offline-swap-store.js").OfflineSwapStore | undefined;
     let arkDustSat: number | undefined;
+    let arkUnilateralExitDelay: number | undefined;
     let arkNetwork: unknown;
     // Read for any rail arkd backs, not just the swap one: the arkade and covenant
     // rails face the same dust floor, and a covenant-only deployment never enters
@@ -121,10 +122,12 @@ async function main(): Promise<void> {
       // would otherwise hang boot forever, with no listener and nothing in the log.
       const infoResponse = await fetch(`${off.arkServerUrl}/v1/info`, { signal: AbortSignal.timeout(BOOT_PROBE_TIMEOUT_MS) });
       if (!infoResponse.ok) throw new UpstreamError("Arkade info endpoint", infoResponse.status);
-      const arkInfo = await infoResponse.json() as { network?: unknown; dust?: unknown };
+      const arkInfo = await infoResponse.json() as { network?: unknown; dust?: unknown; unilateralExitDelay?: unknown };
       arkNetwork = arkInfo.network;
       const dust = Number(arkInfo.dust);
       if (Number.isSafeInteger(dust) && dust > 0) arkDustSat = dust;
+      const exitDelay = Number(arkInfo.unilateralExitDelay);
+      if (Number.isSafeInteger(exitDelay) && exitDelay > 0) arkUnilateralExitDelay = exitDelay;
     }
     let offlineSwapCreator: import("./services/offline-swaps.js").OfflineSwapCreator | undefined;
     if (off.enabled) {
@@ -188,6 +191,7 @@ async function main(): Promise<void> {
         ...(off.covclaimdUrl ? { covclaimdUrl: off.covclaimdUrl } : {}),
         ...(off.emulatorUrl ? { emulatorUrl: off.emulatorUrl } : {}),
         recoveryDelaySeconds: off.covenantRecoveryDelaySeconds,
+        ...(arkUnilateralExitDelay ? { unilateralExitDelay: arkUnilateralExitDelay } : {}),
         contracts,
       });
       // Event-driven, with the repeating catch-up behind it as the dropped-subscription

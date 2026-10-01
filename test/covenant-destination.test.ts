@@ -181,6 +181,18 @@ describe("createCovenantDestinationProvider", () => {
     expect(() => provider(86_528)).not.toThrow();
   });
 
+  it("refuses a recovery delay shorter than arkd's unilateral exit delay", () => {
+    const against = (recoveryDelaySeconds: number) =>
+      createCovenantDestinationProvider({
+        arkServerUrl: "https://ark.example",
+        covclaimdUrl: "https://cc.example",
+        recoveryDelaySeconds,
+        unilateralExitDelay: 2048,
+      });
+    expect(() => against(1536)).toThrow(/at least arkd's unilateral exit delay \(2048\)/);
+    expect(() => against(2048)).not.toThrow();
+  });
+
   it("accepts an emulator URL in place of covclaimd", () => {
     expect(() =>
       createCovenantDestinationProvider({
