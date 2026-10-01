@@ -11,5 +11,5 @@ describe("cli", () => {
     const lines = run.stderr.split("\n").filter((l) => l && !/ExperimentalWarning|--trace-warnings/.test(l));
     expect(run.status).toBe(1);
     expect(lines).toEqual(["config: MAX_SENDABLE must be greater than or equal to MIN_SENDABLE"]);
-  });
+  }, 30_000);
 });

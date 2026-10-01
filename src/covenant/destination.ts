@@ -165,6 +165,7 @@ export function createCovenantDestinationProvider(opts: {
   if (!Number.isInteger(opts.recoveryDelaySeconds) || opts.recoveryDelaySeconds <= 0 || opts.recoveryDelaySeconds % 512 !== 0) {
     throw new Error(`recoveryDelaySeconds must be a positive multiple of 512 (got ${opts.recoveryDelaySeconds})`);
   }
+  // Raw values, as arkd compares them: its SECONDS_PER_BLOCK is 1, so even a block-typed delay is read as seconds.
   if (opts.unilateralExitDelay !== undefined && opts.recoveryDelaySeconds < opts.unilateralExitDelay) {
     throw new Error(
       `recoveryDelaySeconds must be at least arkd's unilateral exit delay (${opts.unilateralExitDelay}); got ${opts.recoveryDelaySeconds}`,
