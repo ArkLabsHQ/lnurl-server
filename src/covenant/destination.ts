@@ -147,6 +147,8 @@ export function createCovenantDestinationProvider(opts: {
   covclaimdUrl?: string;
   emulatorUrl?: string;
   recoveryDelaySeconds: number;
+  /** arkd's advertised value: it refuses every spend, the sweep included, of a script whose shortest exit is below it. */
+  unilateralExitDelay?: number;
   /** Absent keeps the provider standalone (unit tests, the probe script); present
    *  makes every derived destination a contract the SDK watches and can spend. */
   contracts?: IContractManager;
@@ -162,6 +164,11 @@ export function createCovenantDestinationProvider(opts: {
   // nothing. Construction is the last point that can still fail loudly.
   if (!Number.isInteger(opts.recoveryDelaySeconds) || opts.recoveryDelaySeconds <= 0 || opts.recoveryDelaySeconds % 512 !== 0) {
     throw new Error(`recoveryDelaySeconds must be a positive multiple of 512 (got ${opts.recoveryDelaySeconds})`);
+  }
+  if (opts.unilateralExitDelay !== undefined && opts.recoveryDelaySeconds < opts.unilateralExitDelay) {
+    throw new Error(
+      `recoveryDelaySeconds must be at least arkd's unilateral exit delay (${opts.unilateralExitDelay}); got ${opts.recoveryDelaySeconds}`,
+    );
   }
   const now = opts.now ?? (() => Date.now());
   let cached: { at: number; ctx: Promise<{ serverPubkey: Uint8Array; emulatorPubkey: Uint8Array }> } | undefined;
