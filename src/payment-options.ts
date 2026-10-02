@@ -24,7 +24,8 @@ export interface OptionAddress {
 
 /** Options advertised in the LUD-06 payRequest. Emitted only when there is a
  *  non-lightning option to offer (an Arkade identity); otherwise the address stays
- *  pure LUD-06 and `paymentOptions` is omitted. Add rails here as they land. */
+ *  pure LUD-06 and `paymentOptions` is omitted. Add rails here as they land.
+ *  States no `verifiable`: without the server's rail caps it is unknown. */
 export function advertisedOptions(address: OptionAddress): PaymentOption[] {
   if (!address.arkadeAddress) return [];
   return [
