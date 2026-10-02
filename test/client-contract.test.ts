@@ -433,7 +433,7 @@ describe("per-rail bounds contract", () => {
 
     // Top level is the lightning rail's, and arkade publishes the wider floor.
     expect(payRequest.minSendable).toBe(50_000_000);
-    expect(payRequest.paymentOptions).toContainEqual({ id: "arkade", type: "arkade", minSendable: 1_000 });
+    expect(payRequest.paymentOptions).toContainEqual({ id: "arkade", type: "arkade", verifiable: false, minSendable: 1_000 });
 
     // The server builds the callback origin from the registered domain, which
     // carries no port, so the advertised URL is port 80. Put the test port back
@@ -506,7 +506,7 @@ describe("onchain rail contract", () => {
       1023,
     );
     const payRequest = await payer.resolve(lnurl);
-    expect(payRequest.paymentOptions).toContainEqual({ id: "onchain", type: "onchain" });
+    expect(payRequest.paymentOptions).toContainEqual({ id: "onchain", type: "onchain", verifiable: false });
 
     const reachable = { ...payRequest, callback: payRequest.callback.replace("127.0.0.1", new URL(ctx.baseUrl).host) };
     const result = await payer.requestInvoice(reachable, { amountSat: 1_000, paymentOption: "onchain" });
@@ -528,6 +528,6 @@ describe("onchain rail contract", () => {
       1023,
     );
     const payRequest = await payer.resolve(lnurl);
-    expect(payRequest.paymentOptions).toContainEqual({ id: "onchain", type: "onchain" });
+    expect(payRequest.paymentOptions).toContainEqual({ id: "onchain", type: "onchain", verifiable: false });
   });
 });

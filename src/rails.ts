@@ -491,10 +491,12 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
   if (!arkadeReady && !onchainReady) return [];
   const options: PaymentOption[] = [];
   // `available` is emitted only when false: LUD-XX says an absent one means true,
-  // so stating it on every healthy option would be noise.
-  if (lightning.offer) options.push({ id: "lightning", type: "lightning", ...(lightning.available ? {} : { available: false }) });
-  if (arkadeReady) options.push({ id: "arkade", type: "arkade", ...(arkadeState.available ? {} : { available: false }) });
-  if (onchainReady) options.push({ id: "onchain", type: "onchain", ...(onchainState.available ? {} : { available: false }) });
+  // so stating it on every healthy option would be noise. `verifiable` is always
+  // stated, since absent means unknown: arkade answers with verify only for a covenant destination.
+  const arkadeVerifiable = states.get("covenant")?.available === true;
+  if (lightning.offer) options.push({ id: "lightning", type: "lightning", verifiable: true, ...(lightning.available ? {} : { available: false }) });
+  if (arkadeReady) options.push({ id: "arkade", type: "arkade", verifiable: arkadeVerifiable, ...(arkadeState.available ? {} : { available: false }) });
+  if (onchainReady) options.push({ id: "onchain", type: "onchain", verifiable: false, ...(onchainState.available ? {} : { available: false }) });
   if (!base) return options;
   // Emitted relative to the pair the payRequest actually advertises, not to the
   // envelope. A client falls back to the top-level pair for an option that

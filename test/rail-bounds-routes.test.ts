@@ -78,8 +78,8 @@ describe("per-rail sendable bounds", () => {
     expect(meta.minSendable).toBe(1000);
     expect(meta.maxSendable).toBe(100_000_000);
     expect(meta.paymentOptions).toEqual([
-      { id: "lightning", type: "lightning" },
-      { id: "arkade", type: "arkade" },
+      { id: "lightning", type: "lightning", verifiable: true },
+      { id: "arkade", type: "arkade", verifiable: false },
     ]);
   });
 
@@ -88,8 +88,8 @@ describe("per-rail sendable bounds", () => {
     addr("alice");
     const meta = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com");
     expect(meta.paymentOptions).toEqual([
-      { id: "lightning", type: "lightning" },
-      { id: "arkade", type: "arkade", minSendable: 10_000, maxSendable: 5_000_000 },
+      { id: "lightning", type: "lightning", verifiable: true },
+      { id: "arkade", type: "arkade", verifiable: false, minSendable: 10_000, maxSendable: 5_000_000 },
     ]);
   });
 
@@ -146,8 +146,8 @@ describe("per-rail sendable bounds", () => {
     const meta = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com");
     expect(Number(meta.minSendable)).toBeLessThanOrEqual(Number(meta.maxSendable));
     expect(meta.paymentOptions).toEqual([
-      { id: "lightning", type: "lightning" },
-      { id: "arkade", type: "arkade" },
+      { id: "lightning", type: "lightning", verifiable: true },
+      { id: "arkade", type: "arkade", verifiable: false },
     ]);
   });
 
@@ -172,8 +172,8 @@ describe("per-rail sendable bounds", () => {
     const meta = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com");
     expect(meta.minSendable).toBe(50_000_000);
     expect(meta.paymentOptions).toEqual([
-      { id: "lightning", type: "lightning" },
-      { id: "arkade", type: "arkade", minSendable: 1000 },
+      { id: "lightning", type: "lightning", verifiable: true },
+      { id: "arkade", type: "arkade", verifiable: false, minSendable: 1000 },
     ]);
   });
 
@@ -217,7 +217,7 @@ describe("arkd dust floor on the VTXO-settled rails", () => {
     ctx = await start(repos, undefined, undefined, undefined, 330);
     addr("alice");
     const lightning = (await optionsOf("alice")).find((o) => o.id === "lightning");
-    expect(lightning).toEqual({ id: "lightning", type: "lightning" });
+    expect(lightning).toEqual({ id: "lightning", type: "lightning", verifiable: true });
   });
 
   it("refuses an arkade amount below dust at the callback, not after the money moved", async () => {
