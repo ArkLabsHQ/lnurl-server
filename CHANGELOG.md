@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- **`verifiable` on every advertised payment option** — whether that option's callback answers carry a LUD-21 `verify` URL, proposed for LUD-XX (lnurl/luds#303). Until now a payer that must detect settlement, such as a merchant backend, learnt that only by requesting a destination, and lnurl-server's onchain option never has one: every checkout cost a refused request, a settlement row and a slot of the per-IP destination budget. Lightning is `true`; arkade is `true` only while per-payment covenant destinations serve it, since the static-address fallback identifies no payment; onchain is `false`. An address served without server caps states nothing, because absent means unknown.
 - **`lnurlQuoteMeta(quote)` and the `LnurlQuoteMeta` type** (`@arkade-os/lnurl-client/arkade`) — what an lnurl rail records on its quote (`target`, `via`, `verify`, `verifyBatch`), readable without casting `quote.meta.lnurl`. Undefined for a quote no lnurl rail made.
 - **`SentPayment.verify` / `verifyBatch`** — the receiver-confirmation URLs a send's quote carried, so an app can resume a confirmation that was still pending when it closed.
 

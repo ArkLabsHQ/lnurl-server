@@ -98,7 +98,7 @@ describe("/lnurl/:id for a nameless row", () => {
     const meta = await get(`/lnurl/${SID}`);
     expect(meta.tag).toBe("payRequest");
     expect(meta.callback).toBe(`http://domain.com/lnurl/${SID}/callback`);
-    expect(meta.paymentOptions).toContainEqual({ id: "arkade", type: "arkade" });
+    expect(meta.paymentOptions).toContainEqual({ id: "arkade", type: "arkade", verifiable: false });
     expect(metadataOf(meta).map(([k]) => k)).not.toContain("text/identifier");
 
     const cb = await get(`/lnurl/${SID}/callback?amount=50000`);

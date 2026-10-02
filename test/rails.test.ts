@@ -133,21 +133,21 @@ describe("advertisedRailOptions", () => {
   it("offers arkade alone when both lightning rails are disabled", () => {
     expect(
       advertisedRailOptions({ ...IDENTITY, disabledRails: ["interactive-lightning", "offline-swap"] }, FULL),
-    ).toEqual([{ id: "arkade", type: "arkade" }]);
+    ).toEqual([{ id: "arkade", type: "arkade", verifiable: true }]);
   });
 
   it("emits no per-option bounds when no rail narrows the base", () => {
     expect(advertisedRailOptions(IDENTITY, FULL, BASE)).toEqual([
-      { id: "lightning", type: "lightning" },
-      { id: "arkade", type: "arkade" },
+      { id: "lightning", type: "lightning", verifiable: true },
+      { id: "arkade", type: "arkade", verifiable: true },
     ]);
   });
 
   it("emits only the half a rail actually narrows", () => {
     const caps: ServerRailCaps = { ...FULL, limits: { arkade: { minSendable: 10_000 } } };
     expect(advertisedRailOptions(IDENTITY, caps, BASE)).toEqual([
-      { id: "lightning", type: "lightning" },
-      { id: "arkade", type: "arkade", minSendable: 10_000 },
+      { id: "lightning", type: "lightning", verifiable: true },
+      { id: "arkade", type: "arkade", verifiable: true, minSendable: 10_000 },
     ]);
   });
 });
@@ -178,6 +178,30 @@ describe("advertisedRailOptions — LUD-XX `available`", () => {
   it("says nothing at all when a rail is serving", () => {
     const options = advertisedRailOptions(IDENTITY, FULL, BASE);
     for (const option of options) expect(option).not.toHaveProperty("available");
+  });
+});
+
+describe("advertisedRailOptions — `verifiable`", () => {
+  // Lets a payer that must detect settlement skip an option without spending a callback on it.
+  it("marks lightning verifiable: every lightning answer carries a verify URL", () => {
+    expect(advertisedRailOptions(IDENTITY, FULL, BASE).find((o) => o.id === "lightning")).toMatchObject({ verifiable: true });
+  });
+
+  it("marks arkade verifiable only while covenant destinations serve it", () => {
+    const arkade = (address: typeof IDENTITY, caps: ServerRailCaps) =>
+      advertisedRailOptions(address, caps, BASE).find((o) => o.id === "arkade");
+    expect(arkade(IDENTITY, FULL)).toMatchObject({ verifiable: true });
+    expect(arkade(IDENTITY, { ...FULL, covenantDestinations: false })).toMatchObject({ verifiable: false });
+    expect(arkade({ ...IDENTITY, disabledRails: ["covenant"] }, FULL)).toMatchObject({ verifiable: false });
+  });
+
+  it("marks onchain unverifiable: a static boarding address identifies no payment", () => {
+    const options = advertisedRailOptions({ ...IDENTITY, boardingAddress: "tb1qboarding" }, FULL, BASE);
+    expect(options.find((o) => o.id === "onchain")).toMatchObject({ verifiable: false });
+  });
+
+  it("says nothing without server caps, where it is unknown", () => {
+    for (const option of advertisedRailOptions(IDENTITY)) expect(option).not.toHaveProperty("verifiable");
   });
 });
 

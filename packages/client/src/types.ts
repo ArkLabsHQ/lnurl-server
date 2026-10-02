@@ -12,6 +12,8 @@ export interface PaymentOption {
   type: string;
   /** Whether the rail can currently be selected. */
   available?: boolean;
+  /** Whether callback answers on this rail carry a LUD-21 `verify` URL; absent means unknown. */
+  verifiable?: boolean;
   /** Minimum sendable amount on this rail. */
   minSendable?: number;
   /** Maximum sendable amount on this rail. */

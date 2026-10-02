@@ -726,6 +726,14 @@ export const openApiSpec = {
                                   "or disabled outright, is omitted from the list instead: that is a different " +
                                   "statement, and one a payer should act on differently.",
                               },
+                              verifiable: {
+                                type: "boolean",
+                                description:
+                                  "Whether callback answers for this rail carry a LUD-21 `verify` URL, so a payer that must " +
+                                  "detect settlement can skip a rail without requesting it. Always stated: lightning `true`; " +
+                                  "arkade `true` only while per-payment covenant destinations serve it (the static address " +
+                                  "fallback identifies no payment); onchain `false`.",
+                              },
                               minSendable: {
                                 type: "number",
                                 description:

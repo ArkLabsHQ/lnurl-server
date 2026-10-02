@@ -8,6 +8,8 @@ export interface PaymentOption {
   id: string;
   type: string;
   available?: boolean;
+  /** Whether callback answers for this option carry a LUD-21 `verify` URL; absent means unknown. */
+  verifiable?: boolean;
   minSendable?: number;
   maxSendable?: number;
 }
