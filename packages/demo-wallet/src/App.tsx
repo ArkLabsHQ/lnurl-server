@@ -9,6 +9,7 @@ import { balanceView } from "./balance.js";
 import { createMnemonic, loadMnemonic, openWallet, wipeWallet, type DemoWallet } from "./wallet.js";
 import { bootState, claimOrAdopt, domainCapabilities, payer, receiver } from "./lnurl.js";
 import { createRouter, RAIL_PRIORITY } from "./router.js";
+import { sendAmountFor } from "./send-amount.js";
 import { CHOICE_ARGS, nameChoices } from "./name-choice.js";
 import { pendingConfirmations, settlementWatcher, type SettlementWatcher } from "./batch-verify.js";
 import { storedPayments } from "@arkade-os/lnurl-client";
@@ -659,7 +660,8 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
         A Lightning address, an LNURL, an Arkade address or an on-chain address — the
         router decides which rails can serve it.
       </p>
-      <input value={target} onChange={(e) => setTarget(e.target.value)} placeholder="name@domain, LNURL1…, tark1…, tb1…"
+      <input value={target} onChange={(e) => { setTarget(e.target.value); setAmount((a) => sendAmountFor(e.target.value, a)); }}
+        placeholder="name@domain, LNURL1…, tark1…, tb1…, bitcoin:…"
         style={{ padding: 8, borderRadius: 6, border: "1px solid #bbb", width: "100%", marginBottom: 8 }} />
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
         <input type="number" value={amount} min={1} onChange={(e) => setAmount(Number(e.target.value))}
