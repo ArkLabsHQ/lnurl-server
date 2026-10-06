@@ -64,8 +64,8 @@ describe("LUD-XX paymentOptions", () => {
     addr("alice", true);
     const meta = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com");
     expect(meta.paymentOptions).toEqual([
-      { id: "lightning", type: "lightning" },
-      { id: "arkade", type: "arkade" },
+      { id: "lightning", type: "lightning", verifiable: true },
+      { id: "arkade", type: "arkade", verifiable: false },
     ]);
   });
 
