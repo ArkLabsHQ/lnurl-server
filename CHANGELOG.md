@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`lnurlQuoteMeta(quote)` and the `LnurlQuoteMeta` type** (`@arkade-os/lnurl-client/arkade`) — what an lnurl rail records on its quote (`target`, `via`, `verify`, `verifyBatch`), readable without casting `quote.meta.lnurl`. Undefined for a quote no lnurl rail made.
 - **`SentPayment.verify` / `verifyBatch`** — the receiver-confirmation URLs a send's quote carried, so an app can resume a confirmation that was still pending when it closed.
 
+### Removed
+- Removed the unused `@noble/ciphers` dependency.
+
 ### Fixed
 - **The demo wallet's Send takes the amount a pasted payment request asks for** — pasting a BIP321 URI with `amount=` (for example a merchant's unified checkout QR) left the amount field at its previous value. The router sends an explicit amount over the request's own, so paying without noticing underpaid the request. The field is now filled from the URI's `amount=` when one is present, and is left alone for a bare address or a URI without an amount.
 - **Covenant destinations refuse to start with a recovery delay shorter than arkd's unilateral exit delay** — `OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS` was checked only for being a positive multiple of 512. Below arkd's `unilateralExitDelay`, arkd refuses every off-chain spend of the covenant address ("exit delay is too short"), the server's own sweep included, so the arkade rail would stall silently while payers kept funding addresses the server could not sweep. Boot now compares the setting with the value arkd advertises and refuses to start below it. The default (86,528 s) clears mutinynet's 2,048 s.
