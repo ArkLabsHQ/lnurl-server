@@ -8,7 +8,7 @@ describe("sendAmountFor", () => {
   });
 
   it("keeps the typed amount when the target asks for none", () => {
-    for (const raw of ["tark1qqcpq7yq", "bitcoin:?ark=tark1qq", "alice@lnurl.mutinynet.arkade.sh", ""])
+    for (const raw of ["tark1qqcpq7yq", "bitcoin:?ark=tark1qq", "bitcoin:?amount=0&ark=tark1qq", "alice@lnurl.mutinynet.arkade.sh", ""])
       expect(sendAmountFor(raw, 1234)).toBe(1234);
   });
 });
