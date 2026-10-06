@@ -12,21 +12,7 @@ import type { InvoiceFacts } from "@arkade-os/swap";
 export function paymentHashFromBolt11(pr: string): string | null {
   try {
     const { words } = bech32.decode(pr.toLowerCase() as `${string}1${string}`, 2000);
-    const end = words.length - 104;
-    let i = 7;
-    while (i < end) {
-      const type = words[i];
-      const len = (words[i + 1] << 5) | words[i + 2];
-      const dataStart = i + 3;
-      const dataEnd = dataStart + len;
-      if (dataEnd > end) break;
-      if (type === 1) {
-        const bytes = bech32.fromWordsUnsafe(words.slice(dataStart, dataStart + 52));
-        return bytes ? hex.encode(bytes.slice(0, 32)) : null;
-      }
-      i = dataEnd;
-    }
-    return null;
+    return taggedFields(words).paymentHash;
   } catch {
     return null;
   }
@@ -47,6 +33,30 @@ function wordsToInt(words: ArrayLike<number>): number {
   let v = 0;
   for (let i = 0; i < words.length; i++) v = v * 32 + words[i];
   return v;
+}
+
+/** Only the first `p` counts, as a payer's wallet reads it: a later one must not
+ *  pass the invoice gate for a hash the payer never pays. */
+function taggedFields(words: number[]): { paymentHash: string | null; expiry?: number } {
+  const end = words.length - 104;
+  let paymentHash: string | null | undefined;
+  let expiry: number | undefined;
+  let i = 7;
+  while (i < end) {
+    const type = words[i];
+    const len = (words[i + 1] << 5) | words[i + 2];
+    const dataStart = i + 3;
+    const dataEnd = dataStart + len;
+    if (dataEnd > end) break;
+    if (type === 1 && paymentHash === undefined) {
+      const bytes = bech32.fromWordsUnsafe(words.slice(dataStart, dataStart + 52));
+      paymentHash = bytes ? hex.encode(bytes.slice(0, 32)) : null;
+    } else if (type === 6) {
+      expiry = wordsToInt(words.slice(dataStart, dataEnd));
+    }
+    i = dataEnd;
+  }
+  return { paymentHash: paymentHash ?? null, expiry };
 }
 
 /** Decode the fields the offline-receive invoice gate checks: payment hash, amount
@@ -72,24 +82,7 @@ export function invoiceFactsFromBolt11(pr: string): InvoiceFacts {
   }
 
   const timestamp = wordsToInt(words.slice(0, 7));
-  const end = words.length - 104;
-  let paymentHash: string | null = null;
-  let expiry: number | undefined;
-  let i = 7;
-  while (i < end) {
-    const type = words[i];
-    const len = (words[i + 1] << 5) | words[i + 2];
-    const dataStart = i + 3;
-    const dataEnd = dataStart + len;
-    if (dataEnd > end) break;
-    if (type === 1) {
-      const bytes = bech32.fromWordsUnsafe(words.slice(dataStart, dataStart + 52));
-      if (bytes) paymentHash = hex.encode(bytes.slice(0, 32));
-    } else if (type === 6) {
-      expiry = wordsToInt(words.slice(dataStart, dataEnd));
-    }
-    i = dataEnd;
-  }
+  const { paymentHash, expiry } = taggedFields(words);
   if (!paymentHash) throw new Error("bolt11 carries no payment hash");
   return { raw, paymentHash, amountSats, expiresAt: timestamp + (expiry ?? DEFAULT_EXPIRY_SECONDS) };
 }

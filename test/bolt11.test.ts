@@ -66,4 +66,12 @@ describe("invoiceFactsFromBolt11", () => {
     for (let i = 0; i < 104; i++) words.push(0);
     expect(() => invoiceFactsFromBolt11(bech32.encode("lnbc", words, 2000))).toThrow(/payment hash/);
   });
+
+  it("takes the first of two p fields, as paymentHashFromBolt11 does", () => {
+    const p = (h: string) => [1, 52 >> 5, 52 & 31, ...bech32.toWords(Uint8Array.from(Buffer.from(h, "hex")))];
+    const words = [...new Array<number>(7).fill(0), ...p("11".repeat(32)), ...p(hash), ...new Array<number>(104).fill(0)];
+    const invoice = bech32.encode("lnbc", words, 2000);
+    expect(paymentHashFromBolt11(invoice)).toBe("11".repeat(32));
+    expect(invoiceFactsFromBolt11(invoice).paymentHash).toBe("11".repeat(32));
+  });
 });
