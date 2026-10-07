@@ -62,6 +62,9 @@ export interface OfflineSwapResult {
   preimageHash: string;
   lockupAddress: string;
   recovery: OfflineSwapRecoveryV1;
+  /** Unix seconds: the earlier of the invoice's expiry and the quote's valid_until.
+   *  Optional so an injected creator that predates it still compiles. */
+  invoiceExpiresAt?: number;
 }
 
 export interface OfflineSwapRecoveryV1 {
@@ -329,6 +332,7 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
             preimage: hex.encode(preimage),
             preimageHash: paymentHash,
             lockupAddress: derived.address,
+            invoiceExpiresAt: payDeadline,
             recovery: {
               version: 1,
               solverName: candidate.name,
