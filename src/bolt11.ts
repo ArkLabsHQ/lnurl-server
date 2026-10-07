@@ -35,8 +35,8 @@ function wordsToInt(words: ArrayLike<number>): number {
   return v;
 }
 
-/** Only the first `p` counts, as a payer's wallet reads it: a later one must not
- *  pass the invoice gate for a hash the payer never pays. */
+/** Only the first `p` of length 52 counts: BOLT11 makes any other length no
+ *  payment hash at all, so one must not pass the gate for a hash nobody pays. */
 function taggedFields(words: number[]): { paymentHash: string | null; expiry?: number } {
   const end = words.length - 104;
   let paymentHash: string | null | undefined;
@@ -48,8 +48,8 @@ function taggedFields(words: number[]): { paymentHash: string | null; expiry?: n
     const dataStart = i + 3;
     const dataEnd = dataStart + len;
     if (dataEnd > end) break;
-    if (type === 1 && paymentHash === undefined) {
-      const bytes = bech32.fromWordsUnsafe(words.slice(dataStart, dataStart + 52));
+    if (type === 1 && len === 52 && paymentHash === undefined) {
+      const bytes = bech32.fromWordsUnsafe(words.slice(dataStart, dataEnd));
       paymentHash = bytes ? hex.encode(bytes.slice(0, 32)) : null;
     } else if (type === 6) {
       expiry = wordsToInt(words.slice(dataStart, dataEnd));

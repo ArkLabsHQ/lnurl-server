@@ -4,6 +4,8 @@ import { bech32, hex } from "@scure/base";
  * The payment hash (lowercase hex) of a bolt11 invoice, or null when it cannot
  * be decoded. Walks the tagged fields for `p` (type 1) between the 7-word
  * timestamp and the 104-word signature; the signature itself is not checked.
+ * A `p` of any length but 52 is no payment hash to a payer, so it is skipped
+ * here too rather than passing a gate for a hash nobody pays.
  */
 export function paymentHashOf(pr: string): string | null {
   try {
@@ -13,8 +15,8 @@ export function paymentHashOf(pr: string): string | null {
       const len = (words[i + 1]! << 5) | words[i + 2]!;
       const dataEnd = i + 3 + len;
       if (dataEnd > end) return null;
-      if (words[i] === 1) {
-        const bytes = bech32.fromWordsUnsafe(words.slice(i + 3, i + 3 + 52));
+      if (words[i] === 1 && len === 52) {
+        const bytes = bech32.fromWordsUnsafe(words.slice(i + 3, dataEnd));
         return bytes ? hex.encode(bytes.slice(0, 32)) : null;
       }
       i = dataEnd;
