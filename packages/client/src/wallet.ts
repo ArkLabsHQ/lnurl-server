@@ -2,9 +2,11 @@
  *  would otherwise wire by hand. The low-level surface stays exported beneath it. */
 import {
   arkRail,
+  BIP21,
   createDefaultPaymentRouter,
   type PaymentOption,
   type PaymentRail,
+  type PaymentRequest,
   type PaymentRouter,
   type RouterPreferences,
   type Wallet,
@@ -98,7 +100,7 @@ export function arkadePaymentRouter(opts: {
   comment?: string;
 }): PaymentRouter {
   const router = createDefaultPaymentRouter(opts.wallet);
-  if (opts.lightning) router.use(opts.lightning);
+  if (opts.lightning) router.use(invoicePricedLeg(opts.lightning));
   for (const rail of lnurlRails({
     client: opts.client ?? createLnurlClient(),
     arkade: arkRail(),
@@ -108,6 +110,22 @@ export function arkadePaymentRouter(opts: {
     router.use(rail);
   }
   return router;
+}
+
+/** A unified BIP21's invoice prices its own leg, often above `amount=` by the
+ *  receiver's swap fee, so an amount only restating `amount=` must not drop it. */
+function invoicePricedLeg(rail: PaymentRail): PaymentRail {
+  const leg = (req: PaymentRequest): PaymentRequest => {
+    if (req.amount === undefined || req.amount !== BIP21.amountSats(req.raw)) return req;
+    const { amount: _restated, ...rest } = req;
+    return rest;
+  };
+  return {
+    id: rail.id,
+    match: (req, ctx) => rail.match(req, ctx),
+    available: (req, ctx) => rail.available?.(leg(req), ctx) ?? true,
+    quote: (req, ctx) => rail.quote(leg(req), ctx),
+  };
 }
 
 export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
