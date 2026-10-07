@@ -1,12 +1,6 @@
 import { bech32 } from "@scure/base";
 import { LnurlError } from "./errors.js";
 
-/**
- * Which half of the protocol a payRequest URL belongs to. Options, units and
- * the offline rails live only on the address surface; the session callback
- * reads `amount` and `comment` and nothing else, so the payer guards key off
- * this value.
- */
 export type LnurlSurface = "address" | "session";
 
 const ADDRESS_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -86,8 +80,6 @@ export function toPayRequestUrl(input: string): { url: string; surface: LnurlSur
   }
   if (isLnUrl(input)) {
     const url = decodeLnurl(input).text;
-    // Options/units/offline rails live only on the address surface; the session
-    // callback reads amount and comment, so Task 4 keys its guards off this.
     const surface: LnurlSurface = url.includes("/.well-known/lnurlp/") ? "address" : "session";
     return { url, surface };
   }

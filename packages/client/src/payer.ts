@@ -35,9 +35,8 @@ export async function resolve(input: string, fetchImpl: FetchImpl): Promise<PayR
  *
  * `amountSat` is sats and is converted to millisats on the wire; it is
  * range-checked locally against the payRequest bounds before any network
- * call. `paymentOption` and `unit` apply only to an address payRequest and
- * are rejected on a session one, because the session callback reads `amount`
- * and `comment` only and the server would silently ignore the rail choice.
+ * call. `paymentOption` and `unit` are rejected on a session payRequest that
+ * does not advertise them: a live session's callback would silently ignore them.
  * `verify` on the result is optional: the server omits it when the BOLT11
  * payment hash will not decode.
  *
@@ -51,8 +50,10 @@ export async function requestInvoice(
   opts: RequestInvoiceOptions,
   fetchImpl: FetchImpl,
 ): Promise<InvoiceResult> {
-  if (payRequest.source.surface === "session" && (opts.paymentOption !== undefined || opts.unit !== undefined)) {
-    throw new LnurlError("paymentOption and unit are only supported on address payRequests, not on a session payRequest");
+  const unadvertised =
+    (opts.paymentOption !== undefined && !payRequest.paymentOptions) || (opts.unit !== undefined && !payRequest.units);
+  if (payRequest.source.surface === "session" && unadvertised) {
+    throw new LnurlError("paymentOption and unit need a session payRequest that advertises them; this one does not");
   }
   const amountMsat = opts.amountSat * 1000;
   // The top-level pair describes the rail a payer gets by sending no option, so

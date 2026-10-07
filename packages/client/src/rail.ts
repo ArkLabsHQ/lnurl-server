@@ -100,10 +100,6 @@ function makeRail(
       } catch {
         return false;
       }
-      // A session LNURL takes an amount and a comment and nothing else, so it
-      // serves lightning alone and rejects a `paymentOption` outright.
-      if (pr.source.surface === "session") return type === "lightning";
-
       // No `paymentOptions` at all (not an empty array) is LUD-06 silence: a
       // plain payRequest from a non-Arkade server, which is lightning-only on
       // its top-level minSendable/maxSendable.
@@ -126,9 +122,7 @@ function makeRail(
       const pr = await resolveOnce(req.raw);
       if (req.amount === undefined) throw new LnurlError(`${id} needs an explicit amount`);
 
-      const option = pr.source.surface === "session"
-        ? undefined
-        : pr.paymentOptions?.find((o) => o.type === type && o.available !== false)?.id;
+      const option = pr.paymentOptions?.find((o) => o.type === type && o.available !== false)?.id;
       const result = await deps.client.requestInvoice(pr, {
         amountSat: req.amount,
         ...(option !== undefined ? { paymentOption: option } : {}),

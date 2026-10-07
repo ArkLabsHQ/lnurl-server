@@ -91,6 +91,24 @@ describe("requestInvoice", () => {
       .rejects.toThrow(/session/i);
   });
 
+  it("takes paymentOption and unit on a session payRequest that advertises them, as a nameless receiver's does", async () => {
+    const nameless: PayRequest = {
+      ...sessionPr,
+      paymentOptions: [{ id: "lightning", type: "lightning" }, { id: "arkade", type: "arkade" }],
+      units: [{ code: "USD", decimals: 2 }],
+    };
+    const seen: string[] = [];
+    const fetchImpl = async (url: string) => {
+      seen.push(String(url));
+      return jsonResponse({ status: "OK", paymentOption: "arkade", paymentDestination: "ark1xyz" });
+    };
+    await expect(requestInvoice(nameless, { amountSat: 1000, paymentOption: "arkade" }, fetchImpl as never))
+      .resolves.toMatchObject({ kind: "destination", paymentDestination: "ark1xyz" });
+    await requestInvoice(nameless, { amountSat: 1000, unit: "USD" }, fetchImpl as never).catch(() => undefined);
+    expect(seen[0]).toContain("paymentOption=arkade");
+    expect(seen[1]).toContain("unit=USD");
+  });
+
   it("passes comment through when allowed", async () => {
     let seen = "";
     const fetchImpl = async (url: string) => { seen = String(url); return jsonResponse({ pr: buildInvoice(HASH, 1000), routes: [] }); };
