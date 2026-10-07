@@ -37,6 +37,7 @@ import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler } from "../covenant/
 import type { SettlementStore } from "../settlement-store.js";
 import { COVENANT_V1, COVENANT_V2, SWEEP_LEAF, enforcePayTo, enforcePayToWithAssets } from "../covenant/destination.js";
 import { startCatchUpLoop } from "./catch-up-loop.js";
+import { activeCovenantFilters } from "./covenant-retirement.js";
 
 interface EmulatorSubmit {
   submitTx(arkTx: string, checkpointTxs: string[]): Promise<{ signedArkTx: string; signedCheckpointTxs: string[] }>;
@@ -105,35 +106,41 @@ export function createCovenantSweeper(opts: {
   return {
     async sweep() {
       let moved = 0;
-      // One query for every funded destination, and the manager already knows which
-      // outputs are still spendable — no per-record round trip, no vtxo bookkeeping.
-      for (const { contract, vtxos } of await opts.contracts.getContractsWithVtxos({
-        type: COVENANT_CONTRACT_TYPE,
-      })) {
-        const script = covenantDestinationHandler.createScript(contract.params);
-        const tapTree = script.encode();
-        const sweepLeaf = hex.encode(script.leaves[SWEEP_LEAF]![1]);
-        for (const vtxo of vtxos) {
-          if (vtxo.isSpent) continue;
-          try {
-            const paths = await opts.contracts.getSpendablePaths({ contractScript: contract.script, vtxo });
-            // Chosen by leaf, not by position. The handler happens to return the sweep
-            // first, but nothing in the manager's contract promises an order, and the
-            // wrong leaf builds a transaction with no preimage that the emulator simply
-            // refuses — a silent skip every pass rather than an error worth reading.
-            const path = paths.find((p) => hex.encode(p.leaf[1]) === sweepLeaf);
-            // No sweepable path is not a failure: the emulator may be down, and the
-            // user's own two leaves are never ours to spend.
-            if (!path) continue;
-            const arkTxid = await sweepOne(contract, vtxo, path, tapTree);
-            moved++;
-            // What the user's wallet holds: the payment landed at the covenant.
-            const record = opts.settlements?.findByCovenantScript(contract.script);
-            if (record) opts.settlements?.markPaidOut(record.paymentHash, arkTxid);
-            console.log(`covenant sweep: ${contract.script.slice(0, 16)}… -> ${arkTxid}`);
-          } catch (err) {
-            // One stuck destination must not stop the rest, and the next pass retries.
-            console.warn(`covenant sweep failed for ${contract.script.slice(0, 16)}…:`, err);
+      // Scoped to what is still owed a sweep: getContractsWithVtxos force-syncs all
+      // it enumerates. Read off the records, not the watch state the SDK demotes the
+      // moment one is funded — exactly when the sweep has not run yet.
+      const scopes = opts.settlements
+        ? activeCovenantFilters(opts.settlements)
+        : [{ type: COVENANT_CONTRACT_TYPE }];
+      for (const scope of scopes) {
+        // One query per scope, and the manager already knows which outputs are still
+        // spendable — no per-record round trip, no vtxo bookkeeping.
+        for (const { contract, vtxos } of await opts.contracts.getContractsWithVtxos(scope)) {
+          const script = covenantDestinationHandler.createScript(contract.params);
+          const tapTree = script.encode();
+          const sweepLeaf = hex.encode(script.leaves[SWEEP_LEAF]![1]);
+          for (const vtxo of vtxos) {
+            if (vtxo.isSpent) continue;
+            try {
+              const paths = await opts.contracts.getSpendablePaths({ contractScript: contract.script, vtxo });
+              // Chosen by leaf, not by position. The handler happens to return the sweep
+              // first, but nothing in the manager's contract promises an order, and the
+              // wrong leaf builds a transaction with no preimage that the emulator simply
+              // refuses — a silent skip every pass rather than an error worth reading.
+              const path = paths.find((p) => hex.encode(p.leaf[1]) === sweepLeaf);
+              // No sweepable path is not a failure: the emulator may be down, and the
+              // user's own two leaves are never ours to spend.
+              if (!path) continue;
+              const arkTxid = await sweepOne(contract, vtxo, path, tapTree);
+              moved++;
+              // What the user's wallet holds: the payment landed at the covenant.
+              const record = opts.settlements?.findByCovenantScript(contract.script);
+              if (record) opts.settlements?.markPaidOut(record.paymentHash, arkTxid);
+              console.log(`covenant sweep: ${contract.script.slice(0, 16)}… -> ${arkTxid}`);
+            } catch (err) {
+              // One stuck destination must not stop the rest, and the next pass retries.
+              console.warn(`covenant sweep failed for ${contract.script.slice(0, 16)}…:`, err);
+            }
           }
         }
       }

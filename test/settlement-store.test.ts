@@ -53,6 +53,25 @@ describe.each(stores)("%s payout references", (_name, make) => {
     expect(s.findByCovenantScript("0014feed")).toMatchObject({ paymentHash: "v4" });
     expect(s.findByCovenantScript("0014none")).toBeUndefined();
   });
+
+  it("holds a covenant script active until its sweep is recorded", () => {
+    const s = make();
+    s.create({ paymentHash: "v5", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014aa" });
+    s.create({ paymentHash: "v6", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014bb" });
+    // Settled is not finished: the money sits at the covenant until it is swept.
+    s.markObserved("v5", "tx-in");
+    expect(s.listActiveCovenantScripts().sort()).toEqual(["0014aa", "0014bb"]);
+
+    s.markPaidOut("v5", "sweep-tx");
+    expect(s.listActiveCovenantScripts()).toEqual(["0014bb"]);
+  });
+
+  it("never reports a record that has no covenant script", () => {
+    const s = make();
+    s.create({ paymentHash: "v7", pr: "lnbc1", sessionId: "s" });
+    s.create({ paymentHash: "v8", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000 });
+    expect(s.listActiveCovenantScripts()).toEqual([]);
+  });
 });
 
 describe("MemorySettlementStore", () => {

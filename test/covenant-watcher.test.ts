@@ -104,6 +104,30 @@ describe("startCovenantWatcher", () => {
     expect(store.get("v1")!.settled).toBe(false);
   });
 
+  // A catch-up pass force-syncs whatever it enumerates, so every destination ever
+  // derived used to cost an indexer round trip every interval.
+  it("catches up only on the destinations still in play", async () => {
+    const store = storeWith([{ hash: "v1", script: "512011", amountMsat: 50_000 }]);
+    store.create({
+      paymentHash: "done",
+      pr: "",
+      sessionId: "sess",
+      paymentOption: "arkade",
+      paymentDestination: "tark1done",
+      amountMsat: 50_000,
+      covenantScript: "5120done",
+    });
+    store.markPaidOut("done", "sweep-tx");
+    const { manager } = fakeManager();
+
+    await catchUp(store, manager);
+
+    expect(manager.getContractsWithVtxos).toHaveBeenCalledWith({
+      type: COVENANT_CONTRACT_TYPE,
+      script: ["512011"],
+    });
+  });
+
   it("ignores an event for a script it has no record for", () => {
     const store = storeWith([{ hash: "v1", script: "512011", amountMsat: 50_000 }]);
     const { manager, received } = fakeManager();

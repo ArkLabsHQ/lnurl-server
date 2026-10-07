@@ -1,5 +1,9 @@
 import type { Db } from "./db/connection.js";
 
+/** Grace on top of `destinationWatchMs`: a payment that landed just inside the
+ *  window can still be mid-sweep when it closes. */
+export const COVENANT_RETIRE_MARGIN_MS = 86_400_000;
+
 /** A record of one invoice handed to a payer, tracking LUD-21 settlement state. */
 export interface SettlementRecord {
   /** bolt11 payment hash (hex) — the verify URL key. */
@@ -88,6 +92,10 @@ export interface SettlementStore {
   /** Any record with this script, settled or not — the sweep runs after settlement,
    *  so the watcher's pending-only lookup cannot serve it. */
   findByCovenantScript(script: string): SettlementRecord | undefined;
+  /** Covenant destinations still owed work: not yet swept, still inside the window a
+   *  payment there can be attributed in. The sweeper, the watcher's catch-up and
+   *  retirement read this one set, so none can disagree about which scripts matter. */
+  listActiveCovenantScripts(): string[];
   /** Fetch a record, or undefined if unknown or expired. */
   get(paymentHash: string): SettlementRecord | undefined;
   /** Unsettled offline swaps (have a swapId) for the settlement poller. */
@@ -247,6 +255,16 @@ export class MemorySettlementStore implements SettlementStore {
   findByCovenantScript(script: string): SettlementRecord | undefined {
     for (const r of this.map.values()) if (r.covenantScript === script) return r;
     return undefined;
+  }
+
+  listActiveCovenantScripts(): string[] {
+    // Not via `get`, which would expire rows out from under this horizon's margin.
+    const horizon = this.now() - (this.destinationWatchMs + COVENANT_RETIRE_MARGIN_MS);
+    const out: string[] = [];
+    for (const r of this.map.values()) {
+      if (r.covenantScript && !r.payoutReference && r.createdAt > horizon) out.push(r.covenantScript);
+    }
+    return out;
   }
 
   isReferenceUsed(reference: string): boolean {
@@ -484,6 +502,19 @@ export class DbSettlementStore implements SettlementStore {
       .prepare("SELECT * FROM settlements WHERE covenant_script = ? LIMIT 1")
       .get(script) as unknown as SettlementRow | undefined;
     return row ? this.toRecord(row) : undefined;
+  }
+
+  listActiveCovenantScripts(): string[] {
+    // Served by idx_settlements_active_covenants, whose partial predicate is this
+    // query's: it holds the destinations in play, not every covenant row in window.
+    const rows = this.db
+      .prepare(
+        "SELECT covenant_script FROM settlements WHERE covenant_script IS NOT NULL AND payout_reference IS NULL AND created_at > ?",
+      )
+      .all(this.now() - (this.destinationWatchMs + COVENANT_RETIRE_MARGIN_MS)) as unknown as {
+      covenant_script: string;
+    }[];
+    return rows.map((r) => r.covenant_script);
   }
 
   isReferenceUsed(reference: string): boolean {

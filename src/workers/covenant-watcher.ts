@@ -9,6 +9,7 @@ import { isContractVtxoEvent, type IContractManager } from "@arkade-os/sdk";
 import type { SettlementStore } from "../settlement-store.js";
 import { COVENANT_CONTRACT_TYPE } from "../covenant/contract.js";
 import { startCatchUpLoop } from "./catch-up-loop.js";
+import { activeCovenantFilters } from "./covenant-retirement.js";
 
 /** Settle `record` from any output at its script that covers the agreed amount. */
 function settleFrom(
@@ -66,11 +67,15 @@ export function startCovenantWatcher(
   };
 }
 
-/** Settle anything already funded at subscribe time — the events for those are gone. */
+/** Settle anything already funded at subscribe time — the events for those are gone.
+ *  Every record this pass could settle is in the active scope: settling needs
+ *  `settled = 0`, and such a record cannot already have been swept. */
 export async function catchUp(store: SettlementStore, contracts: IContractManager): Promise<number> {
   let settled = 0;
-  for (const { contract, vtxos } of await contracts.getContractsWithVtxos({ type: COVENANT_CONTRACT_TYPE })) {
-    settled += settleFrom(store, contract.script, vtxos);
+  for (const scope of activeCovenantFilters(store)) {
+    for (const { contract, vtxos } of await contracts.getContractsWithVtxos(scope)) {
+      settled += settleFrom(store, contract.script, vtxos);
+    }
   }
   return settled;
 }
