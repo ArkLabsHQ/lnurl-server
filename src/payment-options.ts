@@ -26,6 +26,14 @@ export interface OptionAddress {
   claimPublicKey: string | null;
   /** Arkade boarding address; the onchain rail resolves to it. */
   boardingAddress?: string | null;
+  /** Rail ids the operator disabled for this address. */
+  disabledRails?: readonly unknown[];
+}
+
+/** A token option the provider currently offers. */
+export interface TokenRailRef {
+  optionId: string;
+  ffCode: string;
 }
 
 /** Options advertised in the LUD-06 payRequest. Emitted only when there is a
@@ -46,10 +54,17 @@ export function advertisedOptions(address: OptionAddress): PaymentOption[] {
 export type ResolvedPaymentOption =
   | { kind: "lightning" }
   | { kind: "destination"; paymentOption: string; paymentDestination: string }
+  | { kind: "fixedfloat"; optionId: string; ffCode: string }
   | { kind: "error"; reason: string };
 
-/** Resolve the wallet's `paymentOption` query value. Extend with new rails here. */
-export function resolvePaymentOption(optionId: string | undefined, address: OptionAddress): ResolvedPaymentOption {
+/** Resolve the wallet's `paymentOption` query value. Extend with new rails here. A token
+ *  option resolves only from `tokenRails`, never from its prefix, so an id the provider
+ *  stopped offering is refused rather than half-served. */
+export function resolvePaymentOption(
+  optionId: string | undefined,
+  address: OptionAddress,
+  tokenRails: readonly TokenRailRef[] = [],
+): ResolvedPaymentOption {
   // Ids are canonical lowercase; be liberal about the case payers send.
   const id = optionId?.toLowerCase();
   if (id === undefined || id === "lightning") return { kind: "lightning" };
@@ -62,6 +77,13 @@ export function resolvePaymentOption(optionId: string | undefined, address: Opti
     return address.boardingAddress
       ? { kind: "destination", paymentOption: "onchain", paymentDestination: address.boardingAddress }
       : { kind: "error", reason: "Unsupported paymentOption" };
+  }
+  const token = tokenRails.find((rail) => rail.optionId === id);
+  if (token && address.arkadeAddress && address.claimPublicKey) {
+    if (address.disabledRails?.includes("fixedfloat")) {
+      return { kind: "error", reason: `paymentOption ${token.optionId} is disabled for this address` };
+    }
+    return { kind: "fixedfloat", optionId: token.optionId, ffCode: token.ffCode };
   }
   return { kind: "error", reason: "Unsupported paymentOption" };
 }
