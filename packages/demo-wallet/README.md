@@ -31,7 +31,7 @@ under it, showing the client code that action runs.
 | Watch many receives, one connection | Receive → the list under the invoice | `payer.openVerifyBatchStream(...)` + `stream.update(add, remove)` | [client: verifyBatch](../client/README.md#many-pending-invoices-verifybatch), [LUD-XX #299](https://github.com/lnurl/luds/pull/299) |
 | Confirm many sends, one request | Send → status after paying | `batchVerify(verifyBatchUrl, verifyUrls)` | [client: verifyBatch](../client/README.md#many-pending-invoices-verifybatch) |
 | Preimage-checked verify | Receive/Send when no `verifyBatch` is offered | `payer.pollVerify(verifyUrl, opts)` | [client: Payer](../client/README.md#payer), [LUD-21](https://github.com/lnurl/luds/blob/luds/21.md) |
-| Pay anything | Send → **Find routes**, **Pay** | `arkadePaymentRouter({ wallet, lightning }).options(...)` | [Send routing](#send-routes-through-the-sdks-paymentrouter) |
+| Pay anything | Send → **Find routes**, **Quote**, **Pay** | `arkadePaymentRouter({ wallet, lightning }).options(...)` | [Send routing](#send-routes-through-the-sdks-paymentrouter) |
 | Payment sync | Activity (every 8 s) | `receiver.sync()` + `storedPayments({ domain, handle })` | [client: Payment activity](../client/README.md#payment-activity) |
 
 ## Onboarding
@@ -122,7 +122,10 @@ running `serve` answers HTTP only. So `solverRfqHttpUrl`, when set, routes over 
 otherwise the nostr transport is loaded on demand, keeping `nostr-tools` out of the
 bundle.
 
-Options are quoted **on click**: a quote asks the callback for an invoice.
+Options are quoted **on click**: a quote asks the callback for an invoice. **Pay** then
+sends the quote's `total` — amount plus fee — which the row shows before you commit.
+Pasting a target that names an amount (a BIP21 `amount=`, else its invoice's) fills the
+amount box.
 
 After a send, the receiver's confirmation is batched. Every unconfirmed send at the
 same endpoint is checked in one GET every 2 seconds:

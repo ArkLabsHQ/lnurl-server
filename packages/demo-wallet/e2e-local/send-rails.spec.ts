@@ -51,19 +51,22 @@ test("a browser wallet routes a BOLT11 over the solver's lightning corridor", as
   await expect(page.getByRole("button", { name: "Find routes" })).toBeEnabled({ timeout: 180_000 });
 
   console.log(`TRIAGE registry fetched: ${registryCalls.length}`);
-  const pay = page.getByRole("button", { name: new RegExp(`Pay ${SATS} sats`) }).first();
-  console.log(`TRIAGE routes offered: ${await pay.count()}`);
+  const quote = page.getByRole("button", { name: "Quote" }).first();
+  console.log(`TRIAGE routes offered: ${await quote.count()}`);
 
   // Discovery is the gate: without a reachable registry the rail matches the
   // invoice and then reports an empty market, which reads as "no solver".
   expect(registryCalls.length, "the browser never fetched the local registry").toBeGreaterThan(0);
-  await expect(pay, "the solver rail offered no route for the invoice").toBeVisible({ timeout: 60_000 });
+  await expect(quote, "the solver rail offered no route for the invoice").toBeVisible({ timeout: 60_000 });
 
   // Resolving a route never touches the solver; quoting is where `connect`
   // builds the transport, so only this puts an RFQ on the wire.
-  await pay.click();
+  await quote.click();
   const sendCard = page.locator("div").filter({ has: page.getByRole("heading", { name: "Send", exact: true }) }).last();
   const status = sendCard.locator('p[style*="ui-monospace"]');
+  const confirm = page.getByRole("button", { name: /^Pay \d+ sats$/ });
+  await expect(confirm.or(status.filter({ hasText: /failed/ }))).toBeVisible({ timeout: 120_000 });
+  if (await confirm.isVisible()) await confirm.click();
   const seen: string[] = [];
   await expect
     .poll(async () => {

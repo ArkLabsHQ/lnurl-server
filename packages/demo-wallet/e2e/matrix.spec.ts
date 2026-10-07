@@ -79,7 +79,8 @@ async function pay(from: Page, to: string, amount: number, railId: string, label
 
   const row = from.locator("div").filter({ hasText: new RegExp(`^${railId}`) }).first();
   await expect(row, `${label}: ${railId} was not offered`).toBeVisible({ timeout: 60_000 });
-  await row.getByRole("button", { name: /Pay/ }).click();
+  await row.getByRole("button", { name: "Quote" }).click();
+  await row.getByRole("button", { name: /^Pay \d+ sats$/ }).click({ timeout: 120_000 });
 
   await expect(from.getByText(new RegExp(`sent \\d+ sats via ${railId}|${railId} · `)))
     .toBeVisible({ timeout: 180_000 });
