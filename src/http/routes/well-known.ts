@@ -14,6 +14,7 @@ import {
   type ServerRailCaps,
 } from "../../rails.js";
 import { applyQuote, type PaymentQuote } from "../../quote-provider.js";
+import { withTokenUnits } from "../../rails/fixedfloat/options.js";
 import type { DerivedDestination } from "../../covenant/destination.js";
 import type { AddressRow, DomainRow, LnurlPayDestinationResponse, LnurlPayMetadata } from "../../types/index.js";
 import { LnurlError } from "../errors.js";
@@ -67,9 +68,8 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
   const payRequest = (res: Response, domain: DomainRow, address: AddressRow, callback: string): void => {
     const { railAddress, base } = envelope(domain, address);
     const railCaps = currentRailCaps();
-    const options = advertisedRailOptions(railAddress, railCaps, base);
+    const { options, units } = withTokenUnits(advertisedRailOptions(railAddress, railCaps, base), quoteProvider?.units() ?? []);
     const advertised = advertisedBounds(railAddress, railCaps, base);
-    const units = quoteProvider?.units() ?? [];
     res.json({
       tag: "payRequest",
       callback,

@@ -49,7 +49,7 @@ describe("admin rails", () => {
     const res = await request(app).get("/admin/api/rails");
     expect(res.status).toBe(200);
     const byId = new Map(res.body.rails.map((r: { id: string }) => [r.id, r]));
-    expect([...byId.keys()]).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain"]);
+    expect([...byId.keys()]).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat"]);
     expect(byId.get("interactive-lightning")).toMatchObject({ configured: true, ready: true });
     expect(byId.get("offline-swap")).toMatchObject({ configured: true, ready: true });
     expect(byId.get("arkade")).toMatchObject({ configured: true, ready: true });

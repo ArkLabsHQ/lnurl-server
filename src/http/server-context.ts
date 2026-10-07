@@ -12,6 +12,7 @@ import type { QuoteProvider } from "../quote-provider.js";
 import type { CovenantDestinationProvider } from "../covenant/destination.js";
 import type { RuntimeSettings } from "../services/settings.js";
 import type { LnurlServiceConfig } from "../types/index.js";
+import type { FixedFloatDeps } from "../rails/fixedfloat/provider.js";
 
 export interface ServerDeps {
   repos: Repositories;
@@ -46,13 +47,15 @@ export interface ServerDeps {
   /** Called with a static-rail destination as it is handed out, so a watcher can
    *  register it before the payer pays rather than on its next resync. */
   onDestinationIssued?: (destination: string) => void;
+  /** Token deposits through a custodial swap provider, paid out over the offline swap rail. */
+  fixedFloat?: FixedFloatDeps;
   health?: HealthRegistry;
   logger?: Logger;
 }
 
 /** What every public router shares, resolved once by `createServer`. */
 export interface ServerContext extends Pick<ServerDeps,
-  "addressService" | "registrationLimiter" | "offlineSwapCreator" | "offlineSwaps" | "covenantDestinations" | "quoteProvider" | "onDestinationIssued"
+  "addressService" | "registrationLimiter" | "offlineSwapCreator" | "offlineSwaps" | "covenantDestinations" | "quoteProvider" | "onDestinationIssued" | "fixedFloat"
 > {
   config: LnurlServiceConfig;
   /** Absent in library mode: no DB, so no Lightning addresses. */

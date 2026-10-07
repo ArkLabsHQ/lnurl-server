@@ -12,6 +12,12 @@ export interface PaymentOption {
   verifiable?: boolean;
   minSendable?: number;
   maxSendable?: number;
+  /** CAIP-19 id of a token option; `type` is its CAIP-2 namespace. */
+  asset?: string;
+  /** The units[] code a token option is quoted in. */
+  unit?: string;
+  /** The third party the payer hands funds to, on a custodial rail. */
+  provider?: string;
 }
 
 /** The address fields the option logic depends on. */
