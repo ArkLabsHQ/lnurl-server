@@ -135,7 +135,7 @@ export function lnurlAddressRoutes({ repos, addressService, registrationLimiter:
     res.json({ ok: true });
   });
 
-  // Owner payment activity as a sync source, oldest first with an inclusive nextSince cursor.
+  // Owner payment activity as a sync source, least recently changed first, with an inclusive nextSince cursor.
   r.get("/lnurl/address/:handle/payments", (req, res) => {
     const domain = domainFor(repos, strParam(req.query.domain) ?? req.get("host"));
     if (!domain || !domain.enabled) throw new NotFound("Unknown or disabled domain");
@@ -159,7 +159,7 @@ export function lnurlAddressRoutes({ repos, addressService, registrationLimiter:
         handle: nameless ? address.sessionId! : address.username,
       },
       payments,
-      nextSince: last ? last.createdAt : (since ?? 0),
+      nextSince: last ? last.updatedAt : (since ?? 0),
     });
   });
 

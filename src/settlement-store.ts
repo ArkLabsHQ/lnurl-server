@@ -32,6 +32,8 @@ export interface SettlementRecord {
   addressId: number | null;
   createdAt: number;
   settledAt: number | null;
+  /** The last write to the record: the owner's payments sync pages on it. */
+  updatedAt: number;
 }
 
 /** A pending offline-receive swap awaiting solver settlement, for the poller. */
@@ -121,6 +123,7 @@ export class MemorySettlementStore implements SettlementStore {
   create(rec: NewSettlement): void {
     if (++this.calls % 1000 === 0) this.sweep();
     if (this.map.has(rec.paymentHash)) return;
+    const at = this.now();
     this.map.set(rec.paymentHash, {
       paymentHash: rec.paymentHash,
       pr: rec.pr,
@@ -135,8 +138,9 @@ export class MemorySettlementStore implements SettlementStore {
       amountMsat: rec.amountMsat ?? null,
       covenantScript: rec.covenantScript ?? null,
       addressId: rec.addressId ?? null,
-      createdAt: this.now(),
+      createdAt: at,
       settledAt: null,
+      updatedAt: at,
     });
   }
 
@@ -146,6 +150,7 @@ export class MemorySettlementStore implements SettlementStore {
     r.settled = true;
     r.preimage = preimage;
     r.settledAt = this.now();
+    r.updatedAt = r.settledAt;
     return true;
   }
 
@@ -227,6 +232,7 @@ export class MemorySettlementStore implements SettlementStore {
     // Derived from the record, so no caller can pass the wrong answer in.
     if (!r.covenantScript) r.payoutReference = reference;
     r.settledAt = this.now();
+    r.updatedAt = r.settledAt;
     return true;
   }
 
@@ -234,6 +240,7 @@ export class MemorySettlementStore implements SettlementStore {
     const r = this.get(paymentHash);
     if (!r || r.payoutReference) return false;
     r.payoutReference = reference;
+    r.updatedAt = this.now();
     return true;
   }
 
@@ -249,8 +256,8 @@ export class MemorySettlementStore implements SettlementStore {
 
   listByAddress(addressId: number, limit: number, opts?: { since?: number }): SettlementRecord[] {
     return [...this.map.values()]
-      .filter((r) => r.addressId === addressId && (opts?.since === undefined || r.createdAt >= opts.since))
-      .sort((a, b) => a.createdAt - b.createdAt || (a.paymentHash < b.paymentHash ? -1 : 1))
+      .filter((r) => r.addressId === addressId && (opts?.since === undefined || r.updatedAt >= opts.since))
+      .sort((a, b) => a.updatedAt - b.updatedAt || (a.paymentHash < b.paymentHash ? -1 : 1))
       .slice(0, limit);
   }
 
@@ -285,6 +292,7 @@ interface SettlementRow {
   address_id: number | null;
   created_at: number;
   settled_at: number | null;
+  updated_at: number | null;
 }
 
 /** SQLite-backed store (migration 003). Survives restart and outlives the SSE
@@ -299,9 +307,10 @@ export class DbSettlementStore implements SettlementStore {
   ) {}
 
   create(rec: NewSettlement): void {
+    const at = this.now();
     const info = this.db
       .prepare(
-        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, covenant_script, address_id, created_at, settled_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, covenant_script, address_id, created_at, settled_at, updated_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
       )
       .run(
         rec.paymentHash,
@@ -314,7 +323,8 @@ export class DbSettlementStore implements SettlementStore {
         rec.amountMsat ?? null,
         rec.covenantScript ?? null,
         rec.addressId ?? null,
-        this.now(),
+        at,
+        at,
       );
     // A paymentHash collision on the offline path would leave `verify` polling the
     // OLD record while the payer got the NEW invoice — cryptographically negligible,
@@ -332,11 +342,12 @@ export class DbSettlementStore implements SettlementStore {
   markSettled(paymentHash: string, preimage: string): boolean {
     // `created_at >` keeps this in step with `get`, which treats an expired
     // record as absent — settling one nothing can read afterwards is a lie.
+    const at = this.now();
     const info = this.db
       .prepare(
-        "UPDATE settlements SET settled = 1, preimage = ?, settled_at = ? WHERE payment_hash = ? AND settled = 0 AND created_at > ?",
+        "UPDATE settlements SET settled = 1, preimage = ?, settled_at = ?, updated_at = ? WHERE payment_hash = ? AND settled = 0 AND created_at > ?",
       )
-      .run(preimage, this.now(), paymentHash, this.now() - this.ttlMs);
+      .run(preimage, at, at, paymentHash, at - this.ttlMs);
     return info.changes > 0;
   }
 
@@ -382,6 +393,8 @@ export class DbSettlementStore implements SettlementStore {
       addressId: row.address_id ?? null,
       createdAt: row.created_at,
       settledAt: row.settled_at ?? null,
+      // NULL on a row an older build wrote after migration 16 ran.
+      updatedAt: row.updated_at ?? row.created_at,
     };
   }
 
@@ -443,10 +456,11 @@ export class DbSettlementStore implements SettlementStore {
 
   markObserved(paymentHash: string, reference: string): boolean {
     // Idempotent: a second observation must not overwrite the first's reference.
+    const at = this.now();
     const info = this.db
       .prepare(
         // payout_reference only where the observed payment IS the credit.
-        "UPDATE settlements SET settled = 1, payment_reference = ?, settled_at = ?," +
+        "UPDATE settlements SET settled = 1, payment_reference = ?, settled_at = ?, updated_at = ?," +
           " payout_reference = CASE WHEN covenant_script IS NULL THEN ? ELSE payout_reference END" +
           " WHERE payment_hash = ? AND settled = 0 AND created_at > ?",
       )
@@ -454,14 +468,14 @@ export class DbSettlementStore implements SettlementStore {
       // rather than the verify TTL. Gating it on the shorter one meant the
       // watcher could find a late payment and then fail to record it, which
       // reads as "no payment" from every angle a caller can see.
-      .run(reference, this.now(), reference, paymentHash, this.now() - this.destinationWatchMs);
+      .run(reference, at, at, reference, paymentHash, at - this.destinationWatchMs);
     return info.changes > 0;
   }
 
   markPaidOut(paymentHash: string, reference: string): boolean {
     const info = this.db
-      .prepare("UPDATE settlements SET payout_reference = ? WHERE payment_hash = ? AND payout_reference IS NULL")
-      .run(reference, paymentHash);
+      .prepare("UPDATE settlements SET payout_reference = ?, updated_at = ? WHERE payment_hash = ? AND payout_reference IS NULL")
+      .run(reference, this.now(), paymentHash);
     return info.changes > 0;
   }
 
@@ -497,11 +511,11 @@ export class DbSettlementStore implements SettlementStore {
     const where: string[] = ["address_id = ?"];
     const params: (string | number)[] = [addressId];
     if (opts?.since !== undefined) {
-      where.push("created_at >= ?");
+      where.push("updated_at >= ?");
       params.push(opts.since);
     }
     const rows = this.db
-      .prepare(`SELECT * FROM settlements WHERE ${where.join(" AND ")} ORDER BY created_at ASC, payment_hash ASC LIMIT ?`)
+      .prepare(`SELECT * FROM settlements WHERE ${where.join(" AND ")} ORDER BY updated_at ASC, payment_hash ASC LIMIT ?`)
       .all(...params, limit) as unknown as SettlementRow[];
     return rows.map((row) => this.toRecord(row));
   }

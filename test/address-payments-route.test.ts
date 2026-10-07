@@ -183,6 +183,30 @@ describe("address payments route", () => {
     expect(b2.nextSince).toBe(6000);
   });
 
+  it("lists a payment again once it changes behind a newer one", async () => {
+    const aliceId = await register("alice", ALICE);
+    clock = 1000; seed("swept", aliceId);
+    clock = 2000; seed("newer", aliceId);
+    const first = page((await req("GET", `${ctx.baseUrl}/lnurl/address/alice/payments`, { host: "domain.com", bearer: ALICE })).body);
+    expect(first.nextSince).toBe(2000);
+
+    clock = 3000; settlements.markPaidOut("swept", "sweep-tx");
+    const res = await req("GET", `${ctx.baseUrl}/lnurl/address/alice/payments?since=${first.nextSince}`, { host: "domain.com", bearer: ALICE });
+    expect(res.status).toBe(200);
+    const next = page(res.body);
+    expect(next.payments.map((p) => p.paymentHash)).toEqual(["newer", "swept"]);
+    expect(next.nextSince).toBe(3000);
+  });
+
+  it("answers a numeric nextSince when the last row was written without updated_at", async () => {
+    const aliceId = await register("alice", ALICE);
+    clock = 1000; seed("older-build", aliceId);
+    db.prepare("UPDATE settlements SET updated_at = NULL WHERE payment_hash = 'older-build'").run();
+    const res = await req("GET", `${ctx.baseUrl}/lnurl/address/alice/payments`, { host: "domain.com", bearer: ALICE });
+    expect(res.status).toBe(200);
+    expect(page(res.body).nextSince).toBe(1000);
+  });
+
   it("a payment settled before upgrade is listed after it, under the new handle", async () => {
     const register = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "session.com", body: { token: ALICE, nameless: true } });
     expect(register.status).toBe(201);

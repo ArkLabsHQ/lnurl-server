@@ -71,8 +71,8 @@ export class OfflineSwapStore {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.prepare(
-        "INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, amount_msat, address_id, created_at) VALUES (?, ?, ?, 0, ?, ?, 'lightning', ?, ?, ?)",
-      ).run(record.paymentHash, record.pr, record.sessionId, record.preimage, record.recovery.rfqId, record.amountMsat, record.addressId ?? null, createdAt);
+        "INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, amount_msat, address_id, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?, 'lightning', ?, ?, ?, ?)",
+      ).run(record.paymentHash, record.pr, record.sessionId, record.preimage, record.recovery.rfqId, record.amountMsat, record.addressId ?? null, createdAt, createdAt);
       this.db.prepare(
         "INSERT INTO offline_swaps (payment_hash, rfq_id, solver_name, solver_pubkey, relays_json, recovery_version, recovery_json, lockup_address, expected_amount, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       ).run(
@@ -107,8 +107,9 @@ export class OfflineSwapStore {
   }
 
   markSettled(paymentHash: string, preimage: string): boolean {
+    const at = this.now();
     return this.db.prepare(
-      "UPDATE settlements SET settled = 1, preimage = ?, settled_at = ? WHERE payment_hash = ? AND settled = 0 AND created_at > ?",
-    ).run(preimage, this.now(), paymentHash, this.now() - this.ttlMs).changes > 0;
+      "UPDATE settlements SET settled = 1, preimage = ?, settled_at = ?, updated_at = ? WHERE payment_hash = ? AND settled = 0 AND created_at > ?",
+    ).run(preimage, at, at, paymentHash, at - this.ttlMs).changes > 0;
   }
 }
