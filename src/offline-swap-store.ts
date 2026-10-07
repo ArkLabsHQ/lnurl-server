@@ -63,6 +63,24 @@ function recoveryOf(row: PendingRow): OfflineSwapRecoveryV1 {
   };
 }
 
+/** The restart-recovery row for a corridor swap; the caller owns the transaction. */
+export function insertOfflineSwap(db: Db, paymentHash: string, recovery: OfflineSwapRecoveryV1, createdAt: number): void {
+  db.prepare(
+    "INSERT INTO offline_swaps (payment_hash, rfq_id, solver_name, solver_pubkey, relays_json, recovery_version, recovery_json, lockup_address, expected_amount, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(
+    paymentHash,
+    recovery.rfqId,
+    recovery.solverName,
+    recovery.solverPubkey,
+    JSON.stringify(recovery.relays),
+    recovery.version,
+    JSON.stringify({ script: recovery.script }),
+    recovery.lockupAddress,
+    recovery.expectedAmount,
+    createdAt,
+  );
+}
+
 export class OfflineSwapStore {
   constructor(private db: Db, private ttlMs: number, private now: () => number = Date.now) {}
 
@@ -73,20 +91,7 @@ export class OfflineSwapStore {
       this.db.prepare(
         "INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, amount_msat, address_id, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?, 'lightning', ?, ?, ?, ?)",
       ).run(record.paymentHash, record.pr, record.sessionId, record.preimage, record.recovery.rfqId, record.amountMsat, record.addressId ?? null, createdAt, createdAt);
-      this.db.prepare(
-        "INSERT INTO offline_swaps (payment_hash, rfq_id, solver_name, solver_pubkey, relays_json, recovery_version, recovery_json, lockup_address, expected_amount, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(
-        record.paymentHash,
-        record.recovery.rfqId,
-        record.recovery.solverName,
-        record.recovery.solverPubkey,
-        JSON.stringify(record.recovery.relays),
-        record.recovery.version,
-        JSON.stringify({ script: record.recovery.script }),
-        record.recovery.lockupAddress,
-        record.recovery.expectedAmount,
-        createdAt,
-      );
+      insertOfflineSwap(this.db, record.paymentHash, record.recovery, createdAt);
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
