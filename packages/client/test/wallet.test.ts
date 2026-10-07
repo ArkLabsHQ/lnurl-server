@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { hex } from "@scure/base";
-import type { Wallet } from "@arkade-os/sdk";
-import { arkadeLnurl, encodeLnurl, type ArkadeLnurl, type Receiver } from "../src/wallet.js";
+import { invoiceTarget, type PaymentRail, type RouteQuote, type Wallet } from "@arkade-os/sdk";
+import { arkadeLnurl, arkadePaymentRouter, DEFAULT_RAIL_PRIORITY, encodeLnurl, type ArkadeLnurl, type Receiver } from "../src/wallet.js";
 import { deriveSessionId } from "../src/token.js";
 import { createLnurlClient, type LnurlClient } from "../src/index.js";
 import { LnurlError } from "../src/errors.js";
@@ -293,6 +293,43 @@ describe("arkadeLnurl", () => {
     await lnurl.capabilities();
 
     expect(client.domainCapabilities).toHaveBeenCalledWith({ domain: "lnurl.example.com" });
+  });
+});
+
+describe("arkadePaymentRouter", () => {
+  const UNIFIED = "bitcoin:tb1pgk4xl52hczpgz0fp429ccvdztvmhd5mthd7xxj8aq4nvstc7kzcql3fvdu"
+    + "?ark=tark1qqcpq7yq3e8hhsx6ml3fud93m7827qggaurtzu3zwsr4a0qs0gf858t79qp09kwef5q27wqrep4teavv3j6fk2wpdd3674z306qy00sr5h9h6y"
+    + "&lightning=lntbs60020n1p4vt7d3pp5n7hcxe4650eatxe3ap4eqzjt8am6ldzzs0lzhm63yy6rfklptl8sdqqcqzpkxqrpc8sp5hrhtzvzwqq3qxcfuushmeqh0kw05ym3alhm3l73aeufcea42hh3q9qxpqysgqgks7jz3nm8l5lz4v9y7cwc682nza8j8j3q6k4ez6qg077utxy0hnh3k3gy3ek7ejn4kf55ljrwh2ytr2xvyx2y7aqldjclkjh5qklegqxtquau"
+    + "&amount=0.00005936";
+
+  const invoiceOnly = (): PaymentRail & { quoted: (number | undefined)[] } => {
+    const quoted: (number | undefined)[] = [];
+    return {
+      id: "solver-lightning",
+      quoted,
+      match: (req) => invoiceTarget(req.raw) !== undefined,
+      available: (req) => req.amount === undefined || req.amount === 6002,
+      quote: async (req) => { quoted.push(req.amount); return { railId: "solver-lightning" } as unknown as RouteQuote; },
+    };
+  };
+
+  it("offers a unified URI's lightning leg when the amount restates the URI's own", async () => {
+    const lightning = invoiceOnly();
+    const router = arkadePaymentRouter({ wallet: fakeWallet(), lightning });
+
+    const options = await router.options({ raw: UNIFIED, amount: 5936 }, { priority: DEFAULT_RAIL_PRIORITY });
+    await options.find((o) => o.railId === "solver-lightning")?.quote();
+
+    expect(options.map((o) => o.railId)).toEqual(["ark", "solver-lightning", "onchain"]);
+    expect(lightning.quoted).toEqual([undefined]);
+  });
+
+  it("still drops the lightning leg for an amount the URI does not name", async () => {
+    const router = arkadePaymentRouter({ wallet: fakeWallet(), lightning: invoiceOnly() });
+
+    const options = await router.options({ raw: UNIFIED, amount: 7000 }, { priority: DEFAULT_RAIL_PRIORITY });
+
+    expect(options.map((o) => o.railId)).toEqual(["ark", "onchain"]);
   });
 });
 

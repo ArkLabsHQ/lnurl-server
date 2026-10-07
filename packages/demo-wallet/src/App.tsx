@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { PaymentOption, WalletBalance } from "@arkade-os/sdk";
+import type { PaymentOption, RouteQuote, WalletBalance } from "@arkade-os/sdk";
 import type { DomainCapabilities, InvoiceResult, PayRequest } from "@arkade-os/lnurl-client";
 import type { ClaimOptions, Receiver, SentPayment } from "@arkade-os/lnurl-client/arkade";
 import { lnurlActivityResolver, lnurlQuoteMeta, sentActivityResolver } from "@arkade-os/lnurl-client/arkade";
@@ -575,12 +575,16 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
   const [target, setTarget] = useState("");
   const [amount, setAmount] = useState(1000);
   const [options, setOptions] = useState<PaymentOption[] | null>(null);
+  const [quoted, setQuoted] = useState<{ railId: string; quote: RouteQuote }>();
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [paying, setPaying] = useState<string>();
 
+  // An option closes over the request it was listed for, so an edit must not leave it payable.
+  useEffect(() => { setOptions(null); setQuoted(undefined); }, [target, amount]);
+
   const findRoutes = async () => {
-    setBusy(true); setStatus(""); setOptions(null);
+    setBusy(true); setStatus(""); setOptions(null); setQuoted(undefined);
     try {
       const found = await router.options({ raw: target.trim(), amount }, { priority: RAIL_PRIORITY });
       setOptions(found);
@@ -591,14 +595,20 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
 
   // Quoted only on click: a quote asks the callback for an invoice, so pricing
   // every option up front would mint one per rail and abandon all but one.
-  const pay = async (option: PaymentOption) => {
+  const getQuote = async (option: PaymentOption) => {
     // Quoting a swap rail is a live round trip to a solver and can take a
     // while or stall; without this the button only greys out and the wallet
     // looks like it ignored the click.
     setPaying(option.railId);
-    setBusy(true); setStatus("");
+    setBusy(true); setStatus(""); setQuoted(undefined);
+    try { setQuoted({ railId: option.railId, quote: await option.quote() }); }
+    catch (e) { setStatus(`quote failed: ${(e as Error).message}`); }
+    finally { setBusy(false); setPaying(undefined); }
+  };
+
+  const pay = async (quote: RouteQuote) => {
+    setBusy(true); setStatus(""); setQuoted(undefined);
     try {
-      const quote = await option.quote();
       const handle = await quote.send();
       setStatus(`sent ${quote.amount} sats via ${quote.railId} · fee ${quote.fee} · ${handle.status}`);
       // Unless the wallet writes this down, nothing ever knows who it paid.
@@ -650,7 +660,7 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
         });
       }
     } catch (e) { setStatus(`payment failed: ${(e as Error).message}`); }
-    finally { setBusy(false); setPaying(undefined); }
+    finally { setBusy(false); }
   };
 
   return (
@@ -672,21 +682,26 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
         </button>
       </div>
 
-      {options?.map((option) => (
-        <div key={option.railId} style={{ borderLeft: "4px solid #16834b", paddingLeft: 12, marginBottom: 8,
-          display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ ...mono }}>{option.railId}</span>
-          <button style={{ ...btn, marginLeft: "auto" }} disabled={busy} onClick={() => void pay(option)}>
-            {paying === option.railId ? "Quoting…" : `Pay ${amount} sats`}
-          </button>
-        </div>
-      ))}
+      {options?.map((option) => {
+        const q = quoted?.railId === option.railId ? quoted.quote : undefined;
+        return (
+          <div key={option.railId} style={{ borderLeft: "4px solid #16834b", paddingLeft: 12, marginBottom: 8,
+            display: "flex", alignItems: "center", gap: 12 }}>
+            <span style={{ ...mono }}>{option.railId}</span>
+            {q && <span style={{ ...mono, color: "#555" }}>{q.amount} sats + {q.fee} fee</span>}
+            <button style={{ ...btn, marginLeft: "auto" }} disabled={busy}
+              onClick={() => void (q ? pay(q) : getQuote(option))}>
+              {paying === option.railId ? "Quoting…" : q ? `Pay ${q.total} sats` : "Quote"}
+            </button>
+          </div>
+        );
+      })}
       {status && <p style={{ ...mono, color: status.includes("failed") ? "crimson" : "#16834b" }}>{status}</p>}
       <Call code={[
         "const router = arkadePaymentRouter({ wallet, lightning })",
         `const options = await router.options({ raw: target, amount: ${amount} }, { priority: DEFAULT_RAIL_PRIORITY })`,
-        "const quote = await option.quote()  // the option you clicked; quoted on click, not on listing",
-        "const handle = await quote.send()",
+        "const quote = await option.quote()  // Quote: priced on click, not on listing",
+        "const handle = await quote.send()  // Pay: sends quote.total = quote.amount + quote.fee",
         "pendingConfirmations.add({ verifyUrl, verifyBatch, onSettled, onError })",
         "// every 2s it runs batchVerify(verifyBatch, pendingVerifyUrls): one GET for every unconfirmed send",
       ].join("\n")} />

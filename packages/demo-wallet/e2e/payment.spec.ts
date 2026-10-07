@@ -56,7 +56,8 @@ test("pays another wallet's lightning address over the arkade rail @funded", asy
   // must be offered and must outrank lightning.
   await expect(payerPage.getByText("lnurl-arkade")).toBeVisible();
 
-  await payerPage.getByRole("button", { name: `Pay ${AMOUNT} sats` }).first().click();
+  await payerPage.getByRole("button", { name: "Quote" }).first().click();
+  await payerPage.getByRole("button", { name: /^Pay \d+ sats$/ }).click({ timeout: 120_000 });
   await expect(payerPage.getByText(/sent \d+ sats via lnurl-arkade|lnurl-arkade · /)).toBeVisible({ timeout: 120_000 });
 
   // Money actually left: the payer's spendable balance drops by at least the

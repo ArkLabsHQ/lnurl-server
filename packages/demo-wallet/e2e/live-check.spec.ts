@@ -60,7 +60,8 @@ test("a received payment arrives without a refresh, as one activity row @funded"
     await a.page.getByRole("button", { name: "Find routes" }).click();
     const row = a.page.locator("div").filter({ hasText: /^lnurl-arkade/ }).first();
     await expect(row, "lnurl-arkade was not offered").toBeVisible({ timeout: 60_000 });
-    await row.getByRole("button", { name: /Pay/ }).click();
+    await row.getByRole("button", { name: "Quote" }).click();
+    await row.getByRole("button", { name: /^Pay \d+ sats$/ }).click({ timeout: 120_000 });
     await expect(a.page.getByText(/sent \d+ sats via lnurl-arkade|lnurl-arkade · /))
       .toBeVisible({ timeout: 180_000 });
 

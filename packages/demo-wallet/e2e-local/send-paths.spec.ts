@@ -85,9 +85,13 @@ async function payOver(page: Page, railId: string, target: string, amount: numbe
   await page.getByPlaceholder(/name@domain/).fill(target);
   await page.locator('input[type="number"]').fill(String(amount));
   await page.getByRole("button", { name: "Find routes" }).click();
-  const option = page.locator("div").filter({ hasText: new RegExp(`^${railId}Pay `) }).first();
+  const option = page.locator("div").filter({ hasText: new RegExp(`^${railId}Quote`) }).first();
   await expect(option, `${railId} offered no route`).toBeVisible({ timeout: 120_000 });
-  await option.getByRole("button", { name: `Pay ${amount} sats` }).click();
+  await option.getByRole("button", { name: "Quote" }).click();
+  // A refused quote leaves no Pay button; the caller's statusReaches reports it.
+  const confirm = page.getByRole("button", { name: /^Pay \d+ sats$/ });
+  await expect(confirm.or(page.getByText(/^quote failed/))).toBeVisible({ timeout: 120_000 });
+  if (await confirm.isVisible()) await confirm.click();
 }
 
 /** Accumulated, not sampled: the send path writes one status line that the rail
