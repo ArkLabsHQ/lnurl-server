@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`lnurlQuoteMeta(quote)` and the `LnurlQuoteMeta` type** (`@arkade-os/lnurl-client/arkade`) — what an lnurl rail records on its quote (`target`, `via`, `verify`, `verifyBatch`), readable without casting `quote.meta.lnurl`. Undefined for a quote no lnurl rail made.
 - **`SentPayment.verify` / `verifyBatch`** — the receiver-confirmation URLs a send's quote carried, so an app can resume a confirmation that was still pending when it closed.
 
+### Changed
+- **Three settlements reads no longer scan the table** — migration 17 adds a partial index for each: the covenant scope every worker pass reads (15.8ms to 0.09ms at 50,000 rows), the payment-reference check a static-rail pass makes once per candidate VTXO (5.6ms to 0.02ms), and the pending-destination read the watched-script resync makes every second (19.2ms to 0.09ms). Each index holds only the rows its query can return, so the cost tracks the payments still open rather than the whole watch window.
+
 ### Removed
 - Removed the unused `@noble/ciphers` dependency.
 

@@ -271,6 +271,21 @@ const MIGRATIONS: Migration[] = [
       DROP INDEX IF EXISTS idx_settlements_address;
     `,
   },
+  {
+    version: 17,
+    // Three reads whose cost tracked the whole watch window rather than the payments
+    // open in it, on paths that repeat per worker pass, per candidate VTXO, and once
+    // a second for the watched-script resync. Each partial predicate is implied by
+    // its query's, so the index holds only the rows that query can return.
+    up: `
+      CREATE INDEX idx_settlements_active_covenants ON settlements(created_at)
+        WHERE covenant_script IS NOT NULL AND payout_reference IS NULL;
+      CREATE INDEX idx_settlements_reference ON settlements(payment_reference)
+        WHERE payment_reference IS NOT NULL;
+      CREATE INDEX idx_settlements_pending_destinations ON settlements(created_at)
+        WHERE settled = 0 AND payment_destination IS NOT NULL;
+    `,
+  },
 ];
 
 export const LATEST_MIGRATION = MIGRATIONS[MIGRATIONS.length - 1]!.version;
