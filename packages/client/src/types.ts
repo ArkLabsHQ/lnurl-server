@@ -1,10 +1,3 @@
-/**
- * One payment rail the receiver advertised on an address payRequest, such as
- * `lightning` or `arkade`. Rails exist only on the address surface: a session
- * payRequest never carries them, which is why `requestInvoice` rejects
- * `paymentOption`/`unit` there instead of letting the server silently ignore
- * the choice.
- */
 export interface PaymentOption {
   /** Rail identifier the callback expects back as `paymentOption`. */
   id: string;
@@ -65,12 +58,7 @@ export interface PaymentQuote {
   /** Named fee legs making up the difference. */
   fees?: { name?: string; amount: AmountObject }[];
 }
-/**
- * An LUD-06 payRequest plus the `source` it was fetched from. The source
- * records both the URL and which surface (`address` or `session`) served it,
- * because `requestInvoice` keys its rail guards off the surface: rails,
- * units and the offline path exist only on the address side.
- */
+/** An LUD-06 payRequest plus the `source` (URL and surface) it was fetched from. */
 export interface PayRequest {
   /** LUD-06 tag; `resolve` rejects anything that is not a payRequest. */
   tag: "payRequest";
@@ -84,9 +72,7 @@ export interface PayRequest {
   metadata: string;
   /** Maximum comment length in characters, when the receiver accepts one. */
   commentAllowed?: number;
-  /** Rails the receiver offers; address surface only. */
   paymentOptions?: PaymentOption[];
-  /** Units the receiver prices in; address surface, lightning rail only. */
   units?: Unit[];
   /** Where this payRequest came from; drives the rail guards downstream. */
   source: { url: string; surface: "address" | "session" };
@@ -101,9 +87,8 @@ export interface RequestInvoiceOptions {
   amountSat: number;
   /** Optional payer comment, sent when the payRequest allows one. */
   comment?: string;
-  /** Address surface only. Rejected on a session payRequest. */
   paymentOption?: string;
-  /** Address surface only, lightning rail only. */
+  /** Lightning rail only. */
   unit?: string;
 }
 /**

@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { PaymentRail, RouteQuote, RouterContext } from "@arkade-os/sdk";
 import { createLnurlClient } from "../src/index.js";
 import { LNURL_ARKADE_RAIL, LNURL_LIGHTNING_RAIL, lnurlQuoteMeta, lnurlRails } from "../src/rail.js";
+import { encodeLnurl } from "../src/wallet.js";
 import { buildInvoice, HASH } from "./invoice.js";
+
+const sessionLnurl = encodeLnurl("https://arkadeos.com/lnurl/abc");
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -153,9 +156,26 @@ describe("lnurl rails", () => {
       maxSendable: 100_000_000,
       metadata: '[["text/plain","session"]]',
     }));
-    const req = { raw: "LNURL1DP68GURN8GHJ7MRWW4EXCTNDW46XJMNEDEJHGTNPWF4KZER99EEKSTEWWAJKCMPDDDHX7AMW9AKXUATJD3CZ7URJDA3X2MT4XEM8G7RW0GTE4X83", amount: 500 };
+    const req = { raw: sessionLnurl, amount: 500 };
 
     expect(await by(LNURL_ARKADE_RAIL).available!(req, ctx)).toBe(false);
+  });
+
+  it("pays a nameless receiver's session LNURL on the arkade rail it advertises", async () => {
+    const seen: string[] = [];
+    const { by, arkade } = railsFor(async (url) => {
+      seen.push(url);
+      return url.includes("/callback?")
+        ? json({ status: "OK", paymentOption: "arkade", paymentDestination: "ark1dest" })
+        : json(payRequest({ callback: "https://arkadeos.com/lnurl/abc/callback" }));
+    });
+    const req = { raw: sessionLnurl, amount: 500 };
+
+    expect(await by(LNURL_ARKADE_RAIL).available!(req, ctx)).toBe(true);
+    await by(LNURL_ARKADE_RAIL).quote(req, ctx);
+
+    expect(seen.at(-1)).toContain("paymentOption=arkade");
+    expect(arkade.seen).toEqual([{ raw: "ark1dest", amount: 500 }]);
   });
 
   it("registers no lightning rail when none was supplied", () => {

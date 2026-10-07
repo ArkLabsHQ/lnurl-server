@@ -79,7 +79,7 @@ if (invoice.kind === "bolt11" && invoice.verify) {
 
 A settled bolt11 status is only returned when `SHA256(preimage)` equals the payment hash in `pr`. Anything else — a wrong preimage, or a `pr` that cannot be decoded — is rejected rather than reported as settled.
 
-`requestInvoice` takes `amountSat` plus an optional `comment`. On an address payRequest it also accepts `paymentOption` and `unit`; on a session payRequest those two are rejected. The amount is range-checked locally before anything hits the wire.
+`requestInvoice` takes `amountSat` plus an optional `comment`. It also accepts `paymentOption` and `unit`, except on a session payRequest that does not advertise them (a live session's); a nameless receiver's session LNURL advertises both. The amount is range-checked locally before anything hits the wire.
 
 **Rails can carry different amounts, so check the option you selected.** A covenant destination is bounded by dust and VTXO shape, a solver-mediated swap by whatever the solver quotes — so an entry in `paymentOptions` may publish its own `minSendable`/`maxSendable`, and those win over the top-level pair when you select it. The top-level pair describes the rail you get by sending no `paymentOption` at all. `requestInvoice` applies that rule for you; apply it yourself if you build the callback URL by hand, or you will reject amounts the rail would have accepted.
 
@@ -171,7 +171,7 @@ toPayRequestUrl('alice@example.com')
 
 `isLnAddress` and `isLnUrl` test one form each; `isValidLnUrl` accepts either. All are shape checks only — they never touch the network, so a well-formed but unregistered address passes here and fails at `resolve`.
 
-`toPayRequestUrl` also reports the **surface**, which decides what the payRequest supports: `paymentOptions`, units and the offline rails exist only on the `address` surface, while a `session` LNURL takes an amount and a comment and nothing else. `requestInvoice` rejects rail options on a session payRequest rather than letting the server ignore them silently.
+`toPayRequestUrl` also reports the **surface**. A live `session` LNURL takes an amount and a comment and nothing else, so `requestInvoice` rejects rail options on a session payRequest that advertises none, rather than letting the server ignore them silently. A nameless receiver's session LNURL serves its address, `paymentOptions` and units included, and is paid like one.
 
 Mixed-case LNURLs are rejected per BIP-173 — bech32 forbids mixed case so that case-mangling in transit cannot slip past the checksum. All-uppercase, which is what QR codes carry, decodes normally.
 
