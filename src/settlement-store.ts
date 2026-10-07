@@ -92,9 +92,8 @@ export interface SettlementStore {
   /** Any record with this script, settled or not — the sweep runs after settlement,
    *  so the watcher's pending-only lookup cannot serve it. */
   findByCovenantScript(script: string): SettlementRecord | undefined;
-  /** Covenant destinations still owed work: not yet swept, still inside the window a
-   *  payment there can be attributed in. The sweeper, the watcher's catch-up and
-   *  retirement read this one set, so none can disagree about which scripts matter. */
+  /** Covenant destinations still owed work (unswept, inside the attribution window). The
+   *  sweeper, the watcher's catch-up and retirement all read this one set. */
   listActiveCovenantScripts(): string[];
   /** Fetch a record, or undefined if unknown or expired. */
   get(paymentHash: string): SettlementRecord | undefined;
@@ -505,8 +504,7 @@ export class DbSettlementStore implements SettlementStore {
   }
 
   listActiveCovenantScripts(): string[] {
-    // Served by idx_settlements_active_covenants, whose partial predicate is this
-    // query's: it holds the destinations in play, not every covenant row in window.
+    // Served by the partial idx_settlements_active_covenants (migration 17).
     const rows = this.db
       .prepare(
         "SELECT covenant_script FROM settlements WHERE covenant_script IS NOT NULL AND payout_reference IS NULL AND created_at > ?",

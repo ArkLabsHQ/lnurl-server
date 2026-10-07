@@ -273,10 +273,7 @@ const MIGRATIONS: Migration[] = [
   },
   {
     version: 17,
-    // Three reads whose cost tracked the whole watch window rather than the payments
-    // open in it, on paths that repeat per worker pass, per candidate VTXO, and once
-    // a second for the watched-script resync. Each partial predicate is implied by
-    // its query's, so the index holds only the rows that query can return.
+    // Each predicate is implied by its hot query's, so an index holds only the open rows.
     up: `
       CREATE INDEX idx_settlements_active_covenants ON settlements(created_at)
         WHERE covenant_script IS NOT NULL AND payout_reference IS NULL;

@@ -1,8 +1,3 @@
-// Takes covenant destinations this service is finished with out of the SDK's
-// background channels. A destination nobody paid was the leak: the SDK demotes an
-// `awaiting-funds` contract once a VTXO lands at it, so paid ones retire themselves
-// while an unpaid one has no such moment.
-
 import type { IContractManager } from "@arkade-os/sdk";
 import type { SettlementStore } from "../settlement-store.js";
 import { COVENANT_CONTRACT_TYPE } from "../covenant/contract.js";
