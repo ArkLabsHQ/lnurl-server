@@ -285,11 +285,52 @@ interface SettlementRow {
   settledAt: number | null;
 }
 
+// The wallet's explorers (its src/lib/explorers.ts): the Arkade explorer for ark addresses, mempool for on-chain ones.
+const EXPLORERS: Record<string, { arkade: string; onchain: string }> = {
+  bitcoin: { arkade: "https://arkade.space", onchain: "https://mempool.space" },
+  mutinynet: { arkade: "https://explorer.mutinynet.arkade.sh", onchain: "https://mutinynet.com" },
+};
+
+const explorerLink = (network: string | undefined, destination: string): string | undefined => {
+  const explorer = network ? EXPLORERS[network] : undefined;
+  return explorer && `${/^t?ark1/i.test(destination) ? explorer.arkade : explorer.onchain}/address/${destination}`;
+};
+
+/** A long value shown short; a click copies all of it. */
+function Copyable({ value, length }: { value: string; length: number }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () =>
+    navigator.clipboard.writeText(value).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  return (
+    <code title={`${value} (click to copy)`} onClick={copy} style={{ cursor: "copy" }}>
+      {copied ? "copied ✓" : `${value.slice(0, length)}…`}
+    </code>
+  );
+}
+
+function Destination({ value, network }: { value: string; network?: string }) {
+  const link = explorerLink(network, value);
+  return (
+    <span style={{ whiteSpace: "nowrap" }}>
+      <Copyable value={value} length={18} />
+      {link && <>{" "}<a href={link} target="_blank" rel="noreferrer" title="Open in explorer">↗</a></>}
+    </span>
+  );
+}
+
 function Settlements({ addressId, onAddressFilter }: { addressId?: number; onAddressFilter?: (id: number | undefined) => void } = {}) {
   const [items, setItems] = useState<SettlementRow[]>([]);
   const [err, setErr] = useState<string>();
   const [state, setState] = useState("");
   const [option, setOption] = useState("");
+  const [network, setNetwork] = useState<string>();
+  useEffect(() => {
+    // Only solver discovery knows the network; without it a destination stays copyable but unlinked.
+    api.get<DiscoveryView>("/discovery").then((d) => setNetwork(d.network)).catch(() => undefined);
+  }, []);
   const reload = () => api.get<SettlementRow[]>(`/settlements${qs({ settled: state, option, addressId: addressId ? String(addressId) : "" })}`).then((r) => { setItems(r); setErr(undefined); }).catch((e: Error) => setErr(e.message));
   useEffect(() => {
     reload();
@@ -335,7 +376,7 @@ function Settlements({ addressId, onAddressFilter }: { addressId?: number; onAdd
             <Td>{s.paymentOption}{s.swapId ? " (offline swap)" : ""}</Td>
             <Td>{s.amountMsat != null ? `${s.amountMsat.toLocaleString()} msat` : "—"}</Td>
             <Td>{s.settled ? `settled${s.settledAt ? ` (${ago(s.settledAt)})` : ""}` : "pending"}{s.hasPreimage ? " · preimage held" : ""}</Td>
-            <Td>{s.paymentDestination ? <code title={s.paymentDestination}>{s.paymentDestination.slice(0, 18)}…</code> : <span title={s.paymentHash}><code>{s.paymentHash.slice(0, 12)}…</code></span>}</Td>
+            <Td>{s.paymentDestination ? <Destination value={s.paymentDestination} network={network} /> : <Copyable value={s.paymentHash} length={12} />}</Td>
             <Td>{s.paymentReference ? <code title={s.paymentReference}>{s.paymentReference.slice(0, 12)}…</code> : "—"}</Td>
           </tr>
         ))}</tbody>
