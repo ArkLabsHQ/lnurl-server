@@ -1,7 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { isLnAddress, isLnUrl, isValidLnUrl, toPayRequestUrl } from "../src/encoding.js";
-import {encodeLnurl} from "../src/arkade.js";
+import { encodeLnurl } from "../src/arkade.js";
 
+describe("encodeLnurl", () => {
+  it("emits uppercase, the form QR codes carry", () => {
+    expect(encodeLnurl("https://x.example/lnurl/abc")).toMatch(/^LNURL1[0-9A-Z]+$/);
+  });
+});
 
 describe("classification", () => {
   it("recognises a lightning address", () => {
