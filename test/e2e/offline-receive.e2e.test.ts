@@ -29,7 +29,6 @@ import { hex, base64 } from "@scure/base";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { MnemonicIdentity, Wallet, RestIndexerProvider, ArkAddress, Extension, Transaction } from "@arkade-os/sdk";
-import { CLAIM_PACKET_TYPE } from "../../src/covenant/claim-packet.js";
 import { deriveSessionId } from "../../src/session-token.js";
 import { createServer } from "../../src/http/server.js";
 import { openDb, type Db } from "../../src/db/connection.js";
@@ -62,6 +61,7 @@ import {
 } from "./support/regtest.js";
 
 const AMOUNT_SATS = 5000;
+const CLAIM_PACKET_TYPE = 0x04;
 const SETUP_TIMEOUT_MS = 30 * 60_000; // first boot pulls ~20 images + builds the solver
 const SWAP_TIMEOUT_MS = 12 * 60_000;
 
