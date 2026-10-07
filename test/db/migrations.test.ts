@@ -130,9 +130,9 @@ describe("runMigrations", () => {
     db.close();
   });
 
-  it("migration 17 creates ff_orders with a unique order_id index", () => {
+  it("migration 18 creates ff_orders with a unique order_id index", () => {
     const db = openDb(":memory:");
-    runMigrations(db, { upToVersion: 17 });
+    runMigrations(db, { upToVersion: 18 });
     const cols = (db.prepare("SELECT name FROM pragma_table_info('ff_orders')").all() as { name: string }[]).map((c) => c.name);
     expect(cols).toEqual([
       "payment_hash", "order_id", "order_token", "ff_code", "asset", "unit", "deposit_address", "deposit_tag",
@@ -143,15 +143,15 @@ describe("runMigrations", () => {
     db.close();
   });
 
-  it("migrations run clean from empty to 17", () => {
+  it("migrations run clean from empty to 18", () => {
     const db = openDb(":memory:");
     runMigrations(db);
-    expect(LATEST_MIGRATION).toBe(17);
-    expect((db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number }).v).toBe(17);
+    expect(LATEST_MIGRATION).toBe(18);
+    expect((db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number }).v).toBe(18);
     db.close();
   });
 
-  it("migrating a database already at 16 reaches 17 without touching settlements rows", () => {
+  it("migrating a database already at 16 reaches 18 without touching settlements rows", () => {
     const db = openDb(":memory:");
     runMigrations(db, { upToVersion: 16 });
     db.prepare("INSERT INTO settlements (payment_hash, pr, session_id, settled, payment_option, created_at, updated_at) VALUES ('aa', 'lnbc1', 's', 1, 'lightning', 1000, 2000)").run();

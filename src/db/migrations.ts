@@ -272,7 +272,7 @@ const MIGRATIONS: Migration[] = [
     `,
   },
   {
-    version: 17,
+    version: 18,
     // FixedFloat orders behind token-deposit settlements. order_token is the order's
     // bearer credential: it stays in this table. deposit_amount is base units, as TEXT.
     up: `
