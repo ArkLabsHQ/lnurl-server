@@ -121,6 +121,15 @@ describe("runMigrations", () => {
     db.close();
   });
 
+  it("replaces the bare address index with the cursor index", () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    const indexes = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_settlements_address%'").all() as { name: string }[])
+      .map((i) => i.name);
+    expect(indexes).toEqual(["idx_settlements_address_updated"]);
+    db.close();
+  });
+
   it("adds per-address rail policy defaulting to empty", () => {
     const db = openDb(":memory:");
     runMigrations(db);

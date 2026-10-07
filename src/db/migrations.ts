@@ -261,12 +261,14 @@ const MIGRATIONS: Migration[] = [
   {
     version: 16,
     // The payments sync cursor. A payout recorded no time of its own, so the backfill
-    // can only go as far as the settlement.
+    // can only go as far as the settlement. The new index leads with address_id, so it
+    // serves everything idx_settlements_address did.
     up: `
       ALTER TABLE settlements ADD COLUMN updated_at INTEGER;
       UPDATE settlements SET updated_at = COALESCE(settled_at, created_at);
       CREATE INDEX idx_settlements_address_updated ON settlements(address_id, updated_at, payment_hash)
         WHERE address_id IS NOT NULL;
+      DROP INDEX IF EXISTS idx_settlements_address;
     `,
   },
 ];

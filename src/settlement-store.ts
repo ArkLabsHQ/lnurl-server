@@ -292,7 +292,7 @@ interface SettlementRow {
   address_id: number | null;
   created_at: number;
   settled_at: number | null;
-  updated_at: number;
+  updated_at: number | null;
 }
 
 /** SQLite-backed store (migration 003). Survives restart and outlives the SSE
@@ -393,7 +393,8 @@ export class DbSettlementStore implements SettlementStore {
       addressId: row.address_id ?? null,
       createdAt: row.created_at,
       settledAt: row.settled_at ?? null,
-      updatedAt: row.updated_at,
+      // NULL on a row an older build wrote after migration 16 ran.
+      updatedAt: row.updated_at ?? row.created_at,
     };
   }
 

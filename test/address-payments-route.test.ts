@@ -198,6 +198,15 @@ describe("address payments route", () => {
     expect(next.nextSince).toBe(3000);
   });
 
+  it("answers a numeric nextSince when the last row was written without updated_at", async () => {
+    const aliceId = await register("alice", ALICE);
+    clock = 1000; seed("older-build", aliceId);
+    db.prepare("UPDATE settlements SET updated_at = NULL WHERE payment_hash = 'older-build'").run();
+    const res = await req("GET", `${ctx.baseUrl}/lnurl/address/alice/payments`, { host: "domain.com", bearer: ALICE });
+    expect(res.status).toBe(200);
+    expect(page(res.body).nextSince).toBe(1000);
+  });
+
   it("a payment settled before upgrade is listed after it, under the new handle", async () => {
     const register = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "session.com", body: { token: ALICE, nameless: true } });
     expect(register.status).toBe(201);
