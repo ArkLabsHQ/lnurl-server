@@ -645,20 +645,21 @@ export const openApiSpec = {
       get: {
         summary: "List payments received by one of your LN addresses",
         description:
-          "Sync source for the owner payment activity, oldest first. " +
+          "Sync source for the owner payment activity, least recently changed first. " +
           "Pass the returned nextSince back as since to page forward; the cursor is " +
-          "inclusive, so the boundary row is re-fetched and deduped on paymentHash.",
+          "inclusive, so the boundary row is re-fetched and deduped on paymentHash. " +
+          "A payment that settles or records its payout later is listed again after that change.",
         tags: ["LN Address"],
         security: [{ bearerAuth: [] }],
         parameters: [
           { name: "handle", in: "path", required: true, schema: { type: "string" }, description: HANDLE_PARAM },
           { name: "domain", in: "query", required: false, schema: { type: "string" }, description: "Target domain (defaults to the Host header)" },
-          { name: "since", in: "query", required: false, schema: { type: "integer" }, description: "Only rows with created_at >= since (ms); absent or non-numeric starts from the beginning" },
+          { name: "since", in: "query", required: false, schema: { type: "integer" }, description: "Only rows changed at or after since (ms, a row's updatedAt); absent or non-numeric starts from the beginning" },
           { name: "limit", in: "query", required: false, schema: { type: "integer" }, description: "Max rows returned; default 50, clamped to 1..200" },
         ],
         responses: {
           "200": {
-            description: "Payment page, oldest first",
+            description: "Payment page, least recently changed first",
             content: {
               "application/json": {
                 schema: {
@@ -673,7 +674,7 @@ export const openApiSpec = {
                       },
                     },
                     payments: { type: "array", items: { type: "object" } },
-                    nextSince: { type: "number" },
+                    nextSince: { type: "number", description: "updatedAt of the last row, or since when the page is empty" },
                   },
                 },
               },

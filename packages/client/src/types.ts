@@ -180,9 +180,9 @@ export interface PollVerifyOptions {
 export interface PaymentPage {
   /** Where the payments were earned: domain, full address (null when nameless), and handle. */
   source: { domain: string; lightningAddress: string | null; handle: string };
-  /** Activity entries, oldest first. */
+  /** Activity entries, least recently changed first. */
   payments: PaymentActivity[];
-  /** created_at of the last row, or the request's since when empty. */
+  /** The last row's updatedAt (createdAt on older servers), or the request's since when empty. */
   nextSince: number;
 }
 /**

@@ -37,7 +37,7 @@ describe("runMigrations", () => {
   it("blocks migration 9 while legacy offline swaps remain unsettled", () => {
     const db = openDb(":memory:");
     runMigrations(db);
-    db.exec("DROP TABLE offline_swaps; ALTER TABLE addresses DROP COLUMN disabled_rails; ALTER TABLE addresses DROP COLUMN boarding_address; DROP INDEX IF EXISTS idx_settlements_address; ALTER TABLE settlements DROP COLUMN address_id; ALTER TABLE settlements DROP COLUMN payout_reference; DELETE FROM schema_migrations WHERE version >= 9;");
+    db.exec("DROP TABLE offline_swaps; ALTER TABLE addresses DROP COLUMN disabled_rails; ALTER TABLE addresses DROP COLUMN boarding_address; DROP INDEX IF EXISTS idx_settlements_address_updated; ALTER TABLE settlements DROP COLUMN updated_at; DROP INDEX IF EXISTS idx_settlements_address; ALTER TABLE settlements DROP COLUMN address_id; ALTER TABLE settlements DROP COLUMN payout_reference; DELETE FROM schema_migrations WHERE version >= 9;");
     db.prepare("INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, created_at) VALUES ('aa', 'lnbc1', 'offline:1', 0, 'bb', 'legacy-rfq', ?)").run(Date.now());
     expect(() => runMigrations(db)).toThrow(/upgrade blocked.*1 unsettled legacy offline swap/i);
     db.close();
@@ -46,7 +46,7 @@ describe("runMigrations", () => {
   it("allows migration 9 after legacy offline swaps expire", () => {
     const db = openDb(":memory:");
     runMigrations(db);
-    db.exec("DROP TABLE offline_swaps; ALTER TABLE addresses DROP COLUMN disabled_rails; ALTER TABLE addresses DROP COLUMN boarding_address; DROP INDEX IF EXISTS idx_settlements_address; ALTER TABLE settlements DROP COLUMN address_id; ALTER TABLE settlements DROP COLUMN payout_reference; DROP INDEX IF EXISTS uq_addresses_session_lnurl; ALTER TABLE addresses DROP COLUMN session_lnurl; DELETE FROM schema_migrations WHERE version >= 9;");
+    db.exec("DROP TABLE offline_swaps; ALTER TABLE addresses DROP COLUMN disabled_rails; ALTER TABLE addresses DROP COLUMN boarding_address; DROP INDEX IF EXISTS idx_settlements_address_updated; ALTER TABLE settlements DROP COLUMN updated_at; DROP INDEX IF EXISTS idx_settlements_address; ALTER TABLE settlements DROP COLUMN address_id; ALTER TABLE settlements DROP COLUMN payout_reference; DROP INDEX IF EXISTS uq_addresses_session_lnurl; ALTER TABLE addresses DROP COLUMN session_lnurl; DELETE FROM schema_migrations WHERE version >= 9;");
     db.prepare("INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, created_at) VALUES ('aa', 'lnbc1', 'offline:1', 0, 'bb', 'legacy-rfq', 8000)").run();
 
     expect(() => runMigrations(db, { legacySwapTtlMs: 1000, now: () => 10_000 })).not.toThrow();
@@ -102,6 +102,22 @@ describe("runMigrations", () => {
     const names = (db.prepare("SELECT name FROM pragma_table_info('settlements')").all() as { name: string }[])
       .filter((c) => c.name === "payout_reference");
     expect(names).toHaveLength(1);
+    db.close();
+  });
+
+  it("backfills updated_at from settled_at, else created_at", () => {
+    const db = openDb(":memory:");
+    runMigrations(db, { upToVersion: 15 });
+    const insert = "INSERT INTO settlements (payment_hash, pr, session_id, settled, created_at, settled_at) VALUES (?, '', 's', ?, 1000, ?)";
+    db.prepare(insert).run("pending", 0, null);
+    db.prepare(insert).run("settled", 1, 5000);
+
+    runMigrations(db);
+
+    const at = (hash: string) =>
+      (db.prepare("SELECT updated_at AS u FROM settlements WHERE payment_hash = ?").get(hash) as { u: number | null }).u;
+    expect(at("pending")).toBe(1000);
+    expect(at("settled")).toBe(5000);
     db.close();
   });
 

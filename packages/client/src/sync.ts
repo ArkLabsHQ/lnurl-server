@@ -180,12 +180,12 @@ const syncTarget = async (
     since = page.nextSince;
     await store.writeWatermark(target.baseUrl, watermarkKey, resumeFrom(tail, since));
     if (page.payments.length < limit) return;
-    // The cursor is the last row's createdAt, so a full page that fails to
+    // The cursor is the last row's timestamp, so a full page that fails to
     // advance it would re-fetch itself forever. The page is already stored.
     if (previous !== undefined && since <= previous) {
       throw new LnurlError(
         `payment sync stalled for ${watermarkKey} at ${target.baseUrl}: ${limit} payments share ` +
-          `createdAt ${since}, so the cursor cannot advance past them`,
+          `timestamp ${since}, so the cursor cannot advance past them`,
       );
     }
   }
