@@ -1,9 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { bech32 } from "@scure/base";
 import { isLnAddress, isLnUrl, isValidLnUrl, toPayRequestUrl } from "../src/encoding.js";
+import { encodeLnurl } from "../src/arkade.js";
 
-const encodeLnurl = (url: string) =>
-  bech32.encode("lnurl", bech32.toWords(new TextEncoder().encode(url)), 1023).toUpperCase();
+describe("encodeLnurl", () => {
+  it("emits uppercase, the form QR codes carry", () => {
+    expect(encodeLnurl("https://x.example/lnurl/abc")).toMatch(/^LNURL1[0-9A-Z]+$/);
+  });
+});
 
 describe("classification", () => {
   it("recognises a lightning address", () => {

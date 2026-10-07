@@ -93,7 +93,7 @@ test("a nameless wallet receives offline at its LNURL, then takes a name and rec
     await expect(page.getByRole("heading", { name: "Your LNURL" })).toBeVisible({ timeout: 120_000 });
     await expect(page.getByText(`@${stack.lnurlDomain}`)).toHaveCount(0);
 
-    const lnurl = (await page.getByText(/^lnurl1[0-9a-z]+$/).first().innerText()).trim();
+    const lnurl = (await page.getByText(/^LNURL1[0-9A-Z]+$/).first().innerText({ timeout: 60_000 })).trim();
     const lnurlUrl = decodeLnurl(lnurl);
     expect(lnurlUrl).toMatch(new RegExp(`^${stack.lnurlBase}/lnurl/[0-9a-f]{32}$`));
 
