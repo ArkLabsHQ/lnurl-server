@@ -12,6 +12,7 @@ describe("sendAmountFor", () => {
     expect(sendAmountFor(invoice, 1000)).toBe(6002);
     expect(sendAmountFor(`bitcoin:?lightning=${invoice}`, 1000)).toBe(6002);
     expect(sendAmountFor(`bitcoin:?lightning=${invoice}&amount=0.00005936`, 1000)).toBe(5936);
+    expect(sendAmountFor(`bitcoin:?lightning=${invoice}&amount=0`, 1000)).toBe(6002);
   });
 
   it("keeps the typed amount when the target asks for none", () => {

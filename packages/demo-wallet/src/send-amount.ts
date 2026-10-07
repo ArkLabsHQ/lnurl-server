@@ -4,7 +4,7 @@ import { invoiceFactsFromBolt11 } from "../../../src/bolt11.js";
 /** The send amount once `raw` is entered. The router sends an explicit amount over a
  *  request's own `amount=`, so a field left at its old value would underpay the request.
  *  Failing that, an invoice's own amount, the only one the solver rail pays.
- *  `amount=0` asks for nothing, so it keeps the typed amount too. */
+ *  `amount=0` asks for nothing, so it counts as absent: the invoice, else the typed amount. */
 export const sendAmountFor = (raw: string, current: number): number =>
   BIP21.amountSats(raw.trim()) || invoiceSats(raw.trim()) || current;
 
