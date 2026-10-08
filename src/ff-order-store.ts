@@ -20,7 +20,6 @@ export interface AcceptedFfOrder {
     asset: string;
     unit: string;
     depositAddress: string;
-    depositTag?: string | null;
     /** Base units, as an integer string. */
     depositAmount: string;
     /** The corridor invoice's face value; the receiver gets it less the solver fee. */
@@ -40,7 +39,6 @@ export interface StoredFfOrder {
   asset: string;
   unit: string;
   depositAddress: string;
-  depositTag: string | null;
   depositAmount: string;
   depositTxid: string | null;
   invoiceAmountSat: number;
@@ -65,7 +63,6 @@ interface Row {
   asset: string;
   unit: string;
   deposit_address: string;
-  deposit_tag: string | null;
   deposit_amount: string;
   deposit_txid: string | null;
   invoice_amount_sat: number;
@@ -91,8 +88,8 @@ export class FfOrderStore {
       ).run(record.paymentHash, record.pr, record.sessionId, record.preimage, record.recovery.rfqId, record.paymentOption, o.depositAddress, record.amountMsat, record.addressId ?? null, at, at);
       insertOfflineSwap(this.db, record.paymentHash, record.recovery, at);
       this.db.prepare(
-        "INSERT INTO ff_orders (payment_hash, order_id, order_token, ff_code, asset, unit, deposit_address, deposit_tag, deposit_amount, invoice_amount_sat, status, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(record.paymentHash, o.id, o.token, o.ffCode, o.asset, o.unit, o.depositAddress, o.depositTag ?? null, o.depositAmount, o.invoiceAmountSat, o.status, o.expiresAt, at, at);
+        "INSERT INTO ff_orders (payment_hash, order_id, order_token, ff_code, asset, unit, deposit_address, deposit_amount, invoice_amount_sat, status, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(record.paymentHash, o.id, o.token, o.ffCode, o.asset, o.unit, o.depositAddress, o.depositAmount, o.invoiceAmountSat, o.status, o.expiresAt, at, at);
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -194,7 +191,6 @@ function toOrder(row: Row): StoredFfOrder {
     asset: row.asset,
     unit: row.unit,
     depositAddress: row.deposit_address,
-    depositTag: row.deposit_tag,
     depositAmount: row.deposit_amount,
     depositTxid: row.deposit_txid,
     invoiceAmountSat: row.invoice_amount_sat,

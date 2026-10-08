@@ -284,7 +284,6 @@ const MIGRATIONS: Migration[] = [
         asset              TEXT NOT NULL,
         unit               TEXT NOT NULL,
         deposit_address    TEXT NOT NULL,
-        deposit_tag        TEXT,
         deposit_amount     TEXT NOT NULL,
         deposit_txid       TEXT,
         invoice_amount_sat INTEGER NOT NULL,
