@@ -37,7 +37,7 @@ import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler } from "../covenant/
 import type { SettlementStore } from "../settlement-store.js";
 import { COVENANT_V1, COVENANT_V2, SWEEP_LEAF, enforcePayTo, enforcePayToWithAssets } from "../covenant/destination.js";
 import { startCatchUpLoop } from "./catch-up-loop.js";
-import { activeCovenantFilters } from "./covenant-retirement.js";
+import { activeCovenantFilters, scopeShortfall, scopeSize } from "./covenant-retirement.js";
 
 interface EmulatorSubmit {
   submitTx(arkTx: string, checkpointTxs: string[]): Promise<{ signedArkTx: string; signedCheckpointTxs: string[] }>;
@@ -112,10 +112,15 @@ export function createCovenantSweeper(opts: {
       const scopes = opts.settlements
         ? activeCovenantFilters(opts.settlements)
         : [{ type: COVENANT_CONTRACT_TYPE }];
+      let asked = 0;
+      let found = 0;
       for (const scope of scopes) {
         // One query per scope, and the manager already knows which outputs are still
         // spendable — no per-record round trip, no vtxo bookkeeping.
-        for (const { contract, vtxos } of await opts.contracts.getContractsWithVtxos(scope)) {
+        const resolved = await opts.contracts.getContractsWithVtxos(scope);
+        asked += scopeSize(scope);
+        found += resolved.length;
+        for (const { contract, vtxos } of resolved) {
           const script = covenantDestinationHandler.createScript(contract.params);
           const tapTree = script.encode();
           const sweepLeaf = hex.encode(script.leaves[SWEEP_LEAF]![1]);
@@ -144,6 +149,8 @@ export function createCovenantSweeper(opts: {
           }
         }
       }
+      const shortfall = scopeShortfall(asked, found);
+      if (shortfall) console.warn(`covenant sweeper: ${shortfall}`);
       return moved;
     },
   };

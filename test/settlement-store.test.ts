@@ -74,6 +74,56 @@ describe.each(stores)("%s payout references", (_name, make) => {
   });
 });
 
+/** The two halves of the active set answer to different clocks. */
+const clocked: Array<[string, (now: () => number, watchMs: number) => SettlementStore]> = [
+  ["MemorySettlementStore", (now, watchMs) => new MemorySettlementStore(watchMs, now, watchMs)],
+  ["DbSettlementStore", (now, watchMs) => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    return new DbSettlementStore(db, watchMs, now, watchMs);
+  }],
+];
+
+describe.each(clocked)("%s active covenant window", (_name, make) => {
+  const WATCH = 86_400_000;
+
+  it("drops an unpaid destination the instant a payment there could no longer settle", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    s.create({ paymentHash: "unpaid", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014aa" });
+    expect(s.listActiveCovenantScripts()).toEqual(["0014aa"]);
+
+    t = 1000 + WATCH;
+    expect(s.listActiveCovenantScripts()).toEqual([]);
+    expect(s.markObserved("unpaid", "tx-late")).toBe(false);
+  });
+
+  it("keeps a settled destination active past the window until its sweep lands", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    s.create({ paymentHash: "paid", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014bb" });
+    expect(s.markObserved("paid", "tx-in")).toBe(true);
+
+    t = 1000 + WATCH * 14;
+    expect(s.listActiveCovenantScripts()).toEqual(["0014bb"]);
+
+    expect(s.markPaidOut("paid", "sweep-tx")).toBe(true);
+    expect(s.listActiveCovenantScripts()).toEqual([]);
+    expect(s.findByCovenantScript("0014bb")).toMatchObject({ payoutReference: "sweep-tx" });
+  });
+
+  it("records a sweep that lands after the destination window", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    s.create({ paymentHash: "late", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014cc" });
+    s.markObserved("late", "tx-in");
+
+    t = 1000 + WATCH * 3;
+    expect(s.markPaidOut("late", "sweep-tx")).toBe(true);
+    expect(s.listActiveCovenantScripts()).toEqual([]);
+  });
+});
+
 describe("MemorySettlementStore", () => {
 
   it("creates, settles, and expires", () => {

@@ -1,9 +1,5 @@
 import type { Db } from "./db/connection.js";
 
-/** Grace on top of `destinationWatchMs`: a payment that landed just inside the
- *  window can still be mid-sweep when it closes. */
-export const COVENANT_RETIRE_MARGIN_MS = 86_400_000;
-
 /** A record of one invoice handed to a payer, tracking LUD-21 settlement state. */
 export interface SettlementRecord {
   /** bolt11 payment hash (hex) — the verify URL key. */
@@ -92,8 +88,10 @@ export interface SettlementStore {
   /** Any record with this script, settled or not — the sweep runs after settlement,
    *  so the watcher's pending-only lookup cannot serve it. */
   findByCovenantScript(script: string): SettlementRecord | undefined;
-  /** Covenant destinations still owed work (unswept, inside the attribution window). The
-   *  sweeper, the watcher's catch-up and retirement all read this one set. */
+  /** Covenant destinations still owed work, read by the sweeper, the catch-up and
+   *  retirement: unswept, and either settled or still inside the attribution window.
+   *  Settled outlives the window because money that arrived must always be swept; unpaid
+   *  does not, since sweeping past it moves funds `verify` still reports as unpaid. */
   listActiveCovenantScripts(): string[];
   /** Fetch a record, or undefined if unknown or expired. */
   get(paymentHash: string): SettlementRecord | undefined;
@@ -244,7 +242,9 @@ export class MemorySettlementStore implements SettlementStore {
   }
 
   markPaidOut(paymentHash: string, reference: string): boolean {
-    const r = this.get(paymentHash);
+    // Straight from the map, matching the DB store's unwindowed UPDATE: through `get` a
+    // sweep landing after the window was dropped, leaving the record active for good.
+    const r = this.map.get(paymentHash);
     if (!r || r.payoutReference) return false;
     r.payoutReference = reference;
     r.updatedAt = this.now();
@@ -257,11 +257,12 @@ export class MemorySettlementStore implements SettlementStore {
   }
 
   listActiveCovenantScripts(): string[] {
-    // Not via `get`, which would expire rows out from under this horizon's margin.
-    const horizon = this.now() - (this.destinationWatchMs + COVENANT_RETIRE_MARGIN_MS);
+    // Walks the map, not `get`, which expires a settled record whose money is still there.
+    const horizon = this.now() - this.destinationWatchMs;
     const out: string[] = [];
     for (const r of this.map.values()) {
-      if (r.covenantScript && !r.payoutReference && r.createdAt > horizon) out.push(r.covenantScript);
+      if (!r.covenantScript || r.payoutReference) continue;
+      if (r.settled || r.createdAt > horizon) out.push(r.covenantScript);
     }
     return out;
   }
@@ -504,15 +505,15 @@ export class DbSettlementStore implements SettlementStore {
   }
 
   listActiveCovenantScripts(): string[] {
-    // Served by the partial idx_settlements_active_covenants (migration 17).
-    const rows = this.db
-      .prepare(
-        "SELECT covenant_script FROM settlements WHERE covenant_script IS NOT NULL AND payout_reference IS NULL AND created_at > ?",
-      )
-      .all(this.now() - (this.destinationWatchMs + COVENANT_RETIRE_MARGIN_MS)) as unknown as {
-      covenant_script: string;
-    }[];
-    return rows.map((r) => r.covenant_script);
+    // Two reads, not one `settled = 1 OR created_at > ?`: without the settled equality
+    // SQLite cannot drive the range off (settled, created_at), and the OR form scanned
+    // every never-paid destination. Disjoint on `settled`, so no row appears twice.
+    const scoped = "SELECT covenant_script FROM settlements WHERE covenant_script IS NOT NULL AND payout_reference IS NULL";
+    const settled = this.db.prepare(`${scoped} AND settled = 1`).all() as unknown as { covenant_script: string }[];
+    const open = this.db
+      .prepare(`${scoped} AND settled = 0 AND created_at > ?`)
+      .all(this.now() - this.destinationWatchMs) as unknown as { covenant_script: string }[];
+    return [...settled, ...open].map((r) => r.covenant_script);
   }
 
   isReferenceUsed(reference: string): boolean {

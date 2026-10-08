@@ -27,6 +27,18 @@ export function activeCovenantFilters(store: SettlementStore): ContractScope[] {
   return filters;
 }
 
+/** How many scripts a scope named; 0 for the unscoped fallback, which promises none. */
+export function scopeSize(scope: ContractScope): number {
+  return Array.isArray(scope.script) ? scope.script.length : 0;
+}
+
+/** The shortfall message for a pass, or undefined when every script resolved. Every
+ *  active script was registered before its address went out, so resolving fewer means
+ *  retained contracts stopped coming back and a sweep is being stranded silently. */
+export function scopeShortfall(asked: number, found: number): string | undefined {
+  return found < asked ? `resolved ${found} of ${asked} covenant destination(s)` : undefined;
+}
+
 /** One retirement pass. Returns how many destinations left the watch set. */
 export async function retireFinishedCovenants(
   store: SettlementStore,
@@ -37,10 +49,12 @@ export async function retireFinishedCovenants(
     type: COVENANT_CONTRACT_TYPE,
     watch: [...LIVE_WATCH_STATES],
   });
+  const stale = live.filter((contract) => !active.has(contract.script));
+  if (stale.length > RETIRE_PER_PASS) {
+    console.log(`covenant retirement: ${stale.length} to retire, ${RETIRE_PER_PASS} per pass`);
+  }
   let retired = 0;
-  for (const contract of live) {
-    if (retired >= RETIRE_PER_PASS) break;
-    if (active.has(contract.script)) continue;
+  for (const contract of stale.slice(0, RETIRE_PER_PASS)) {
     try {
       await contracts.setContractWatchState(contract.script, "retained");
       retired++;

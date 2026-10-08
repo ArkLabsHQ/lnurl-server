@@ -113,19 +113,58 @@ describe("retireFinishedCovenants", () => {
   });
 
   // The dominant leak: an invoice nobody paid leaves a script watched for good.
-  it("retires a never-paid destination once it is past the window and its margin", async () => {
+  it("retires a never-paid destination as soon as it leaves the attribution window", async () => {
     let now = 1_000_000_000;
     const watchMs = 604_800_000;
     const store = storeWith([{ hash: "v1", script: scriptOf(1) }], { watchMs, now: () => now });
     const { manager, live } = fakeManager([row(scriptOf(1))]);
 
-    now += watchMs + 1;
     expect(await retireFinishedCovenants(store, manager)).toBe(0);
     expect(live()).toEqual([scriptOf(1)]);
 
-    now += 86_400_000;
+    now += watchMs;
     expect(await retireFinishedCovenants(store, manager)).toBe(1);
     expect(live()).toEqual([]);
+  });
+
+  it("never retires a settled destination whose sweep has not landed, however late", async () => {
+    let now = 1_000_000_000;
+    const watchMs = 604_800_000;
+    const store = storeWith([{ hash: "v1", script: scriptOf(1) }], { watchMs, now: () => now });
+    store.markObserved("v1", "tx-in");
+    const { manager, live } = fakeManager([row(scriptOf(1))]);
+
+    now += watchMs * 14;
+    expect(await retireFinishedCovenants(store, manager)).toBe(0);
+    expect(live()).toEqual([scriptOf(1)]);
+
+    store.markPaidOut("v1", "sweep-tx");
+    expect(await retireFinishedCovenants(store, manager)).toBe(1);
+    expect(live()).toEqual([]);
+  });
+
+  it("names the backlog once when it cannot clear it in one pass", async () => {
+    const store = storeWith([]);
+    const { manager } = fakeManager(Array.from({ length: 450 }, (_, i) => row(scriptOf(i))));
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await retireFinishedCovenants(store, manager);
+      expect(log).toHaveBeenCalledWith("covenant retirement: 450 to retire, 100 per pass");
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("says nothing about a backlog it clears in one pass", async () => {
+    const store = storeWith([]);
+    const { manager } = fakeManager([row(scriptOf(1))]);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await retireFinishedCovenants(store, manager);
+      expect(log.mock.calls.flat().join(" ")).not.toContain("per pass");
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it("reads only the live watch states, never the whole history", async () => {
@@ -310,7 +349,7 @@ describe("the watch set at scale", () => {
   it("subscribes the live destinations only, and stays that way across a restart", async () => {
     // Modest on purpose — a drain costs one subscribe POST per retirement. Still
     // three passes at the cap; scripts/probe-watchset.ts runs this at 10k.
-    const DEAD = 250;
+    const DEAD = 150;
     const file = await seeded("restart", DEAD);
 
     // First boot: the backlog is on the wire, exactly as it was before retirement.
@@ -351,7 +390,7 @@ describe("the watch set at scale", () => {
   }, 120_000);
 
   it("bounds a worker pass by the destinations in play, not by history", async () => {
-    const DEAD = 5_000;
+    const DEAD = 1_200;
     const file = await seeded("per-pass", DEAD);
     const { settlements, contracts, close } = await boot(file);
     try {

@@ -227,8 +227,14 @@ describe("DbSettlementStore", () => {
   // pass and per candidate VTXO. The plan is the only thing that says so.
   describe.each([
     [
-      "the covenant scope every worker pass reads",
-      "SELECT covenant_script FROM settlements WHERE covenant_script IS NOT NULL AND payout_reference IS NULL AND created_at > ?",
+      "the settled-but-unswept half of the covenant scope",
+      "SELECT covenant_script FROM settlements WHERE covenant_script IS NOT NULL AND payout_reference IS NULL AND settled = 1",
+      [],
+      "idx_settlements_active_covenants",
+    ],
+    [
+      "the still-attributable half of the covenant scope",
+      "SELECT covenant_script FROM settlements WHERE covenant_script IS NOT NULL AND payout_reference IS NULL AND settled = 0 AND created_at > ?",
       [0],
       "idx_settlements_active_covenants",
     ],
@@ -252,6 +258,8 @@ describe("DbSettlementStore", () => {
         .map((r) => r.detail)
         .join(" ");
       expect(plan).toContain(index);
+      // A SEARCH, not a SCAN: the `OR` form named this index while scanning behind it.
+      expect(plan).toContain("SEARCH");
       db.close();
     });
   });

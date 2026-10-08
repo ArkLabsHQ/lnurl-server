@@ -274,8 +274,9 @@ const MIGRATIONS: Migration[] = [
   {
     version: 17,
     // Each predicate is implied by its hot query's, so an index holds only the open rows.
+    // `settled` leads the covenant one so both halves of the active scope are a SEARCH.
     up: `
-      CREATE INDEX idx_settlements_active_covenants ON settlements(created_at)
+      CREATE INDEX idx_settlements_active_covenants ON settlements(settled, created_at)
         WHERE covenant_script IS NOT NULL AND payout_reference IS NULL;
       CREATE INDEX idx_settlements_reference ON settlements(payment_reference)
         WHERE payment_reference IS NOT NULL;

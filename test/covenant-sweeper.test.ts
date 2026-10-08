@@ -100,6 +100,35 @@ describe("createCovenantSweeper", () => {
     expect(getContractsWithVtxos).not.toHaveBeenCalled();
   });
 
+  it("warns once a pass when the manager resolves fewer contracts than it asked about", async () => {
+    const { manager } = managerWith([{ script: "5120aa", vtxos: [] }, { script: "5120bb", vtxos: [] }]);
+    const settlements = new MemorySettlementStore(3_600_000);
+    for (const script of ["5120aa", "5120bb", "5120cc"]) {
+      settlements.create({ paymentHash: `h-${script}`, pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: script });
+    }
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await sweeperWith(manager, settlements).sweep();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]!.join(" ")).toContain("2 of 3");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("says nothing when every destination it asked about resolved, vtxos or not", async () => {
+    const { manager } = managerWith([{ script: "5120aa", vtxos: [] }]);
+    const settlements = new MemorySettlementStore(3_600_000);
+    settlements.create({ paymentHash: "h", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "5120aa" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await sweeperWith(manager, settlements).sweep();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   // The SDK demotes a destination the instant a VTXO lands at it — which is exactly
   // when the money is there and the sweep has not run. Scoping on watch state would
   // strand it; scoping on our own records does not.
