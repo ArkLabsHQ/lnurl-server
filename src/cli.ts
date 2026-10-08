@@ -206,10 +206,14 @@ async function main(): Promise<void> {
       );
       runtime.addStop(sweeper.stop);
       runtime.addStop(startCovenantWatcher(settlements, contracts, off.pollIntervalMs, sweeper.trigger));
-      // Slow on purpose: each retirement re-posts the whole subscription.
-      const { startCovenantRetirement } = await import("./workers/covenant-retirement.js");
-      runtime.addStop(startCovenantRetirement(settlements, contracts, 60_000).stop);
       console.log(`covenant destinations: enabled (emulator=${off.emulatorUrl}, recovery=${off.covenantRecoveryDelaySeconds}s)`);
+    }
+    // Both rails leak a watched script per payment request, and either can be on
+    // without the other, so this follows the contract manager rather than a rail.
+    // Slow on purpose: each retirement re-posts the whole subscription.
+    if (contracts) {
+      const { startContractRetirement } = await import("./workers/covenant-retirement.js");
+      runtime.addStop(startContractRetirement(settlements, contracts, 60_000, offlineSwaps).stop);
     }
     let watchDestination: ((destination: string) => void) | undefined;
     deps = {
