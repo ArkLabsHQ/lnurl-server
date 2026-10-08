@@ -355,7 +355,9 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `ADMIN_BIND` | `127.0.0.1` | Admin bind address (`0.0.0.0` in Docker) |
 | `BOOTSTRAP_DOMAIN` | — | Domain name to create on first startup if no domains exist |
 | `REGISTRATION_RATE_LIMIT` | `10` | Max address registration requests per minute per IP |
+| `CALLBACK_RATE_LIMIT_PER_MINUTE` | `30` | Max Lightning-address callbacks per minute per client IP on the branches that cost the server without a live wallet session — an offline-swap quote or a destination. One budget, shared by both. |
 | `TRUST_PROXY` | `1` | Express `trust proxy` value — number of hops or `false` |
+| `TRUSTED_FORWARDERS` | — | Comma-separated IPs and CIDRs (IPv4 or IPv6) whose `X-Forwarded-For` is believed at any hop, on top of the `TRUST_PROXY` hops. For a server that calls callbacks for its payers, such as BTCPay Server: it forwards each payer's IP, so per-IP limits apply per payer rather than to all of its checkouts at once. **Only list hosts you control or trust: a trusted forwarder decides which IP each of its requests is limited as.** Anyone else's `X-Forwarded-For` is ignored as before. The reverse proxy in front must append to the forwarder's header rather than replace it, which many do by default for clients they don't trust. |
 | `TRACE_REQUESTS` | — | Set to `1` to log one structured line per request — method, path, `Host`, status, duration, request id, and the `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Real-Ip` headers — on both the public and admin servers, plus the resolved startup config. Unmatched 404s are logged too, so no line at all means the request never reached the process. Off by default. |
 | `MAX_SESSIONS` | `5000` | Global concurrent SSE session cap |
 | `MAX_SESSIONS_PER_IP` | `50` | Concurrent SSE session cap per resolved client IP |

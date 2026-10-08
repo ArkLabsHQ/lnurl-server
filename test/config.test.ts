@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { loadConfig } from "../src/config.js";
+import { ConfigError } from "../src/errors.js";
 
 const base = { PORT: "3000", BASE_URL: "http://localhost:3000" };
 
@@ -35,6 +36,26 @@ describe("loadConfig", () => {
 
   it("rejects a key that is not 32 bytes", () => {
     expect(() => loadConfig({ ...base, DB_PATH: "/data/x.db", TOKEN_ENCRYPTION_KEY: "abcd" })).toThrow(/32 bytes/);
+  });
+
+  it("trusts one proxy hop and no forwarders by default", () => {
+    const cfg = loadConfig({ ...base });
+    expect(cfg.trustProxy).toBe(1);
+    expect(cfg.trustedForwarders.rules).toEqual([]);
+  });
+
+  it.each(["not-an-ip", "203.0.113.10/33", "2001:db8::/129", "10.0.0.0/0", "10.0.0.0/", "10.0.0.0/8/8", "203.0.113.10:443", "203.0.113.10 198.51.100.1"])(
+    "rejects the TRUSTED_FORWARDERS entry %s",
+    (entry) => {
+      const load = () => loadConfig({ ...base, TRUSTED_FORWARDERS: `203.0.113.10, ${entry}` });
+      expect(load).toThrow(ConfigError);
+      expect(load).toThrow(/TRUSTED_FORWARDERS/);
+    },
+  );
+
+  it("reads CALLBACK_RATE_LIMIT_PER_MINUTE with the 30 default", () => {
+    expect(loadConfig({ ...base }).callbackRateLimitPerMin).toBe(30);
+    expect(loadConfig({ ...base, CALLBACK_RATE_LIMIT_PER_MINUTE: "120" }).callbackRateLimitPerMin).toBe(120);
   });
 
   it("reads VERIFY_TTL_MS with a 24h default", () => {
@@ -169,6 +190,7 @@ describe("loadConfig", () => {
     ["MAX_SESSIONS", "0"],
     ["MAX_SESSIONS_PER_IP", "-1"],
     ["MAX_CONCURRENT_OFFLINE_QUOTES", "1.5"],
+    ["CALLBACK_RATE_LIMIT_PER_MINUTE", "0"],
   ])("rejects invalid %s=%s", (name, value) => {
     expect(() => loadConfig({ ...base, [name]: value })).toThrow(name);
   });

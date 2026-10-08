@@ -300,10 +300,12 @@ async function main(): Promise<void> {
       // would quietly keep the default while the watcher used the override.
       destinationWatchMs: config.destinationWatchMs,
       trustProxy: config.trustProxy,
+      trustedForwarders: config.trustedForwarders,
       traceRequests: config.traceRequests,
       maxSessions: config.maxSessions,
       maxSessionsPerIp: config.maxSessionsPerIp,
       maxConcurrentOfflineQuotes: config.maxConcurrentOfflineQuotes,
+      callbackRateLimitPerMin: config.callbackRateLimitPerMin,
     },
     deps ? { ...deps, health, logger } : { health, logger } as never,
   );
