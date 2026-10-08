@@ -260,9 +260,19 @@ Where it is present, the `verify` URL reports the non-`pr` LUD-21 shape: `{ stat
 
 ### Receive rails
 
-Every backend is one entry in the rail registry (`src/rails.ts`): `interactive-lightning` (live wallet session), `offline-swap` (solver-mediated `bolt11->arkade-btc` while offline), `arkade` (direct destination), `covenant` (per-payment destinations for the arkade rail), and `onchain` (the owner's boarding address — an ordinary on-chain payment, not a swap, which is why nothing here observes it). New rails — assets, stablecoin swaps, an onchain-BTC-to-arkade-BTC offline receive in the same family as `offline-swap` — slot in there with no plumbing changes.
+Every backend is one entry in the rail registry (`src/rails.ts`): `interactive-lightning` (live wallet session), `offline-swap` (solver-mediated `bolt11->arkade-btc` while offline), `arkade` (direct destination), `covenant` (per-payment destinations for the arkade rail), `onchain` (the owner's boarding address — an ordinary on-chain payment, not a swap, which is why nothing here observes it), and `fixedfloat` (token deposits, below). New rails — assets, an onchain-BTC-to-arkade-BTC offline receive in the same family as `offline-swap` — slot in there with no plumbing changes.
 
 Server-wide capability comes from configuration; per-address policy comes from the operator. `GET /admin/api/rails` lists what this process wired, each address carries its own disabled set (stored in SQLite, edited in the admin UI Addresses tab under Rails, or via `PATCH /admin/api/addresses/{id}/rails`), and the payRequest advertises only the rails that survive both. A disabled or unavailable rail never fails silently: its callbacks answer `{ "status": "ERROR" }` naming the rail, while the process keeps serving the rest.
+
+### Token deposits (FixedFloat, opt-in, mainnet only)
+
+With `FIXEDFLOAT_API_KEY` and `FIXEDFLOAT_API_SECRET` set, an address with an Arkade identity also advertises one option per stablecoin network (`ff-usdtarbitrum`, `ff-usdcsol`, `ff-usdttrc`, …): `type` is the CAIP-2 namespace, `asset` the CAIP-19 id, `unit` a `units[]` code (`USDT`, `USDC`), `provider` the custodian. The payer deposits the token with FixedFloat, which pays the corridor's hold invoice, and the covenant pays arkade BTC to the receiver. The callback (`?amount=<msat>&paymentOption=ff-…`) answers the deposit address, an EIP-681 or Solana Pay `paymentURI` (none on Tron), and a `paymentQuote` whose `payment` is the deposit in the token's base units and whose `expiresAt` is the payer's deadline. `verify` answers the destination shape; once settled, `paymentReference` is the payer's deposit txid on the token chain.
+
+**The trust model, plainly.** While the swap is in flight the payer's tokens sit with **FixedFloat**, a no-KYC custodial exchange, and the sats sit in the **solver's** VHTLC. This server holds no user funds and no user keys, and it cannot compel either party to perform. The two legs are not equally trust-minimised: the last one is covenant-enforced (a settled swap can only pay the receiver's registered address), the first is ordinary exchange counterparty risk. **This server cannot refund a payer**: it never holds their tokens, has no address to return them to, and never drives FixedFloat's emergency flow. A late, short or over deposit lands the order in FixedFloat's `EMERGENCY` state, which the payer resolves with FixedFloat; the admin Settlements view shows it.
+
+**Mainnet only.** FixedFloat has no testnet, so the server refuses to start with FixedFloat keys while arkd reports any network but `bitcoin`: a test deployment would take a payer's real tokens for test sats. `FIXEDFLOAT_SIMULATE=true` is the reverse — an in-process stand-in, refused on `bitcoin` and with real keys, that advertises `ffsim-` options with `provider: "Simulated"` on testnet chains so wallet and checkout UIs can be exercised end to end. It takes no deposit; a test that needs a settled order pays the corridor invoice itself.
+
+FixedFloat allows 250 request-weight units a minute per key and an order costs 50, so the rail takes at most a handful of orders a minute; past that, and past `FIXEDFLOAT_MAX_OPEN_ORDERS` unfunded orders, the callback answers HTTP 429. Token deposits need a file-backed `DB_PATH` and offline receive (the corridor is what pays the order).
 
 ## Payment quote (LUD-XX)
 
@@ -360,6 +370,15 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `MAX_SESSIONS` | `5000` | Global concurrent SSE session cap |
 | `MAX_SESSIONS_PER_IP` | `50` | Concurrent SSE session cap per resolved client IP |
 | `MAX_CONCURRENT_OFFLINE_QUOTES` | `20` | Global in-flight offline RFQ cap |
+| `FIXEDFLOAT_API_KEY` / `FIXEDFLOAT_API_SECRET` | — | Turn on [token deposits](#token-deposits-fixedfloat-opt-in-mainnet-only); both or neither. Mainnet (`bitcoin`) only — the server refuses to start with them elsewhere. **Credentials**: the secret signs every request and is held only by the signer. |
+| `FIXEDFLOAT_REFCODE` / `FIXEDFLOAT_AFFTAX` | — | FixedFloat affiliate code, and the affiliate percentage it adds to every quote. |
+| `FIXEDFLOAT_ALLOW` / `FIXEDFLOAT_DENY` | all / none | Comma-separated FixedFloat codes to offer, from the 13 stablecoin networks whose decimals the server knows (`src/rails/fixedfloat/catalogue.ts`); deny applies after allow. |
+| `FIXEDFLOAT_WINDOW_SECONDS` | `900` | Deposit window assumed before an order exists. The callback refuses unless the corridor invoice outlives it plus the margin; it grows on its own to the longest window FixedFloat has granted. |
+| `FIXEDFLOAT_SETTLE_MARGIN_SECONDS` | `600` | What FixedFloat may need between a deposit and paying the invoice: an order whose deadline plus this outlives the invoice is refused. |
+| `FIXEDFLOAT_MAX_OPEN_ORDERS` | `20` | Unfunded, unexpired orders allowed at once. |
+| `FIXEDFLOAT_REFRESH_MS` | `300000` | Rates and currency-list refresh interval. |
+| `FIXEDFLOAT_BASE_URL` / `FIXEDFLOAT_RATES_URL` | `https://ff.io/api/v2` / `https://ff.io/rates/fixed.xml` | FixedFloat's API and public rates export. |
+| `FIXEDFLOAT_SIMULATE` | `false` | `true` runs the simulated provider instead; never on `bitcoin`, never with keys. |
 | `SHUTDOWN_TIMEOUT_MS` | `15000` | Grace period before lingering HTTP connections are forced closed |
 
 ## Development

@@ -283,6 +283,7 @@ interface SettlementRow {
   hasPreimage: boolean;
   createdAt: number;
   settledAt: number | null;
+  ffOrder?: { id: string; status: string; ffCode: string; emergency: string[] | null };
 }
 
 // The wallet's explorers (its src/lib/explorers.ts): the Arkade explorer for ark addresses, mempool for on-chain ones.
@@ -366,7 +367,7 @@ function Settlements({ addressId, onAddressFilter }: { addressId?: number; onAdd
         </p>
       )}
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
-        <thead><tr><Th>Created</Th><Th>Address</Th><Th>Option</Th><Th>Amount</Th><Th>State</Th><Th>Destination</Th><Th>Reference</Th></tr></thead>
+        <thead><tr><Th>Created</Th><Th>Address</Th><Th>Option</Th><Th>Amount</Th><Th>State</Th><Th>Destination</Th><Th>Reference</Th><Th>Token order</Th></tr></thead>
         <tbody>{items.map((s) => (
           <tr key={s.paymentHash}>
             <Td><span title={new Date(s.createdAt).toLocaleString()}>{ago(s.createdAt)}</span></Td>
@@ -376,8 +377,14 @@ function Settlements({ addressId, onAddressFilter }: { addressId?: number; onAdd
             <Td>{s.paymentOption}{s.swapId ? " (offline swap)" : ""}</Td>
             <Td>{s.amountMsat != null ? `${s.amountMsat.toLocaleString()} msat` : "—"}</Td>
             <Td>{s.settled ? `settled${s.settledAt ? ` (${ago(s.settledAt)})` : ""}` : "pending"}{s.hasPreimage ? " · preimage held" : ""}</Td>
-            <Td>{s.paymentDestination ? <Destination value={s.paymentDestination} network={network} /> : <Copyable value={s.paymentHash} length={12} />}</Td>
+            {/* A token deposit address is on another chain, so no Bitcoin explorer link. */}
+            <Td>{s.paymentDestination ? <Destination value={s.paymentDestination} network={s.ffOrder ? undefined : network} /> : <Copyable value={s.paymentHash} length={12} />}</Td>
             <Td>{s.paymentReference ? <code title={s.paymentReference}>{s.paymentReference.slice(0, 12)}…</code> : "—"}</Td>
+            <Td>{s.ffOrder
+              ? <span title={s.ffOrder.ffCode} style={{ color: s.ffOrder.status === "EMERGENCY" ? "crimson" : undefined }}>
+                  <code>{s.ffOrder.id}</code> · {s.ffOrder.status}{s.ffOrder.emergency ? ` (${s.ffOrder.emergency.join(", ")})` : ""}
+                </span>
+              : "—"}</Td>
           </tr>
         ))}</tbody>
       </table>

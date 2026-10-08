@@ -522,12 +522,30 @@ export const adminOpenApiSpec = {
               swapId: { type: "string", nullable: true, description: "RFQ id for offline corridor swaps" },
               paymentOption: { type: "string" },
               paymentDestination: { type: "string", nullable: true },
-              paymentReference: { type: "string", nullable: true, description: "Observed Arkade txid, once settled by observation" },
+              paymentReference: { type: "string", nullable: true, description: "Observed Arkade txid once settled by observation; on a token deposit, the payer's deposit txid on the token chain" },
               payoutReference: { type: "string", nullable: true, description: "Arkade txid that credited the recipient's own address; differs from paymentReference on the covenant and swap rails" },
               amountMsat: { type: "integer", nullable: true },
               hasPreimage: { type: "boolean", description: "Whether the record holds its preimage (never exposed here)" },
               createdAt: { type: "integer" },
               settledAt: { type: "integer", nullable: true },
+              ffOrder: {
+                type: "object",
+                description:
+                  "Present on a token deposit: the provider's order behind it, as last polled. Its token is the order's bearer " +
+                  "credential and is never exposed (`hasToken` only). An EMERGENCY status means the payer's tokens are held " +
+                  "by the provider (late, short or over deposit); the payer resolves it with the provider.",
+                properties: {
+                  id: { type: "string", description: "The provider's order id (ffsim-… when simulated)" },
+                  status: { type: "string", enum: ["NEW", "PENDING", "EXCHANGE", "WITHDRAW", "DONE", "EXPIRED", "EMERGENCY"] },
+                  ffCode: { type: "string" },
+                  unit: { type: "string" },
+                  depositAmount: { type: "string", description: "Base units of the token" },
+                  depositTxid: { type: "string", nullable: true },
+                  expiresAt: { type: "integer", description: "Unix seconds: the provider's deposit deadline" },
+                  hasToken: { type: "boolean" },
+                  emergency: { type: "array", nullable: true, items: { type: "string" }, description: "e.g. EXPIRED, LESS, MORE, LIMIT" },
+                },
+              },
             },
           } } } } },
           ...errorResponse("503", "No settlement store configured"),

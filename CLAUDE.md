@@ -76,6 +76,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/):
 - `src/payment-options.ts` — LUD-XX paymentOptions rail registry (advertise + resolve)
 - `src/quote-provider.ts` — LUD-XX paymentQuote framework (injected rate oracle seam)
 - `src/settlement-store.ts` + `src/workers/offline-poller.ts` — LUD-21 settlement records (memory/SQLite) and the offline-swap status poller
+- `src/rails/fixedfloat/` + `src/ff-order-store.ts` + `src/workers/ff-order-poller.ts` — Token deposits (`FIXEDFLOAT_*`, mainnet only; `FIXEDFLOAT_SIMULATE` off it): a payer's stablecoin deposit with FixedFloat pays the corridor's hold invoice. `settled` comes from the corridor alone; FixedFloat's status supplies only the deposit txid that becomes `paymentReference`
 - `scripts/probe-solver.ts` — live solver quote probe (operator diagnostic; funds nothing)
 - `scripts/probe-covenant.ts` — the same for the covenant rail: derives a destination from a network's real operator + emulator keys, so a config that would silently fall back to the static address fails here instead of on a payer's money
 - `scripts/inspect-funding.ts` — why a funded lockup never claimed: reports the claim packet and output taptree covclaimd needs, both of which it declines at debug level

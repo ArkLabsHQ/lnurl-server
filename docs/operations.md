@@ -28,6 +28,12 @@ Server-wide capability is not the whole answer: `onchain` depends on the *addres
 
 Covenant destinations settle from a contract subscription, and that subscription does drop and reconnect in normal operation. An event lost to a reconnect window is recovered by the catch-up pass, which runs on `OFFLINE_POLL_INTERVAL_MS` — so a record can legitimately take up to that long to flip after the money lands. What should *not* happen is a record that stays unsettled indefinitely while the sweep logs and the balance rises: the sweeper reads the contract manager and never the settlement store, so it is unaffected by anything wrong on the settlement side and will keep moving funds regardless. If you see that pair — sweep logged, record unsettled past a few catch-up intervals — check `DESTINATION_WATCH_MS` first, since a record older than that window becomes invisible to the watcher while the sweeper carries on (see [Shutdown and incidents](#shutdown-and-incidents)).
 
+### Token deposits (FixedFloat)
+
+The rail is mainnet-only: the process refuses to start with `FIXEDFLOAT_API_KEY` set unless arkd reports `bitcoin`. `GET /admin/api/rails` says why it is dark (no keys, stale rates, corridor not ready). The admin Settlements view shows each deposit's FixedFloat order id and last status; the order's token never leaves the database.
+
+A payer whose tokens are stuck has an order in `EMERGENCY` (logged once as `ff_order_emergency` at error, with the reason: `EXPIRED` for a late deposit, `LESS`/`MORE` for a short or over one). This server never calls FixedFloat's `emergency` method and cannot refund: give the payer the order id from the Settlements view and send them to FixedFloat support, which resolves it against the refund address the payer supplies. An order that expired unfunded (`ff_order_status` with `EXPIRED`) moved no money. `ff_window_longer_than_configured` means FixedFloat granted a longer deposit window than `FIXEDFLOAT_WINDOW_SECONDS`; the server has adopted it, and if it plus `FIXEDFLOAT_SETTLE_MARGIN_SECONDS` exceeds the corridor's hold invoice (1800s on intent-solver today), every token callback is refused until one of them changes.
+
 ## Backup and restore
 
 Quiesce writes before copying SQLite. The safest sequence is:
