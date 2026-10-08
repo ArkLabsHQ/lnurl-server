@@ -30,7 +30,9 @@ Covenant destinations settle from a contract subscription, and that subscription
 
 ### Token deposits (FixedFloat)
 
-The rail is mainnet-only: the process refuses to start with `FIXEDFLOAT_API_KEY` set unless arkd reports `bitcoin`. `GET /admin/api/rails` says why it is dark (no keys, stale rates, corridor not ready). The admin Settlements view shows each deposit's FixedFloat order id and last status; the order's token never leaves the database.
+The rail is mainnet-only: the process refuses to start with `FIXEDFLOAT_API_KEY` set unless arkd reports `bitcoin`. `GET /admin/api/rails` says why it is dark (no keys, stale rates, corridor not ready, or FixedFloat calls paused for two minutes after an HTTP 429 or five errors in a row). The admin Settlements view shows each deposit's FixedFloat order id and last status; the order's token never leaves the database.
+
+Two errors mean a settled payment's merchant will not be credited: `ff_deposit_txid_unrecognised` (FixedFloat reported a deposit txid in a shape no explorer of that chain uses) and `ff_reference_missing` (a settled payment reached its TTL with no deposit txid at all). The receiver was paid in both cases; the order id lets FixedFloat support supply the deposit transaction.
 
 A payer whose tokens are stuck has an order in `EMERGENCY` (logged once as `ff_order_emergency` at error, with the reason: `EXPIRED` for a late deposit, `LESS`/`MORE` for a short or over one). This server never calls FixedFloat's `emergency` method and cannot refund: give the payer the order id from the Settlements view and send them to FixedFloat support, which resolves it against the refund address the payer supplies. An order that expired unfunded (`ff_order_status` with `EXPIRED`) moved no money, but it is still watched until the TTL: a late deposit turns it `EMERGENCY` and logs as above. Expect that case most often from a payer who deposited after the quote's `expiresAt` (the corridor invoice less `FIXEDFLOAT_SETTLE_MARGIN_SECONDS`) but inside FixedFloat's own longer window, when the invoice was already dead.
 
