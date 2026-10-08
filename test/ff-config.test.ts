@@ -145,7 +145,7 @@ describe("FixedFloat in the admin API", () => {
       paymentHash: "aa".repeat(32), pr: "lnbc1", sessionId: "offline:1", preimage: "bb".repeat(32), amountMsat: 10_000_000, paymentOption: "ff-usdtarbitrum",
       recovery: { version: 1, solverName: "s", solverPubkey: "11".repeat(32), relays: ["wss://relay.example"], rfqId: "rfq-1", lockupAddress: "tark1x", expectedAmount: 9_980, script: {} },
       order: { id: "AB12CD", token: "secret-order-token", ffCode: "USDTARBITRUM", asset: "eip155:42161/erc20:0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
-        unit: "USDT", depositAddress: "0x" + "ab".repeat(20), depositAmount: "8426000", toAmountSat: 10_000, status: "NEW", expiresAt: 1_900_000_000 },
+        unit: "USDT", depositAddress: "0x" + "ab".repeat(20), depositAmount: "8426000", invoiceAmountSat: 10_000, status: "NEW", expiresAt: 1_900_000_000 },
     });
     const fixedFloat = {
       provider: FIXEDFLOAT, rates: { snapshot: () => ({ rails: [], ready: false, reason: "FixedFloat rates not loaded yet" }) },

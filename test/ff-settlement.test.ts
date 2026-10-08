@@ -57,7 +57,7 @@ beforeEach(async () => {
     paymentHash: HASH, pr: "lnbc100u1fake", sessionId: "offline:1", preimage: PREIMAGE, amountMsat: 10_000_000, paymentOption: "ff-usdtarbitrum",
     recovery: { version: 1, solverName: "s", solverPubkey: "11".repeat(32), relays: ["wss://relay.example"], rfqId: "rfq-1", lockupAddress: "tark1x", expectedAmount: 9_980, script: {} },
     order: { id: order.id, token: order.token, ffCode: "USDTARBITRUM", asset: "eip155:42161/erc20:0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9", unit: "USDT",
-      depositAddress: order.from.address, depositAmount: "8426000", toAmountSat: 10_000, status: "NEW", expiresAt: order.expiresAt! },
+      depositAddress: order.from.address, depositAmount: "8426000", invoiceAmountSat: 10_000, status: "NEW", expiresAt: order.expiresAt! },
   });
 });
 

@@ -316,7 +316,7 @@ describe("FixedFloat callback", () => {
     const [record] = settlements.listRecent(10);
     const order = [...ff.orders.values()][0]!;
     expect(record).toMatchObject({ paymentOption: "ff-usdtarbitrum", paymentDestination: order.from.address, amountMsat: 10_000_000, settled: false });
-    expect(orders.byPaymentHash(record!.paymentHash)).toMatchObject({ orderId: order.id, token: order.token, depositAmount: "8426000", toAmountSat: 10_000 });
+    expect(orders.byPaymentHash(record!.paymentHash)).toMatchObject({ orderId: order.id, token: order.token, depositAmount: "8426000", invoiceAmountSat: 10_000 });
     expect(db.prepare("SELECT payment_hash FROM offline_swaps").all()).toEqual([{ payment_hash: record!.paymentHash }]);
   });
 

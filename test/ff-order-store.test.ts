@@ -34,7 +34,7 @@ function accepted(hash: string, overrides: Partial<AcceptedFfOrder["order"]> = {
     order: {
       id: `ID${hash.slice(0, 4)}`, token: "secret-order-token", ffCode: "USDTARBITRUM",
       asset: "eip155:42161/erc20:0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9", unit: "USDT",
-      depositAddress: "0x" + "ab".repeat(20), depositAmount: "8426000", toAmountSat: 10_000, status: "NEW", expiresAt: 1_000 + 900,
+      depositAddress: "0x" + "ab".repeat(20), depositAmount: "8426000", invoiceAmountSat: 10_000, status: "NEW", expiresAt: 1_000 + 900,
       ...overrides,
     },
   };

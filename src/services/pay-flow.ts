@@ -212,7 +212,7 @@ export async function createFixedFloatDestination(args: {
       paymentOption: id, recovery: swap.recovery,
       order: {
         id: order.id, token: order.token, ffCode: rail.ffCode, asset: rail.asset, unit: rail.unit, depositAddress: order.from.address,
-        depositAmount: quote.payment.amount, toAmountSat: toSat, status: order.status, expiresAt: order.expiresAt,
+        depositAmount: quote.payment.amount, invoiceAmountSat: toSat, status: order.status, expiresAt: order.expiresAt,
       },
     });
     logger.info("ff_order_created", { requestId, orderId: order.id, ffCode: rail.ffCode, unit: rail.unit, sats: toSat });

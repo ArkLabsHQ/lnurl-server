@@ -23,7 +23,8 @@ export interface AcceptedFfOrder {
     depositTag?: string | null;
     /** Base units, as an integer string. */
     depositAmount: string;
-    toAmountSat: number;
+    /** The corridor invoice's face value; the receiver gets it less the solver fee. */
+    invoiceAmountSat: number;
     status: string;
     /** Unix seconds. */
     expiresAt: number;
@@ -42,7 +43,7 @@ export interface StoredFfOrder {
   depositTag: string | null;
   depositAmount: string;
   depositTxid: string | null;
-  toAmountSat: number;
+  invoiceAmountSat: number;
   status: string;
   emergency: { status: string[]; choice: string } | null;
   expiresAt: number;
@@ -67,7 +68,7 @@ interface Row {
   deposit_tag: string | null;
   deposit_amount: string;
   deposit_txid: string | null;
-  to_amount_sat: number;
+  invoice_amount_sat: number;
   status: string;
   emergency_json: string | null;
   expires_at: number;
@@ -90,8 +91,8 @@ export class FfOrderStore {
       ).run(record.paymentHash, record.pr, record.sessionId, record.preimage, record.recovery.rfqId, record.paymentOption, o.depositAddress, record.amountMsat, record.addressId ?? null, at, at);
       insertOfflineSwap(this.db, record.paymentHash, record.recovery, at);
       this.db.prepare(
-        "INSERT INTO ff_orders (payment_hash, order_id, order_token, ff_code, asset, unit, deposit_address, deposit_tag, deposit_amount, to_amount_sat, status, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(record.paymentHash, o.id, o.token, o.ffCode, o.asset, o.unit, o.depositAddress, o.depositTag ?? null, o.depositAmount, o.toAmountSat, o.status, o.expiresAt, at, at);
+        "INSERT INTO ff_orders (payment_hash, order_id, order_token, ff_code, asset, unit, deposit_address, deposit_tag, deposit_amount, invoice_amount_sat, status, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(record.paymentHash, o.id, o.token, o.ffCode, o.asset, o.unit, o.depositAddress, o.depositTag ?? null, o.depositAmount, o.invoiceAmountSat, o.status, o.expiresAt, at, at);
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -196,7 +197,7 @@ function toOrder(row: Row): StoredFfOrder {
     depositTag: row.deposit_tag,
     depositAmount: row.deposit_amount,
     depositTxid: row.deposit_txid,
-    toAmountSat: row.to_amount_sat,
+    invoiceAmountSat: row.invoice_amount_sat,
     status: row.status,
     emergency: row.emergency_json ? (JSON.parse(row.emergency_json) as StoredFfOrder["emergency"]) : null,
     expiresAt: row.expires_at,

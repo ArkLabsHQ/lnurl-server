@@ -277,22 +277,22 @@ const MIGRATIONS: Migration[] = [
     // bearer credential: it stays in this table. deposit_amount is base units, as TEXT.
     up: `
       CREATE TABLE IF NOT EXISTS ff_orders (
-        payment_hash    TEXT PRIMARY KEY REFERENCES settlements(payment_hash) ON DELETE CASCADE,
-        order_id        TEXT NOT NULL,
-        order_token     TEXT NOT NULL,
-        ff_code         TEXT NOT NULL,
-        asset           TEXT NOT NULL,
-        unit            TEXT NOT NULL,
-        deposit_address TEXT NOT NULL,
-        deposit_tag     TEXT,
-        deposit_amount  TEXT NOT NULL,
-        deposit_txid    TEXT,
-        to_amount_sat   INTEGER NOT NULL,
-        status          TEXT NOT NULL,
-        emergency_json  TEXT,
-        expires_at      INTEGER NOT NULL,
-        created_at      INTEGER NOT NULL,
-        updated_at      INTEGER NOT NULL
+        payment_hash       TEXT PRIMARY KEY REFERENCES settlements(payment_hash) ON DELETE CASCADE,
+        order_id           TEXT NOT NULL,
+        order_token        TEXT NOT NULL,
+        ff_code            TEXT NOT NULL,
+        asset              TEXT NOT NULL,
+        unit               TEXT NOT NULL,
+        deposit_address    TEXT NOT NULL,
+        deposit_tag        TEXT,
+        deposit_amount     TEXT NOT NULL,
+        deposit_txid       TEXT,
+        invoice_amount_sat INTEGER NOT NULL,
+        status             TEXT NOT NULL,
+        emergency_json     TEXT,
+        expires_at         INTEGER NOT NULL,
+        created_at         INTEGER NOT NULL,
+        updated_at         INTEGER NOT NULL
       );
       CREATE UNIQUE INDEX IF NOT EXISTS uq_ff_orders_order_id ON ff_orders(order_id);
     `,

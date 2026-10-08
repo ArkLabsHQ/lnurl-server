@@ -136,7 +136,7 @@ describe("runMigrations", () => {
     const cols = (db.prepare("SELECT name FROM pragma_table_info('ff_orders')").all() as { name: string }[]).map((c) => c.name);
     expect(cols).toEqual([
       "payment_hash", "order_id", "order_token", "ff_code", "asset", "unit", "deposit_address", "deposit_tag",
-      "deposit_amount", "deposit_txid", "to_amount_sat", "status", "emergency_json", "expires_at", "created_at", "updated_at",
+      "deposit_amount", "deposit_txid", "invoice_amount_sat", "status", "emergency_json", "expires_at", "created_at", "updated_at",
     ]);
     const index = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'uq_ff_orders_order_id'").get() as { sql: string };
     expect(index.sql).toMatch(/UNIQUE INDEX .*ff_orders\(order_id\)/);

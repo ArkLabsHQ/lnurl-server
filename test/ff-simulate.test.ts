@@ -82,7 +82,7 @@ describe("simulated token provider", () => {
       paymentHash: hash, pr: "lntbs100u1simulated", sessionId: "offline:1", preimage: "bb".repeat(32), amountMsat: 10_000_000, paymentOption: "ffsim-usdtarbitrum",
       recovery: { version: 1, solverName: "s", solverPubkey: "11".repeat(32), relays: ["wss://relay.example"], rfqId: "rfq-1", lockupAddress: "tark1x", expectedAmount: 9_980, script: {} },
       order: { id: order.id, token: order.token, ffCode: "USDTARBITRUM", asset: `${SIM_ASSETS.USDTARBITRUM!.chain}/erc20:0x${"cd".repeat(20)}`, unit: "USDT",
-        depositAddress: order.from.address, depositAmount: "8475000", toAmountSat: 10_000, status: order.status, expiresAt: order.expiresAt! },
+        depositAddress: order.from.address, depositAmount: "8475000", invoiceAmountSat: 10_000, status: order.status, expiresAt: order.expiresAt! },
     });
     expect((await sim.deps.client.order(order.id, order.token)).status).toBe("NEW");
 

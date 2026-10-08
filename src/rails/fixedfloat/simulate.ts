@@ -114,7 +114,7 @@ export function simulatedTransport(opts: { orders: SimulatedOrders; windowSecond
       return orderAnswer({
         id: order.orderId, token: order.token, status: settled ? "DONE" : at >= order.expiresAt ? "EXPIRED" : "NEW", code: order.ffCode,
         amount: formatUnits(order.depositAmount, SIM_ASSETS[order.ffCode]?.decimals ?? 6), address: order.depositAddress,
-        toAmount: (order.toAmountSat / 1e8).toFixed(8), expiration: order.expiresAt, now: at,
+        toAmount: (order.invoiceAmountSat / 1e8).toFixed(8), expiration: order.expiresAt, now: at,
         txid: settled ? txidFor(namespaceOf(order.asset), order.orderId) : null,
       });
     },
