@@ -88,6 +88,11 @@ export interface SettlementStore {
   /** Any record with this script, settled or not — the sweep runs after settlement,
    *  so the watcher's pending-only lookup cannot serve it. */
   findByCovenantScript(script: string): SettlementRecord | undefined;
+  /** Covenant destinations still owed work, read by the sweeper, the catch-up and
+   *  retirement: unswept, and either settled or still inside the attribution window.
+   *  Settled outlives the window because money that arrived must always be swept; unpaid
+   *  does not, since sweeping past it moves funds `verify` still reports as unpaid. */
+  listActiveCovenantScripts(): string[];
   /** Fetch a record, or undefined if unknown or expired. */
   get(paymentHash: string): SettlementRecord | undefined;
   /** Unsettled offline swaps (have a swapId) for the settlement poller. */
@@ -107,6 +112,9 @@ export interface SettlementStore {
   listRecent(limit: number, opts?: { settled?: boolean; option?: string }): SettlementRecord[];
   listByAddress(addressId: number, limit: number, opts?: { since?: number }): SettlementRecord[];
 }
+
+/** Money arrived at its covenant and no sweep is recorded: expiry must never reclaim it. */
+const owesSweep = (r: SettlementRecord): boolean => Boolean(r.covenantScript && r.settled && !r.payoutReference);
 
 /** In-memory store used in library / no-DB mode. Lazy expiry on read plus an
  *  opportunistic sweep so the map can't grow unbounded under create-only traffic. */
@@ -161,7 +169,7 @@ export class MemorySettlementStore implements SettlementStore {
     if (this.now() - r.createdAt >= lifetime) {
       // Same rules as the DB store: a destination outlives the verify TTL, and
       // an address's history outlives both.
-      if (r.addressId === null || r.addressId === undefined) this.map.delete(paymentHash);
+      if ((r.addressId === null || r.addressId === undefined) && !owesSweep(r)) this.map.delete(paymentHash);
       return undefined;
     }
     return r;
@@ -237,7 +245,9 @@ export class MemorySettlementStore implements SettlementStore {
   }
 
   markPaidOut(paymentHash: string, reference: string): boolean {
-    const r = this.get(paymentHash);
+    // Straight from the map, matching the DB store's unwindowed UPDATE: through `get` a
+    // sweep landing after the window was dropped, leaving the record active for good.
+    const r = this.map.get(paymentHash);
     if (!r || r.payoutReference) return false;
     r.payoutReference = reference;
     r.updatedAt = this.now();
@@ -247,6 +257,17 @@ export class MemorySettlementStore implements SettlementStore {
   findByCovenantScript(script: string): SettlementRecord | undefined {
     for (const r of this.map.values()) if (r.covenantScript === script) return r;
     return undefined;
+  }
+
+  listActiveCovenantScripts(): string[] {
+    // Walks the map, not `get`, which expires a settled record whose money is still there.
+    const horizon = this.now() - this.destinationWatchMs;
+    const out: string[] = [];
+    for (const r of this.map.values()) {
+      if (!r.covenantScript || r.payoutReference) continue;
+      if (r.settled || r.createdAt > horizon) out.push(r.covenantScript);
+    }
+    return out;
   }
 
   isReferenceUsed(reference: string): boolean {
@@ -271,7 +292,7 @@ export class MemorySettlementStore implements SettlementStore {
   private sweep(): void {
     const t = this.now();
     for (const [k, r] of this.map) {
-      if (t - r.createdAt >= this.ttlMs && (r.addressId === null || r.addressId === undefined)) this.map.delete(k);
+      if (t - r.createdAt >= this.ttlMs && (r.addressId === null || r.addressId === undefined) && !owesSweep(r)) this.map.delete(k);
     }
   }
 }
@@ -368,7 +389,8 @@ export class DbSettlementStore implements SettlementStore {
       // only copy of it — and a wallet offline past the TTL is precisely the
       // case the sync source exists for, so deleting here let any payer's
       // verify poll erase a receive its owner had not seen yet.
-      if (row.address_id === null || row.address_id === undefined) {
+      const owesSweep = Boolean(row.covenant_script && row.settled && !row.payout_reference);
+      if ((row.address_id === null || row.address_id === undefined) && !owesSweep) {
         this.db.prepare("DELETE FROM settlements WHERE payment_hash = ?").run(paymentHash);
       }
       return undefined;
@@ -484,6 +506,18 @@ export class DbSettlementStore implements SettlementStore {
       .prepare("SELECT * FROM settlements WHERE covenant_script = ? LIMIT 1")
       .get(script) as unknown as SettlementRow | undefined;
     return row ? this.toRecord(row) : undefined;
+  }
+
+  listActiveCovenantScripts(): string[] {
+    // Two reads, not one `settled = 1 OR created_at > ?`: without the settled equality
+    // SQLite cannot drive the range off (settled, created_at), and the OR form scanned
+    // every never-paid destination. Disjoint on `settled`, so no row appears twice.
+    const scoped = "SELECT covenant_script FROM settlements WHERE covenant_script IS NOT NULL AND payout_reference IS NULL";
+    const settled = this.db.prepare(`${scoped} AND settled = 1`).all() as unknown as { covenant_script: string }[];
+    const open = this.db
+      .prepare(`${scoped} AND settled = 0 AND created_at > ?`)
+      .all(this.now() - this.destinationWatchMs) as unknown as { covenant_script: string }[];
+    return [...settled, ...open].map((r) => r.covenant_script);
   }
 
   isReferenceUsed(reference: string): boolean {

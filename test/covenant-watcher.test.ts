@@ -25,8 +25,12 @@ const storeWith = (recs: { hash: string; script: string; amountMsat: number }[])
 
 const contract = (script: string) => ({ type: COVENANT_CONTRACT_TYPE, script, params: {}, address: `tark1${script}` });
 
-/** Captures the subscriber so a test can push events the way the manager would. */
-function fakeManager(funded: { script: string; vtxos: { txid: string; value: number; isSpent?: boolean }[] }[] = []) {
+/** Captures the subscriber so a test can push events the way the manager would, and
+ *  resolves every script asked about as the real manager does. `drops` loses one. */
+function fakeManager(
+  funded: { script: string; vtxos: { txid: string; value: number; isSpent?: boolean }[] }[] = [],
+  drops: string[] = [],
+) {
   let emit: ((e: unknown) => void) | undefined;
   const manager = {
     onContractEvent: vi.fn((cb: (e: unknown) => void) => {
@@ -35,7 +39,13 @@ function fakeManager(funded: { script: string; vtxos: { txid: string; value: num
         emit = undefined;
       };
     }),
-    getContractsWithVtxos: vi.fn(async () => funded.map((f) => ({ contract: contract(f.script), vtxos: f.vtxos }))),
+    getContractsWithVtxos: vi.fn(async (filter?: { script?: string[] }) => {
+      const vtxosByScript = new Map(funded.map((f) => [f.script, f.vtxos]));
+      const requested = filter?.script ?? funded.map((f) => f.script);
+      return requested
+        .filter((s) => !drops.includes(s))
+        .map((s) => ({ contract: contract(s), vtxos: vtxosByScript.get(s) ?? [] }));
+    }),
   } as unknown as IContractManager;
   const received = (script: string, vtxos: { txid: string; value: number }[]) =>
     emit?.({ type: "vtxo_received", contractScript: script, vtxos, contract: contract(script), timestamp: Date.now() });
@@ -102,6 +112,46 @@ describe("startCovenantWatcher", () => {
     received("512011", [{ txid: "tx-short", value: 49 }]);
 
     expect(store.get("v1")!.settled).toBe(false);
+  });
+
+  // A catch-up pass force-syncs whatever it enumerates, so every destination ever
+  // derived used to cost an indexer round trip every interval.
+  it("catches up only on the destinations still in play", async () => {
+    const store = storeWith([{ hash: "v1", script: "512011", amountMsat: 50_000 }]);
+    store.create({
+      paymentHash: "done",
+      pr: "",
+      sessionId: "sess",
+      paymentOption: "arkade",
+      paymentDestination: "tark1done",
+      amountMsat: 50_000,
+      covenantScript: "5120done",
+    });
+    store.markPaidOut("done", "sweep-tx");
+    const { manager } = fakeManager();
+
+    await catchUp(store, manager);
+
+    expect(manager.getContractsWithVtxos).toHaveBeenCalledWith({
+      type: COVENANT_CONTRACT_TYPE,
+      script: ["512011"],
+    });
+  });
+
+  it("warns once a pass when the manager resolves fewer contracts than it asked about", async () => {
+    const store = storeWith([
+      { hash: "v1", script: "512011", amountMsat: 50_000 },
+      { hash: "v2", script: "512022", amountMsat: 50_000 },
+    ]);
+    const { manager } = fakeManager([], ["512022"]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await catchUp(store, manager);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]!.join(" ")).toContain("1 of 2");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("ignores an event for a script it has no record for", () => {

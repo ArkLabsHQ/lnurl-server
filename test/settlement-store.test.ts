@@ -53,6 +53,98 @@ describe.each(stores)("%s payout references", (_name, make) => {
     expect(s.findByCovenantScript("0014feed")).toMatchObject({ paymentHash: "v4" });
     expect(s.findByCovenantScript("0014none")).toBeUndefined();
   });
+
+  it("holds a covenant script active until its sweep is recorded", () => {
+    const s = make();
+    s.create({ paymentHash: "v5", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014aa" });
+    s.create({ paymentHash: "v6", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014bb" });
+    // Settled is not finished: the money sits at the covenant until it is swept.
+    s.markObserved("v5", "tx-in");
+    expect(s.listActiveCovenantScripts().sort()).toEqual(["0014aa", "0014bb"]);
+
+    s.markPaidOut("v5", "sweep-tx");
+    expect(s.listActiveCovenantScripts()).toEqual(["0014bb"]);
+  });
+
+  it("never reports a record that has no covenant script", () => {
+    const s = make();
+    s.create({ paymentHash: "v7", pr: "lnbc1", sessionId: "s" });
+    s.create({ paymentHash: "v8", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000 });
+    expect(s.listActiveCovenantScripts()).toEqual([]);
+  });
+});
+
+/** The two halves of the active set answer to different clocks. */
+const clocked: Array<[string, (now: () => number, watchMs: number) => SettlementStore]> = [
+  ["MemorySettlementStore", (now, watchMs) => new MemorySettlementStore(watchMs, now, watchMs)],
+  ["DbSettlementStore", (now, watchMs) => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    return new DbSettlementStore(db, watchMs, now, watchMs);
+  }],
+];
+
+describe.each(clocked)("%s active covenant window", (_name, make) => {
+  const WATCH = 86_400_000;
+
+  it("drops an unpaid destination the instant a payment there could no longer settle", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    s.create({ paymentHash: "unpaid", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014aa" });
+    expect(s.listActiveCovenantScripts()).toEqual(["0014aa"]);
+
+    t = 1000 + WATCH;
+    expect(s.listActiveCovenantScripts()).toEqual([]);
+    expect(s.markObserved("unpaid", "tx-late")).toBe(false);
+  });
+
+  it("keeps a settled destination active past the window until its sweep lands", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    s.create({ paymentHash: "paid", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014bb" });
+    expect(s.markObserved("paid", "tx-in")).toBe(true);
+
+    t = 1000 + WATCH * 14;
+    expect(s.listActiveCovenantScripts()).toEqual(["0014bb"]);
+
+    expect(s.markPaidOut("paid", "sweep-tx")).toBe(true);
+    expect(s.listActiveCovenantScripts()).toEqual([]);
+    expect(s.findByCovenantScript("0014bb")).toMatchObject({ payoutReference: "sweep-tx" });
+  });
+
+  it("records a sweep that lands after the destination window", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    s.create({ paymentHash: "late", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014cc" });
+    s.markObserved("late", "tx-in");
+
+    t = 1000 + WATCH * 3;
+    expect(s.markPaidOut("late", "sweep-tx")).toBe(true);
+    expect(s.listActiveCovenantScripts()).toEqual([]);
+  });
+
+  it("keeps a settled, unswept destination through an expired read", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    s.create({ paymentHash: "owed", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014dd" });
+    s.markObserved("owed", "tx-in");
+
+    t = 1000 + WATCH * 3;
+    expect(s.get("owed")).toBeUndefined();
+    expect(s.listActiveCovenantScripts()).toEqual(["0014dd"]);
+    expect(s.markPaidOut("owed", "sweep-tx")).toBe(true);
+  });
+});
+
+it("MemorySettlementStore's periodic sweep keeps a destination still owed a sweep", () => {
+  let t = 1000;
+  const s = new MemorySettlementStore(5000, () => t, 5000);
+  s.create({ paymentHash: "owed", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014ee" });
+  s.markObserved("owed", "tx-in");
+
+  t = 1000 + 5000 * 3;
+  for (let i = 0; i < 1000; i++) s.create({ paymentHash: `fill-${i}`, pr: "lnbc1", sessionId: "s" });
+  expect(s.listActiveCovenantScripts()).toEqual(["0014ee"]);
 });
 
 describe("MemorySettlementStore", () => {

@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { MultisigTapscript, VtxoScript, type IContractManager } from "@arkade-os/sdk";
 import { createCovenantSweeper, startCovenantSweeper } from "../src/workers/covenant-sweeper.js";
+import { MemorySettlementStore, type SettlementStore } from "../src/settlement-store.js";
 import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler as handler } from "../src/covenant/contract.js";
 import { COLLABORATIVE_LEAF, COVENANT_V1, RECOVERY_LEAF, SWEEP_LEAF } from "../src/covenant/destination.js";
 
@@ -24,13 +25,14 @@ const realLeaves = handler.createScript(realParams).leaves;
 // hold is which destinations are attempted at all, that a spent output is left alone,
 // and that one broken destination cannot stop the others.
 
-const contract = (script: string) => ({
+const contract = (script: string, watch: "awaiting-funds" | "retained" = "awaiting-funds") => ({
   type: COVENANT_CONTRACT_TYPE,
   // Real params: the sweeper rebuilds the script from these to find its leaf.
   params: realParams,
   script,
   address: `tark1for-${script}`,
   state: "active" as const,
+  watch,
   createdAt: Date.now(),
 });
 
@@ -41,10 +43,13 @@ const vtxo = (txid: string, opts: { spent?: boolean } = {}) => ({
   isSpent: opts.spent ?? false,
 });
 
-function managerWith(entries: { script: string; vtxos: ReturnType<typeof vtxo>[] }[]) {
+function managerWith(
+  entries: { script: string; vtxos: ReturnType<typeof vtxo>[] }[],
+  watch: "awaiting-funds" | "retained" = "awaiting-funds",
+) {
   const getSpendablePaths = vi.fn(async () => [{ leaf: {} as never, extraWitness: [] }]);
   const getContractsWithVtxos = vi.fn(async () =>
-    entries.map((e) => ({ contract: contract(e.script), vtxos: e.vtxos })),
+    entries.map((e) => ({ contract: contract(e.script, watch), vtxos: e.vtxos })),
   );
   return {
     manager: { getContractsWithVtxos, getSpendablePaths } as unknown as IContractManager,
@@ -53,7 +58,7 @@ function managerWith(entries: { script: string; vtxos: ReturnType<typeof vtxo>[]
   };
 }
 
-const sweeperWith = (manager: IContractManager) =>
+const sweeperWith = (manager: IContractManager, settlements?: SettlementStore) =>
   createCovenantSweeper({
     contracts: manager,
     arkServerUrl: "http://unused",
@@ -61,6 +66,7 @@ const sweeperWith = (manager: IContractManager) =>
     indexer: {} as never,
     arkProvider: { getInfo: async () => ({ checkpointTapscript: "00" }) } as never,
     emulator: { submitTx: async () => ({ signedArkTx: "", signedCheckpointTxs: [] }) },
+    ...(settlements ? { settlements } : {}),
   });
 
 describe("createCovenantSweeper", () => {
@@ -70,6 +76,71 @@ describe("createCovenantSweeper", () => {
     await sweeperWith(manager).sweep();
 
     expect(getContractsWithVtxos).toHaveBeenCalledWith({ type: COVENANT_CONTRACT_TYPE });
+  });
+
+  // A pass force-syncs whatever it enumerates, so every dead destination in the
+  // table used to cost an indexer round trip.
+  it("asks only about the destinations still owed a sweep", async () => {
+    const { manager, getContractsWithVtxos } = managerWith([{ script: "5120aa", vtxos: [vtxo("tx-a")] }]);
+    const settlements = new MemorySettlementStore(3_600_000);
+    settlements.create({ paymentHash: "live", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "5120aa" });
+    settlements.create({ paymentHash: "done", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "5120bb" });
+    settlements.markPaidOut("done", "sweep-tx");
+
+    await sweeperWith(manager, settlements).sweep();
+
+    expect(getContractsWithVtxos).toHaveBeenCalledWith({ type: COVENANT_CONTRACT_TYPE, script: ["5120aa"] });
+  });
+
+  it("queries nothing at all when no destination is owed a sweep", async () => {
+    const { manager, getContractsWithVtxos } = managerWith([{ script: "5120aa", vtxos: [vtxo("tx-a")] }]);
+
+    await sweeperWith(manager, new MemorySettlementStore(3_600_000)).sweep();
+
+    expect(getContractsWithVtxos).not.toHaveBeenCalled();
+  });
+
+  it("warns once a pass when the manager resolves fewer contracts than it asked about", async () => {
+    const { manager } = managerWith([{ script: "5120aa", vtxos: [] }, { script: "5120bb", vtxos: [] }]);
+    const settlements = new MemorySettlementStore(3_600_000);
+    for (const script of ["5120aa", "5120bb", "5120cc"]) {
+      settlements.create({ paymentHash: `h-${script}`, pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: script });
+    }
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await sweeperWith(manager, settlements).sweep();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]!.join(" ")).toContain("2 of 3");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("says nothing when every destination it asked about resolved, vtxos or not", async () => {
+    const { manager } = managerWith([{ script: "5120aa", vtxos: [] }]);
+    const settlements = new MemorySettlementStore(3_600_000);
+    settlements.create({ paymentHash: "h", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "5120aa" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await sweeperWith(manager, settlements).sweep();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // The SDK demotes a destination the instant a VTXO lands at it — which is exactly
+  // when the money is there and the sweep has not run. Scoping on watch state would
+  // strand it; scoping on our own records does not.
+  it("still sweeps a funded destination the SDK has already demoted", async () => {
+    const { manager, getSpendablePaths } = managerWith([{ script: "5120aa", vtxos: [vtxo("tx-a")] }], "retained");
+    const settlements = new MemorySettlementStore(3_600_000);
+    settlements.create({ paymentHash: "live", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "5120aa" });
+    settlements.markObserved("live", "tx-a");
+
+    await sweeperWith(manager, settlements).sweep();
+
+    expect(getSpendablePaths).toHaveBeenCalled();
   });
 
   // One query for every destination, where the old shape issued one per record.
