@@ -222,4 +222,45 @@ describe("DbSettlementStore", () => {
     expect(s.listPendingSwaps()).toEqual([]);
     db.close();
   });
+
+  // Both ran as a table scan before migration 17, on paths that repeat per worker
+  // pass and per candidate VTXO. The plan is the only thing that says so.
+  describe.each([
+    [
+      "the settled-but-unswept half of the covenant scope",
+      "SELECT covenant_script FROM settlements WHERE covenant_script IS NOT NULL AND payout_reference IS NULL AND settled = 1",
+      [],
+      "idx_settlements_active_covenants",
+    ],
+    [
+      "the still-attributable half of the covenant scope",
+      "SELECT covenant_script FROM settlements WHERE covenant_script IS NOT NULL AND payout_reference IS NULL AND settled = 0 AND created_at > ?",
+      [0],
+      "idx_settlements_active_covenants",
+    ],
+    [
+      "the reference check every observed payment makes",
+      "SELECT 1 FROM settlements WHERE payment_reference = ? LIMIT 1",
+      ["tx-a"],
+      "idx_settlements_reference",
+    ],
+    [
+      "the pending-destination read the watched-script resync makes every second",
+      "SELECT payment_hash FROM settlements WHERE settled = 0 AND payment_option IS NOT NULL AND payment_option != 'lightning' AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
+      [0],
+      "idx_settlements_pending_destinations",
+    ],
+  ])("%s", (_name, sql, params, index) => {
+    it(`is served by ${index}`, () => {
+      const db = openDb(":memory:");
+      runMigrations(db);
+      const plan = (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...(params as never[])) as { detail: string }[])
+        .map((r) => r.detail)
+        .join(" ");
+      expect(plan).toContain(index);
+      // A SEARCH, not a SCAN: the `OR` form named this index while scanning behind it.
+      expect(plan).toContain("SEARCH");
+      db.close();
+    });
+  });
 });

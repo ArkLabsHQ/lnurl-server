@@ -271,9 +271,22 @@ const MIGRATIONS: Migration[] = [
       DROP INDEX IF EXISTS idx_settlements_address;
     `,
   },
+  {
+    version: 17,
+    // Each predicate is implied by its hot query's, so an index holds only the open rows.
+    // `settled` leads the covenant one so both halves of the active scope are a SEARCH.
+    up: `
+      CREATE INDEX idx_settlements_active_covenants ON settlements(settled, created_at)
+        WHERE covenant_script IS NOT NULL AND payout_reference IS NULL;
+      CREATE INDEX idx_settlements_reference ON settlements(payment_reference)
+        WHERE payment_reference IS NOT NULL;
+      CREATE INDEX idx_settlements_pending_destinations ON settlements(created_at)
+        WHERE settled = 0 AND payment_destination IS NOT NULL;
+    `,
+  },
 ];
 
-export const LATEST_MIGRATION = MIGRATIONS[MIGRATIONS.length - 1]!.version;
+export const LATEST_MIGRATION = Math.max(...MIGRATIONS.map((m) => m.version));
 export const MIGRATION_COUNT = MIGRATIONS.length;
 
 /** Apply all pending forward-only migrations inside a transaction each. */
@@ -286,8 +299,13 @@ export function runMigrations(
   db.exec(
     "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);",
   );
-  const row = db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number | null };
-  const current = row.v ?? 0;
+  // Every applied version, not just the highest: a version numbered on another branch
+  // that merged first must not carry this one past unapplied.
+  const applied = new Set(
+    (db.prepare("SELECT version FROM schema_migrations").all() as { version: number }[]).map((r) => r.version),
+  );
+  // The drain gate still asks how far the schema got, which is the maximum.
+  const current = applied.size === 0 ? 0 : Math.max(...applied);
 
   if (current >= 4 && current < 9) {
     const table = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'offline_swaps'").get();
@@ -301,8 +319,8 @@ export function runMigrations(
     }
   }
 
-  for (const m of MIGRATIONS) {
-    if (m.version <= current) continue;
+  for (const m of [...MIGRATIONS].sort((a, b) => a.version - b.version)) {
+    if (applied.has(m.version)) continue;
     if (options.upToVersion !== undefined && m.version > options.upToVersion) continue;
     db.exec("BEGIN");
     try {
