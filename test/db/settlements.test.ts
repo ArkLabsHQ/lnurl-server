@@ -42,11 +42,23 @@ describe("store parity past the ttl", () => {
     memory.create(rec);
     sqlite.create(rec);
 
-    expect(memory.listPendingDestinations()).toEqual(sqlite.listPendingDestinations());
-    expect(sqlite.listPendingDestinations()[0]).toMatchObject({
-      covenantScript: "5120aa",
-    });
+    expect(memory.pendingByCovenantScript("5120aa")).toEqual(sqlite.pendingByCovenantScript("5120aa"));
+    expect(sqlite.pendingByCovenantScript("5120aa")).toMatchObject({ covenantScript: "5120aa" });
     expect(sqlite.get("vid1")?.covenantScript).toBe("5120aa");
+    db.close();
+  });
+
+  // The static-address watcher reads this every second and owns no other rail.
+  it("lists only static-address arkade destinations in both stores", () => {
+    const { db, memory, sqlite } = stores(() => 1000);
+    for (const store of [memory, sqlite]) {
+      store.create({ paymentHash: "static", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "tark1static", amountMsat: 1_000 });
+      store.create({ paymentHash: "covenant", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "tark1derived", amountMsat: 1_000, covenantScript: "5120aa" });
+      store.create({ paymentHash: "onchain", pr: "", sessionId: "s", paymentOption: "onchain", paymentDestination: "bcrt1pboarding", amountMsat: 1_000 });
+    }
+
+    expect(memory.listPendingDestinations().map((d) => d.paymentHash)).toEqual(["static"]);
+    expect(sqlite.listPendingDestinations().map((d) => d.paymentHash)).toEqual(["static"]);
     db.close();
   });
 
@@ -234,7 +246,7 @@ describe("DbSettlementStore", () => {
     ["the pending-swap read the offline poller makes every pass", (s) => s.swaps.listPending(), "idx_settlements_pending_swaps_created"],
     ["the same read without a recovery store", (s) => s.settlements.listPendingSwaps(), "idx_settlements_pending_swaps_created"],
     ["the active-lockup scope retirement reads", (s) => s.swaps.listActiveLockupScripts(), "idx_settlements_pending_swaps_created"],
-    ["the pending-destination read the watched-script resync makes every second", (s) => s.settlements.listPendingDestinations(), "idx_settlements_pending_destinations"],
+    ["the pending-destination read the watched-script resync makes every second", (s) => s.settlements.listPendingDestinations(), "idx_settlements_pending_static_destinations"],
   ])("%s", (_name, call, index) => {
     it(`is served by ${index}`, () => {
       const db = openDb(":memory:");
