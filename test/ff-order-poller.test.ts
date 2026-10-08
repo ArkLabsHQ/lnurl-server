@@ -104,7 +104,7 @@ describe("FixedFloat order poller", () => {
   it("ends a pass at an exhausted budget instead of failing every order", async () => {
     await open("aa".repeat(32));
     await open("cc".repeat(32));
-    budget.take(250 - budget.used());
+    while (budget.take(1));
     await poll();
     expect(orderCalls()).toBe(0);
     expect(lines.filter((l) => l.event === "ff_order_poll_failed")).toEqual([]);

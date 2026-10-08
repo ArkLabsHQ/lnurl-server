@@ -90,6 +90,27 @@ describe("FixedFloat client", () => {
     expect(ff.calls).toEqual([]);
   });
 
+  it("keeps 25 units of headroom under FixedFloat's 250 by default", () => {
+    const budget = new FfBudget();
+    for (let i = 0; i < 4; i++) expect(budget.take(50)).toBeDefined();
+    expect(budget.take(26)).toBeUndefined();
+    expect(budget.take(25)).toBeDefined();
+  });
+
+  it("stamps create's units when the request is sent, not when they were reserved", async () => {
+    let now = 0;
+    ff = await fakeFixedFloat();
+    const budget = new FfBudget(250, 60_000, () => now);
+    const client = clientFor(ff, { budget });
+    const reservation = client.reserveCreate()!;
+    now = 50_000;
+    await client.create({ fromCcy: "USDTARBITRUM", toSat: 10_000, toAddress: BOLT11 }, reservation);
+    now = 60_000;
+    expect(budget.used()).toBe(50);
+    now = 110_000;
+    expect(budget.used()).toBe(0);
+  });
+
   it("releases budget as the minute window rolls", async () => {
     let now = 0;
     const budget = new FfBudget(250, 60_000, () => now);

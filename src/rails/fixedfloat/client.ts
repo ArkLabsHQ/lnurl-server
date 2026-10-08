@@ -69,19 +69,28 @@ export function ffHttpTransport(cfg: { baseUrl: string; auth: FfAuth; timeoutMs?
   };
 }
 
-/** A sliding one-minute window over FixedFloat's weights, shared by every call in the process. */
+/** Units taken from the budget: handed back for a call never made, or re-dated to when it was sent. */
+export interface FfSpend {
+  refund(): void;
+  restamp(): void;
+}
+
+/** A sliding one-minute window over FixedFloat's weights, shared by every call in the process.
+ *  It stops 25 units short of FixedFloat's 250: its minute and ours cannot be aligned. */
 export class FfBudget {
   private spent: { at: number; weight: number }[] = [];
 
-  constructor(private limit = FF_LIMIT_PER_MINUTE, private windowMs = 60_000, private now: () => number = Date.now) {}
+  constructor(private limit = FF_LIMIT_PER_MINUTE - 25, private windowMs = 60_000, private now: () => number = Date.now) {}
 
-  /** Spends now or refuses; it never waits, since a queued payer would be handed a stale quote.
-   *  The returned function hands the units back for a call that was never made. */
-  take(weight: number): (() => void) | undefined {
+  /** Spends now or refuses; it never waits, since a queued payer would be handed a stale quote. */
+  take(weight: number): FfSpend | undefined {
     if (this.used() + weight > this.limit) return undefined;
     const entry = { at: this.now(), weight };
     this.spent.push(entry);
-    return () => { this.spent = this.spent.filter((s) => s !== entry); };
+    return {
+      refund: () => { this.spent = this.spent.filter((s) => s !== entry); },
+      restamp: () => { entry.at = this.now(); },
+    };
   }
 
   used(): number {
@@ -201,6 +210,7 @@ export function ffClient(cfg: {
   };
   const quoteBody = (req: FfAmountRequest) => ({ type: "fixed", fromCcy: req.fromCcy, toCcy: "BTCLN", direction: "to", amount: btc(req.toSat), ...affiliate });
   const spent = new WeakSet<FfReservation>();
+  const held = new WeakMap<FfReservation, FfSpend>();
 
   return {
     async ccies() {
@@ -231,15 +241,19 @@ export function ffClient(cfg: {
     },
 
     reserveCreate() {
-      const refund = cfg.budget.take(FF_CREATE_WEIGHT);
-      if (!refund) return undefined;
-      const reservation: FfReservation = { release: () => { if (!spent.has(reservation)) { spent.add(reservation); refund(); } } };
+      const spend = cfg.budget.take(FF_CREATE_WEIGHT);
+      if (!spend) return undefined;
+      const reservation: FfReservation = { release: () => { if (!spent.has(reservation)) { spent.add(reservation); spend.refund(); } } };
+      held.set(reservation, spend);
       return reservation;
     },
 
     async create(req, reservation) {
-      if (spent.has(reservation)) throw new Error("FixedFloat create reservation already used or released");
+      const spend = held.get(reservation);
+      if (!spend || spent.has(reservation)) throw new Error("FixedFloat create reservation already used or released");
       spent.add(reservation);
+      // FixedFloat counts the call from when it arrives, which can be well after the reservation.
+      spend.restamp();
       const data = await cfg.transport.call("create", { ...quoteBody(req), toAddress: req.toAddress });
       return parseOrder("create", data, nowSec());
     },
