@@ -379,7 +379,7 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `FIXEDFLOAT_MIN_PAY_WINDOW_SECONDS` | `300` | The shortest deadline a payer is handed. Checked before an order is created (invoice less margin) and after (the earlier of that and FixedFloat's deadline); less, and the callback refuses. |
 | `FIXEDFLOAT_MAX_OPEN_ORDERS` | `20` | Unfunded, unexpired orders allowed at once. |
 | `FIXEDFLOAT_MAX_OPEN_ORDERS_PER_ADDRESS` | `5` | Unfunded, unexpired orders one receiving address may have at once. |
-| `FIXEDFLOAT_ORDERS_PER_IP` / `FIXEDFLOAT_ORDERS_PER_IP_WINDOW_SECONDS` | `10` / `600` | Token callbacks one IP may make per window; the other rails keep their own limits. A BTCPay server is one IP for all its checkouts, so raise this for a busy one. |
+| `FIXEDFLOAT_ORDERS_PER_IP` / `FIXEDFLOAT_ORDERS_PER_IP_WINDOW_SECONDS` | `10` / `600` | Token callbacks one IP may make per window. A BTCPay server is one IP for all its checkouts, so raise this for a busy one. Before this limit applies, each token callback also spends one of the 30 callbacks a minute per IP that the offline Lightning and Arkade destination callbacks share. That limit is fixed in code, with no setting: a burst of token callbacks can refuse the same server's other callbacks for the rest of that minute, and a rate here above 30 a minute has no effect. |
 | `FIXEDFLOAT_REFRESH_MS` | `300000` | Rates and currency-list refresh interval. |
 | `FIXEDFLOAT_BASE_URL` / `FIXEDFLOAT_RATES_URL` | `https://ff.io/api/v2` / `https://ff.io/rates/fixed.xml` | FixedFloat's API and public rates export. |
 | `FIXEDFLOAT_SIMULATE` | `false` | `true` runs the simulated provider instead; never on `bitcoin`, never with keys. |
