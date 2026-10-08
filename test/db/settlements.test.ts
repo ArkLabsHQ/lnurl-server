@@ -245,6 +245,18 @@ describe("DbSettlementStore", () => {
       "idx_settlements_reference",
     ],
     [
+      "the pending-swap read the offline poller makes every pass",
+      "SELECT payment_hash FROM settlements WHERE swap_id IS NOT NULL AND settled = 0 AND preimage IS NOT NULL AND created_at > ?",
+      [0],
+      "idx_settlements_pending_swaps_created",
+    ],
+    [
+      "the active-lockup scope retirement reads",
+      "SELECT o.lockup_address FROM settlements s JOIN offline_swaps o ON o.payment_hash = s.payment_hash WHERE s.swap_id IS NOT NULL AND s.settled = 0 AND s.preimage IS NOT NULL AND s.created_at > ?",
+      [0],
+      "idx_settlements_pending_swaps_created",
+    ],
+    [
       "the pending-destination read the watched-script resync makes every second",
       "SELECT payment_hash FROM settlements WHERE settled = 0 AND payment_option IS NOT NULL AND payment_option != 'lightning' AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
       [0],

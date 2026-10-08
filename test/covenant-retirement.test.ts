@@ -4,7 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
+import { hex } from "@scure/base";
 import {
+  ArkAddress,
   ContractManager,
   MultisigTapscript,
   RestIndexerProvider,
@@ -17,12 +19,15 @@ import { openDb } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { sqliteContractStores } from "../src/contract-store.js";
 import { DbSettlementStore, MemorySettlementStore } from "../src/settlement-store.js";
+import { OfflineSwapStore } from "../src/offline-swap-store.js";
 import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler as handler } from "../src/covenant/contract.js";
 import { COVENANT_V1 } from "../src/covenant/destination.js";
+import { SWAP_LOCKUP_CONTRACT_TYPE } from "@arkade-os/swap";
 import {
   activeCovenantFilters,
   retireFinishedCovenants,
-  startCovenantRetirement,
+  retireFinishedLockups,
+  startContractRetirement,
 } from "../src/workers/covenant-retirement.js";
 
 // The watch set is the thing under test, not settlement: before retirement the
@@ -55,6 +60,16 @@ const row = (script: string, watch: Contract["watch"] = "awaiting-funds"): Contr
   createdAt: Date.now(),
 });
 
+/** What registerLockupContract writes: no `watch` at all. */
+const lockupRow = (script: string): Contract => ({
+  type: SWAP_LOCKUP_CONTRACT_TYPE,
+  params: {},
+  script,
+  address: `tark1lockup-${script}`,
+  state: "active",
+  createdAt: Date.now(),
+});
+
 /** Tracks watch state as the SDK's repository does, so a retirement is observable
  *  without standing up a manager. */
 function fakeManager(contracts: Contract[]) {
@@ -62,8 +77,12 @@ function fakeManager(contracts: Contract[]) {
   const setContractWatchState = vi.fn(async (script: string, watch: Contract["watch"]) => {
     byScript.get(script)!.watch = watch;
   });
-  const getContracts = vi.fn(async (filter?: { watch?: readonly string[] }) =>
-    [...byScript.values()].filter((c) => !filter?.watch || filter.watch.includes(c.watch ?? "watched")),
+  const getContracts = vi.fn(async (filter?: { watch?: readonly string[]; type?: string }) =>
+    [...byScript.values()].filter(
+      (c) =>
+        (!filter?.watch || filter.watch.includes(c.watch ?? "watched")) &&
+        (filter?.type === undefined || c.type === filter.type),
+    ),
   );
   return {
     manager: { getContracts, setContractWatchState } as unknown as IContractManager,
@@ -234,14 +253,14 @@ describe("activeCovenantFilters", () => {
   });
 });
 
-describe("startCovenantRetirement", () => {
+describe("startContractRetirement", () => {
   it("retires on its own clock and stops when stopped", async () => {
     vi.useFakeTimers();
     try {
       const store = storeWith([]);
       const { manager, setContractWatchState } = fakeManager([row(scriptOf(1))]);
 
-      const handle = startCovenantRetirement(store, manager, 60_000);
+      const handle = startContractRetirement(store, manager, 60_000);
       await vi.advanceTimersByTimeAsync(0);
       expect(setContractWatchState).toHaveBeenCalledTimes(1);
 
@@ -303,6 +322,10 @@ describe("the watch set at scale", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  const lockupAddress = (i: number) =>
+    new ArkAddress(xonly(2), hex.decode((1_000_000 + i).toString(16).padStart(64, "0")), "tark").encode();
+  const lockupScriptOf = (i: number) => hex.encode(ArkAddress.decode(lockupAddress(i)).pkScript);
+
   /** File-backed, so "restart" is a second manager over the same rows. */
   const seeded = async (name: string, dead: number) => {
     const file = path.join(dir, `${name}.db`);
@@ -311,7 +334,16 @@ describe("the watch set at scale", () => {
     const settlements = new DbSettlementStore(db, 3_600_000, undefined, 604_800_000);
     const { contractRepository } = await sqliteContractStores(db);
     await contractRepository.getContracts();
+    const insertSwap = db.prepare(
+      "INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, amount_msat, created_at, updated_at)" +
+        " VALUES (?, 'lnbc1', 'offline:1', ?, ?, ?, 'lightning', 50000, ?, ?)",
+    );
+    const insertLockup = db.prepare(
+      "INSERT INTO offline_swaps (payment_hash, rfq_id, solver_name, solver_pubkey, relays_json, recovery_version, recovery_json, lockup_address, expected_amount, created_at)" +
+        " VALUES (?, ?, 'one', '11', '[\"wss://relay.example\"]', 1, '{}', ?, 1, ?)",
+    );
 
+    const at = Date.now();
     db.exec("BEGIN");
     for (let i = 0; i < dead + LIVE; i++) {
       const script = scriptOf(i);
@@ -330,6 +362,11 @@ describe("the watch set at scale", () => {
         settlements.markObserved(`pay-${i}`, `tx-${i}`);
         settlements.markPaidOut(`pay-${i}`, `sweep-${i}`);
       }
+      // Rows inserted directly: createAccepted opens its own transaction.
+      await contractRepository.saveContract(lockupRow(lockupScriptOf(i)));
+      // Fresh: a lockup outside the poller's window is inactive whatever its swap says.
+      insertSwap.run(`swap-${i}`, i < dead ? 1 : 0, `bb${i}`, `rfq-${i}`, at, at);
+      insertLockup.run(`swap-${i}`, `rfq-${i}`, lockupAddress(i), at);
     }
     db.exec("COMMIT");
     db.close();
@@ -343,23 +380,28 @@ describe("the watch set at scale", () => {
       indexerProvider: new RestIndexerProvider(indexer.baseUrl),
       ...(await sqliteContractStores(db)),
     });
-    return { db, settlements, contracts, close: () => { contracts.dispose(); db.close(); } };
+    const swaps = new OfflineSwapStore(db, 3_600_000);
+    return { db, settlements, swaps, contracts, close: () => { contracts.dispose(); db.close(); } };
   };
 
-  it("subscribes the live destinations only, and stays that way across a restart", async () => {
+  it("subscribes the live destinations and lockups only, across a restart", async () => {
     // Modest on purpose — a drain costs one subscribe POST per retirement. Still
     // three passes at the cap; scripts/probe-watchset.ts runs this at 10k.
     const DEAD = 150;
     const file = await seeded("restart", DEAD);
 
-    // First boot: the backlog is on the wire, exactly as it was before retirement.
+    // Both backlogs on the wire, as before retirement: one lockup per destination.
     indexer.subscribes.length = 0;
     const first = await boot(file);
-    expect(indexer.subscribes.at(-1)).toHaveLength(DEAD + LIVE);
+    expect(indexer.subscribes.at(-1)).toHaveLength((DEAD + LIVE) * 2);
 
     let guard = 0;
-    while ((await retireFinishedCovenants(first.settlements, first.contracts)) > 0) {
-      expect(++guard).toBeLessThan(200);
+    while (
+      (await retireFinishedCovenants(first.settlements, first.contracts)) +
+        (await retireFinishedLockups(first.swaps, first.contracts)) >
+      0
+    ) {
+      expect(++guard).toBeLessThan(400);
     }
     first.close();
 
@@ -367,10 +409,14 @@ describe("the watch set at scale", () => {
     indexer.subscribes.length = 0;
     const second = await boot(file);
     try {
-      expect(indexer.subscribes.at(-1)).toHaveLength(LIVE);
+      expect(indexer.subscribes.at(-1)).toHaveLength(LIVE * 2);
       expect(await second.contracts.getContracts({ type: COVENANT_CONTRACT_TYPE })).toHaveLength(DEAD + LIVE);
       expect(
         await second.contracts.getContracts({ type: COVENANT_CONTRACT_TYPE, watch: ["watched", "awaiting-funds"] }),
+      ).toHaveLength(LIVE);
+      expect(await second.contracts.getContracts({ type: SWAP_LOCKUP_CONTRACT_TYPE })).toHaveLength(DEAD + LIVE);
+      expect(
+        await second.contracts.getContracts({ type: SWAP_LOCKUP_CONTRACT_TYPE, watch: ["watched", "awaiting-funds"] }),
       ).toHaveLength(LIVE);
       // Retired, never deleted: the row holds the preimage the sweep leaf needs.
       expect(await second.contracts.getContracts({ type: COVENANT_CONTRACT_TYPE, watch: ["retained"] })).toHaveLength(DEAD);
@@ -405,4 +451,63 @@ describe("the watch set at scale", () => {
       close();
     }
   }, 120_000);
+});
+
+describe("retireFinishedLockups", () => {
+  const swapsWith = (active: string[]) => ({ listActiveLockupScripts: () => active }) as never;
+
+  it("retires a lockup whose swap is settled or past the poller's window", async () => {
+    const { manager, live } = fakeManager([lockupRow(scriptOf(1)), lockupRow(scriptOf(2))]);
+
+    expect(await retireFinishedLockups(swapsWith([]), manager)).toBe(2);
+    expect(live()).toEqual([]);
+  });
+
+  it("keeps a lockup its swap is still pending on", async () => {
+    const { manager, live } = fakeManager([lockupRow(scriptOf(1)), lockupRow(scriptOf(2))]);
+
+    expect(await retireFinishedLockups(swapsWith([scriptOf(1)]), manager)).toBe(1);
+    expect(live()).toEqual([scriptOf(1)]);
+  });
+
+  it("asks only about lockup contracts, by the type the swap package registers", async () => {
+    const { manager, getContracts } = fakeManager([]);
+
+    await retireFinishedLockups(swapsWith([]), manager);
+
+    expect(getContracts).toHaveBeenCalledWith({
+      type: SWAP_LOCKUP_CONTRACT_TYPE,
+      watch: ["watched", "awaiting-funds"],
+    });
+  });
+
+  it("never touches a covenant destination", async () => {
+    const { manager, live } = fakeManager([row(scriptOf(7)), lockupRow(scriptOf(8))]);
+
+    await retireFinishedLockups(swapsWith([]), manager);
+
+    expect(live()).toEqual([scriptOf(7)]);
+  });
+});
+
+describe("startContractRetirement with both rails", () => {
+  it("spends one per-pass budget across destinations and lockups", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = storeWith([]);
+      const contracts = [
+        ...Array.from({ length: 80 }, (_, i) => row(scriptOf(i))),
+        ...Array.from({ length: 80 }, (_, i) => lockupRow(scriptOf(1000 + i))),
+      ];
+      const { manager, setContractWatchState } = fakeManager(contracts);
+
+      const handle = startContractRetirement(store, manager, 600_000, { listActiveLockupScripts: () => [] } as never);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(setContractWatchState).toHaveBeenCalledTimes(100);
+      handle.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

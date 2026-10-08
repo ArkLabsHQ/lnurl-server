@@ -284,6 +284,16 @@ const MIGRATIONS: Migration[] = [
         WHERE settled = 0 AND payment_destination IS NOT NULL;
     `,
   },
+  {
+    version: 19,
+    // Migration 4's index keys the same rows by swap_id, so it holds every never-paid
+    // swap forever and a created_at range over it depends on the planner's stats. The
+    // offline poller reads this every pass, and lockup retirement reads it too.
+    up: `
+      CREATE INDEX idx_settlements_pending_swaps_created ON settlements(created_at)
+        WHERE swap_id IS NOT NULL AND settled = 0;
+    `,
+  },
 ];
 
 export const LATEST_MIGRATION = Math.max(...MIGRATIONS.map((m) => m.version));
