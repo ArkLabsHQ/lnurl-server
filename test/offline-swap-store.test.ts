@@ -8,6 +8,7 @@ import { hex } from "@scure/base";
 import { openDb } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
+import { DbSettlementStore } from "../src/settlement-store.js";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -61,6 +62,31 @@ describe("OfflineSwapStore", () => {
     store.createAccepted(accepted);
     expect(() => store.createAccepted({ ...accepted, paymentHash: "cc".repeat(32) })).toThrow();
     expect(db.prepare("SELECT COUNT(*) AS n FROM settlements").get()).toEqual({ n: 1 });
+    db.close();
+  });
+
+  it("lists exactly the unsettled swaps inside the window, whatever else the table holds", () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    let t = 1_000;
+    const store = new OfflineSwapStore(db, 60_000, () => t);
+    const settlements = new DbSettlementStore(db, 60_000, () => t);
+    const swap = (hash: string) => store.createAccepted({
+      paymentHash: hash, pr: "lnbc1", sessionId: "offline:1", preimage: "bb".repeat(32), amountMsat: 1_000,
+      recovery: { version: 1, solverName: "one", solverPubkey: "11".repeat(32), relays: ["wss://relay.example"], rfqId: `rfq-${hash}`, lockupAddress: "tark1", expectedAmount: 1, script: {} },
+    });
+    swap("expired");
+    t = 30_000;
+    swap("pending");
+    swap("settled");
+    store.markSettled("settled", "cc".repeat(32));
+    settlements.create({ paymentHash: "relay", pr: "lnbc1", sessionId: "s" });
+    settlements.create({ paymentHash: "legacy", pr: "lnbc1", sessionId: "offline:1", preimage: "dd".repeat(32), swapId: "legacy-rfq" });
+    settlements.create({ paymentHash: "static", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1_000 });
+    settlements.create({ paymentHash: "covenant", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1y", amountMsat: 1_000, covenantScript: "5120aa" });
+    t = 61_000;
+
+    expect(store.listPending().map((p) => p.paymentHash)).toEqual(["pending"]);
     db.close();
   });
 
