@@ -111,6 +111,16 @@ export class FfOrderStore {
     return rows.map(toOrder);
   }
 
+  /** Settled deposits that left the poll list, within one TTL past it, still with no reference. */
+  listUnreferencedPastTtl(): StoredFfOrder[] {
+    const cutoff = this.now() - this.ttlMs;
+    const rows = this.db.prepare(
+      `SELECT f.* FROM ff_orders f JOIN settlements s ON s.payment_hash = f.payment_hash
+       WHERE s.settled = 1 AND s.payment_reference IS NULL AND f.created_at <= ? AND f.created_at > ?`,
+    ).all(cutoff, cutoff - this.ttlMs) as unknown as Row[];
+    return rows.map(toOrder);
+  }
+
   byPaymentHash(paymentHash: string): StoredFfOrder | undefined {
     const row = this.db.prepare("SELECT * FROM ff_orders WHERE payment_hash = ?").get(paymentHash) as unknown as Row | undefined;
     return row ? toOrder(row) : undefined;

@@ -117,4 +117,29 @@ describe("FixedFloat order poller", () => {
     await poll();
     expect(settlements.get("aa".repeat(32))).toMatchObject({ settled: false, paymentReference: null });
   });
+
+  it("warns, once, about a deposit txid that is no transaction id of the token's chain", async () => {
+    const id = await open("aa".repeat(32));
+    Object.assign(ff.orders.get(id)!, { status: "PENDING" });
+    ff.orders.get(id)!.from.tx.id = "not-a-txid";
+    const seen = new Set<string>();
+    await pollFfOrders({ orders, client, logger }, { seen });
+    await pollFfOrders({ orders, client, logger }, { seen });
+    expect(lines.filter((l) => l.event === "ff_deposit_txid_unrecognised")).toEqual([
+      expect.objectContaining({ level: "warn", orderId: id, txid: "not-a-txid" }),
+    ]);
+    expect(orders.byPaymentHash("aa".repeat(32))?.depositTxid).toBeNull();
+  });
+
+  it("logs an error, once, when a settled payment reaches its TTL with no reference", async () => {
+    const id = await open("aa".repeat(32));
+    settlements.markSettled("aa".repeat(32), "bb".repeat(32));
+    const later = new FfOrderStore(db, 86_400_000, () => Date.now() + 86_400_001);
+    const seen = new Set<string>();
+    await pollFfOrders({ orders: later, client, logger }, { seen });
+    await pollFfOrders({ orders: later, client, logger }, { seen });
+    expect(lines.filter((l) => l.event === "ff_reference_missing")).toEqual([
+      expect.objectContaining({ level: "error", orderId: id }),
+    ]);
+  });
 });

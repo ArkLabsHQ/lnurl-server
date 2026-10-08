@@ -9,13 +9,19 @@ import { chainTxid, namespaceOf } from "../rails/fixedfloat/catalogue.js";
 import type { FfOrderStore, StoredFfOrder } from "../ff-order-store.js";
 import { startCatchUpLoop, type CatchUpLoop } from "./catch-up-loop.js";
 
-/** Store what FixedFloat says about one order, logging a transition worth an operator's eye. */
-export function recordOrder(orders: FfOrderStore, stored: StoredFfOrder, fresh: FfOrder, logger: Logger): void {
+/** Store what FixedFloat says about one order, logging a transition worth an operator's eye.
+ *  `seen` holds what was already warned about, so a stuck order warns once, not every pass. */
+export function recordOrder(orders: FfOrderStore, stored: StoredFfOrder, fresh: FfOrder, logger: Logger, seen = new Set<string>()): void {
   if (fresh.id !== stored.orderId) {
     logger.warn("ff_order_mismatch", { orderId: stored.orderId, answeredFor: fresh.id });
     return;
   }
   const depositTxid = fresh.from.txid ? chainTxid(namespaceOf(stored.asset), fresh.from.txid) ?? null : null;
+  // Without it the settled payment never gets a reference, and BTCPay never credits it.
+  if (fresh.from.txid && !depositTxid && !seen.has(`txid:${stored.orderId}`)) {
+    seen.add(`txid:${stored.orderId}`);
+    logger.warn("ff_deposit_txid_unrecognised", { orderId: stored.orderId, ffCode: stored.ffCode, txid: fresh.from.txid });
+  }
   const { changed } = orders.recordStatus(stored.paymentHash, { status: fresh.status, emergency: fresh.emergency, depositTxid });
   if (!changed) return;
   const fields = { orderId: stored.orderId, ffCode: stored.ffCode, status: fresh.status };
@@ -32,9 +38,15 @@ interface PollDeps { orders: FfOrderStore; client: FfClient; logger: Logger }
 
 /** One pass over the open orders. A failed call leaves its order for the next pass; an
  *  exhausted budget ends the pass, since every remaining call would fail the same way. */
-export async function pollFfOrders(deps: PollDeps, opts: { expired: boolean } = { expired: true }): Promise<void> {
+export async function pollFfOrders(deps: PollDeps, opts: { expired?: boolean; seen?: Set<string> } = {}): Promise<void> {
+  const seen = opts.seen ?? new Set<string>();
+  for (const lost of deps.orders.listUnreferencedPastTtl()) {
+    if (seen.has(`ttl:${lost.orderId}`)) continue;
+    seen.add(`ttl:${lost.orderId}`);
+    deps.logger.error("ff_reference_missing", { orderId: lost.orderId, ffCode: lost.ffCode });
+  }
   for (const stored of deps.orders.listOpen()) {
-    if (stored.status === "EXPIRED" && !opts.expired) continue;
+    if (stored.status === "EXPIRED" && opts.expired === false) continue;
     let fresh: FfOrder;
     try {
       fresh = await deps.client.order(stored.orderId, stored.token);
@@ -43,7 +55,7 @@ export async function pollFfOrders(deps: PollDeps, opts: { expired: boolean } = 
       deps.logger.warn("ff_order_poll_failed", { orderId: stored.orderId, error });
       continue;
     }
-    recordOrder(deps.orders, stored, fresh, deps.logger);
+    recordOrder(deps.orders, stored, fresh, deps.logger, seen);
   }
 }
 
@@ -51,8 +63,9 @@ export async function pollFfOrders(deps: PollDeps, opts: { expired: boolean } = 
  *  exactly the payer whose tokens are stuck. */
 export function startFfOrderPoller(deps: PollDeps & { intervalMs: number }): CatchUpLoop {
   let pass = 0;
+  const seen = new Set<string>();
   return startCatchUpLoop({
-    pass: () => pollFfOrders(deps, { expired: pass++ % 10 === 0 }),
+    pass: () => pollFfOrders(deps, { expired: pass++ % 10 === 0, seen }),
     intervalMs: deps.intervalMs,
     onError: (error) => deps.logger.warn("ff_order_poll_failed", { error }),
   });
