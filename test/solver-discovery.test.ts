@@ -5,6 +5,7 @@ import { legacyAssetSolverCard, legacyBtcSolverCard, registryIndex, solverCard }
 const registryUrl = "https://registry.test/bitcoin.json";
 // x-only; the covenant commits to an emulator key, so selection requires one.
 const EMULATOR = new Uint8Array(32).fill(7);
+const twentyDaysLater = () => 1_000_000 + 20 * 86_400_000;
 
 class CardStore {
   rows: Array<{ id: number; label: string; network: string; cardJson: string; enabled: boolean; createdAt: number; updatedAt: number }> = [];
@@ -251,6 +252,75 @@ describe("DiscoveryService", () => {
     await restarted.start();
     expect(restarted.status()).toMatchObject({ ready: true, candidateCount: 1 });
     restarted.stop();
+  });
+
+  it("keeps a pinned card's market when a stale registry lists the same one", async () => {
+    const cache = new CacheStore();
+    const card = legacyBtcSolverCard("registry", 30);
+    const service = new DiscoveryService({
+      network: "bitcoin", registryUrls: [registryUrl], cardsFile: "cards.json", cardStore: new CardStore(), cacheStore: cache,
+      readFile: async () => JSON.stringify([card]),
+      fetchImpl: async () => response(registryIndex(card, 1_000)),
+      now: twentyDaysLater, refreshIntervalMs: 0,
+    });
+
+    await service.start();
+    expect(service.selectLightningReceive(10_000, EMULATOR).map(({ source, sourceType }) => ({ source, sourceType })))
+      .toEqual([{ source: "file:cards.json:0", sourceType: "local" }]);
+    expect(service.status()).toMatchObject({ ready: true, candidateCount: 1 });
+    expect(cache.row).toBeUndefined();
+    service.stop();
+  });
+
+  it("still takes nothing from a stale registry on its own", async () => {
+    const cache = new CacheStore();
+    const service = new DiscoveryService({
+      network: "bitcoin", registryUrls: [registryUrl], cardStore: new CardStore(), cacheStore: cache,
+      fetchImpl: async () => response(registryIndex(legacyBtcSolverCard("registry", 30), 1_000)),
+      now: twentyDaysLater, refreshIntervalMs: 0,
+    });
+
+    await service.start();
+    expect(service.status()).toMatchObject({ ready: false, candidateCount: 0 });
+    expect(service.status().warnings).toEqual([expect.stringMatching(/index is stale/)]);
+    expect(cache.row).toBeUndefined();
+    service.stop();
+  });
+
+  it("serves a fresh registry's copy of a market a local card also pins", async () => {
+    const cache = new CacheStore();
+    const card = legacyBtcSolverCard("registry", 30);
+    const service = new DiscoveryService({
+      network: "bitcoin", registryUrls: [registryUrl], cardsFile: "cards.json", cardStore: new CardStore(), cacheStore: cache,
+      readFile: async () => JSON.stringify([card]),
+      fetchImpl: async () => response(registryIndex(card, 1_000)),
+      now: () => 1_000_000, refreshIntervalMs: 0,
+    });
+
+    await service.start();
+    expect(service.selectLightningReceive(10_000, EMULATOR).map(({ source, sourceType }) => ({ source, sourceType })))
+      .toEqual([{ source: registryUrl, sourceType: "registry" }]);
+    expect(cache.row?.url).toBe(registryUrl);
+    service.stop();
+  });
+
+  it("does not let a stale registry hide a market a fresh one also lists", async () => {
+    const staleUrl = "https://stale.test/bitcoin.json";
+    const card = legacyBtcSolverCard("registry", 30);
+    const fetched: string[] = [];
+    const service = new DiscoveryService({
+      network: "bitcoin", registryUrls: [staleUrl, registryUrl], cardStore: new CardStore(), cacheStore: new CacheStore(),
+      fetchImpl: async (url) => {
+        fetched.push(url);
+        return response(registryIndex(card, url === staleUrl ? 1_000 : 1_000 + 20 * 86_400));
+      },
+      now: twentyDaysLater, refreshIntervalMs: 0,
+    });
+
+    await service.start();
+    expect(service.selectLightningReceive(10_000, EMULATOR).map((candidate) => candidate.source)).toEqual([registryUrl]);
+    expect(fetched).toEqual([staleUrl, registryUrl]);
+    service.stop();
   });
 
   it("keeps the previous snapshot when a refresh has no usable replacement", async () => {
