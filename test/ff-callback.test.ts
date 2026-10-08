@@ -12,7 +12,7 @@ import { OfflineSwapStore } from "../src/offline-swap-store.js";
 import { FfOrderStore } from "../src/ff-order-store.js";
 import { FfBudget, ffAuth, ffClient, ffHttpTransport } from "../src/rails/fixedfloat/client.js";
 import { ffRates, ffRatesXml } from "../src/rails/fixedfloat/rates.js";
-import { DepositWindow, FIXEDFLOAT, type FixedFloatDeps } from "../src/rails/fixedfloat/provider.js";
+import { FIXEDFLOAT, type FixedFloatDeps } from "../src/rails/fixedfloat/provider.js";
 import type { OfflineSwapCreator, OfflineSwapParams, OfflineSwapResult } from "../src/services/offline-swaps.js";
 import { fakeFixedFloat, fail, type FakeFf } from "./helpers/fake-fixedfloat.js";
 import { buildInvoice } from "./helpers/bolt11.js";
@@ -89,7 +89,7 @@ beforeEach(async () => {
   await rates.refresh();
   settlements = new DbSettlementStore(db, 86_400_000);
   orders = new FfOrderStore(db, 86_400_000);
-  deps = { provider: FIXEDFLOAT, rates, client, orders, window: new DepositWindow(900), settleMarginSeconds: 600, maxOpenOrders: 20 };
+  deps = { provider: FIXEDFLOAT, rates, client, orders, settleMarginSeconds: 600, minPayWindowSeconds: 300, maxOpenOrders: 20 };
 });
 
 afterEach(async () => {
@@ -126,14 +126,14 @@ describe("FixedFloat callback", () => {
     expect(ff.calls.at(-1)?.body).toMatchObject({ type: "fixed", fromCcy: "USDTARBITRUM", toCcy: "BTCLN", direction: "to", amount: 0.0001, toAddress: settlements.get(hash)!.pr });
   });
 
-  it("carries no top-level expiresAt; the quote's is the earlier of FixedFloat's and the invoice's", async () => {
+  it("carries no top-level expiresAt; the quote's is the earlier of FixedFloat's and the invoice's less the margin", async () => {
     const baseUrl = await start();
     const invoiceDeadline = nowSec() + 1_800;
     corridor.deadline = () => invoiceDeadline;
     const res = await callback(baseUrl, "amount=10000000&paymentOption=ff-usdtarbitrum");
     expect(res.body).not.toHaveProperty("expiresAt");
     const ffDeadline = [...ff.orders.values()][0]!.time.expiration as number;
-    expect(Date.parse(res.body.paymentQuote.expiresAt) / 1000).toBe(Math.min(ffDeadline, invoiceDeadline));
+    expect(Date.parse(res.body.paymentQuote.expiresAt) / 1000).toBe(Math.min(ffDeadline, invoiceDeadline - 600));
   });
 
   it("echoes the requested paymentOption id", async () => {
@@ -181,26 +181,32 @@ describe("FixedFloat callback", () => {
     expect(ff.orders.size).toBe(0);
   });
 
-  it("does not create an FF order when the invoice deadline is shorter than the window plus margin", async () => {
+  it("does not create an FF order when the invoice, less the margin, leaves under the minimum pay window", async () => {
     const baseUrl = await start();
-    corridor.deadline = () => nowSec() + 1_400;
+    corridor.deadline = () => nowSec() + 800;
     const res = await callback(baseUrl, "amount=10000000&paymentOption=ff-usdtarbitrum");
     expect(res.body).toMatchObject({ status: "ERROR", reason: "paymentOption ff-usdtarbitrum is unavailable for this request" });
     expect(events).toEqual(["price", "corridor"]);
     expect(budget.used()).toBe(2);
   });
 
-  it("refuses an order whose deadline plus the payout margin outlives the invoice", async () => {
+  it("serves an order FixedFloat keeps open longer than the invoice allows, quoting the invoice's deadline less the margin", async () => {
     const baseUrl = await start();
-    ff.windowSeconds = 1_500;
-    const first = await callback(baseUrl, "amount=10000000&paymentOption=ff-usdtarbitrum");
-    expect(first.body).toEqual({ status: "ERROR", reason: "paymentOption ff-usdtarbitrum is unavailable for this request" });
+    ff.windowSeconds = 1_800;
+    const invoiceDeadline = nowSec() + 1_800;
+    corridor.deadline = () => invoiceDeadline;
+    const res = await callback(baseUrl, "amount=10000000&paymentOption=ff-usdtarbitrum");
+    expect(res.body.status).toBe("OK");
+    expect(Date.parse(res.body.paymentQuote.expiresAt) / 1000).toBe(invoiceDeadline - 600);
+  });
+
+  it("refuses an order that leaves the payer under the minimum pay window", async () => {
+    const baseUrl = await start();
+    ff.windowSeconds = 200;
+    const res = await callback(baseUrl, "amount=10000000&paymentOption=ff-usdtarbitrum");
+    expect(res.body).toEqual({ status: "ERROR", reason: "paymentOption ff-usdtarbitrum is unavailable for this request" });
     expect(ff.orders.size).toBe(1);
     expect(settlements.listRecent(10)).toEqual([]);
-    // The longer window FixedFloat granted is now the pre-check's, so no second order is spent.
-    const second = await callback(baseUrl, "amount=10000000&paymentOption=ff-usdtarbitrum");
-    expect(second.body.status).toBe("ERROR");
-    expect(ff.orders.size).toBe(1);
   });
 
   it("maps FixedFloat's unroutable-invoice answer (304) to an unavailable option, never a 500", async () => {

@@ -13,7 +13,7 @@ import { SettingsService } from "../src/services/settings.js";
 import { DbSettlementStore } from "../src/settlement-store.js";
 import { FfOrderStore } from "../src/ff-order-store.js";
 import { createAdminApi } from "../src/http/routes/admin/index.js";
-import { DepositWindow, FIXEDFLOAT } from "../src/rails/fixedfloat/provider.js";
+import { FIXEDFLOAT } from "../src/rails/fixedfloat/provider.js";
 import { FfBudget, ffClient } from "../src/rails/fixedfloat/client.js";
 import { startFixedFloat } from "../src/rails/fixedfloat/wiring.js";
 import { createLogger } from "../src/logger.js";
@@ -73,13 +73,13 @@ describe("FixedFloat config", () => {
   it("defaults come from loadConfig, not from literals", () => {
     const cfg = loadConfig(LIVE).fixedFloat!;
     expect(cfg).toMatchObject({
-      mode: "live", baseUrl: "https://ff.io/api/v2", ratesUrl: "https://ff.io/rates/fixed.xml", windowSeconds: 900,
-      settleMarginSeconds: 600, refreshMs: 300_000, maxOpenOrders: 20, deny: [],
+      mode: "live", baseUrl: "https://ff.io/api/v2", ratesUrl: "https://ff.io/rates/fixed.xml",
+      settleMarginSeconds: 600, minPayWindowSeconds: 300, refreshMs: 300_000, maxOpenOrders: 20, deny: [],
     });
     expect(cfg.allow).toBeUndefined();
     // intent-solver mints its hold invoice for 2h - 90min (DEFAULT_HOLD_INVOICE_WINDOW): the
     // shipped pre-check must fit under it, or every token deposit is refused.
-    expect(cfg.windowSeconds + cfg.settleMarginSeconds).toBeLessThan(1_800);
+    expect(cfg.settleMarginSeconds + cfg.minPayWindowSeconds).toBeLessThan(1_800);
   });
 
   it("reads allow, deny, refcode and afftax, refusing a code the asset table lacks", () => {
@@ -149,7 +149,7 @@ describe("FixedFloat in the admin API", () => {
     const fixedFloat = {
       provider: FIXEDFLOAT, rates: { snapshot: () => ({ rails: [], ready: false, reason: "FixedFloat rates not loaded yet" }) },
       client: ffClient({ transport: { call: async () => { throw new Error("unused"); } }, budget: new FfBudget() }),
-      orders, window: new DepositWindow(900), settleMarginSeconds: 600, maxOpenOrders: 20,
+      orders, settleMarginSeconds: 600, minPayWindowSeconds: 300, maxOpenOrders: 20,
     };
     const app = express();
     app.use("/admin/api", createAdminApi({

@@ -127,7 +127,7 @@ export async function createOfflineSwapInvoice(args: {
 
 /** Why a created order cannot be handed to a payer, if it cannot. Past `create`, so a
  *  refusal leaves an order nobody funds: it expires on the provider's side. */
-function orderRefusal(order: FfOrder, rail: FfRail, toSat: number, now: number, invoiceDeadline: number, marginSeconds: number): string | undefined {
+function orderRefusal(order: FfOrder, rail: FfRail, toSat: number): string | undefined {
   if (order.type !== "fixed") return "order is not fixed-rate";
   if (order.from.code !== rail.ffCode || order.to.code !== "BTCLN") return "order is for a different pair";
   if (baseUnits(order.to.amount, 8) !== String(toSat)) return "order delivers a different amount than the invoice";
@@ -135,8 +135,7 @@ function orderRefusal(order: FfOrder, rail: FfRail, toSat: number, now: number, 
   if (!isValidAddress(namespaceOf(rail.asset), order.from.address)) return "deposit address is not an address of the token's chain";
   // No advertised chain's URI can carry a memo, and a deposit without one is lost.
   if (order.from.tag) return "deposit needs a memo tag";
-  if (order.expiresAt === undefined || order.expiresAt <= now) return "order states no future deadline";
-  if (order.expiresAt + marginSeconds > invoiceDeadline) return "order outlives the invoice";
+  if (order.expiresAt === undefined) return "order states no deadline";
   return undefined;
 }
 
@@ -186,20 +185,22 @@ export async function createFixedFloatDestination(args: {
       logger.warn("offline_quote_failed", { requestId, error: err });
       throw new LnurlError(err instanceof RailRefusedError ? err.message : "Unable to create offline invoice");
     }
-    const deadline = swap.invoiceExpiresAt;
+    // The payer's deadline ends a margin before the invoice's, so the provider still has
+    // time to pay it. A deposit after that, but inside the provider's own longer window,
+    // may find the invoice dead and lands in the provider's emergency/refund flow; the
+    // order poller keeps watching expired orders so that case is reported.
+    const payBy = swap.invoiceExpiresAt === undefined ? undefined : swap.invoiceExpiresAt - ff.settleMarginSeconds;
     const before = Math.floor(Date.now() / 1000);
-    if (deadline === undefined || deadline - before < ff.window.seconds() + ff.settleMarginSeconds) {
-      throw refuse("invoice deadline is too short for the deposit window", { invoiceSecondsLeft: deadline === undefined ? null : deadline - before });
+    if (payBy === undefined || payBy - before < ff.minPayWindowSeconds) {
+      throw refuse("the invoice leaves too short a pay window", { paySecondsLeft: payBy === undefined ? null : payBy - before });
     }
 
     const order = await ff.client.create({ fromCcy: rail.ffCode, toSat, toAddress: swap.invoice }, reservation);
     const now = Math.floor(Date.now() / 1000);
-    if (order.expiresAt !== undefined && ff.window.observe(order.expiresAt - now)) {
-      logger.warn("ff_window_longer_than_configured", { orderId: order.id, seconds: order.expiresAt - now });
-    }
-    const refusal = orderRefusal(order, rail, toSat, now, deadline, ff.settleMarginSeconds);
+    const refusal = orderRefusal(order, rail, toSat)
+      ?? (Math.min(order.expiresAt!, payBy) - now < ff.minPayWindowSeconds ? "the order leaves too short a pay window" : undefined);
     const quote = refusal ? undefined : ffPaymentQuote({
-      amountMsat, order, rail, toAmountSat: swap.recovery.expectedAmount, invoiceExpiresAt: deadline, ...(price.fromBtc ? { fromBtc: price.fromBtc } : {}),
+      amountMsat, order, rail, toAmountSat: swap.recovery.expectedAmount, payBy, ...(price.fromBtc ? { fromBtc: price.fromBtc } : {}),
     });
     if (!quote || order.expiresAt === undefined) throw refuse(refusal ?? "no quote", { orderId: order.id });
 

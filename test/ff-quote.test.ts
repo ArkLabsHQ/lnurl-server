@@ -14,7 +14,7 @@ const ORDER: FfOrder = {
   emergency: null,
 };
 const quote = (overrides: Partial<Parameters<typeof ffPaymentQuote>[0]> = {}) =>
-  ffPaymentQuote({ amountMsat: 10_000_000, order: ORDER, rail: RAIL, toAmountSat: 9_980, invoiceExpiresAt: 1_791_001_800, fromBtc: "0.00010268", ...overrides });
+  ffPaymentQuote({ amountMsat: 10_000_000, order: ORDER, rail: RAIL, toAmountSat: 9_980, payBy: 1_791_001_800, fromBtc: "0.00010268", ...overrides });
 
 describe("baseUnits", () => {
   it('converts 8.578 USDT at 6 decimals to "8578000"', () => {
@@ -65,7 +65,7 @@ describe("ffPaymentQuote", () => {
 
   it("expiresAt is the earlier of the FF expiration and the invoice deadline", () => {
     expect(quote()?.expiresAt).toBe(new Date(1_791_000_900_000).toISOString());
-    expect(quote({ invoiceExpiresAt: 1_791_000_100 })?.expiresAt).toBe(new Date(1_791_000_100_000).toISOString());
+    expect(quote({ payBy: 1_791_000_100 })?.expiresAt).toBe(new Date(1_791_000_100_000).toISOString());
   });
 
   it("fees name both the provider and the solver leg", () => {

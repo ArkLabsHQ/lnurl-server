@@ -6,7 +6,7 @@ import { startCatchUpLoop } from "../../workers/catch-up-loop.js";
 import { ffReferenceOnSettle, startFfOrderPoller } from "../../workers/ff-order-poller.js";
 import { FfBudget, ffClient, ffHttpTransport, type FfTransport } from "./client.js";
 import { ffRates, ffRatesXml } from "./rates.js";
-import { DepositWindow, FIXEDFLOAT, SIMULATED, type FixedFloatDeps } from "./provider.js";
+import { FIXEDFLOAT, SIMULATED, type FixedFloatDeps } from "./provider.js";
 import { FF_ASSETS } from "./catalogue.js";
 import { SIM_ASSETS, simulatedRatesXml, simulatedTransport } from "./simulate.js";
 
@@ -57,8 +57,8 @@ export function startFixedFloat(opts: { config: FixedFloatConfig; db: Db; ttlMs:
   const poller = startFfOrderPoller({ orders, client, logger, intervalMs: ORDER_POLL_MS });
   return {
     deps: {
-      provider, rates, client, orders, window: new DepositWindow(config.windowSeconds),
-      settleMarginSeconds: config.settleMarginSeconds, maxOpenOrders: config.maxOpenOrders,
+      provider, rates, client, orders, settleMarginSeconds: config.settleMarginSeconds,
+      minPayWindowSeconds: config.minPayWindowSeconds, maxOpenOrders: config.maxOpenOrders,
     },
     onSettled: ffReferenceOnSettle({ orders, client, logger }),
     stop: () => { refresh.stop(); poller.stop(); },

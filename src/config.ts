@@ -14,10 +14,10 @@ export interface FixedFloatConfig {
   deny: string[];
   baseUrl: string;
   ratesUrl: string;
-  /** Deposit window assumed before an order exists; each order's own deadline is checked too. */
-  windowSeconds: number;
   /** What FixedFloat may need between a deposit and paying the invoice. */
   settleMarginSeconds: number;
+  /** The shortest pay window a payer is handed; less, and the request is refused. */
+  minPayWindowSeconds: number;
   refreshMs: number;
   maxOpenOrders: number;
 }
@@ -240,8 +240,8 @@ function buildFixedFloat(env: Env, dbPath: string | undefined, offlineReceive: O
     deny: ffCodes(env.FIXEDFLOAT_DENY, "FIXEDFLOAT_DENY") ?? [],
     baseUrl: env.FIXEDFLOAT_BASE_URL ? httpUrl(env.FIXEDFLOAT_BASE_URL, "FIXEDFLOAT_BASE_URL") : "https://ff.io/api/v2",
     ratesUrl: env.FIXEDFLOAT_RATES_URL ? httpUrl(env.FIXEDFLOAT_RATES_URL, "FIXEDFLOAT_RATES_URL") : "https://ff.io/rates/fixed.xml",
-    windowSeconds: integer(env, "FIXEDFLOAT_WINDOW_SECONDS", 900, { min: 60 }),
     settleMarginSeconds: integer(env, "FIXEDFLOAT_SETTLE_MARGIN_SECONDS", 600, { min: 0 }),
+    minPayWindowSeconds: integer(env, "FIXEDFLOAT_MIN_PAY_WINDOW_SECONDS", 300, { min: 60 }),
     refreshMs: integer(env, "FIXEDFLOAT_REFRESH_MS", 300_000, { min: 10_000 }),
     maxOpenOrders: integer(env, "FIXEDFLOAT_MAX_OPEN_ORDERS", 20, { min: 1 }),
   };

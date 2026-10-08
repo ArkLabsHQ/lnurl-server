@@ -193,7 +193,7 @@ async function main(): Promise<void> {
       runtime.addStop(started.stop);
       fixedFloat = started.deps;
       ffOnSettled = started.onSettled;
-      console.log(`token deposits: enabled (${fixedFloat.provider.label}, window=${config.fixedFloat.windowSeconds}s, margin=${config.fixedFloat.settleMarginSeconds}s)`);
+      console.log(`token deposits: enabled (${fixedFloat.provider.label}, margin=${config.fixedFloat.settleMarginSeconds}s, min pay window=${config.fixedFloat.minPayWindowSeconds}s)`);
     }
     let covenantDestinations: import("./covenant/destination.js").CovenantDestinationProvider | undefined;
     if (off.covenantDestinations && contracts) {

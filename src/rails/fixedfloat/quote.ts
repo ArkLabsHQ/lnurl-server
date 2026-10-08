@@ -23,12 +23,12 @@ export function ffPaymentQuote(input: {
   rail: FfRail;
   /** What the corridor pays the receiver, after the solver's fee. */
   toAmountSat: number;
-  /** Unix seconds: the corridor invoice's pay deadline. */
-  invoiceExpiresAt: number;
+  /** Unix seconds: the last a deposit can land and still have the invoice paid. */
+  payBy: number;
   /** FixedFloat's own BTC valuation of the deposit, from `price`. */
   fromBtc?: string;
 }): PaymentQuote | undefined {
-  const { amountMsat, order, rail, toAmountSat, invoiceExpiresAt, fromBtc } = input;
+  const { amountMsat, order, rail, toAmountSat, payBy, fromBtc } = input;
   const payment = baseUnits(order.from.amount, rail.decimals);
   if (!payment || order.expiresAt === undefined) return undefined;
   const amountSat = amountMsat / 1000;
@@ -38,7 +38,7 @@ export function ffPaymentQuote(input: {
   const providerSat = fromBtc === undefined ? undefined : Math.round(Number(fromBtc) * 1e8) - amountSat;
   return {
     id: order.id,
-    expiresAt: new Date(Math.min(order.expiresAt, invoiceExpiresAt) * 1000).toISOString(),
+    expiresAt: new Date(Math.min(order.expiresAt, payBy) * 1000).toISOString(),
     requested: { amount: String(amountMsat), unit: "msat" },
     payment: { amount: payment, unit: rail.unit },
     receive: msat(toAmountSat),
