@@ -4,9 +4,10 @@
 // was not paid.
 
 import type { Logger } from "../logger.js";
-import type { FfClient, FfOrder } from "../rails/fixedfloat/client.js";
+import { FfBudgetError, type FfClient, type FfOrder } from "../rails/fixedfloat/client.js";
 import { chainTxid, namespaceOf } from "../rails/fixedfloat/catalogue.js";
 import type { FfOrderStore, StoredFfOrder } from "../ff-order-store.js";
+import { startCatchUpLoop, type CatchUpLoop } from "./catch-up-loop.js";
 
 /** Store what FixedFloat says about one order, logging a transition worth an operator's eye. */
 export function recordOrder(orders: FfOrderStore, stored: StoredFfOrder, fresh: FfOrder, logger: Logger): void {
@@ -25,6 +26,32 @@ export function recordOrder(orders: FfOrderStore, stored: StoredFfOrder, fresh: 
   } else if (fresh.status === "DONE") {
     logger.info("ff_order_status", fields);
   }
+}
+
+interface PollDeps { orders: FfOrderStore; client: FfClient; logger: Logger }
+
+/** One pass over the open orders. A failed call leaves its order for the next pass; an
+ *  exhausted budget ends the pass, since every remaining call would fail the same way. */
+export async function pollFfOrders(deps: PollDeps): Promise<void> {
+  for (const stored of deps.orders.listOpen()) {
+    let fresh: FfOrder;
+    try {
+      fresh = await deps.client.order(stored.orderId, stored.token);
+    } catch (error) {
+      if (error instanceof FfBudgetError) return;
+      deps.logger.warn("ff_order_poll_failed", { orderId: stored.orderId, error });
+      continue;
+    }
+    recordOrder(deps.orders, stored, fresh, deps.logger);
+  }
+}
+
+export function startFfOrderPoller(deps: PollDeps & { intervalMs: number }): CatchUpLoop {
+  return startCatchUpLoop({
+    pass: () => pollFfOrders(deps),
+    intervalMs: deps.intervalMs,
+    onError: (error) => deps.logger.warn("ff_order_poll_failed", { error }),
+  });
 }
 
 /** The offline poller's hook for a newly settled swap. A token deposit is referenced by the
