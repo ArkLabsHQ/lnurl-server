@@ -75,7 +75,7 @@ describe("FixedFloat config", () => {
     expect(cfg).toMatchObject({
       mode: "live", baseUrl: "https://ff.io/api/v2", ratesUrl: "https://ff.io/rates/fixed.xml",
       settleMarginSeconds: 600, minPayWindowSeconds: 300, refreshMs: 300_000, maxOpenOrders: 20, deny: [],
-      maxOpenOrdersPerAddress: 2, ordersPerIp: 2, ipWindowSeconds: 600,
+      maxOpenOrdersPerAddress: 5, ordersPerIp: 10, ipWindowSeconds: 600,
     });
     expect(cfg.allow).toBeUndefined();
     // intent-solver mints its hold invoice for 2h - 90min (DEFAULT_HOLD_INVOICE_WINDOW): the
