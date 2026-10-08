@@ -37,7 +37,7 @@ import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler } from "../covenant/
 import type { SettlementStore } from "../settlement-store.js";
 import { COVENANT_V1, COVENANT_V2, SWEEP_LEAF, enforcePayTo, enforcePayToWithAssets } from "../covenant/destination.js";
 import { startCatchUpLoop } from "./catch-up-loop.js";
-import { activeCovenantFilters, scopeShortfall, scopeSize } from "./covenant-retirement.js";
+import { activeCovenantFilters, resolveCovenants, scopeShortfall, scopeSize } from "./covenant-retirement.js";
 
 interface EmulatorSubmit {
   submitTx(arkTx: string, checkpointTxs: string[]): Promise<{ signedArkTx: string; signedCheckpointTxs: string[] }>;
@@ -117,7 +117,7 @@ export function createCovenantSweeper(opts: {
       for (const scope of scopes) {
         // One query per scope, and the manager already knows which outputs are still
         // spendable — no per-record round trip, no vtxo bookkeeping.
-        const resolved = await opts.contracts.getContractsWithVtxos(scope);
+        const resolved = await resolveCovenants(opts.contracts, scope);
         asked += scopeSize(scope);
         found += resolved.length;
         for (const { contract, vtxos } of resolved) {
