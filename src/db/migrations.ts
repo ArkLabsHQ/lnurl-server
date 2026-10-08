@@ -282,6 +282,8 @@ const MIGRATIONS: Migration[] = [
         WHERE payment_reference IS NOT NULL;
       CREATE INDEX idx_settlements_pending_destinations ON settlements(created_at)
         WHERE settled = 0 AND payment_destination IS NOT NULL;
+      CREATE INDEX idx_settlements_pending_swaps_created ON settlements(created_at)
+        WHERE swap_id IS NOT NULL AND settled = 0;
     `,
   },
 ];

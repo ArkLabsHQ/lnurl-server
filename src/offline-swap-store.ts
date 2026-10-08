@@ -1,3 +1,5 @@
+import { ArkAddress } from "@arkade-os/sdk";
+import { hex } from "@scure/base";
 import type { Db } from "./db/connection.js";
 import type { OfflineSwapRecoveryV1 } from "./services/offline-swaps.js";
 import { MalformedRecordError } from "./errors.js";
@@ -104,6 +106,28 @@ export class OfflineSwapStore {
        WHERE s.settled = 0 AND s.preimage IS NOT NULL AND s.created_at > ?`,
     ).all(this.now() - this.ttlMs) as unknown as PendingRow[];
     return rows.map((row) => ({ paymentHash: row.payment_hash, preimage: row.preimage, recovery: recoveryOf(row) }));
+  }
+
+  /** pkScripts of the lockups this service still works, keyed the way contract rows
+   *  and events are: unsettled and inside the poller's window, the same horizon as
+   *  {@link listPending}, so retirement never outlives an attempt to claim.
+   *  `swap_id IS NOT NULL` is implied by the join and stated so the partial
+   *  idx_settlements_pending_swaps_created can serve the range. */
+  listActiveLockupScripts(): string[] {
+    const rows = this.db.prepare(
+      `SELECT o.lockup_address
+       FROM settlements s JOIN offline_swaps o ON o.payment_hash = s.payment_hash
+       WHERE s.swap_id IS NOT NULL AND s.settled = 0 AND s.preimage IS NOT NULL AND s.created_at > ?`,
+    ).all(this.now() - this.ttlMs) as unknown as { lockup_address: string }[];
+    const scripts: string[] = [];
+    for (const row of rows) {
+      try {
+        scripts.push(hex.encode(ArkAddress.decode(row.lockup_address).pkScript));
+      } catch {
+        // Costs this lockup its retirement, never the whole pass.
+      }
+    }
+    return scripts;
   }
 
   markSettled(paymentHash: string, preimage: string): boolean {
