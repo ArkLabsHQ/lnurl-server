@@ -4,7 +4,7 @@ import type { AdminDeps } from "../../admin-context.js";
 
 /** Read-only audit view over the settlements table. The preimage is never exposed
  *  (a hasPreimage flag is enough for debugging) and `pr` is omitted as bulk. */
-export function adminSettlementRoutes({ repos, settlements }: AdminDeps): Router {
+export function adminSettlementRoutes({ repos, settlements, fixedFloat }: AdminDeps): Router {
   const r = Router();
   r.get("/settlements", (req, res) => {
     if (!settlements) throw new ServiceUnavailable("no settlement store configured");
@@ -37,6 +37,14 @@ export function adminSettlementRoutes({ repos, settlements }: AdminDeps): Router
       const domain = repos.domains.getById(row.domainId)?.domain;
       return { id, lightningAddress: domain ? `${row.username}@${domain}` : row.username };
     };
+    // The order's token is its bearer credential: a flag, never the value, like hasPreimage.
+    const ffOrderFor = (paymentHash: string) => {
+      const o = fixedFloat?.orders.byPaymentHash(paymentHash);
+      return o ? { ffOrder: {
+        id: o.orderId, status: o.status, ffCode: o.ffCode, unit: o.unit, depositAmount: o.depositAmount, depositTxid: o.depositTxid,
+        expiresAt: o.expiresAt, hasToken: o.token.length > 0, emergency: o.emergency?.status ?? null,
+      } } : {};
+    };
     res.json(
       rows.map((x) => ({
         paymentHash: x.paymentHash,
@@ -52,6 +60,7 @@ export function adminSettlementRoutes({ repos, settlements }: AdminDeps): Router
         hasPreimage: x.preimage !== null,
         createdAt: x.createdAt,
         settledAt: x.settledAt,
+        ...ffOrderFor(x.paymentHash),
       })),
     );
   });

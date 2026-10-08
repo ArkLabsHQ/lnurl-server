@@ -1,4 +1,26 @@
 import { ConfigError } from "./errors.js";
+import { ffAuth, type FfAuth } from "./rails/fixedfloat/client.js";
+import { FF_ASSETS } from "./rails/fixedfloat/catalogue.js";
+
+/** Token deposits through FixedFloat, or through the simulator off mainnet. */
+export interface FixedFloatConfig {
+  mode: "live" | "simulate";
+  /** The signer, closed over the key and secret so neither is a field of any config object. */
+  auth?: FfAuth;
+  refcode?: string;
+  afftax?: number;
+  /** FixedFloat codes; absent means the whole asset table. */
+  allow?: string[];
+  deny: string[];
+  baseUrl: string;
+  ratesUrl: string;
+  /** Deposit window assumed before an order exists; each order's own deadline is checked too. */
+  windowSeconds: number;
+  /** What FixedFloat may need between a deposit and paying the invoice. */
+  settleMarginSeconds: number;
+  refreshMs: number;
+  maxOpenOrders: number;
+}
 
 /** Server-orchestrated offline receive over the Arkade intents corridor. */
 export interface OfflineReceiveConfig {
@@ -68,6 +90,7 @@ export interface AppConfig {
   maxConcurrentOfflineQuotes: number;
   shutdownTimeoutMs: number;
   offlineReceive: OfflineReceiveConfig;
+  fixedFloat?: FixedFloatConfig;
 }
 
 type Env = Record<string, string | undefined>;
@@ -148,6 +171,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
   const baseUrl = env.BASE_URL ? httpUrl(env.BASE_URL, "BASE_URL") : `http://localhost:${port}`;
   const adminPort = integer(env, "ADMIN_PORT", 3001, { min: 1, max: 65_535 });
   if (dbPath && adminPort === port) throw new ConfigError("ADMIN_PORT must differ from PORT when DB_PATH is set");
+  const fixedFloat = buildFixedFloat(env, dbPath, offlineReceive);
 
   return {
     port,
@@ -172,7 +196,68 @@ export function loadConfig(env: Env = process.env): AppConfig {
     maxConcurrentOfflineQuotes: integer(env, "MAX_CONCURRENT_OFFLINE_QUOTES", 20, { min: 1 }),
     shutdownTimeoutMs: integer(env, "SHUTDOWN_TIMEOUT_MS", 15_000, { min: 1 }),
     offlineReceive,
+    ...(fixedFloat ? { fixedFloat } : {}),
   };
+}
+
+function ffCodes(raw: string | undefined, name: string): string[] | undefined {
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const codes = raw.split(",").map((c) => c.trim().toUpperCase()).filter(Boolean);
+  const unknown = codes.filter((c) => !(c in FF_ASSETS));
+  if (unknown.length) throw new ConfigError(`${name} names ${unknown.join(", ")}, not in the token table (known: ${Object.keys(FF_ASSETS).join(", ")})`);
+  return codes;
+}
+
+function buildFixedFloat(env: Env, dbPath: string | undefined, offlineReceive: OfflineReceiveConfig): FixedFloatConfig | undefined {
+  const apiKey = env.FIXEDFLOAT_API_KEY || undefined;
+  const apiSecret = env.FIXEDFLOAT_API_SECRET || undefined;
+  const simulateRaw = env.FIXEDFLOAT_SIMULATE;
+  if (simulateRaw !== undefined && simulateRaw !== "" && simulateRaw !== "true" && simulateRaw !== "false") {
+    throw new ConfigError("FIXEDFLOAT_SIMULATE must be true or false");
+  }
+  const simulate = simulateRaw === "true";
+  if (Boolean(apiKey) !== Boolean(apiSecret)) throw new ConfigError("FIXEDFLOAT_API_KEY and FIXEDFLOAT_API_SECRET go together: set both or neither");
+  if (simulate && apiKey) {
+    throw new ConfigError("FIXEDFLOAT_SIMULATE=true cannot run with FIXEDFLOAT_API_KEY set: a simulated rail must never be mistaken for the real one");
+  }
+  if (!apiKey && !simulate) return undefined;
+  if (!dbPath || dbPath === ":memory:") {
+    throw new ConfigError("token deposits need a file-backed DB_PATH: an order lost on restart is a payer's support case nobody can resolve");
+  }
+  if (!offlineReceive.enabled) {
+    throw new ConfigError("token deposits pay out over offline receive, which is not configured (ARK_SERVER_URL, solver cards, and COVCLAIMD_URL or OFFLINE_SELF_CLAIM)");
+  }
+  const afftaxRaw = env.FIXEDFLOAT_AFFTAX;
+  const afftax = afftaxRaw === undefined || afftaxRaw === "" ? undefined : Number(afftaxRaw);
+  if (afftax !== undefined && !(Number.isFinite(afftax) && afftax >= 0)) throw new ConfigError("FIXEDFLOAT_AFFTAX must be a non-negative number (a percentage)");
+  const allow = ffCodes(env.FIXEDFLOAT_ALLOW, "FIXEDFLOAT_ALLOW");
+  return {
+    mode: simulate ? "simulate" : "live",
+    ...(apiKey && apiSecret ? { auth: ffAuth(apiKey, apiSecret) } : {}),
+    ...(env.FIXEDFLOAT_REFCODE ? { refcode: env.FIXEDFLOAT_REFCODE } : {}),
+    ...(afftax !== undefined ? { afftax } : {}),
+    ...(allow ? { allow } : {}),
+    deny: ffCodes(env.FIXEDFLOAT_DENY, "FIXEDFLOAT_DENY") ?? [],
+    baseUrl: env.FIXEDFLOAT_BASE_URL ? httpUrl(env.FIXEDFLOAT_BASE_URL, "FIXEDFLOAT_BASE_URL") : "https://ff.io/api/v2",
+    ratesUrl: env.FIXEDFLOAT_RATES_URL ? httpUrl(env.FIXEDFLOAT_RATES_URL, "FIXEDFLOAT_RATES_URL") : "https://ff.io/rates/fixed.xml",
+    windowSeconds: integer(env, "FIXEDFLOAT_WINDOW_SECONDS", 900, { min: 60 }),
+    settleMarginSeconds: integer(env, "FIXEDFLOAT_SETTLE_MARGIN_SECONDS", 600, { min: 0 }),
+    refreshMs: integer(env, "FIXEDFLOAT_REFRESH_MS", 300_000, { min: 10_000 }),
+    maxOpenOrders: integer(env, "FIXEDFLOAT_MAX_OPEN_ORDERS", 20, { min: 1 }),
+  };
+}
+
+/** Called once arkd has said which network it is on. FixedFloat has no testnet, so real keys
+ *  anywhere but mainnet would take a payer's real tokens for test sats; the simulator is the
+ *  reverse. Every push to main auto-deploys to mutinynet, so this refuses to start. */
+export function assertFixedFloatNetwork(ff: FixedFloatConfig | undefined, network: unknown): void {
+  if (!ff) return;
+  if (ff.mode === "live" && network !== "bitcoin") {
+    throw new ConfigError(`FIXEDFLOAT_API_KEY is set but arkd is on ${String(network)}: FixedFloat has no testnet, so real tokens would buy ${String(network)} sats (use FIXEDFLOAT_SIMULATE=true off mainnet)`);
+  }
+  if (ff.mode === "simulate" && network === "bitcoin") {
+    throw new ConfigError("FIXEDFLOAT_SIMULATE=true refuses to run on bitcoin: the simulator takes no real deposit");
+  }
 }
 
 function buildOfflineReceive(env: Env): OfflineReceiveConfig {
