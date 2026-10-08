@@ -1,6 +1,7 @@
 import type { FfClient } from "./client.js";
 import type { FfRates } from "./rates.js";
 import type { FfOrderStore } from "../../ff-order-store.js";
+import type { FfRailCaps } from "../../rails.js";
 
 /** Who the payer hands their tokens to. The simulator never answers as FixedFloat. */
 export interface FfProvider {
@@ -27,4 +28,11 @@ export interface FixedFloatDeps {
   /** Token callbacks one IP may make per `ipWindowSeconds`. */
   ordersPerIp: number;
   ipWindowSeconds: number;
+}
+
+/** What the rail can serve now: the provider's rails, down while its calls are paused. */
+export function ffRailCaps(ff: Pick<FixedFloatDeps, "provider" | "rates" | "client">): FfRailCaps {
+  const caps = { provider: ff.provider.label, ...ff.rates.snapshot() };
+  const paused = ff.client.pausedUntil();
+  return paused === undefined ? caps : { ...caps, ready: false, reason: `${caps.provider} calls paused after errors until ${new Date(paused).toISOString()}` };
 }

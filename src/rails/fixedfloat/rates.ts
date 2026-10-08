@@ -2,7 +2,7 @@
 // unauthenticated GET of rates/fixed.xml (no request weight) plus one ccies call.
 
 import type { Logger } from "../../logger.js";
-import type { FfClient, FfCurrency } from "./client.js";
+import { FfBudgetError, type FfClient, type FfCurrency } from "./client.js";
 import { FF_ASSETS, ffAssetId, type FfAsset, type TokenUnitCode } from "./catalogue.js";
 
 export interface FfRail {
@@ -115,6 +115,8 @@ export function ffRates(cfg: {
         okAt = now();
         failure = undefined;
       } catch (error) {
+        // Our own budget or pause refused it: the last snapshot stands, staleness still applies.
+        if (error instanceof FfBudgetError) return;
         failure = `FixedFloat rates refresh failed: ${error instanceof Error ? error.message : String(error)}`;
         cfg.logger?.warn("ff_rates_stale", { reason: failure });
       }

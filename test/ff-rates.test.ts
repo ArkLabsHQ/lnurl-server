@@ -7,9 +7,9 @@ import { ffRates, ffRatesXml, parseRatesXml } from "../src/rails/fixedfloat/rate
 let ff: FakeFf | undefined;
 afterEach(async () => { await ff?.close(); ff = undefined; });
 
-const ratesFor = (f: FakeFf, opts: { allow?: string[]; deny?: string[]; now?: () => number; staleAfterMs?: number } = {}) =>
+const ratesFor = (f: FakeFf, opts: { allow?: string[]; deny?: string[]; now?: () => number; staleAfterMs?: number; budget?: FfBudget } = {}) =>
   ffRates({
-    client: ffClient({ transport: ffHttpTransport({ baseUrl: f.baseUrl, auth: ffAuth(f.apiKey, f.secret) }), budget: new FfBudget() }),
+    client: ffClient({ transport: ffHttpTransport({ baseUrl: f.baseUrl, auth: ffAuth(f.apiKey, f.secret) }), budget: opts.budget ?? new FfBudget() }),
     fetchRatesXml: ffRatesXml(f.ratesUrl),
     idPrefix: "ff-",
     staleAfterMs: opts.staleAfterMs ?? 900_000,
@@ -85,6 +85,16 @@ describe("FixedFloat rates", () => {
     await rates.refresh();
     expect(rates.snapshot()).toMatchObject({ ready: false, rails: before });
     expect(rates.snapshot().reason).toMatch(/503/);
+  });
+
+  it("keeps the last snapshot when its own budget refuses the refresh, which says nothing about FixedFloat", async () => {
+    ff = await fakeFixedFloat();
+    const budget = new FfBudget();
+    const rates = ratesFor(ff, { budget });
+    await rates.refresh();
+    while (budget.take(1));
+    await rates.refresh();
+    expect(rates.snapshot().ready).toBe(true);
   });
 
   it("is not ready while FixedFloat cannot send Lightning at all", async () => {

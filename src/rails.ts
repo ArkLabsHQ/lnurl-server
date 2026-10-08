@@ -22,6 +22,7 @@ import type { PaymentOption } from "./payment-options.js";
 import type { ServerDeps } from "./http/server-context.js";
 import type { FfRail } from "./rails/fixedfloat/rates.js";
 import { ffPaymentOptions } from "./rails/fixedfloat/options.js";
+import { ffRailCaps } from "./rails/fixedfloat/provider.js";
 import { InvalidRailPolicyError } from "./errors.js";
 
 /** Every receive rail the server knows. The order is the advertise order. */
@@ -442,7 +443,7 @@ export function currentRailCaps(wiring: Pick<ServerDeps,
     ...(wiring.arkServerUrl ? { arkServerUrl: wiring.arkServerUrl } : {}),
     covenantDestinations: Boolean(wiring.covenantDestinations),
     ...(limits ? { limits } : {}),
-    ...(wiring.fixedFloat ? { fixedFloat: { provider: wiring.fixedFloat.provider.label, ...wiring.fixedFloat.rates.snapshot() } } : {}),
+    ...(wiring.fixedFloat ? { fixedFloat: ffRailCaps(wiring.fixedFloat) } : {}),
   };
 }
 

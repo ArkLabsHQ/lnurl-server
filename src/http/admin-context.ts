@@ -8,7 +8,7 @@ import type { SettlementStore } from "../settlement-store.js";
 import type { DiscoveryService } from "../services/solver-discovery.js";
 import type { Logger } from "../logger.js";
 import type { ServerRailCaps } from "../rails.js";
-import type { FixedFloatDeps } from "../rails/fixedfloat/provider.js";
+import { ffRailCaps, type FixedFloatDeps } from "../rails/fixedfloat/provider.js";
 
 export interface AdminDeps {
   repos: Repositories;
@@ -23,7 +23,7 @@ export interface AdminDeps {
    *  rather than failing it, since every other admin read works without one. */
   indexer?: Pick<IndexerProvider, "getVtxos">;
   /** Token deposits, when configured: their rail state and their orders. */
-  fixedFloat?: Pick<FixedFloatDeps, "provider" | "rates" | "orders">;
+  fixedFloat?: Pick<FixedFloatDeps, "provider" | "rates" | "orders" | "client">;
   logger?: Logger;
 }
 
@@ -37,6 +37,6 @@ export function adminRailCaps({ config, discovery, fixedFloat }: AdminDeps): Ser
     ...(status?.reason ? { discoveryReason: status.reason } : {}),
     ...(config.offlineReceive.arkServerUrl ? { arkServerUrl: config.offlineReceive.arkServerUrl } : {}),
     covenantDestinations: config.offlineReceive.covenantDestinations,
-    ...(fixedFloat ? { fixedFloat: { provider: fixedFloat.provider.label, ...fixedFloat.rates.snapshot() } } : {}),
+    ...(fixedFloat ? { fixedFloat: ffRailCaps(fixedFloat) } : {}),
   };
 }

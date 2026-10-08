@@ -23,6 +23,8 @@ export interface FakeFf {
   ccies: Record<string, unknown>[];
   rates: FakeRate[];
   ratesStatus: number;
+  /** HTTP status of every API answer, e.g. 429 when FixedFloat rate-limits the key. */
+  httpStatus: number;
   orders: Map<string, FakeOrder>;
   /** Seconds a created order stays open for deposit. */
   windowSeconds: number;
@@ -98,6 +100,7 @@ export async function fakeFixedFloat(opts: { apiKey?: string; secret?: string } 
     ccies: defaultCcies(),
     rates: defaultRates(),
     ratesStatus: 200,
+    httpStatus: 200,
     orders: new Map<string, FakeOrder>(),
     windowSeconds: 900,
   } as unknown as FakeFf;
@@ -174,7 +177,7 @@ export async function fakeFixedFloat(opts: { apiKey?: string; secret?: string } 
     if (!handler) return send(404, fail(404, "Unknown method"));
     const body = raw ? JSON.parse(raw) : {};
     ff.calls.push({ method, weight: method === "create" ? 50 : 1, body });
-    send(200, handler(body));
+    send(ff.httpStatus, ff.httpStatus === 200 ? handler(body) : fail(ff.httpStatus, "Too many requests"));
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;

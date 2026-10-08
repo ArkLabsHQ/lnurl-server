@@ -1,7 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { createHmac } from "node:crypto";
 import { fakeFixedFloat, fail, type FakeFf } from "./helpers/fake-fixedfloat.js";
-import { FfApiError, FfBudget, FfBudgetError, ffAuth, ffClient, ffHttpTransport } from "../src/rails/fixedfloat/client.js";
+import { FfApiError, FfBudget, FfBudgetError, FfCooldownError, ffAuth, ffClient, ffHttpTransport } from "../src/rails/fixedfloat/client.js";
+import { FIXEDFLOAT, ffRailCaps } from "../src/rails/fixedfloat/provider.js";
 
 let ff: FakeFf | undefined;
 afterEach(async () => { await ff?.close(); ff = undefined; });
@@ -153,5 +154,55 @@ describe("FixedFloat client", () => {
     expect(order).toMatchObject({ type: "fixed", status: "NEW", from: { code: "USDTARBITRUM", amount: "8.426", tag: null, txid: null }, to: { code: "BTCLN", amount: "0.00010000" } });
     expect(order.from.address).toMatch(/^0x[0-9a-f]{40}$/);
     expect(ff.calls.at(-1)?.body).toEqual({ type: "fixed", fromCcy: "USDTARBITRUM", toCcy: "BTCLN", direction: "to", amount: 0.0001, toAddress: BOLT11 });
+  });
+});
+
+describe("FixedFloat client backoff", () => {
+  const quote = { fromCcy: "USDTARBITRUM", toSat: 10_000 };
+
+  it("pauses every call after an HTTP 429, and the token rail reads unavailable until it ends", async () => {
+    let now = 1_000_000;
+    ff = await fakeFixedFloat();
+    const client = clientFor(ff, { now: () => now });
+    const rates = { snapshot: () => ({ rails: [], ready: true }) };
+    ff.httpStatus = 429;
+    await expect(client.ccies()).rejects.toMatchObject({ status: 429 });
+    ff.httpStatus = 200;
+    const calls = ff.calls.length;
+    await expect(client.price(quote)).rejects.toBeInstanceOf(FfCooldownError);
+    expect(client.reserveCreate()).toBeUndefined();
+    expect(ff.calls).toHaveLength(calls);
+    expect(ffRailCaps({ provider: FIXEDFLOAT, rates, client })).toMatchObject({ ready: false, reason: expect.stringMatching(/paused/) });
+
+    now += 120_000;
+    await expect(client.price(quote)).resolves.toMatchObject({ fromCode: "USDTARBITRUM" });
+    expect(ffRailCaps({ provider: FIXEDFLOAT, rates, client }).ready).toBe(true);
+  });
+
+  it("pauses after five errors in a row, which a success in between resets", async () => {
+    ff = await fakeFixedFloat();
+    const client = clientFor(ff);
+    const real = ff.price;
+    const failTimes = async (n: number) => {
+      ff!.price = () => fail(500, "unavailable");
+      for (let i = 0; i < n; i++) await expect(client.price(quote)).rejects.toBeInstanceOf(FfApiError);
+      ff!.price = real;
+    };
+    await failTimes(4);
+    await client.price(quote);
+    await failTimes(4);
+    expect(client.pausedUntil()).toBeUndefined();
+    await failTimes(1);
+    expect(client.pausedUntil()).toBeDefined();
+  });
+
+  it("does not count FixedFloat refusing an unroutable invoice (304) towards a pause", async () => {
+    ff = await fakeFixedFloat();
+    ff.create = () => fail(304, "Invalid route, unable to find a path to destination");
+    const client = clientFor(ff, { budget: new FfBudget(10_000) });
+    for (let i = 0; i < 6; i++) {
+      await expect(client.create({ ...quote, toAddress: BOLT11 }, client.reserveCreate()!)).rejects.toMatchObject({ code: 304 });
+    }
+    expect(client.pausedUntil()).toBeUndefined();
   });
 });

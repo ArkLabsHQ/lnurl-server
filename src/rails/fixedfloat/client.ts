@@ -11,16 +11,44 @@ export const FF_CREATE_WEIGHT = 50;
 const FF_CALL_WEIGHT = 1;
 
 export class FfApiError extends Error {
-  constructor(readonly method: FfMethod, readonly code: number | undefined, detail: string) {
+  constructor(readonly method: FfMethod, readonly code: number | undefined, detail: string, readonly status?: number) {
     super(`FixedFloat ${method} failed${code === undefined ? "" : ` (code ${code})`}: ${detail}`);
     this.name = "FfApiError";
   }
 }
 
 export class FfBudgetError extends Error {
-  constructor(readonly method: FfMethod) {
-    super(`FixedFloat request budget exhausted (${method})`);
+  constructor(readonly method: FfMethod, reason = "request budget exhausted") {
+    super(`FixedFloat ${reason} (${method})`);
     this.name = "FfBudgetError";
+  }
+}
+
+/** Calls refused locally while FixedFloat is cooling down: handled as the budget is. */
+export class FfCooldownError extends FfBudgetError {
+  constructor(method: FfMethod) {
+    super(method, "calls paused after errors");
+    this.name = "FfCooldownError";
+  }
+}
+
+/** Closes a key for `ms` after `limit` failures in a row, or at once when told to. */
+export class Strikes {
+  private state = new Map<string, { count: number; until: number }>();
+  constructor(private limit: number, private ms: number, private now: () => number = Date.now) {}
+
+  closedUntil(key: string): number | undefined {
+    const until = this.state.get(key)?.until ?? 0;
+    return until > this.now() ? until : undefined;
+  }
+
+  fail(key: string, immediately = false): void {
+    const s = this.state.get(key) ?? { count: 0, until: 0 };
+    this.state.set(key, immediately || s.count + 1 >= this.limit ? { count: 0, until: this.now() + this.ms } : { ...s, count: s.count + 1 });
+  }
+
+  pass(key: string): void {
+    this.state.delete(key);
   }
 }
 
@@ -62,7 +90,7 @@ export function ffHttpTransport(cfg: { baseUrl: string; auth: FfAuth; timeoutMs?
       const json = (await res.json().catch(() => undefined)) as { code?: unknown; msg?: unknown; data?: unknown } | undefined;
       if (!json || json.code !== 0) {
         const code = typeof json?.code === "number" ? json.code : undefined;
-        throw new FfApiError(method, code, cfg.auth.redact(typeof json?.msg === "string" ? json.msg : `HTTP ${res.status}`));
+        throw new FfApiError(method, code, cfg.auth.redact(typeof json?.msg === "string" ? json.msg : `HTTP ${res.status}`), res.status);
       }
       return json.data;
     },
@@ -144,7 +172,14 @@ export interface FfClient {
   reserveCreate(): FfReservation | undefined;
   create(req: FfCreateRequest, reservation: FfReservation): Promise<FfOrder>;
   order(id: string, token: string): Promise<FfOrder>;
+  /** Epoch ms until which every call is refused after FixedFloat errors, if it is. */
+  pausedUntil(): number | undefined;
 }
+
+/** Five errors in a row, or one HTTP 429, pause all calls for two minutes: FixedFloat
+ *  answers a rate-limited key by blocking it for longer each time it is pushed. */
+const PAUSE_AFTER = 5;
+const PAUSE_MS = 120_000;
 
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.length > 0 ? v : undefined);
 const flag = (v: unknown): boolean => v === true || v === 1;
@@ -202,11 +237,27 @@ export function ffClient(cfg: {
   afftax?: number;
   now?: () => number;
 }): FfClient {
-  const nowSec = () => Math.floor((cfg.now ?? Date.now)() / 1000);
+  const now = cfg.now ?? Date.now;
+  const nowSec = () => Math.floor(now() / 1000);
   const affiliate = { ...(cfg.refcode ? { refcode: cfg.refcode } : {}), ...(cfg.afftax !== undefined ? { afftax: cfg.afftax } : {}) };
+  const breaker = new Strikes(PAUSE_AFTER, PAUSE_MS, now);
+  const paused = () => breaker.closedUntil("ff");
+  const send = async (method: FfMethod, data: object): Promise<unknown> => {
+    try {
+      const answer = await cfg.transport.call(method, data);
+      breaker.pass("ff");
+      return answer;
+    } catch (error) {
+      // A 304 is FixedFloat answering, about one invoice, so it is no sign of trouble.
+      if (error instanceof FfApiError && error.code === 304) breaker.pass("ff");
+      else breaker.fail("ff", error instanceof FfApiError && error.status === 429);
+      throw error;
+    }
+  };
   const call = (method: FfMethod, data: object): Promise<unknown> => {
+    if (paused()) return Promise.reject(new FfCooldownError(method));
     if (!cfg.budget.take(FF_CALL_WEIGHT)) return Promise.reject(new FfBudgetError(method));
-    return cfg.transport.call(method, data);
+    return send(method, data);
   };
   const quoteBody = (req: FfAmountRequest) => ({ type: "fixed", fromCcy: req.fromCcy, toCcy: "BTCLN", direction: "to", amount: btc(req.toSat), ...affiliate });
   const spent = new WeakSet<FfReservation>();
@@ -241,7 +292,7 @@ export function ffClient(cfg: {
     },
 
     reserveCreate() {
-      const spend = cfg.budget.take(FF_CREATE_WEIGHT);
+      const spend = paused() ? undefined : cfg.budget.take(FF_CREATE_WEIGHT);
       if (!spend) return undefined;
       const reservation: FfReservation = { release: () => { if (!spent.has(reservation)) { spent.add(reservation); spend.refund(); } } };
       held.set(reservation, spend);
@@ -251,15 +302,18 @@ export function ffClient(cfg: {
     async create(req, reservation) {
       const spend = held.get(reservation);
       if (!spend || spent.has(reservation)) throw new Error("FixedFloat create reservation already used or released");
+      if (paused()) throw new FfCooldownError("create");
       spent.add(reservation);
       // FixedFloat counts the call from when it arrives, which can be well after the reservation.
       spend.restamp();
-      const data = await cfg.transport.call("create", { ...quoteBody(req), toAddress: req.toAddress });
+      const data = await send("create", { ...quoteBody(req), toAddress: req.toAddress });
       return parseOrder("create", data, nowSec());
     },
 
     async order(id, token) {
       return parseOrder("order", await call("order", { id, token }), nowSec());
     },
+
+    pausedUntil: paused,
   };
 }
