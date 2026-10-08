@@ -22,4 +22,9 @@ export interface FixedFloatDeps {
   /** The shortest deadline a payer is handed; less, and the request is refused. */
   minPayWindowSeconds: number;
   maxOpenOrders: number;
+  /** Unfunded orders one receiving address may have open. */
+  maxOpenOrdersPerAddress: number;
+  /** Token callbacks one IP may make per `ipWindowSeconds`. */
+  ordersPerIp: number;
+  ipWindowSeconds: number;
 }

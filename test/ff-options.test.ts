@@ -132,7 +132,7 @@ describe("payRequest units", () => {
         fixedFloat: {
           provider: FIXEDFLOAT, rates: { snapshot: () => ({ rails: RAILS, ready: true }) },
           client: ffClient({ transport: { call: async () => { throw new Error("unused"); } }, budget: new FfBudget() }),
-          orders: new FfOrderStore(db, 86_400_000), settleMarginSeconds: 600, minPayWindowSeconds: 300, maxOpenOrders: 20,
+          orders: new FfOrderStore(db, 86_400_000), settleMarginSeconds: 600, minPayWindowSeconds: 300, maxOpenOrders: 20, maxOpenOrdersPerAddress: 2, ordersPerIp: 2, ipWindowSeconds: 600,
         } },
     ));
     servers.push(server);

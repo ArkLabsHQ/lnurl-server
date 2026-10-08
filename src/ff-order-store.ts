@@ -128,9 +128,13 @@ export class FfOrderStore {
     ).get(orderId));
   }
 
-  /** Unexpired orders nobody has funded yet: the open-order cap's count. */
-  countAwaitingDeposit(nowSec: number): number {
-    return (this.db.prepare("SELECT COUNT(*) AS n FROM ff_orders WHERE status = 'NEW' AND expires_at > ?").get(nowSec) as { n: number }).n;
+  /** Unexpired orders nobody has funded yet, in all or for one receiving address: the open-order caps' count. */
+  countAwaitingDeposit(nowSec: number, addressId?: number): number {
+    const sql = "SELECT COUNT(*) AS n FROM ff_orders f JOIN settlements s ON s.payment_hash = f.payment_hash WHERE f.status = 'NEW' AND f.expires_at > ?";
+    const row = addressId === undefined
+      ? this.db.prepare(sql).get(nowSec)
+      : this.db.prepare(`${sql} AND s.address_id = ?`).get(nowSec, addressId);
+    return (row as { n: number }).n;
   }
 
   /** What FixedFloat last said. Never touches `settled`: that comes from the corridor alone.

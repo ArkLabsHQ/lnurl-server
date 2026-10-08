@@ -41,7 +41,11 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
   // each destination hit writes a store record.
   const addressCallbackLimiter = new RateLimiter(30, 60_000);
   let offlineQuotes = 0;
+  // Each token callback spends one of a handful of provider orders a minute, so one IP or
+  // one receiver must not be able to hold them all.
+  const tokenIpLimiter = fixedFloat ? new RateLimiter(fixedFloat.ordersPerIp, fixedFloat.ipWindowSeconds * 1000) : undefined;
   let tokenQuotes = 0;
+  const tokenQuotesByAddress = new Map<number, number>();
   const r = Router();
 
   const activeAddress = (host: string | undefined, rawUsername: string) => {
@@ -132,10 +136,17 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       if (!bounds) throw new LnurlError(`paymentOption ${resolved.optionId} cannot take any amount right now`);
       if (amountMsat < bounds.min || amountMsat > bounds.max) throw new LnurlError(`Amount must be between ${bounds.min} and ${bounds.max} millisats`);
       if (amountMsat % 1000 !== 0) throw new LnurlError("Amount must be a whole number of satoshis");
-      if (tokenQuotes + fixedFloat.orders.countAwaitingDeposit(Math.floor(Date.now() / 1000)) >= fixedFloat.maxOpenOrders) {
+      if (!tokenIpLimiter!.allow(req.ip ?? "unknown")) throw new LnurlError("Too many token deposit requests from this IP, try again later", 429);
+      const nowSec = Math.floor(Date.now() / 1000);
+      const openHere = tokenQuotesByAddress.get(address.id) ?? 0;
+      if (openHere + fixedFloat.orders.countAwaitingDeposit(nowSec, address.id) >= fixedFloat.maxOpenOrdersPerAddress) {
+        throw new LnurlError("This receiver has too many unpaid token deposits open, try again shortly", 429);
+      }
+      if (tokenQuotes + fixedFloat.orders.countAwaitingDeposit(nowSec) >= fixedFloat.maxOpenOrders) {
         throw new LnurlError("Token deposit capacity reached, try again shortly", 429);
       }
       tokenQuotes++;
+      tokenQuotesByAddress.set(address.id, openHere + 1);
       try {
         res.json(await createFixedFloatDestination({
           ff: fixedFloat, rail, creator, amountMsat, receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey,
@@ -143,6 +154,9 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
         }));
       } finally {
         tokenQuotes--;
+        const left = (tokenQuotesByAddress.get(address.id) ?? 1) - 1;
+        if (left > 0) tokenQuotesByAddress.set(address.id, left);
+        else tokenQuotesByAddress.delete(address.id);
       }
       return;
     }

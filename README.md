@@ -274,7 +274,7 @@ With `FIXEDFLOAT_API_KEY` and `FIXEDFLOAT_API_SECRET` set, an address with an Ar
 
 **Mainnet only.** FixedFloat has no testnet, so the server refuses to start with FixedFloat keys while arkd reports any network but `bitcoin`: a test deployment would take a payer's real tokens for test sats. `FIXEDFLOAT_SIMULATE=true` is the reverse — an in-process stand-in, refused on `bitcoin` and with real keys, that advertises `ffsim-` options with `provider: "Simulated"` on testnet chains so wallet and checkout UIs can be exercised end to end. It takes no deposit; a test that needs a settled order pays the corridor invoice itself.
 
-FixedFloat allows 250 request-weight units a minute per key and an order costs 50, so the rail takes at most a handful of orders a minute; past that, and past `FIXEDFLOAT_MAX_OPEN_ORDERS` unfunded orders, the callback answers HTTP 429. Token deposits need a file-backed `DB_PATH` and offline receive (the corridor is what pays the order).
+FixedFloat allows 250 request-weight units a minute per key and an order costs 50, so the rail takes at most a handful of orders a minute. So that no single party can hold them all, the callback answers HTTP 429 past `FIXEDFLOAT_ORDERS_PER_IP` token callbacks from one IP, past `FIXEDFLOAT_MAX_OPEN_ORDERS_PER_ADDRESS` unfunded orders for one receiver, and past `FIXEDFLOAT_MAX_OPEN_ORDERS` in all. Token deposits need a file-backed `DB_PATH` and offline receive (the corridor is what pays the order).
 
 ## Payment quote (LUD-XX)
 
@@ -378,6 +378,8 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `FIXEDFLOAT_SETTLE_MARGIN_SECONDS` | `600` | What FixedFloat may need between a deposit and paying the invoice: the payer's deadline ends this long before the corridor invoice's. |
 | `FIXEDFLOAT_MIN_PAY_WINDOW_SECONDS` | `300` | The shortest deadline a payer is handed. Checked before an order is created (invoice less margin) and after (the earlier of that and FixedFloat's deadline); less, and the callback refuses. |
 | `FIXEDFLOAT_MAX_OPEN_ORDERS` | `20` | Unfunded, unexpired orders allowed at once. |
+| `FIXEDFLOAT_MAX_OPEN_ORDERS_PER_ADDRESS` | `2` | Unfunded, unexpired orders one receiving address may have at once. |
+| `FIXEDFLOAT_ORDERS_PER_IP` / `FIXEDFLOAT_ORDERS_PER_IP_WINDOW_SECONDS` | `2` / `600` | Token callbacks one IP may make per window; the other rails keep their own limits. |
 | `FIXEDFLOAT_REFRESH_MS` | `300000` | Rates and currency-list refresh interval. |
 | `FIXEDFLOAT_BASE_URL` / `FIXEDFLOAT_RATES_URL` | `https://ff.io/api/v2` / `https://ff.io/rates/fixed.xml` | FixedFloat's API and public rates export. |
 | `FIXEDFLOAT_SIMULATE` | `false` | `true` runs the simulated provider instead; never on `bitcoin`, never with keys. |

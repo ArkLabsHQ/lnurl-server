@@ -18,6 +18,9 @@ export interface FixedFloatConfig {
   settleMarginSeconds: number;
   /** The shortest pay window a payer is handed; less, and the request is refused. */
   minPayWindowSeconds: number;
+  maxOpenOrdersPerAddress: number;
+  ordersPerIp: number;
+  ipWindowSeconds: number;
   refreshMs: number;
   maxOpenOrders: number;
 }
@@ -244,6 +247,9 @@ function buildFixedFloat(env: Env, dbPath: string | undefined, offlineReceive: O
     minPayWindowSeconds: integer(env, "FIXEDFLOAT_MIN_PAY_WINDOW_SECONDS", 300, { min: 60 }),
     refreshMs: integer(env, "FIXEDFLOAT_REFRESH_MS", 300_000, { min: 10_000 }),
     maxOpenOrders: integer(env, "FIXEDFLOAT_MAX_OPEN_ORDERS", 20, { min: 1 }),
+    maxOpenOrdersPerAddress: integer(env, "FIXEDFLOAT_MAX_OPEN_ORDERS_PER_ADDRESS", 2, { min: 1 }),
+    ordersPerIp: integer(env, "FIXEDFLOAT_ORDERS_PER_IP", 2, { min: 1 }),
+    ipWindowSeconds: integer(env, "FIXEDFLOAT_ORDERS_PER_IP_WINDOW_SECONDS", 600, { min: 1 }),
   };
 }
 

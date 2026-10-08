@@ -58,9 +58,9 @@ async function start(extra: Partial<ServerDeps> = {}, withFf = true): Promise<st
   return baseUrl;
 }
 
-function get(url: string): Promise<{ status: number; body: Record<string, any> }> {
+function get(url: string, ip?: string): Promise<{ status: number; body: Record<string, any> }> {
   return new Promise((resolve, reject) => {
-    http.get(url, { headers: { Host: "domain.com" } }, (res) => {
+    http.get(url, { headers: { Host: "domain.com", ...(ip ? { "X-Forwarded-For": ip } : {}) } }, (res) => {
       let d = "";
       res.on("data", (c) => (d += c));
       res.on("end", () => resolve({ status: res.statusCode ?? 0, body: JSON.parse(d) }));
@@ -68,7 +68,8 @@ function get(url: string): Promise<{ status: number; body: Record<string, any> }
   });
 }
 
-const callback = (baseUrl: string, query: string) => get(`${baseUrl}/.well-known/lnurlp/alice/callback?${query}`);
+const callback = (baseUrl: string, query: string, opts: { ip?: string; user?: string } = {}) =>
+  get(`${baseUrl}/.well-known/lnurlp/${opts.user ?? "alice"}/callback?${query}`, opts.ip);
 
 beforeEach(async () => {
   db = openDb(":memory:"); runMigrations(db); repos = createRepositories(db);
@@ -76,6 +77,8 @@ beforeEach(async () => {
   const address = repos.addresses.create({ domainId, username: "alice", status: "active", sessionId: "s-alice" });
   repos.addresses.setOfflineReceive(address.id, RECEIVE, CLAIM_PUBKEY);
   repos.addresses.setBoardingAddress(address.id, "tb1qboardingaddressexample");
+  const bob = repos.addresses.create({ domainId, username: "bob", status: "active", sessionId: "s-bob" });
+  repos.addresses.setOfflineReceive(bob.id, RECEIVE, CLAIM_PUBKEY);
   events = [];
   ff = await fakeFixedFloat();
   for (const method of ["price", "create"] as const) {
@@ -89,7 +92,10 @@ beforeEach(async () => {
   await rates.refresh();
   settlements = new DbSettlementStore(db, 86_400_000);
   orders = new FfOrderStore(db, 86_400_000);
-  deps = { provider: FIXEDFLOAT, rates, client, orders, settleMarginSeconds: 600, minPayWindowSeconds: 300, maxOpenOrders: 20 };
+  deps = {
+    provider: FIXEDFLOAT, rates, client, orders, settleMarginSeconds: 600, minPayWindowSeconds: 300, maxOpenOrders: 20,
+    ordersPerIp: 100, ipWindowSeconds: 600, maxOpenOrdersPerAddress: 100,
+  };
 });
 
 afterEach(async () => {
@@ -267,6 +273,26 @@ describe("FixedFloat callback", () => {
     expect((await callback(baseUrl, "amount=10000000&paymentOption=ff-usdtarbitrum")).body.status).toBe("OK");
     const res = await callback(baseUrl, "amount=10000000&paymentOption=ff-usdtarbitrum");
     expect(res).toEqual({ status: 429, body: { status: "ERROR", reason: "Token deposit capacity reached, try again shortly" } });
+  });
+
+  it("one IP cannot exhaust the global open-order cap; another IP is still served", async () => {
+    deps = { ...deps, maxOpenOrders: 3, ordersPerIp: 2 };
+    const baseUrl = await start();
+    const ask = (ip: string, user = "alice") => callback(baseUrl, "amount=10000000&paymentOption=ff-usdtarbitrum", { ip, user });
+    expect((await ask("10.0.0.1")).body.status).toBe("OK");
+    expect((await ask("10.0.0.1", "bob")).body.status).toBe("OK");
+    expect(await ask("10.0.0.1")).toEqual({ status: 429, body: { status: "ERROR", reason: "Too many token deposit requests from this IP, try again later" } });
+    expect((await ask("10.0.0.2")).body.status).toBe("OK");
+  });
+
+  it("caps the unpaid orders open for one receiver, while another receiver is still served", async () => {
+    deps = { ...deps, maxOpenOrdersPerAddress: 2 };
+    const baseUrl = await start();
+    const ask = (user: string) => callback(baseUrl, "amount=10000000&paymentOption=ff-usdtarbitrum", { user });
+    expect((await ask("alice")).body.status).toBe("OK");
+    expect((await ask("alice")).body.status).toBe("OK");
+    expect(await ask("alice")).toEqual({ status: 429, body: { status: "ERROR", reason: "This receiver has too many unpaid token deposits open, try again shortly" } });
+    expect((await ask("bob")).body.status).toBe("OK");
   });
 
   it("writes the settlement and ff_orders rows atomically", async () => {

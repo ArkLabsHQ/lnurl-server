@@ -75,6 +75,7 @@ describe("FixedFloat config", () => {
     expect(cfg).toMatchObject({
       mode: "live", baseUrl: "https://ff.io/api/v2", ratesUrl: "https://ff.io/rates/fixed.xml",
       settleMarginSeconds: 600, minPayWindowSeconds: 300, refreshMs: 300_000, maxOpenOrders: 20, deny: [],
+      maxOpenOrdersPerAddress: 2, ordersPerIp: 2, ipWindowSeconds: 600,
     });
     expect(cfg.allow).toBeUndefined();
     // intent-solver mints its hold invoice for 2h - 90min (DEFAULT_HOLD_INVOICE_WINDOW): the
@@ -149,7 +150,7 @@ describe("FixedFloat in the admin API", () => {
     const fixedFloat = {
       provider: FIXEDFLOAT, rates: { snapshot: () => ({ rails: [], ready: false, reason: "FixedFloat rates not loaded yet" }) },
       client: ffClient({ transport: { call: async () => { throw new Error("unused"); } }, budget: new FfBudget() }),
-      orders, settleMarginSeconds: 600, minPayWindowSeconds: 300, maxOpenOrders: 20,
+      orders, settleMarginSeconds: 600, minPayWindowSeconds: 300, maxOpenOrders: 20, maxOpenOrdersPerAddress: 2, ordersPerIp: 2, ipWindowSeconds: 600,
     };
     const app = express();
     app.use("/admin/api", createAdminApi({

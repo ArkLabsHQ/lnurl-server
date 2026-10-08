@@ -59,6 +59,7 @@ export function startFixedFloat(opts: { config: FixedFloatConfig; db: Db; ttlMs:
     deps: {
       provider, rates, client, orders, settleMarginSeconds: config.settleMarginSeconds,
       minPayWindowSeconds: config.minPayWindowSeconds, maxOpenOrders: config.maxOpenOrders,
+      maxOpenOrdersPerAddress: config.maxOpenOrdersPerAddress, ordersPerIp: config.ordersPerIp, ipWindowSeconds: config.ipWindowSeconds,
     },
     onSettled: ffReferenceOnSettle({ orders, client, logger }),
     stop: () => { refresh.stop(); poller.stop(); },

@@ -571,7 +571,7 @@ describe("token rail contract", () => {
         server.on("request", createServer({ ...CONFIG, baseUrl }, {
           repos, addressService: new AddressService(repos, randomBytes(32)), settlements: new DbSettlementStore(db, 86_400_000),
           offlineSwapCreator: corridor, offlineSwaps: new OfflineSwapStore(db, 86_400_000),
-          fixedFloat: { provider: FIXEDFLOAT, rates, client, orders: new FfOrderStore(db, 86_400_000), settleMarginSeconds: 600, minPayWindowSeconds: 300, maxOpenOrders: 20 },
+          fixedFloat: { provider: FIXEDFLOAT, rates, client, orders: new FfOrderStore(db, 86_400_000), settleMarginSeconds: 600, minPayWindowSeconds: 300, maxOpenOrders: 20, maxOpenOrdersPerAddress: 2, ordersPerIp: 2, ipWindowSeconds: 600 },
         }));
         resolve({ baseUrl, close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }) });
       });
