@@ -64,6 +64,23 @@ export function isValidAddress(namespace: string, address: string): boolean {
 
 export const namespaceOf = (chain: string): string => chain.slice(0, chain.indexOf(":"));
 
+/** A transaction id in its chain's own shape, the one BTCPay links to an explorer by
+ *  (ChainDirectory.cs): 0x + 64 hex on EVM, bare 64 hex on Tron, base58 on Solana. */
+export function chainTxid(namespace: string, raw: string): string | undefined {
+  const hex = /^(?:0x)?([0-9a-fA-F]{64})$/.exec(raw)?.[1];
+  if (namespace === "eip155") return hex ? `0x${hex}` : undefined;
+  if (namespace === "tron") return hex;
+  if (namespace === "solana") {
+    // A transaction id is its 64-byte signature; a hex string can pass the alphabet alone.
+    try {
+      return /^[1-9A-HJ-NP-Za-km-z]{64,88}$/.test(raw) && base58.decode(raw).length === 64 ? raw : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
 /** The CAIP-19 id for a token at `contract`, or undefined when the contract is not an
  *  address of the asset's chain — a stale or garbled catalogue row, not a rail. */
 export function ffAssetId(asset: FfAsset, contract: string): string | undefined {
