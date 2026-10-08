@@ -1,4 +1,5 @@
 import type { IContractManager } from "@arkade-os/sdk";
+import { SWAP_LOCKUP_CONTRACT_TYPE } from "@arkade-os/swap";
 import type { SettlementStore } from "../settlement-store.js";
 import { COVENANT_CONTRACT_TYPE } from "../covenant/contract.js";
 import { startCatchUpLoop, type CatchUpLoop } from "./catch-up-loop.js";
@@ -39,41 +40,72 @@ export function scopeShortfall(asked: number, found: number): string | undefined
   return found < asked ? `resolved ${found} of ${asked} covenant destination(s)` : undefined;
 }
 
-/** One retirement pass. Returns how many destinations left the watch set. */
-export async function retireFinishedCovenants(
-  store: SettlementStore,
+/** Retire every live contract of one type whose script the service no longer works. */
+async function retireOutside(
   contracts: IContractManager,
+  type: string,
+  active: Set<string>,
+  rail: { name: string; unit: string },
+  limit: number,
 ): Promise<number> {
-  const active = new Set(store.listActiveCovenantScripts());
-  const live = await contracts.getContracts({
-    type: COVENANT_CONTRACT_TYPE,
-    watch: [...LIVE_WATCH_STATES],
-  });
+  if (limit <= 0) return 0;
+  const live = await contracts.getContracts({ type, watch: [...LIVE_WATCH_STATES] });
   const stale = live.filter((contract) => !active.has(contract.script));
-  if (stale.length > RETIRE_PER_PASS) {
-    console.log(`covenant retirement: ${stale.length} to retire, ${RETIRE_PER_PASS} per pass`);
-  }
+  if (stale.length > limit) console.log(`${rail.name} retirement: ${stale.length} to retire, ${limit} per pass`);
   let retired = 0;
-  for (const contract of stale.slice(0, RETIRE_PER_PASS)) {
+  for (const contract of stale.slice(0, limit)) {
     try {
       await contracts.setContractWatchState(contract.script, "retained");
       retired++;
     } catch (err) {
       // One row that will not move must not hold back the rest; the next pass retries.
-      console.warn(`covenant retirement: ${contract.script.slice(0, 16)}… stayed watched:`, err);
+      console.warn(`${rail.name} retirement: ${contract.script.slice(0, 16)}… stayed watched:`, err);
     }
   }
-  if (retired > 0) console.log(`covenant retirement: ${retired} destination(s) retired`);
+  if (retired > 0) console.log(`${rail.name} retirement: ${retired} ${rail.unit}(s) retired`);
   return retired;
 }
 
-export function startCovenantRetirement(
+/** One pass over the per-payment covenant destinations. */
+export async function retireFinishedCovenants(
+  store: SettlementStore,
+  contracts: IContractManager,
+  limit = RETIRE_PER_PASS,
+): Promise<number> {
+  const active = new Set(store.listActiveCovenantScripts());
+  return retireOutside(contracts, COVENANT_CONTRACT_TYPE, active, { name: "covenant", unit: "destination" }, limit);
+}
+
+/** One pass over the offline-receive lockups. `registerLockupContract` writes no
+ *  `watch`, which the SDK reads as `watched` and never demotes, so every offline
+ *  invoice request left a script subscribed for the life of the process. */
+export async function retireFinishedLockups(
+  swaps: ActiveLockups,
+  contracts: IContractManager,
+  limit = RETIRE_PER_PASS,
+): Promise<number> {
+  const active = new Set(swaps.listActiveLockupScripts());
+  return retireOutside(contracts, SWAP_LOCKUP_CONTRACT_TYPE, active, { name: "lockup", unit: "lockup" }, limit);
+}
+
+/** The slice of the offline-swap store retirement needs; optional for a caller
+ *  without the offline rail. */
+export interface ActiveLockups {
+  listActiveLockupScripts(): string[];
+}
+
+export function startContractRetirement(
   store: SettlementStore,
   contracts: IContractManager,
   intervalMs: number,
+  swaps?: ActiveLockups,
 ): CatchUpLoop {
   return startCatchUpLoop({
-    pass: () => retireFinishedCovenants(store, contracts),
+    // One budget across both rails: every retirement re-posts the whole subscription.
+    pass: async () => {
+      const retired = await retireFinishedCovenants(store, contracts);
+      if (swaps) await retireFinishedLockups(swaps, contracts, RETIRE_PER_PASS - retired);
+    },
     intervalMs,
     onError: (err) => console.warn("covenant retirement: pass failed; retrying:", err),
     immediate: true,

@@ -389,8 +389,8 @@ export class DbSettlementStore implements SettlementStore {
       // only copy of it — and a wallet offline past the TTL is precisely the
       // case the sync source exists for, so deleting here let any payer's
       // verify poll erase a receive its owner had not seen yet.
-      const owesSweep = Boolean(row.covenant_script && row.settled && !row.payout_reference);
-      if ((row.address_id === null || row.address_id === undefined) && !owesSweep) {
+      const rowOwesSweep = Boolean(row.covenant_script && row.settled && !row.payout_reference);
+      if ((row.address_id === null || row.address_id === undefined) && !rowOwesSweep) {
         this.db.prepare("DELETE FROM settlements WHERE payment_hash = ?").run(paymentHash);
       }
       return undefined;

@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { secp256k1 } from "@noble/curves/secp256k1.js";
+import { MultisigTapscript, VtxoScript } from "@arkade-os/sdk";
+import { hex } from "@scure/base";
 import { openDb } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
@@ -86,6 +89,65 @@ describe("OfflineSwapStore", () => {
     db.prepare("UPDATE offline_swaps SET relays_json = '[]'").run();
 
     expect(() => store.listPending()).toThrow("invalid offline swap relays");
+    db.close();
+  });
+});
+
+/** A real lockup address, so the script derivation under test is the real one. */
+const xonly = (fill: number) => secp256k1.getPublicKey(new Uint8Array(32).fill(fill), true).subarray(1);
+const lockupScript = new VtxoScript([MultisigTapscript.encode({ pubkeys: [xonly(8), xonly(2)] }).script]);
+const LOCKUP = lockupScript.address("tark", xonly(2)).encode();
+const LOCKUP_PKSCRIPT = hex.encode(lockupScript.pkScript);
+
+describe("OfflineSwapStore active lockups", () => {
+  const swap = (store: OfflineSwapStore, hash: string, address = LOCKUP) =>
+    store.createAccepted({
+      paymentHash: hash, pr: "lnbc1", sessionId: "offline:1", preimage: "bb".repeat(32), amountMsat: 1_000,
+      recovery: { version: 1, solverName: "one", solverPubkey: "11".repeat(32), relays: ["wss://relay.example"], rfqId: `rfq-${hash}`, lockupAddress: address, expectedAmount: 1, script: {} },
+    });
+
+  it("reports a pending lockup as the pkScript a contract row is keyed by", () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    const store = new OfflineSwapStore(db, 60_000, () => 1_000);
+    swap(store, "aa".repeat(32));
+
+    expect(store.listActiveLockupScripts()).toEqual([LOCKUP_PKSCRIPT]);
+    db.close();
+  });
+
+  it("drops a lockup once its swap settles, which is our claim landing", () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    const store = new OfflineSwapStore(db, 60_000, () => 1_000);
+    swap(store, "aa".repeat(32));
+    expect(store.markSettled("aa".repeat(32), "cc".repeat(32))).toBe(true);
+
+    expect(store.listActiveLockupScripts()).toEqual([]);
+    db.close();
+  });
+
+  it("drops a lockup past the window the poller works, like listPending", () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    let t = 1_000;
+    const store = new OfflineSwapStore(db, 60_000, () => t);
+    swap(store, "aa".repeat(32));
+
+    t = 1_000 + 60_000;
+    expect(store.listPending()).toEqual([]);
+    expect(store.listActiveLockupScripts()).toEqual([]);
+    db.close();
+  });
+
+  it("skips an undecodable lockup address rather than failing the pass", () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    const store = new OfflineSwapStore(db, 60_000, () => 1_000);
+    swap(store, "aa".repeat(32), "tark1nonsense");
+    swap(store, "dd".repeat(32));
+
+    expect(store.listActiveLockupScripts()).toEqual([LOCKUP_PKSCRIPT]);
     db.close();
   });
 });
