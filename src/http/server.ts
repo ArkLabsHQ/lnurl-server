@@ -53,7 +53,7 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
   // to disable entirely (direct connections only). Express walks from the socket outward,
   // asking trust(addr, i) of each hop, and req.ip is the first one refused; a listed
   // forwarder is trusted at any depth.
-  const hops = config.trustProxy === true ? Infinity : Number(config.trustProxy ?? 1);
+  const hops = config.trustProxy === true ? Infinity : config.trustProxy === false ? 0 : (config.trustProxy ?? 1);
   const forwarders = config.trustedForwarders;
   app.set("trust proxy", (addr: string, i: number) => {
     if (i < hops) return true;

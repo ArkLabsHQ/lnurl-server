@@ -282,10 +282,11 @@ function parseTrustedForwarders(raw: string | undefined): BlockList {
   const list = new BlockList();
   for (const entry of (raw ?? "").split(",").map((e) => e.trim()).filter(Boolean)) {
     const [ip, bits, ...rest] = entry.split("/");
-    const family = isIP(ip) === 6 ? "ipv6" : "ipv4";
+    const version = isIP(ip);
+    const family = version === 6 ? "ipv6" : "ipv4";
     // No /0: it would believe every client's X-Forwarded-For and void every per-IP limit.
     const prefixOk = bits === undefined || (/^\d+$/.test(bits) && Number(bits) >= 1 && Number(bits) <= (family === "ipv6" ? 128 : 32));
-    if (!isIP(ip) || rest.length > 0 || !prefixOk) {
+    if (!version || rest.length > 0 || !prefixOk) {
       throw new ConfigError(`TRUSTED_FORWARDERS entry "${entry}" must be an IP address or CIDR (prefix 1-32 for IPv4, 1-128 for IPv6)`);
     }
     if (bits === undefined) list.addAddress(ip, family);

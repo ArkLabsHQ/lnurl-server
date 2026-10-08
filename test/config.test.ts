@@ -44,6 +44,14 @@ describe("loadConfig", () => {
     expect(cfg.trustedForwarders.rules).toEqual([]);
   });
 
+  it("takes a full-length prefix as one host", () => {
+    const { trustedForwarders } = loadConfig({ ...base, TRUSTED_FORWARDERS: "203.0.113.10/32, 2001:db8::1/128" });
+    expect(trustedForwarders.check("203.0.113.10", "ipv4")).toBe(true);
+    expect(trustedForwarders.check("203.0.113.11", "ipv4")).toBe(false);
+    expect(trustedForwarders.check("2001:db8::1", "ipv6")).toBe(true);
+    expect(trustedForwarders.check("2001:db8::2", "ipv6")).toBe(false);
+  });
+
   it.each(["not-an-ip", "203.0.113.10/33", "2001:db8::/129", "10.0.0.0/0", "10.0.0.0/", "10.0.0.0/8/8", "203.0.113.10:443", "203.0.113.10 198.51.100.1"])(
     "rejects the TRUSTED_FORWARDERS entry %s",
     (entry) => {
