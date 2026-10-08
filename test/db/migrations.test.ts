@@ -34,6 +34,44 @@ describe("runMigrations", () => {
     db.close();
   });
 
+  it("applies a version a higher one already landed past", () => {
+    const db = openDb(":memory:");
+    const versions = () =>
+      (db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as { version: number }[])
+        .map((r) => r.version);
+    const indexes = () =>
+      (db.prepare("SELECT name FROM pragma_index_list('settlements')").all() as { name: string }[])
+        .map((r) => r.name);
+
+    runMigrations(db, { upToVersion: 16 });
+    expect(versions()).not.toContain(17);
+    db.exec("CREATE TABLE other_branch_marker (id INTEGER PRIMARY KEY)");
+    db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (18, ?)").run(1000);
+
+    expect(() => runMigrations(db)).not.toThrow();
+
+    expect(versions()).toContain(17);
+    expect(versions().filter((v) => v === 18)).toEqual([18]);
+    expect(indexes()).toContain("idx_settlements_active_covenants");
+    expect(() => runMigrations(db)).not.toThrow();
+    expect(versions().filter((v) => v === 17)).toEqual([17]);
+    db.close();
+  });
+
+  // The reverted 13 recorded its version without adding the column; 14 adds it.
+  it("never re-runs the burned version 13", () => {
+    const db = openDb(":memory:");
+    runMigrations(db, { upToVersion: 12 });
+    db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (13, ?)").run(1000);
+
+    expect(() => runMigrations(db)).not.toThrow();
+
+    const columns = (db.prepare("SELECT name FROM pragma_table_info('settlements')").all() as { name: string }[])
+      .map((c) => c.name);
+    expect(columns).toContain("payout_reference");
+    db.close();
+  });
+
   it("blocks migration 9 while legacy offline swaps remain unsettled", () => {
     const db = openDb(":memory:");
     runMigrations(db);
