@@ -75,8 +75,6 @@ interface Row {
   updated_at: number;
 }
 
-const TERMINAL = "('DONE', 'EXPIRED')";
-
 export class FfOrderStore {
   constructor(private db: Db, private ttlMs: number, private now: () => number = Date.now) {}
 
@@ -101,12 +99,12 @@ export class FfOrderStore {
     }
   }
 
-  /** Orders the poller still asks FixedFloat about: any not yet finished, and a finished
-   *  one whose settled row still lacks the deposit txid it is referenced by. */
+  /** Orders the poller still asks FixedFloat about: any not DONE (a late deposit revives an
+   *  EXPIRED one), and a DONE one whose settled row still lacks its deposit txid. */
   listOpen(): StoredFfOrder[] {
     const rows = this.db.prepare(
       `SELECT f.* FROM ff_orders f JOIN settlements s ON s.payment_hash = f.payment_hash
-       WHERE f.created_at > ? AND (f.status NOT IN ${TERMINAL}
+       WHERE f.created_at > ? AND (f.status != 'DONE'
          OR (f.deposit_txid IS NULL AND s.settled = 1 AND s.payment_reference IS NULL))
        ORDER BY f.created_at`,
     ).all(this.now() - this.ttlMs) as unknown as Row[];

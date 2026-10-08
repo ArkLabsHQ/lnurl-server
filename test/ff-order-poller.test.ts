@@ -65,15 +65,27 @@ describe("FixedFloat order poller", () => {
     expect(lines).toContainEqual(expect.objectContaining({ level: "error", event: "ff_order_status", orderId: expired, status: "EXPIRED" }));
   });
 
-  it("stops polling a DONE or EXPIRED order", async () => {
+  it("stops polling a DONE order, and polls an EXPIRED one only on the slow cadence", async () => {
     const done = await open("aa".repeat(32));
     const expired = await open("cc".repeat(32));
     ff.orders.get(done)!.status = "DONE";
     ff.orders.get(expired)!.status = "EXPIRED";
     await poll();
     expect(orderCalls()).toBe(2);
-    await poll();
+    await pollFfOrders({ orders, client, logger }, { expired: false });
     expect(orderCalls()).toBe(2);
+    await poll();
+    expect(orderCalls()).toBe(3);
+  });
+
+  it("logs ff_order_emergency, never the token, when a late deposit turns an EXPIRED order EMERGENCY", async () => {
+    const id = await open("aa".repeat(32));
+    ff.orders.get(id)!.status = "EXPIRED";
+    await poll();
+    Object.assign(ff.orders.get(id)!, { status: "EMERGENCY", emergency: { status: ["EXPIRED"], choice: "NONE", repeat: false } });
+    await poll();
+    expect(lines).toContainEqual(expect.objectContaining({ level: "error", event: "ff_order_emergency", orderId: id, emergency: ["EXPIRED"] }));
+    expect(JSON.stringify(lines)).not.toContain(ff.orders.get(id)!.token);
   });
 
   it("a transient order-call failure leaves the row open for the next pass", async () => {

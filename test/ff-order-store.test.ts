@@ -59,11 +59,11 @@ describe("FfOrderStore", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM offline_swaps").get()).toEqual({ n: 1 });
   });
 
-  it("listOpen excludes DONE, EXPIRED and rows past the ttl", () => {
+  it("listOpen keeps EXPIRED, which a late deposit can still revive, and excludes DONE and rows past the ttl", () => {
     for (const [hash, status] of [["a1", "NEW"], ["a2", "PENDING"], ["a3", "DONE"], ["a4", "EXPIRED"], ["a5", "EMERGENCY"]] as const) {
       orders.createAccepted(accepted(hash.repeat(32), { status }));
     }
-    expect(orders.listOpen().map((o) => o.status).sort()).toEqual(["EMERGENCY", "NEW", "PENDING"]);
+    expect(orders.listOpen().map((o) => o.status).sort()).toEqual(["EMERGENCY", "EXPIRED", "NEW", "PENDING"]);
     now += TTL;
     expect(orders.listOpen()).toEqual([]);
   });

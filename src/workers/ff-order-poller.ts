@@ -32,8 +32,9 @@ interface PollDeps { orders: FfOrderStore; client: FfClient; logger: Logger }
 
 /** One pass over the open orders. A failed call leaves its order for the next pass; an
  *  exhausted budget ends the pass, since every remaining call would fail the same way. */
-export async function pollFfOrders(deps: PollDeps): Promise<void> {
+export async function pollFfOrders(deps: PollDeps, opts: { expired: boolean } = { expired: true }): Promise<void> {
   for (const stored of deps.orders.listOpen()) {
+    if (stored.status === "EXPIRED" && !opts.expired) continue;
     let fresh: FfOrder;
     try {
       fresh = await deps.client.order(stored.orderId, stored.token);
@@ -46,9 +47,12 @@ export async function pollFfOrders(deps: PollDeps): Promise<void> {
   }
 }
 
+/** An expired order is asked about every tenth pass only: a late deposit is rare, but it is
+ *  exactly the payer whose tokens are stuck. */
 export function startFfOrderPoller(deps: PollDeps & { intervalMs: number }): CatchUpLoop {
+  let pass = 0;
   return startCatchUpLoop({
-    pass: () => pollFfOrders(deps),
+    pass: () => pollFfOrders(deps, { expired: pass++ % 10 === 0 }),
     intervalMs: deps.intervalMs,
     onError: (error) => deps.logger.warn("ff_order_poll_failed", { error }),
   });
