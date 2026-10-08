@@ -1,3 +1,4 @@
+import { BlockList, isIP } from "node:net";
 import { ConfigError } from "./errors.js";
 
 /** Server-orchestrated offline receive over the Arkade intents corridor. */
@@ -61,7 +62,9 @@ export interface AppConfig {
   allowInsecureTokenStorage: boolean;
   bootstrapDomain?: string;
   registrationRateLimitPerMin: number;
+  callbackRateLimitPerMin: number;
   trustProxy: number | boolean;
+  trustedForwarders: BlockList;
   traceRequests: boolean;
   maxSessions: number;
   maxSessionsPerIp: number;
@@ -165,7 +168,9 @@ export function loadConfig(env: Env = process.env): AppConfig {
     allowInsecureTokenStorage,
     bootstrapDomain: env.BOOTSTRAP_DOMAIN || undefined,
     registrationRateLimitPerMin: integer(env, "REGISTRATION_RATE_LIMIT", 10, { min: 1 }),
+    callbackRateLimitPerMin: integer(env, "CALLBACK_RATE_LIMIT_PER_MINUTE", 30, { min: 1 }),
     trustProxy: parseTrustProxy(env.TRUST_PROXY),
+    trustedForwarders: parseTrustedForwarders(env.TRUSTED_FORWARDERS),
     traceRequests,
     maxSessions: integer(env, "MAX_SESSIONS", 5_000, { min: 1 }),
     maxSessionsPerIp: integer(env, "MAX_SESSIONS_PER_IP", 50, { min: 1 }),
@@ -271,4 +276,21 @@ function parseTrustProxy(raw: string | undefined): number | boolean {
   if (raw === "false") return false;
   if (!/^\d+$/.test(raw)) throw new ConfigError("TRUST_PROXY must be false or a non-negative integer");
   return Number(raw);
+}
+
+function parseTrustedForwarders(raw: string | undefined): BlockList {
+  const list = new BlockList();
+  for (const entry of (raw ?? "").split(",").map((e) => e.trim()).filter(Boolean)) {
+    const [ip, bits, ...rest] = entry.split("/");
+    const version = isIP(ip);
+    const family = version === 6 ? "ipv6" : "ipv4";
+    // No /0: it would believe every client's X-Forwarded-For and void every per-IP limit.
+    const prefixOk = bits === undefined || (/^\d+$/.test(bits) && Number(bits) >= 1 && Number(bits) <= (family === "ipv6" ? 128 : 32));
+    if (!version || rest.length > 0 || !prefixOk) {
+      throw new ConfigError(`TRUSTED_FORWARDERS entry "${entry}" must be an IP address or CIDR (prefix 1-32 for IPv4, 1-128 for IPv6)`);
+    }
+    if (bits === undefined) list.addAddress(ip, family);
+    else list.addSubnet(ip, Number(bits), family);
+  }
+  return list;
 }

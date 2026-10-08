@@ -18,11 +18,15 @@ export interface LnurlServiceConfig {
   /** Trust X-Forwarded-* headers from a reverse proxy (default: 1 hop). Pass a number for
    *  the hop count, true to trust all, or false to disable. */
   trustProxy?: number | boolean;
+  /** Addresses whose X-Forwarded-For is believed at any hop, on top of `trustProxy` (default: none). */
+  trustedForwarders?: import("node:net").BlockList;
   /** Log one structured completion line per request (default: off). */
   traceRequests?: boolean;
   maxSessions?: number;
   maxSessionsPerIp?: number;
   maxConcurrentOfflineQuotes?: number;
+  /** Per-IP budget, per minute, for the LUD-16 callback branches served without a live wallet session (default: 30). */
+  callbackRateLimitPerMin?: number;
   /** LUD-XX `verifyBatch` endpoint caps. Absent leaves every default. */
   verifyBatch?: Partial<import("../services/verify-batch.js").VerifyBatchConfig>;
 }
