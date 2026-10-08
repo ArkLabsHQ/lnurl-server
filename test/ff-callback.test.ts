@@ -223,6 +223,20 @@ describe("FixedFloat callback", () => {
     expect(settlements.listRecent(10)).toEqual([]);
   });
 
+  it("pauses a receiver's token quotes after two unroutable invoices, without spending more orders", async () => {
+    const baseUrl = await start();
+    ff.create = () => fail(304, "Invalid route, unable to find a path to destination");
+    const creates = () => ff.calls.filter((c) => c.method === "create").length;
+    const ask = (user = "alice") => callback(baseUrl, "amount=10000000&paymentOption=ff-usdtarbitrum", { user });
+    await ask();
+    await ask();
+    expect(creates()).toBe(2);
+    expect((await ask()).body).toEqual({ status: "ERROR", reason: "paymentOption ff-usdtarbitrum is unavailable for this receiver right now" });
+    expect(creates()).toBe(2);
+    await ask("bob");
+    expect(creates()).toBe(3);
+  });
+
   it("refuses when FF's to.amount does not equal the invoice amount", async () => {
     const baseUrl = await start();
     const real = ff.create;

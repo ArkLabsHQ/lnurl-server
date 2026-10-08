@@ -154,6 +154,8 @@ export async function createFixedFloatDestination(args: {
   baseUrl: string;
   logger: Logger;
   requestId: string;
+  /** Told when the provider cannot route the corridor invoice (FixedFloat's 304). */
+  onUnroutable?: () => void;
 }): Promise<LnurlPayDestinationResponse> {
   const { ff, rail, creator, amountMsat, receiveAddress, claimPublicKey, addressId, baseUrl, logger, requestId } = args;
   const id = rail.optionId;
@@ -227,7 +229,10 @@ export async function createFixedFloatDestination(args: {
   } catch (err) {
     if (err instanceof LnurlError) throw err;
     if (err instanceof FfBudgetError) throw busy();
-    if (err instanceof FfApiError) throw refuse(`${ff.provider.label} ${err.method} refused`, { code: err.code, error: err });
+    if (err instanceof FfApiError) {
+      if (err.code === 304) args.onUnroutable?.();
+      throw refuse(`${ff.provider.label} ${err.method} refused`, { code: err.code, error: err });
+    }
     logger.error("ff_quote_failed", { requestId, optionId: id, error: err });
     throw new LnurlError(`paymentOption ${id} is unavailable for this request`);
   } finally {
