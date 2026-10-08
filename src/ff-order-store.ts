@@ -138,7 +138,8 @@ export class FfOrderStore {
 
   /** Unexpired orders nobody has funded yet, in all or for one receiving address: the open-order caps' count. */
   countAwaitingDeposit(nowSec: number, addressId?: number): number {
-    const sql = "SELECT COUNT(*) AS n FROM ff_orders f JOIN settlements s ON s.payment_hash = f.payment_hash WHERE f.status = 'NEW' AND f.expires_at > ?";
+    // CROSS JOIN pins ff_orders outer: open-order caps bound its NEW rows, not a receiver's settlements.
+    const sql = "SELECT COUNT(*) AS n FROM ff_orders f CROSS JOIN settlements s ON s.payment_hash = f.payment_hash WHERE f.status = 'NEW' AND f.expires_at > ?";
     const row = addressId === undefined
       ? this.db.prepare(sql).get(nowSec)
       : this.db.prepare(`${sql} AND s.address_id = ?`).get(nowSec, addressId);

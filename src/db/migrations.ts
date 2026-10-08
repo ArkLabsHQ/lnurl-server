@@ -307,6 +307,8 @@ const MIGRATIONS: Migration[] = [
         updated_at         INTEGER NOT NULL
       );
       CREATE UNIQUE INDEX IF NOT EXISTS uq_ff_orders_order_id ON ff_orders(order_id);
+      CREATE INDEX IF NOT EXISTS idx_ff_orders_created ON ff_orders(created_at);
+      CREATE INDEX IF NOT EXISTS idx_ff_orders_awaiting ON ff_orders(expires_at) WHERE status = 'NEW';
     `,
   },
 ];

@@ -114,4 +114,24 @@ describe("FfOrderStore", () => {
     db.prepare("DELETE FROM settlements WHERE payment_hash = ?").run("aa".repeat(32));
     expect(orders.byPaymentHash("aa".repeat(32))).toBeUndefined();
   });
+
+  it.each([
+    ["listOpen", () => orders.listOpen()],
+    ["listUnreferencedPastTtl", () => orders.listUnreferencedPastTtl()],
+    ["countAwaitingDeposit", () => orders.countAwaitingDeposit(1_000)],
+    ["countAwaitingDeposit for one receiver", () => orders.countAwaitingDeposit(1_000, 1)],
+  ])("%s starts from an ff_orders index rather than scanning", (_name, call) => {
+    const prepare = db.prepare.bind(db);
+    const seen: string[] = [];
+    db.prepare = (sql: string) => (seen.push(sql), prepare(sql));
+    try {
+      call();
+    } finally {
+      db.prepare = prepare;
+    }
+    expect(seen).toHaveLength(1);
+    const plan = (db.prepare(`EXPLAIN QUERY PLAN ${seen[0]}`).all() as { detail: string }[]).map((r) => r.detail);
+    expect(plan[0]).toMatch(/^SEARCH f USING INDEX idx_ff_orders_/);
+    expect(plan.join(" | ")).not.toContain("SCAN");
+  });
 });
