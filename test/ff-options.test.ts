@@ -3,7 +3,9 @@ import http from "node:http";
 import { randomBytes } from "node:crypto";
 import { advertisedRailOptions, describeServerRails, effectiveRails, type Bounds, type FfRailCaps, type ServerRailCaps } from "../src/rails.js";
 import { withTokenUnits } from "../src/rails/fixedfloat/options.js";
-import { FIXEDFLOAT } from "../src/rails/fixedfloat/provider.js";
+import { DepositWindow, FIXEDFLOAT } from "../src/rails/fixedfloat/provider.js";
+import { FfBudget, ffClient } from "../src/rails/fixedfloat/client.js";
+import { FfOrderStore } from "../src/ff-order-store.js";
 import type { FfRail } from "../src/rails/fixedfloat/rates.js";
 import { createServer } from "../src/http/server.js";
 import { openDb } from "../src/db/connection.js";
@@ -127,7 +129,11 @@ describe("payRequest units", () => {
     const server = http.createServer(createServer(
       { port: 0, baseUrl: "http://domain.com", minSendable: 1_000, maxSendable: 100_000_000 },
       { repos, addressService: new AddressService(repos, randomBytes(32)), offlineSwapCreator: creator,
-        fixedFloat: { provider: FIXEDFLOAT, rates: { snapshot: () => ({ rails: RAILS, ready: true }) } } },
+        fixedFloat: {
+          provider: FIXEDFLOAT, rates: { snapshot: () => ({ rails: RAILS, ready: true }) },
+          client: ffClient({ transport: { call: async () => { throw new Error("unused"); } }, budget: new FfBudget() }),
+          orders: new FfOrderStore(db, 86_400_000), window: new DepositWindow(900), settleMarginSeconds: 600, maxOpenOrders: 20,
+        } },
     ));
     servers.push(server);
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));

@@ -14,12 +14,12 @@ import {
   type ServerRailCaps,
 } from "../../rails.js";
 import { applyQuote, type PaymentQuote } from "../../quote-provider.js";
-import { withTokenUnits } from "../../rails/fixedfloat/options.js";
+import { ffOptionBounds, withTokenUnits } from "../../rails/fixedfloat/options.js";
 import type { DerivedDestination } from "../../covenant/destination.js";
 import type { AddressRow, DomainRow, LnurlPayDestinationResponse, LnurlPayMetadata } from "../../types/index.js";
 import { LnurlError } from "../errors.js";
 import { domainFor, msatParam, originOf, strParam } from "../params.js";
-import { buildMetadata, createOfflineSwapInvoice, destinationUri, requestSessionInvoice } from "../../services/pay-flow.js";
+import { buildMetadata, createFixedFloatDestination, createOfflineSwapInvoice, destinationUri, requestSessionInvoice } from "../../services/pay-flow.js";
 import type { ServerContext } from "../server-context.js";
 import { isNameless } from "../../services/addresses.js";
 import { BATCH_PATH } from "../../services/verify-batch.js";
@@ -34,13 +34,14 @@ const railStatesFor = (address: { arkadeAddress: string | null; claimPublicKey: 
 export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router {
   const {
     config, sessions, store, settings, logger, currentRailCaps,
-    offlineSwapCreator: creator, offlineSwaps, quoteProvider, covenantDestinations, onDestinationIssued,
+    offlineSwapCreator: creator, offlineSwaps, quoteProvider, covenantDestinations, onDestinationIssued, fixedFloat,
   } = ctx;
   // Tighter per-IP guard on callback branches that cost resources without a live
   // wallet session: each offline-swap hit asks the solver for a fresh quote, and
   // each destination hit writes a store record.
   const addressCallbackLimiter = new RateLimiter(30, 60_000);
   let offlineQuotes = 0;
+  let tokenQuotes = 0;
   const r = Router();
 
   const activeAddress = (host: string | undefined, rawUsername: string) => {
@@ -98,10 +99,10 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     // LUD-XX paymentOptions: resolve the wallet's selected rail. "lightning" (or absent)
     // falls through to the BOLT11 flow below; a destination rail (arkade) returns the
     // registered address + a non-`pr` verify record.
-    const resolved = resolvePaymentOption(paymentOptionId, address);
+    const railCaps = currentRailCaps();
+    const resolved = resolvePaymentOption(paymentOptionId, address, railCaps.fixedFloat?.rails ?? []);
     if (resolved.kind === "error") throw new LnurlError(resolved.reason);
     // Per-address rail policy: a disabled rail fails loudly instead of serving.
-    const railCaps = currentRailCaps();
     const railStates = railStatesFor(address, railCaps);
     if (resolved.kind === "destination" && railStates.get("arkade")?.enabled === false) {
       throw new LnurlError("paymentOption arkade is disabled for this address");
@@ -113,11 +114,37 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     const receiveUnit = strParam(req.query.receiveUnit);
     let paymentQuote: PaymentQuote | undefined;
     if (unit !== undefined || receiveUnit !== undefined) {
-      if (resolved.kind === "destination") throw new LnurlError("unit is not supported for this paymentOption");
+      // A token rail quotes its own payment, but only for an amount in millisats.
+      if (resolved.kind === "destination" || resolved.kind === "fixedfloat") throw new LnurlError("unit is not supported for this paymentOption");
       const q = applyQuote(quoteProvider, { amount: amountMsat, unit, receiveUnit, paymentOption: paymentOptionId });
       if (!q.ok) throw new LnurlError(q.reason);
       amountMsat = q.amountMsat;
       paymentQuote = q.paymentQuote;
+    }
+
+    if (resolved.kind === "fixedfloat") {
+      const rail = railCaps.fixedFloat?.rails.find((r) => r.optionId === resolved.optionId);
+      if (!fixedFloat || !creator || !rail || !address.arkadeAddress || !address.claimPublicKey || !railStates.get("fixedfloat")?.available) {
+        throw new LnurlError(`paymentOption ${resolved.optionId} is currently unavailable`);
+      }
+      if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) throw new LnurlError("Too many requests", 429);
+      const bounds = ffOptionBounds(rail, railBounds("offline-swap", railCaps, base));
+      if (!bounds) throw new LnurlError(`paymentOption ${resolved.optionId} cannot take any amount right now`);
+      if (amountMsat < bounds.min || amountMsat > bounds.max) throw new LnurlError(`Amount must be between ${bounds.min} and ${bounds.max} millisats`);
+      if (amountMsat % 1000 !== 0) throw new LnurlError("Amount must be a whole number of satoshis");
+      if (tokenQuotes + fixedFloat.orders.countAwaitingDeposit(Math.floor(Date.now() / 1000)) >= fixedFloat.maxOpenOrders) {
+        throw new LnurlError("Token deposit capacity reached, try again shortly", 429);
+      }
+      tokenQuotes++;
+      try {
+        res.json(await createFixedFloatDestination({
+          ff: fixedFloat, rail, creator, amountMsat, receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey,
+          addressId: address.id, baseUrl: settings.baseUrl(), logger, requestId: res.locals.requestId as string,
+        }));
+      } finally {
+        tokenQuotes--;
+      }
+      return;
     }
 
     if (resolved.kind === "destination") {
