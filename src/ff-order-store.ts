@@ -118,6 +118,11 @@ export class FfOrderStore {
     return row ? toOrder(row) : undefined;
   }
 
+  byOrderId(orderId: string): StoredFfOrder | undefined {
+    const row = this.db.prepare("SELECT * FROM ff_orders WHERE order_id = ?").get(orderId) as unknown as Row | undefined;
+    return row ? toOrder(row) : undefined;
+  }
+
   /** Whether the corridor swap behind an order has settled. */
   isSettled(orderId: string): boolean {
     return Boolean(this.db.prepare(
