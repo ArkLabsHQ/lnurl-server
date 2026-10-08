@@ -136,7 +136,6 @@ describe("admin reconcile, in bulk", () => {
     expect(res.body.addresses).toHaveLength(2);
   });
 
-  // A synchronous read of every address, to keep 200, stalled every request in the process.
   it("reads no more addresses than the 200 it reports", async () => {
     for (let i = 0; i < 203; i++) addr(`user${i}`);
     repos.addresses.create({ domainId, username: "bare", status: "active", sessionId: "s" });

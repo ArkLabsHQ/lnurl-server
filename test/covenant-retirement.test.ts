@@ -451,7 +451,6 @@ describe("the watch set at scale", () => {
     }
   }, 120_000);
 
-  // With `type = ?` beside three or more scripts, SQLite read every covenant ever issued.
   it("resolves a pass's scope by primary key, not by contract type", async () => {
     const { db, settlements, contracts, close } = await boot(await seeded("scope-plan", 20));
     const prepare = db.prepare.bind(db);

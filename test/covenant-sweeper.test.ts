@@ -92,8 +92,6 @@ describe("createCovenantSweeper", () => {
     expect(getContractsWithVtxos).toHaveBeenCalledWith({ script: ["5120aa"] });
   });
 
-  // The scope names scripts only, so a contract of another type there must not
-  // reach the covenant handler, whose throw would end the whole pass.
   it("skips a contract of another type at a scoped script", async () => {
     const getSpendablePaths = vi.fn(async (_q: { contractScript: string }) => [{ leaf: {} as never, extraWitness: [] }]);
     const getContractsWithVtxos = vi.fn(async () => [

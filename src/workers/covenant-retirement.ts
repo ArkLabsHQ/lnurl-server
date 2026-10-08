@@ -30,7 +30,8 @@ export function activeCovenantFilters(store: SettlementStore): ContractScope[] {
   return filters;
 }
 
-/** One scope's covenant contracts, with their vtxos. */
+/** One scope's covenant contracts, with their vtxos. Another type would reach the
+ *  sweeper's covenant handler, whose throw ends the whole pass. */
 export async function resolveCovenants(contracts: IContractManager, scope: ContractScope) {
   return (await contracts.getContractsWithVtxos(scope)).filter(({ contract }) => contract.type === COVENANT_CONTRACT_TYPE);
 }

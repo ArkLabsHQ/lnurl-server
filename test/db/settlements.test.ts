@@ -48,7 +48,6 @@ describe("store parity past the ttl", () => {
     db.close();
   });
 
-  // The static-address watcher reads this every second and owns no other rail.
   it("lists only static-address arkade destinations in both stores", () => {
     const { db, memory, sqlite } = stores(() => 1000);
     for (const store of [memory, sqlite]) {
@@ -236,9 +235,8 @@ describe("DbSettlementStore", () => {
     db.close();
   });
 
-  // Each ran as a table scan, on paths that repeat per worker pass and per candidate
-  // VTXO. Planned from what the call prepares: a pasted copy once passed here while
-  // the poller ran other SQL.
+  // Each was once a table scan on a path run every worker pass. Planned from the SQL
+  // the call prepares, since a pasted copy can drift from it unnoticed.
   type Stores = { settlements: DbSettlementStore; swaps: OfflineSwapStore };
   describe.each<[string, (s: Stores) => unknown, string]>([
     ["the covenant scope, both halves", (s) => s.settlements.listActiveCovenantScripts(), "idx_settlements_active_covenants"],
