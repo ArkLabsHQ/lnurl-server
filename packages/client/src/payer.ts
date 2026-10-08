@@ -1,7 +1,8 @@
 import { lnurlFetch, type FetchImpl } from "./http.js";
 import { LnurlError, LnurlTimeoutError, LnurlTransportError } from "./errors.js";
 import { toPayRequestUrl } from "./encoding.js";
-import type { Bolt11Result, InvoiceResult, PayRequest, PaymentQuote, PollVerifyOptions, RequestInvoiceOptions, VerifyStatus } from "./types.js";
+import type { Bolt11Result, DestinationResult, InvoiceResult, PayRequest, PaymentQuote, PollVerifyOptions, RequestInvoiceOptions, VerifyStatus } from "./types.js";
+import { isTokenAddress, tokenOptions, type TokenOption } from "./token-options.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { hex } from "@scure/base";
 import { amountMsatOf, paymentHashOf } from "./bolt11.js";
@@ -10,6 +11,20 @@ function preimageOpens(preimage: string, pr: string): boolean {
   const hash = paymentHashOf(pr);
   if (!hash || !/^[0-9a-f]{64}$/i.test(preimage)) return false;
   return hex.encode(sha256(hex.decode(preimage.toLowerCase()))) === hash;
+}
+
+/** The checks the BTCPay plugin makes of a token answer (LnurlTokenRequester.cs): the
+ *  option it asked for, an address on the token's own chain, and a whole amount of the token. */
+function assertTokenAnswer(token: TokenOption, answer: DestinationResult): void {
+  if (answer.paymentOption !== token.id) throw new LnurlError(`The callback answered for ${answer.paymentOption}, not ${token.id}`);
+  if (!answer.paymentDestination || !isTokenAddress(token.asset.namespace, answer.paymentDestination)) {
+    throw new LnurlError(`The callback returned no ${token.asset.namespace} address to pay`);
+  }
+  const payment = answer.paymentQuote?.payment as { amount?: unknown; unit?: unknown } | undefined;
+  const whole = typeof payment?.amount === "string" && /^[0-9]{1,78}$/.test(payment.amount) && /[1-9]/.test(payment.amount);
+  if (!whole || typeof payment?.unit !== "string" || payment.unit.toUpperCase() !== token.unit.code) {
+    throw new LnurlError(`The callback quoted no whole amount of ${token.unit.code}`);
+  }
 }
 
 /**
@@ -62,6 +77,8 @@ export async function requestInvoice(
   const selected = opts.paymentOption
     ? payRequest.paymentOptions?.find((option) => option.id === opts.paymentOption)
     : undefined;
+  const token = selected?.asset !== undefined ? tokenOptions(payRequest).find((o) => o.id === selected.id) : undefined;
+  if (selected?.asset !== undefined && !token) throw new LnurlError(`paymentOption ${selected.id} is not a token this client can pay`);
   const min = selected?.minSendable ?? payRequest.minSendable;
   const max = selected?.maxSendable ?? payRequest.maxSendable;
   if (!Number.isSafeInteger(amountMsat)) {
@@ -91,6 +108,7 @@ export async function requestInvoice(
   const sep = payRequest.callback.includes("?") ? "&" : "?";
   const body = await lnurlFetch<Record<string, unknown>>(`${payRequest.callback}${sep}${params.toString()}`, undefined, fetchImpl);
   if (typeof body.pr === "string") {
+    if (token) throw new LnurlError(`The callback answered token option ${token.id} with an invoice`);
     const invoiceMsat = amountMsatOf(body.pr);
     if (invoiceMsat === undefined) throw new LnurlError("The callback returned an invoice that does not decode");
     // An amountless invoice answering an amounted request is refused too: the
@@ -105,13 +123,20 @@ export async function requestInvoice(
     return result;
   }
   if (typeof body.paymentOption === "string") {
-    return {
+    const result: DestinationResult = {
       kind: "destination",
       paymentOption: body.paymentOption,
       ...(typeof body.paymentDestination === "string" ? { paymentDestination: body.paymentDestination } : {}),
+      ...(typeof body.paymentDestinationTag === "string" ? { paymentDestinationTag: body.paymentDestinationTag } : {}),
+      ...(typeof body.paymentURI === "string" ? { paymentURI: body.paymentURI } : {}),
+      ...(body.paymentQuote && typeof body.paymentQuote === "object" ? { paymentQuote: body.paymentQuote as PaymentQuote } : {}),
+      ...(typeof body.expiresAt === "number" ? { expiresAt: body.expiresAt } : {}),
+      ...(typeof body.provider === "string" ? { provider: body.provider } : {}),
       ...(typeof body.verify === "string" ? { verify: body.verify } : {}),
       ...(typeof body.verifyBatch === "string" ? { verifyBatch: body.verifyBatch } : {}),
     };
+    if (token) assertTokenAnswer(token, result);
+    return result;
   }
   throw new LnurlError("Unexpected callback response");
 }

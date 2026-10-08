@@ -19,6 +19,14 @@ import {
   LnurlTimeoutError,
 } from "../packages/client/src/index.js";
 import type { LnurlSession, PaymentSyncStore, StoredPayment } from "../packages/client/src/index.js";
+import { tokenOptions } from "../packages/client/src/index.js";
+import { OfflineSwapStore } from "../src/offline-swap-store.js";
+import { FfOrderStore } from "../src/ff-order-store.js";
+import type { OfflineSwapCreator } from "../src/services/offline-swaps.js";
+import { FfBudget, ffAuth, ffClient, ffHttpTransport } from "../src/rails/fixedfloat/client.js";
+import { ffRates, ffRatesXml } from "../src/rails/fixedfloat/rates.js";
+import { DepositWindow, FIXEDFLOAT } from "../src/rails/fixedfloat/provider.js";
+import { fakeFixedFloat, type FakeFf } from "./helpers/fake-fixedfloat.js";
 
 const CONFIG: LnurlServiceConfig = { port: 0, baseUrl: "", minSendable: 1_000, maxSendable: 100_000_000, invoiceTimeoutMs: 3_000 };
 
@@ -510,7 +518,7 @@ describe("onchain rail contract", () => {
 
     const reachable = { ...payRequest, callback: payRequest.callback.replace("127.0.0.1", new URL(ctx.baseUrl).host) };
     const result = await payer.requestInvoice(reachable, { amountSat: 1_000, paymentOption: "onchain" });
-    expect(result).toEqual({ kind: "destination", paymentOption: "onchain", paymentDestination: BOARDING });
+    expect(result).toEqual({ kind: "destination", paymentOption: "onchain", paymentDestination: BOARDING, paymentURI: `bitcoin:${BOARDING}?amount=0.00001` });
     expect("verify" in result).toBe(false);
   });
 
@@ -529,5 +537,68 @@ describe("onchain rail contract", () => {
     );
     const payRequest = await payer.resolve(lnurl);
     expect(payRequest.paymentOptions).toContainEqual({ id: "onchain", type: "onchain", verifiable: false });
+  });
+});
+
+describe("token rail contract", () => {
+  const ARK = "tark1qpf3lesxsy69q0f8yvfnyf7gv7kglfkg83fhaxjyc0zmm0wtrl3n024rshrsa8fnnv73w38094qfl9jp5g7pzdc8j2m58metfpd8rcd37nqs45";
+  let db: Db; let ff: FakeFf; let ctx: { baseUrl: string; close: () => Promise<void> };
+
+  beforeEach(async () => {
+    db = openDb(":memory:"); runMigrations(db);
+    const repos = createRepositories(db);
+    const domain = repos.domains.create({ domain: "127.0.0.1", allocationModes: ["self"] });
+    const reg = repos.addresses.create({ domainId: domain.id, username: "alice", status: "active", sessionId: "s-alice" });
+    repos.addresses.setOfflineReceive(reg.id, ARK, "02" + "ab".repeat(32));
+    ff = await fakeFixedFloat();
+    const client = ffClient({ transport: ffHttpTransport({ baseUrl: ff.baseUrl, auth: ffAuth(ff.apiKey, ff.secret) }), budget: new FfBudget() });
+    const rates = ffRates({ client, fetchRatesXml: ffRatesXml(ff.ratesUrl), idPrefix: "ff-", staleAfterMs: 900_000 });
+    await rates.refresh();
+    const corridor: OfflineSwapCreator = {
+      isSettled: async () => false,
+      create: async (p) => {
+        const preimage = randomBytes(32).toString("hex");
+        const hash = createHash("sha256").update(Buffer.from(preimage, "hex")).digest("hex");
+        return { swapId: `rfq-${hash.slice(0, 8)}`, invoice: buildInvoice(hash, p.amountSat), preimage, preimageHash: hash, lockupAddress: ARK,
+          invoiceExpiresAt: Math.floor(Date.now() / 1000) + 1_800,
+          recovery: { version: 1, solverName: "s", solverPubkey: "11".repeat(32), relays: ["wss://relay.example"], rfqId: `rfq-${hash.slice(0, 8)}`, lockupAddress: ARK, expectedAmount: p.amountSat - 20, script: {} } };
+      },
+    };
+    const server = http.createServer();
+    ctx = await new Promise<typeof ctx>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        const baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+        server.on("request", createServer({ ...CONFIG, baseUrl }, {
+          repos, addressService: new AddressService(repos, randomBytes(32)), settlements: new DbSettlementStore(db, 86_400_000),
+          offlineSwapCreator: corridor, offlineSwaps: new OfflineSwapStore(db, 86_400_000),
+          fixedFloat: { provider: FIXEDFLOAT, rates, client, orders: new FfOrderStore(db, 86_400_000), window: new DepositWindow(900), settleMarginSeconds: 600, maxOpenOrders: 20 },
+        }));
+        resolve({ baseUrl, close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }) });
+      });
+    });
+  });
+
+  afterEach(async () => {
+    await ctx.close();
+    await ff.close();
+    db.close();
+  });
+
+  it("parses asset, unit and provider off a payment option, and pays one for a quoted destination", async () => {
+    const payer = createLnurlClient();
+    const lnurl = bech32.encode("lnurl", bech32.toWords(new TextEncoder().encode(`${ctx.baseUrl}/.well-known/lnurlp/alice`)), 1023);
+    const payRequest = await payer.resolve(lnurl);
+    const [usdt] = tokenOptions(payRequest);
+    expect(usdt).toMatchObject({ id: "ff-usdtarbitrum", provider: "FixedFloat", unit: { code: "USDT", decimals: 6 }, asset: { chainId: "eip155:42161" } });
+    expect(tokenOptions(payRequest)).toHaveLength(13);
+
+    const reachable = { ...payRequest, callback: payRequest.callback.replace("127.0.0.1", new URL(ctx.baseUrl).host) };
+    const result = await payer.requestInvoice(reachable, { amountSat: 10_000, paymentOption: "ff-usdtarbitrum" });
+    expect(result).toMatchObject({
+      kind: "destination", paymentOption: "ff-usdtarbitrum", provider: "FixedFloat",
+      paymentQuote: { payment: { amount: "8426000", unit: "USDT" }, requested: { amount: "10000000", unit: "msat" } },
+      paymentURI: expect.stringMatching(/^ethereum:0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9@42161\/transfer\?address=0x[0-9a-f]{40}&uint256=8426000$/),
+    });
+    expect(result).not.toHaveProperty("expiresAt");
   });
 });
