@@ -113,6 +113,9 @@ export interface SettlementStore {
   listByAddress(addressId: number, limit: number, opts?: { since?: number }): SettlementRecord[];
 }
 
+/** Money arrived at its covenant and no sweep is recorded: expiry must never reclaim it. */
+const owesSweep = (r: SettlementRecord): boolean => Boolean(r.covenantScript && r.settled && !r.payoutReference);
+
 /** In-memory store used in library / no-DB mode. Lazy expiry on read plus an
  *  opportunistic sweep so the map can't grow unbounded under create-only traffic. */
 export class MemorySettlementStore implements SettlementStore {
@@ -166,7 +169,7 @@ export class MemorySettlementStore implements SettlementStore {
     if (this.now() - r.createdAt >= lifetime) {
       // Same rules as the DB store: a destination outlives the verify TTL, and
       // an address's history outlives both.
-      if (r.addressId === null || r.addressId === undefined) this.map.delete(paymentHash);
+      if ((r.addressId === null || r.addressId === undefined) && !owesSweep(r)) this.map.delete(paymentHash);
       return undefined;
     }
     return r;
@@ -289,7 +292,7 @@ export class MemorySettlementStore implements SettlementStore {
   private sweep(): void {
     const t = this.now();
     for (const [k, r] of this.map) {
-      if (t - r.createdAt >= this.ttlMs && (r.addressId === null || r.addressId === undefined)) this.map.delete(k);
+      if (t - r.createdAt >= this.ttlMs && (r.addressId === null || r.addressId === undefined) && !owesSweep(r)) this.map.delete(k);
     }
   }
 }
@@ -386,7 +389,8 @@ export class DbSettlementStore implements SettlementStore {
       // only copy of it — and a wallet offline past the TTL is precisely the
       // case the sync source exists for, so deleting here let any payer's
       // verify poll erase a receive its owner had not seen yet.
-      if (row.address_id === null || row.address_id === undefined) {
+      const owesSweep = Boolean(row.covenant_script && row.settled && !row.payout_reference);
+      if ((row.address_id === null || row.address_id === undefined) && !owesSweep) {
         this.db.prepare("DELETE FROM settlements WHERE payment_hash = ?").run(paymentHash);
       }
       return undefined;

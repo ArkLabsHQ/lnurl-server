@@ -122,6 +122,29 @@ describe.each(clocked)("%s active covenant window", (_name, make) => {
     expect(s.markPaidOut("late", "sweep-tx")).toBe(true);
     expect(s.listActiveCovenantScripts()).toEqual([]);
   });
+
+  it("keeps a settled, unswept destination through an expired read", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    s.create({ paymentHash: "owed", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014dd" });
+    s.markObserved("owed", "tx-in");
+
+    t = 1000 + WATCH * 3;
+    expect(s.get("owed")).toBeUndefined();
+    expect(s.listActiveCovenantScripts()).toEqual(["0014dd"]);
+    expect(s.markPaidOut("owed", "sweep-tx")).toBe(true);
+  });
+});
+
+it("MemorySettlementStore's periodic sweep keeps a destination still owed a sweep", () => {
+  let t = 1000;
+  const s = new MemorySettlementStore(5000, () => t, 5000);
+  s.create({ paymentHash: "owed", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014ee" });
+  s.markObserved("owed", "tx-in");
+
+  t = 1000 + 5000 * 3;
+  for (let i = 0; i < 1000; i++) s.create({ paymentHash: `fill-${i}`, pr: "lnbc1", sessionId: "s" });
+  expect(s.listActiveCovenantScripts()).toEqual(["0014ee"]);
 });
 
 describe("MemorySettlementStore", () => {
