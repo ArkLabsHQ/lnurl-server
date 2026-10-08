@@ -16,6 +16,7 @@ import { FIXEDFLOAT, type FixedFloatDeps } from "../src/rails/fixedfloat/provide
 import type { OfflineSwapCreator, OfflineSwapParams, OfflineSwapResult } from "../src/services/offline-swaps.js";
 import { fakeFixedFloat, fail, type FakeFf } from "./helpers/fake-fixedfloat.js";
 import { buildInvoice } from "./helpers/bolt11.js";
+import { createLogger } from "../src/logger.js";
 
 const RECEIVE = new ArkAddress(new Uint8Array(32).fill(1), new Uint8Array(32).fill(2), "tark").encode();
 const CLAIM_PUBKEY = "02" + "ab".repeat(32);
@@ -317,6 +318,17 @@ describe("FixedFloat callback", () => {
     expect(record).toMatchObject({ paymentOption: "ff-usdtarbitrum", paymentDestination: order.from.address, amountMsat: 10_000_000, settled: false });
     expect(orders.byPaymentHash(record!.paymentHash)).toMatchObject({ orderId: order.id, token: order.token, depositAmount: "8426000", toAmountSat: 10_000 });
     expect(db.prepare("SELECT payment_hash FROM offline_swaps").all()).toEqual([{ payment_hash: record!.paymentHash }]);
+  });
+
+  it("logs the order id when an order FixedFloat created cannot be recorded", async () => {
+    const lines: Record<string, unknown>[] = [];
+    const sink = (line: string) => lines.push(JSON.parse(line));
+    orders.createAccepted = () => { throw new Error("disk full"); };
+    const baseUrl = await start({ logger: createLogger({ info: sink, warn: sink, error: sink }) });
+    const res = await callback(baseUrl, "amount=10000000&paymentOption=ff-usdtarbitrum");
+    expect(res.body).toEqual({ status: "ERROR", reason: "paymentOption ff-usdtarbitrum is unavailable for this request" });
+    const order = [...ff.orders.values()][0]!;
+    expect(lines).toContainEqual(expect.objectContaining({ level: "error", event: "ff_quote_failed", orderId: order.id }));
   });
 
   it("returns no paymentURI for a tron option but still returns the destination", async () => {

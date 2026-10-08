@@ -170,6 +170,7 @@ export async function createFixedFloatDestination(args: {
   };
   const reservation = ff.client.reserveCreate();
   if (!reservation) throw busy();
+  let order: FfOrder | undefined;
   try {
     const price = await ff.client.price({ fromCcy: rail.ffCode, toSat });
     if (price.errors.length > 0) {
@@ -197,7 +198,7 @@ export async function createFixedFloatDestination(args: {
       throw refuse("the invoice leaves too short a pay window", { paySecondsLeft: payBy === undefined ? null : payBy - before });
     }
 
-    const order = await ff.client.create({ fromCcy: rail.ffCode, toSat, toAddress: swap.invoice }, reservation);
+    order = await ff.client.create({ fromCcy: rail.ffCode, toSat, toAddress: swap.invoice }, reservation);
     const now = Math.floor(Date.now() / 1000);
     const refusal = orderRefusal(order, rail, toSat)
       ?? (Math.min(order.expiresAt!, payBy) - now < ff.minPayWindowSeconds ? "the order leaves too short a pay window" : undefined);
@@ -233,7 +234,8 @@ export async function createFixedFloatDestination(args: {
       if (err.code === 304) args.onUnroutable?.();
       throw refuse(`${ff.provider.label} ${err.method} refused`, { code: err.code, error: err });
     }
-    logger.error("ff_quote_failed", { requestId, optionId: id, error: err });
+    // An order that exists at the provider but nowhere here is an unfundable support case: name it.
+    logger.error("ff_quote_failed", { requestId, optionId: id, ...(order ? { orderId: order.id } : {}), error: err });
     throw new LnurlError(`paymentOption ${id} is unavailable for this request`);
   } finally {
     reservation.release();
