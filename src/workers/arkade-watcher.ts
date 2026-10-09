@@ -102,7 +102,9 @@ function settleAtScript(
     .filter((v) => v.createdAt.getTime() >= oldest - SETTLEMENT_SKEW_MS)
     // A txid that already settled a record must not settle another one later.
     .filter((v) => !store.isReferenceUsed(v.txid))
-    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    // Same-second ties smallest first, so an older small record cannot take the payment
+    // a larger one needs; then txid:vout, so the indexer's listing order never decides.
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.value - b.value || a.txid.localeCompare(b.txid) || a.vout - b.vout);
   const assigned = new Set<string>();
   for (const record of [...records].sort((a, b) => a.createdAt - b.createdAt)) {
     const hit = arrivals.find(
