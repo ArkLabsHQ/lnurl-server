@@ -403,7 +403,7 @@ describe("createOfflineSwapCoordinator", () => {
     const gated = await createOfflineSwapCoordinator(swapSettings({ contracts: { createContract } }));
     solver.mode.expired = true;
     try {
-      await expect(gated.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY })).rejects.toThrow(/already expired/);
+      await expect(gated.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY })).rejects.toThrow(/expired at/);
     } finally {
       solver.mode.expired = false;
     }
@@ -415,7 +415,7 @@ describe("createOfflineSwapCoordinator", () => {
     const gated = await createOfflineSwapCoordinator(swapSettings({ contracts: { createContract } }));
     solver.mode.refundSoon = true;
     try {
-      await expect(gated.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY })).rejects.toThrow(/under 1800s to claim/);
+      await expect(gated.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY })).rejects.toThrow(/refund_window check/);
     } finally {
       solver.mode.refundSoon = false;
     }

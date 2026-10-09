@@ -31,7 +31,7 @@ import {
   type RfqTransport,
 } from "@arkade-os/swap/protocol";
 import { nostrRfqTransport } from "@arkade-os/swap/nostr";
-import { assertReceivable, newRfqId } from "../vendor/swap-rfq.js";
+import { verifyReceiveWindow } from "@arkade-os/swap/advanced";
 import { invoiceFactsFromBolt11 } from "../bolt11.js";
 import { MalformedRecordError, RailRefusedError, SolverQuoteError, UpstreamError } from "../errors.js";
 import { checkedPreimage, randomEntropy, type EntropyProvider } from "../covenant/entropy.js";
@@ -271,7 +271,7 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
         try {
           const preimage = checkedPreimage(settings.entropy ?? randomEntropy);
           const paymentHash = paymentHashOf(preimage);
-          const rfqId = newRfqId();
+          const rfqId = hex.encode(crypto.getRandomValues(new Uint8Array(32)));
           // Self-claim mode sends no packet: claim_packet is optional on the wire
           // and the solver funds anyway, waiting for our own covenant claim.
           let claimPacket: string | undefined;
@@ -309,7 +309,7 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
             hrp: ctx.hrp,
           });
           const { payDeadline } = verifyReceiveInvoice({ invoice: derived.invoice, decode: invoiceFactsFromBolt11, paymentHash, quote });
-          assertReceivable({ quote, payDeadline, now: Math.floor(Date.now() / 1000) });
+          verifyReceiveWindow({ quote, quoteId: rfqId, payDeadline, now: Math.floor(Date.now() / 1000) });
           if (settings.contracts) {
             // Before the invoice leaves, so nothing funds a lockup with no row — but
             // not fatal as it is in a wallet: the poller claims off the indexer by
