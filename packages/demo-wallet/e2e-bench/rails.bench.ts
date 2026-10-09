@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { bech32, hex } from "@scure/base";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
-import { ArkAddress, MnemonicIdentity, RestIndexerProvider, Wallet } from "@arkade-os/sdk";
+import { ArkAddress, EsploraProvider, MnemonicIdentity, RestArkProvider, RestIndexerProvider, Wallet } from "@arkade-os/sdk";
 import { createLnurlClient, type PayRequest } from "@arkade-os/lnurl-client";
 import { ESPLORA_URL, faucet, mine, nodeSqliteStorage } from "../../../test/e2e/support/regtest.js";
 import {
@@ -58,8 +58,8 @@ async function newWallet(): Promise<{ wallet: Wallet; identity: MnemonicIdentity
   const identity = MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist), { isMainnet: false });
   const wallet = await Wallet.create({
     identity,
-    arkServerUrl: stack.arkServer,
-    esploraUrl: ESPLORA_URL,
+    arkProvider: new RestArkProvider(stack.arkServer),
+    onchainProvider: new EsploraProvider(ESPLORA_URL),
     storage: await nodeSqliteStorage(":memory:"),
     settlementConfig: false,
   });
@@ -172,7 +172,7 @@ test("ark: a bare Arkade transfer, the floor every LNURL rail is measured agains
     const user = await newUser();
     const before = await spendableAt(user.arkadeAddress);
     const sent = Date.now();
-    await payerWallet.sendBitcoin({ address: user.arkadeAddress, amount: SATS });
+    await payerWallet.send({ address: user.arkadeAddress, amount: SATS });
     const spendableMs = await elapsedUntil(sent, "ark spendable", async () => (await spendableAt(user.arkadeAddress)) > before);
     results.push({ rail: "ark (no server)", quoteMs: 0, observeMs: 0, spendableMs });
   }
@@ -193,7 +193,7 @@ test("lnurl-arkade, static destination: settlement the server can only observe",
     if (result.kind !== "destination") throw new Error(`expected a destination, got ${result.kind}`);
 
     const sent = Date.now();
-    await payerWallet.sendBitcoin({ address: result.paymentDestination!, amount: SATS });
+    await payerWallet.send({ address: result.paymentDestination!, amount: SATS });
     const spendableMs = await elapsedUntil(sent, "static spendable", async () => (await spendableAt(user.arkadeAddress)) > 0);
     const observeMs = await elapsedUntil(sent, "static observed", async () => {
       const page = await owner.listPayments(token, username);
@@ -218,7 +218,7 @@ test("lnurl-arkade, covenant destination: an address per payment, then a sweep",
     if (result.kind !== "destination") throw new Error(`expected a destination, got ${result.kind}`);
 
     const sent = Date.now();
-    await payerWallet.sendBitcoin({ address: result.paymentDestination!, amount: SATS });
+    await payerWallet.send({ address: result.paymentDestination!, amount: SATS });
     const observeMs = await elapsedUntil(sent, "covenant observed", async () => {
       const page = await owner.listPayments(token, username);
       return page.payments.some((p) => p.settled);

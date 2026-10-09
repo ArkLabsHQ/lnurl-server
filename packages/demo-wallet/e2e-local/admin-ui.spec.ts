@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { hex } from "@scure/base";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
-import { MnemonicIdentity, Wallet } from "@arkade-os/sdk";
+import { EsploraProvider, MnemonicIdentity, RestArkProvider, Wallet } from "@arkade-os/sdk";
 import { createLnurlClient } from "@arkade-os/lnurl-client";
 import { ESPLORA_URL, nodeSqliteStorage } from "../../../test/e2e/support/regtest.js";
 import {
@@ -77,8 +77,8 @@ test.beforeAll(async () => {
   const signer = MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist), { isMainnet: false });
   wallet = await Wallet.create({
     identity: signer,
-    arkServerUrl: stack.arkServer,
-    esploraUrl: ESPLORA_URL,
+    arkProvider: new RestArkProvider(stack.arkServer),
+    onchainProvider: new EsploraProvider(ESPLORA_URL),
     storage: await nodeSqliteStorage(":memory:"),
     settlementConfig: false,
   });

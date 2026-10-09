@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { ArkAddress, type IContractManager } from "@arkade-os/sdk";
-import { SWAP_LOCKUP_CONTRACT_TYPE } from "@arkade-os/swap";
+import { SWAP_LOCKUP_CONTRACT_TYPE } from "@arkade-os/swap/protocol";
 import { hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { startLockupWatcher } from "../src/workers/lockup-watcher.js";

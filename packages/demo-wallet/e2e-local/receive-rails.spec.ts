@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { bech32, hex } from "@scure/base";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
-import { ArkAddress, MnemonicIdentity, RestIndexerProvider, Wallet } from "@arkade-os/sdk";
+import { ArkAddress, EsploraProvider, MnemonicIdentity, RestArkProvider, RestIndexerProvider, Wallet } from "@arkade-os/sdk";
 import { createLnurlClient, type PayRequest } from "@arkade-os/lnurl-client";
 import {
   ESPLORA_URL,
@@ -56,8 +56,8 @@ async function newWallet(): Promise<{ wallet: Wallet; identity: MnemonicIdentity
   const identity = MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist), { isMainnet: false });
   const wallet = await Wallet.create({
     identity,
-    arkServerUrl: stack.arkServer,
-    esploraUrl: ESPLORA_URL,
+    arkProvider: new RestArkProvider(stack.arkServer),
+    onchainProvider: new EsploraProvider(ESPLORA_URL),
     storage: await nodeSqliteStorage(":memory:"),
     settlementConfig: false,
   });
@@ -207,7 +207,7 @@ test("arkade rail, static destination: the user's own address, no verify, settle
   // so the server hands out no verify it could not stand behind.
   expect("verify" in result).toBe(false);
 
-  const txid = await payerWallet.sendBitcoin({ address: user.arkadeAddress, amount: ARKADE_SATS });
+  const txid = await payerWallet.send({ address: user.arkadeAddress, amount: ARKADE_SATS });
   expect(txid).toMatch(/^[0-9a-f]{64}$/);
   await pollUntil(
     "the arkade watcher settles the record",
@@ -293,7 +293,7 @@ test.describe("arkade rail, per-payment covenant destinations", () => {
     expect(first.verify).toMatch(/\/lnurl\/verify\/[0-9a-f]{32}$/);
     expect(second.verify).toMatch(/\/lnurl\/verify\/[0-9a-f]{32}$/);
 
-    const txid = await payerWallet.sendBitcoin({ address: second.paymentDestination!, amount: COVENANT_SATS });
+    const txid = await payerWallet.send({ address: second.paymentDestination!, amount: COVENANT_SATS });
     const settled = await payer.pollVerify(second.verify!, { timeoutMs: SETTLE_TIMEOUT_MS, intervalMs: 3000 });
     expect(settled).toMatchObject({
       kind: "destination",

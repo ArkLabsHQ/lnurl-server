@@ -1,16 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
-import { receiveVtxoScript, unilateralClaimDelay } from "@arkade-os/swap";
+import { lightningReceiveContract, unilateralClaimDelay } from "@arkade-os/swap/protocol";
 import { deserializeSelfClaim, serializeSelfClaim } from "../src/covenant/self-claim-codec.js";
 
 describe("self-claim recovery codec", () => {
   it("round-trips the exact VHTLC v2 script", () => {
     const key = () => secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true).slice(1);
-    const script = receiveVtxoScript({
+    const script = lightningReceiveContract({
       solverPubkey: key(),
       refundLocktime: 900_000,
-      serverPubkey: key(),
+      operatorPubkey: key(),
       paymentHash: hex.encode(secp256k1.utils.randomSecretKey()),
       claimDelay: unilateralClaimDelay(86_400),
       emulatorPubkey: key(),

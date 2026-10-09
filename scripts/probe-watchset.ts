@@ -17,6 +17,7 @@ import {
   MultisigTapscript,
   RestIndexerProvider,
   VtxoScript,
+  collectContracts,
   contractHandlers,
 } from "@arkade-os/sdk";
 import { openDb } from "../src/db/connection.js";
@@ -96,7 +97,7 @@ const open = async () => {
 let t0 = Date.now();
 {
   const { db, settlements, stores } = await open();
-  await stores.contractRepository.getContracts();
+  await collectContracts(stores.contractRepository);
   db.exec("BEGIN");
   for (let i = 0; i < N; i++) {
     const script = scriptOf(i);

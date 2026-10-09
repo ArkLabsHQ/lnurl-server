@@ -1,5 +1,5 @@
 import type { IContractManager } from "@arkade-os/sdk";
-import { SWAP_LOCKUP_CONTRACT_TYPE } from "@arkade-os/swap";
+import { SWAP_LOCKUP_CONTRACT_TYPE } from "@arkade-os/swap/protocol";
 import type { SettlementStore } from "../settlement-store.js";
 import { COVENANT_CONTRACT_TYPE } from "../covenant/contract.js";
 import { startCatchUpLoop, type CatchUpLoop } from "./catch-up-loop.js";

@@ -20,10 +20,8 @@ import { base64, hex } from "@scure/base";
 import { encodeClientClaimPacket } from "../covenant/claim-packet.js";
 import { ArkAddress, RestArkProvider, VHTLCV2ContractHandler, getNetwork, toXOnly, type NetworkName } from "@arkade-os/sdk";
 import {
-  assertReceivable,
   deriveLightningReceive,
   lightningReceiveRequest,
-  newRfqId,
   paymentHashOf,
   registerLockupContract,
   sealClaimPacket,
@@ -31,8 +29,9 @@ import {
   verifyReceiveInvoice,
   type LockupContractWriter,
   type RfqTransport,
-} from "@arkade-os/swap";
+} from "@arkade-os/swap/protocol";
 import { nostrRfqTransport } from "@arkade-os/swap/nostr";
+import { assertReceivable, newRfqId } from "../vendor/swap-rfq.js";
 import { invoiceFactsFromBolt11 } from "../bolt11.js";
 import { MalformedRecordError, RailRefusedError, SolverQuoteError, UpstreamError } from "../errors.js";
 import { checkedPreimage, randomEntropy, type EntropyProvider } from "../covenant/entropy.js";
@@ -304,7 +303,7 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
             paymentHash,
             payoutPubkey,
             payoutAddress: params.receiveAddress,
-            serverPubkey: ctx.serverPubkey,
+            operatorPubkey: ctx.serverPubkey,
             emulatorPubkey: ctx.emulatorPubkey,
             claimDelay: ctx.claimDelay,
             hrp: ctx.hrp,

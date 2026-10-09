@@ -7,7 +7,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
-import { ArkAddress, MnemonicIdentity, RestIndexerProvider, Wallet } from "@arkade-os/sdk";
+import { ArkAddress, EsploraProvider, MnemonicIdentity, RestArkProvider, RestIndexerProvider, Wallet } from "@arkade-os/sdk";
 import { hex } from "@scure/base";
 import { ESPLORA_URL, faucet, mine, nodeSqliteStorage } from "../../../test/e2e/support/regtest.js";
 import { readLocalStack, requestOption, useLocalStack } from "./local-stack.js";
@@ -21,8 +21,8 @@ const shown = (page: Page) =>
 async function fundedPayer(arkServer: string): Promise<Wallet> {
   const wallet = await Wallet.create({
     identity: MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist), { isMainnet: false }),
-    arkServerUrl: arkServer,
-    esploraUrl: ESPLORA_URL,
+    arkProvider: new RestArkProvider(arkServer),
+    onchainProvider: new EsploraProvider(ESPLORA_URL),
     storage: await nodeSqliteStorage(":memory:"),
     settlementConfig: false,
   });
@@ -55,7 +55,7 @@ test("a browser wallet surfaces an incoming Arkade transfer it did not make", as
   const address = paymentDestination!;
   expect(address).toMatch(/^tark1/);
   const payer = await fundedPayer(local.arkServer);
-  const txid = await payer.sendBitcoin({ address, amount: SENT });
+  const txid = await payer.send({ address, amount: SENT });
 
   // Independent of any wallet: the money is at the recipient's script.
   const script = hex.encode(ArkAddress.decode(address).pkScript);

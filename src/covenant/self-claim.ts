@@ -23,7 +23,7 @@ import {
   type IndexerProvider,
   type VHTLC,
 } from "@arkade-os/sdk";
-import { LOCKTIME_THRESHOLD } from "@arkade-os/swap";
+import { LOCKTIME_THRESHOLD } from "@arkade-os/swap/protocol";
 import { UpstreamError } from "../errors.js";
 import { createLogger, type Logger } from "../logger.js";
 

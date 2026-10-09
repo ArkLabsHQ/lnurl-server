@@ -11,6 +11,7 @@ import {
   MultisigTapscript,
   RestIndexerProvider,
   VtxoScript,
+  collectContracts,
   contractHandlers,
   type Contract,
   type IContractManager,
@@ -22,7 +23,7 @@ import { DbSettlementStore, MemorySettlementStore } from "../src/settlement-stor
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
 import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler as handler } from "../src/covenant/contract.js";
 import { COVENANT_V1 } from "../src/covenant/destination.js";
-import { SWAP_LOCKUP_CONTRACT_TYPE } from "@arkade-os/swap";
+import { SWAP_LOCKUP_CONTRACT_TYPE } from "@arkade-os/swap/protocol";
 import {
   activeCovenantFilters,
   retireFinishedCovenants,
@@ -333,7 +334,7 @@ describe("the watch set at scale", () => {
     runMigrations(db);
     const settlements = new DbSettlementStore(db, 3_600_000, undefined, 604_800_000);
     const { contractRepository } = await sqliteContractStores(db);
-    await contractRepository.getContracts();
+    await collectContracts(contractRepository);
     const insertSwap = db.prepare(
       "INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, amount_msat, created_at, updated_at)" +
         " VALUES (?, 'lnbc1', 'offline:1', ?, ?, ?, 'lightning', 50000, ?, ?)",
