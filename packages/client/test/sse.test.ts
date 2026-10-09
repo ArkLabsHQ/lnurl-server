@@ -1,7 +1,28 @@
 import { describe, it, expect } from "vitest";
 import { createSseParser, readSseStream } from "../src/sse.js";
+import { LnurlTransportError } from "../src/errors.js";
 
 describe("createSseParser", () => {
+  it("refuses a frame that never ends instead of buffering it", () => {
+    const p = createSseParser();
+    p.push("data: ");
+    expect(() => { for (let i = 0; i < 2048; i++) p.push("x".repeat(1024)); }).toThrow(LnurlTransportError);
+  });
+
+  it("cancels the body when a frame outgrows the limit", async () => {
+    let sent = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        if (sent++ >= 64) return c.close();
+        c.enqueue(new TextEncoder().encode("x".repeat(64 * 1024)));
+      },
+      cancel() { cancelled = true; },
+    });
+    await expect(readSseStream(body, () => {})).rejects.toBeInstanceOf(LnurlTransportError);
+    expect(cancelled).toBe(true);
+  });
+
   it("parses a complete frame", () => {
     const p = createSseParser();
     expect(p.push('event: session_created\ndata: {"sessionId":"abc"}\n\n')).toEqual([

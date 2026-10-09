@@ -1,3 +1,5 @@
+import { LnurlTransportError } from "./errors.js";
+
 /**
  * The SSE event names the session stream can carry: the opening frame that
  * resolves `openSession`, invoice requests from payers, settlement notices,
@@ -56,10 +58,14 @@ export function createSseParser(): { push(chunk: string): SseFrame[] } {
         buffer = buffer.slice(idx + 2);
         if (frame !== undefined) frames.push(frame);
       }
+      if (buffer.length > MAX_FRAME_CHARS) throw new LnurlTransportError(`SSE frame over ${MAX_FRAME_CHARS} characters`);
       return frames;
     },
   };
 }
+
+/** Session frames are small JSON; an unterminated one past this is not a frame. */
+const MAX_FRAME_CHARS = 1024 * 1024;
 
 /**
  * Reads SSE frames from a fetch response body until the stream ends or the
@@ -91,6 +97,9 @@ export async function readSseStream(
       if (value) for (const f of parser.push(decoder.decode(value, { stream: !done }))) onFrame(f);
       if (done) break;
     }
+  } catch (err) {
+    await reader.cancel(err).catch(() => undefined);
+    throw err;
   } finally {
     reader.releaseLock();
   }
