@@ -1,7 +1,7 @@
 import { lnurlFetch, type FetchImpl } from "./http.js";
 import { LnurlError, LnurlTimeoutError, LnurlTransportError } from "./errors.js";
 import { toPayRequestUrl } from "./encoding.js";
-import type { Bolt11Result, DestinationResult, InvoiceResult, PayRequest, PaymentQuote, PollVerifyOptions, RequestInvoiceOptions, VerifyStatus } from "./types.js";
+import type { Bolt11Result, DestinationResult, InvoiceResult, PayRequest, PaymentQuote, PollVerifyOptions, RequestInvoiceOptions, VerifyExpectation, VerifyStatus } from "./types.js";
 import { isTokenAddress, tokenOptions, type TokenOption } from "./token-options.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { hex } from "@scure/base";
@@ -168,6 +168,20 @@ export function parseVerifyStatus(body: Record<string, unknown>): VerifyStatus {
   };
 }
 
+/**
+ * Whether a verify answer is about `expected`: a BOLT11 status for the same payment
+ * hash, or a destination status on the same rail and, when both name one, the same
+ * destination. The preimage check alone only proves the answer's own invoice.
+ */
+export function verifyStatusIsFor(status: VerifyStatus, expected: VerifyExpectation): boolean {
+  if ("pr" in expected) {
+    const hash = paymentHashOf(expected.pr);
+    return status.kind === "bolt11" && hash !== null && paymentHashOf(status.pr) === hash;
+  }
+  return status.kind === "destination" && status.paymentOption === expected.paymentOption &&
+    (status.paymentDestination === undefined || expected.paymentDestination === undefined || status.paymentDestination === expected.paymentDestination);
+}
+
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -216,6 +230,7 @@ export async function pollVerify(
     if (opts?.signal?.aborted) throw opts.signal.reason ?? new LnurlError("Aborted");
     const body = await lnurlFetch<Record<string, unknown>>(verifyUrl, undefined, fetchImpl);
     const status = parseVerifyStatus(body);
+    if (opts?.expect && !verifyStatusIsFor(status, opts.expect)) throw new LnurlError("Verify answered about a different payment");
     lastSnapshot = status;
     opts?.onUpdate?.(status);
     if (status.settled) return status;

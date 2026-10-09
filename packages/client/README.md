@@ -70,7 +70,7 @@ const invoice = await payer.requestInvoice(payRequest, { amountSat: 50 });
 
 // Pay invoice.pr through your own Lightning path, then wait for settlement:
 if (invoice.kind === "bolt11" && invoice.verify) {
-  const status = await payer.pollVerify(invoice.verify, { timeoutMs: 120_000, intervalMs: 1_000 });
+  const status = await payer.pollVerify(invoice.verify, { timeoutMs: 120_000, intervalMs: 1_000, expect: invoice });
   if (status.kind === "bolt11" && status.settled) {
     console.log("settled, preimage:", status.preimage);
   }
@@ -78,6 +78,8 @@ if (invoice.kind === "bolt11" && invoice.verify) {
 ```
 
 A settled bolt11 status is only returned when `SHA256(preimage)` equals the payment hash in `pr`. Anything else — a wrong preimage, or a `pr` that cannot be decoded — is rejected rather than reported as settled.
+
+That proves the answer's own `pr`, not that it is the invoice you are watching. Pass the callback's answer as `expect` and an answer about any other payment — another invoice with its genuine preimage, a destination status, another destination — fails with `LnurlError` instead. lnurl rails record the same value on their quotes as `lnurlQuoteMeta(quote).expect`; for batched or streamed answers, `verifyStatusIsFor(status, expect)` is the same check.
 
 `requestInvoice` takes `amountSat` plus an optional `comment`. It also accepts `paymentOption` and `unit`, except on a session payRequest that does not advertise them (a live session's); a nameless receiver's session LNURL advertises both. The amount is range-checked locally before anything hits the wire.
 

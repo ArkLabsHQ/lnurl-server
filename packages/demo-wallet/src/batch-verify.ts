@@ -1,13 +1,14 @@
-import { batchVerify, type VerifyBatchStream, type VerifyStatus } from "@arkade-os/lnurl-client";
+import { batchVerify, verifyStatusIsFor, type VerifyBatchStream, type VerifyExpectation, type VerifyStatus } from "@arkade-os/lnurl-client";
 import { payer } from "./lnurl.js";
 
 // Longer than a corridor swap can take (the solver's deadline is 660s), not a poll budget.
 const WATCH_MS = 15 * 60_000;
 const MAX_BACKOFF_MS = 30_000;
+const FOREIGN_ANSWER = "verify answered about a different payment";
 
 export interface WatchHandlers { settled: () => void; gaveUp: (reason: string) => void }
 export interface SettlementWatcher {
-  add(verifyUrl: string, on: WatchHandlers): void;
+  add(verifyUrl: string, on: WatchHandlers, expect?: VerifyExpectation): void;
   pending(): number;
   stop(): void;
 }
@@ -25,7 +26,7 @@ export function settlementWatcher(opts: {
   onChange?: (state: { pending: number; connected: boolean }) => void;
 }): SettlementWatcher {
   const open = opts.open ?? ((o, h) => payer.openVerifyBatchStream(o, h));
-  const pending = new Map<string, { on: WatchHandlers; deadline: number }>();
+  const pending = new Map<string, { on: WatchHandlers; deadline: number; expect?: VerifyExpectation }>();
   const unsent = new Set<string>();
   let stream: VerifyBatchStream | undefined;
   let retry: ReturnType<typeof setTimeout> | undefined;
@@ -58,12 +59,15 @@ export function settlementWatcher(opts: {
         attempt = 0;
         if (unsent.size && send([...unsent])) unsent.clear();
         const entry = pending.get(url);
-        if (!entry || !status.settled) return;
+        if (!entry) return;
+        const foreign = entry.expect !== undefined && !verifyStatusIsFor(status, entry.expect);
+        if (!foreign && !status.settled) return;
         pending.delete(url);
         // The server closes a stream whose every URL is settled, so removing the last one would race that close.
         if (pending.size) send([], [url]);
         changed();
-        entry.on.settled();
+        if (foreign) entry.on.gaveUp(FOREIGN_ANSWER);
+        else entry.on.settled();
       },
       onError: (e) => { lastError = e.message; },
       onClose: () => {
@@ -77,9 +81,9 @@ export function settlementWatcher(opts: {
   }
 
   return {
-    add(verifyUrl, on) {
+    add(verifyUrl, on, expect) {
       if (stopped || pending.has(verifyUrl)) return;
-      pending.set(verifyUrl, { on, deadline: Date.now() + (opts.timeoutMs ?? WATCH_MS) });
+      pending.set(verifyUrl, { on, deadline: Date.now() + (opts.timeoutMs ?? WATCH_MS), ...(expect ? { expect } : {}) });
       if (stream) { if (!send([verifyUrl])) unsent.add(verifyUrl); }
       else if (!retry) connect();
       changed();
@@ -102,6 +106,8 @@ export interface ReceiverConfirmation {
   verifyBatch?: string;
   /** Fail the entry when no settled answer has arrived within this window. */
   timeoutMs?: number;
+  /** The payment the verify URL was issued for; an answer about another fails the entry. */
+  expect?: VerifyExpectation;
   /** Finality per invoice: the settled status or a timeout error. */
   onSettled: (status: VerifyStatus) => void;
   onError: (err: Error) => void;
@@ -167,7 +173,7 @@ export const pendingConfirmations = (() => {
       if (entry.verifyBatch === undefined) {
         entry.soloPolling = true;
         payer
-          .pollVerify(entry.verifyUrl, { intervalMs: POLL_MS, timeoutMs: entry.deadline - now })
+          .pollVerify(entry.verifyUrl, { intervalMs: POLL_MS, timeoutMs: entry.deadline - now, ...(entry.expect ? { expect: entry.expect } : {}) })
           .then((status) => settle(entry, status))
           .catch((err: unknown) => fail(entry, err as Error));
         continue;
@@ -183,6 +189,10 @@ export const pendingConfirmations = (() => {
           const answer = body.results[entry.verifyUrl];
           if (answer.kind !== "verify") {
             fail(entry, new Error(answer.reason));
+            continue;
+          }
+          if (entry.expect && !verifyStatusIsFor(answer.status, entry.expect)) {
+            fail(entry, new Error(FOREIGN_ANSWER));
             continue;
           }
           if (answer.status.settled) settle(entry, answer.status);

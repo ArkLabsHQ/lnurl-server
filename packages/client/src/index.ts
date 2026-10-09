@@ -1,6 +1,6 @@
 import { LnurlError, LnurlTransportError, LnurlTimeoutError } from "./errors.js";
 import type { FetchImpl } from "./http.js";
-import { resolve, requestInvoice, pollVerify } from "./payer.js";
+import { resolve, requestInvoice, pollVerify, verifyStatusIsFor } from "./payer.js";
 import { batchVerify, openVerifyBatchStream } from "./verify-batch.js";
 import type {
   BatchVerifyOptions,
@@ -53,6 +53,7 @@ import type {
   PollVerifyOptions,
   RequestInvoiceOptions,
   Unit,
+  VerifyExpectation,
   VerifyStatus,
 } from "./types.js";
 
@@ -260,6 +261,7 @@ export {
   upgradeAddress,
   tokenOptions,
   isTokenAddress,
+  verifyStatusIsFor,
 };
 export { browserPaymentStore, forgetStoredPayments, storedPayments } from "./stores.js";
 export type {
@@ -284,6 +286,7 @@ export type {
   PaymentPage,
   PaymentQuote,
   PollVerifyOptions,
+  VerifyExpectation,
   RegisterAddressRequest,
   RegisterArkadeIdentityRequest,
   RegisteredAddress,
