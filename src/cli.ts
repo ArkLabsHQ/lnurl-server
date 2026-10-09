@@ -1,5 +1,5 @@
 import { createServer } from "./http/server.js";
-import { loadConfig } from "./config.js";
+import { assertFixedFloatNetwork, loadConfig } from "./config.js";
 import { VERSION } from "./version.js";
 import { SessionManager } from "./services/sessions.js";
 import type { Db } from "./db/connection.js";
@@ -183,6 +183,18 @@ async function main(): Promise<void> {
       });
       if (offlineSwapCreator.close) runtime.addTransport({ close: offlineSwapCreator.close });
     }
+    let fixedFloat: import("./rails/fixedfloat/provider.js").FixedFloatDeps | undefined;
+    let ffOnSettled: ((paymentHash: string) => Promise<void>) | undefined;
+    if (config.fixedFloat) {
+      // Before anything listens: a mainnet custodian on a test network takes real tokens for test sats.
+      assertFixedFloatNetwork(config.fixedFloat, arkNetwork);
+      const { startFixedFloat } = await import("./rails/fixedfloat/wiring.js");
+      const started = startFixedFloat({ config: config.fixedFloat, db, ttlMs: config.verifyTtlMs, logger });
+      runtime.addStop(started.stop);
+      fixedFloat = started.deps;
+      ffOnSettled = started.onSettled;
+      console.log(`token deposits: enabled (${fixedFloat.provider.label}, margin=${config.fixedFloat.settleMarginSeconds}s, min pay window=${config.fixedFloat.minPayWindowSeconds}s)`);
+    }
     let covenantDestinations: import("./covenant/destination.js").CovenantDestinationProvider | undefined;
     if (off.covenantDestinations && contracts) {
       const { createCovenantDestinationProvider } = await import("./covenant/destination.js");
@@ -230,6 +242,7 @@ async function main(): Promise<void> {
       ...(arkDustSat ? { arkDustSat } : {}),
       onchainMinSat: config.onchainMinSendableSats,
       ...(covenantDestinations ? { covenantDestinations } : {}),
+      ...(fixedFloat ? { fixedFloat } : {}),
       // Late-bound: the watcher is built below, and nothing calls this until the
       // listeners are accepting, which is later still.
       onDestinationIssued: (destination) => watchDestination?.(destination),
@@ -239,7 +252,7 @@ async function main(): Promise<void> {
     if (offlineSwapCreator) {
       const { startOfflineSettlementPoller } = await import("./workers/offline-poller.js");
       const { startLockupWatcher } = await import("./workers/lockup-watcher.js");
-      const poller = startOfflineSettlementPoller(settlements, offlineSwapCreator, off.pollIntervalMs, offlineSwaps, logger);
+      const poller = startOfflineSettlementPoller(settlements, offlineSwapCreator, off.pollIntervalMs, offlineSwaps, logger, ffOnSettled ? { onSettled: ffOnSettled } : {});
       runtime.addStop(poller.stop);
       if (contracts && offlineSwaps) runtime.addStop(startLockupWatcher(contracts, offlineSwaps, poller.trigger, logger));
       const via = `cards:${config.offlineReceive.registryUrls?.[0] ?? config.offlineReceive.cardsFile ?? "network-default"}`;
@@ -268,7 +281,7 @@ async function main(): Promise<void> {
     const adminIndexer = off.arkServerUrl
       ? new (await import("@arkade-os/sdk")).RestIndexerProvider(off.arkServerUrl)
       : undefined;
-    const adminServer = createAdminServer({ repos, addressService, sessions, settings, config, settlements, discovery: solverDiscovery, ...(adminIndexer ? { indexer: adminIndexer } : {}), logger }).listen(config.adminPort, config.adminBind, () => {
+    const adminServer = createAdminServer({ repos, addressService, sessions, settings, config, settlements, discovery: solverDiscovery, ...(adminIndexer ? { indexer: adminIndexer } : {}), ...(fixedFloat ? { fixedFloat } : {}), logger }).listen(config.adminPort, config.adminBind, () => {
       console.log(`admin server on http://${config.adminBind}:${config.adminPort} (front with a proxy)`);
     });
     runtime.addServer(adminServer);

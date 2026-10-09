@@ -48,7 +48,9 @@ interface FakeSolver {
   baseUrl: string;
   requests: Record<string, any>[];
   statuses: Map<string, string>;
-  mode: { wrongHash?: boolean; fromAmountDelta?: number; bogusLockup?: boolean; amountsAsStrings?: boolean; expired?: boolean; refundSoon?: boolean };
+  mode: { wrongHash?: boolean; fromAmountDelta?: number; bogusLockup?: boolean; amountsAsStrings?: boolean; expired?: boolean; refundSoon?: boolean; invoiceExpirySeconds?: number };
+  /** Unix seconds the last quote was stamped at. */
+  issuedAt?: number;
   close: () => Promise<void>;
 }
 
@@ -56,17 +58,23 @@ async function startFakeSolver(): Promise<FakeSolver> {
   const requests: Record<string, any>[] = [];
   const statuses = new Map<string, string>();
   const mode: FakeSolver["mode"] = {};
+  const fake: Partial<FakeSolver> = {};
   const { baseUrl, close } = await serve(async (req, res) => {
     res.setHeader("content-type", "application/json");
     if (req.method === "POST" && req.url === "/v1/swap") {
       const r = await readBody(req);
       requests.push(r);
       const now = Math.floor(Date.now() / 1000);
+      fake.issuedAt = now;
       const validUntil = mode.expired ? now - 1 : now + 600;
       const refundLocktime = mode.refundSoon ? validUntil + 1_799 : now + 7200;
       const paymentHash = mode.wrongHash ? "ff".repeat(32) : r.profile.payment_hash;
       // The payer commits to `amount` (amount_side "from"); the invoice names exactly it.
-      const invoice = buildInvoice(paymentHash, { amountHrp: `${r.amount * 10000}p`, timestamp: now });
+      const invoice = buildInvoice(paymentHash, {
+        amountHrp: `${r.amount * 10000}p`,
+        timestamp: now,
+        ...(mode.invoiceExpirySeconds ? { expirySeconds: mode.invoiceExpirySeconds } : {}),
+      });
       const script = lightningReceiveContract({
         solverPubkey: toXOnly(hex.decode(solverPub), "solver"),
         refundLocktime,
@@ -116,7 +124,7 @@ async function startFakeSolver(): Promise<FakeSolver> {
     res.statusCode = 404;
     res.end("{}");
   });
-  return { baseUrl, requests, statuses, mode, close };
+  return Object.assign(fake, { baseUrl, requests, statuses, mode, close }) as FakeSolver;
 }
 
 let covclaimd: { baseUrl: string; close: () => Promise<void> };
@@ -240,6 +248,22 @@ describe("createOfflineSwapCoordinator", () => {
     expect(base64.decode(r.profile.claim_packet)).toHaveLength(93);
     // The covenant derivation agrees with the solver's, so the quoted lockup passes.
     expect(swap.lockupAddress).toMatch(/^tark1/);
+  });
+
+  it("returns the invoice pay deadline as invoiceExpiresAt", async () => {
+    // The default invoice lives 3600s against a quote valid for 600s.
+    const swap = await creator.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
+    expect(swap.invoiceExpiresAt).toBe(solver.issuedAt! + 600);
+  });
+
+  it("invoiceExpiresAt is the earlier of the invoice expiry and the quote's valid_until", async () => {
+    solver.mode.invoiceExpirySeconds = 300;
+    try {
+      const swap = await creator.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
+      expect(swap.invoiceExpiresAt).toBe(solver.issuedAt! + 300);
+    } finally {
+      solver.mode.invoiceExpirySeconds = undefined;
+    }
   });
 
   it("omits the claim packet without covclaimd and derives the same lockup", async () => {

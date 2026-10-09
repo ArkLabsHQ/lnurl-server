@@ -155,3 +155,47 @@ describe("requestInvoice", () => {
     await expect(requestInvoice(addressPr, { amountSat: 1000 }, fetchImpl as never)).rejects.toBeInstanceOf(LnurlError);
   });
 });
+
+describe("requestInvoice on a token option", () => {
+  const DEPOSIT = "0x" + "ab".repeat(20);
+  const tokenPr: PayRequest = {
+    ...addressPr,
+    units: [{ code: "USDT", decimals: 6, name: "Tether USD" }],
+    paymentOptions: [
+      { id: "lightning", type: "lightning" },
+      { id: "ff-usdtarbitrum", type: "eip155", asset: "eip155:42161/erc20:0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9", unit: "USDT", provider: "FixedFloat", verifiable: true, minSendable: 2_844_000, maxSendable: 100_000_000 },
+    ],
+  };
+  const quote = { id: "AB12CD", expiresAt: "2026-10-08T00:00:00.000Z", requested: { amount: "10000000", unit: "msat" }, payment: { amount: "8426000", unit: "USDT" } };
+  const answer = {
+    status: "OK", paymentOption: "ff-usdtarbitrum", paymentDestination: DEPOSIT, provider: "FixedFloat", paymentQuote: quote,
+    paymentURI: `ethereum:0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9@42161/transfer?address=${DEPOSIT}&uint256=8426000`,
+    verify: "https://x/lnurl/verify/" + HASH, verifyBatch: "https://x/lnurl/verifyBatch",
+  };
+  const ask = (body: unknown) => requestInvoice(tokenPr, { amountSat: 10_000, paymentOption: "ff-usdtarbitrum" }, (async () => jsonResponse(body)) as never);
+
+  it("carries paymentQuote, paymentURI, provider and expiresAt through a destination result", async () => {
+    expect(await ask(answer)).toEqual({
+      kind: "destination", paymentOption: "ff-usdtarbitrum", paymentDestination: DEPOSIT, paymentURI: answer.paymentURI, provider: "FixedFloat",
+      paymentQuote: quote, verify: answer.verify, verifyBatch: answer.verifyBatch,
+    });
+    const arkade = await requestInvoice(tokenPr, { amountSat: 10_000, paymentOption: "arkade" },
+      (async () => jsonResponse({ status: "OK", paymentOption: "arkade", paymentDestination: "ark1x", expiresAt: 1_900_000_000 })) as never);
+    expect(arkade).toMatchObject({ kind: "destination", expiresAt: 1_900_000_000 });
+  });
+
+  it("refuses a token answer whose destination is not an address of the option's chain", async () => {
+    await expect(ask({ ...answer, paymentDestination: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t" })).rejects.toThrow(/eip155/);
+    await expect(ask({ ...answer, paymentDestination: undefined })).rejects.toBeInstanceOf(LnurlError);
+  });
+
+  it("refuses a token answer without a whole amount in the option's unit", async () => {
+    await expect(ask({ ...answer, paymentQuote: { ...quote, payment: { amount: "8.426", unit: "USDT" } } })).rejects.toThrow(/whole amount of USDT/);
+    await expect(ask({ ...answer, paymentQuote: { ...quote, payment: { amount: "8426000", unit: "msat" } } })).rejects.toThrow(/whole amount of USDT/);
+    await expect(ask({ ...answer, paymentQuote: undefined })).rejects.toThrow(/whole amount of USDT/);
+  });
+
+  it("refuses a token answer for another option", async () => {
+    await expect(ask({ ...answer, paymentOption: "ff-usdttrc" })).rejects.toThrow(/ff-usdttrc/);
+  });
+});

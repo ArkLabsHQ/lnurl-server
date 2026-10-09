@@ -31,7 +31,7 @@ const IDENTITY = { arkadeAddress: "ark1xyz", claimPublicKey: "02" + "ab".repeat(
 
 describe("rail registry", () => {
   it("names every rail exactly once", () => {
-    expect(RAIL_IDS).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain"]);
+    expect(RAIL_IDS).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat"]);
     expect(new Set(RAIL_IDS).size).toBe(RAIL_IDS.length);
   });
 
@@ -79,7 +79,10 @@ describe("effectiveRails", () => {
     // onchain keys off the boarding address rather than the Arkade identity, so
     // "fully wired" needs both. Added here and not to IDENTITY, which the
     // advertise tests share and would otherwise always offer the rail.
-    const states = effectiveRails({ ...IDENTITY, boardingAddress: "tb1qboarding" }, FULL);
+    const states = effectiveRails(
+      { ...IDENTITY, boardingAddress: "tb1qboarding" },
+      { ...FULL, fixedFloat: { provider: "FixedFloat", ready: true, rails: [] } },
+    );
     expect(states.filter((s) => s.available).map((s) => s.id)).toEqual([...RAIL_IDS]);
   });
 

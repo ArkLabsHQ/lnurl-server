@@ -55,6 +55,13 @@ export interface LnurlPayDestinationResponse {
    *  address and a number the server already has. The spec requires a successful
    *  non-`pr` response to carry this or `paymentDestination`; we send both. */
   paymentURI?: string;
+  /** What the payer actually pays, on a rail priced in something other than msat. Its
+   *  `expiresAt` is the payer's deadline; a token answer carries no top-level one. */
+  paymentQuote?: PaymentQuote;
+  /** A memo the deposit must carry. Never sent yet: no advertised token network uses one. */
+  paymentDestinationTag?: string;
+  /** The third party the payer hands funds to, on a custodial rail. */
+  provider?: string;
 }
 
 /** LNURL error response */

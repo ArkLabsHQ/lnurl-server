@@ -6,13 +6,18 @@ import { startCatchUpLoop } from "./catch-up-loop.js";
 
 type Pending = { swapId: string; paymentHash: string; preimage: string; recovery?: import("../services/offline-swaps.js").OfflineSwapRecoveryV1 };
 
+export interface SettlementHooks {
+  /** After a swap newly settles. A failure is logged, never fatal: the swap stays settled. */
+  onSettled?: (paymentHash: string) => Promise<void>;
+}
+
 function pendingSwaps(store: SettlementStore, recovered?: OfflineSwapStore): Pending[] {
   return recovered
     ? recovered.listPending().map((row) => ({ ...row, swapId: row.recovery.rfqId }))
     : store.listPendingSwaps();
 }
 
-async function settleOne(store: SettlementStore, creator: OfflineSwapCreator, p: Pending, recovered: OfflineSwapStore | undefined, logger: Logger): Promise<boolean> {
+async function settleOne(store: SettlementStore, creator: OfflineSwapCreator, p: Pending, recovered: OfflineSwapStore | undefined, logger: Logger, hooks: SettlementHooks): Promise<boolean> {
   let claimed = false;
   if (creator.selfClaim) {
     try {
@@ -34,6 +39,7 @@ async function settleOne(store: SettlementStore, creator: OfflineSwapCreator, p:
     if (claimed || await creator.isSettled(p.swapId, p.recovery)) {
       const settled = (recovered ?? store).markSettled(p.paymentHash, p.preimage);
       await creator.release?.(p.swapId);
+      if (settled) await hooks.onSettled?.(p.paymentHash).catch((error) => logger.warn("offline_swap_settled_hook_failed", { swapId: p.swapId, error }));
       return settled;
     }
   } catch (err) {
@@ -52,12 +58,13 @@ export async function settleOfflineSwaps(
   creator: OfflineSwapCreator,
   recovered?: OfflineSwapStore,
   logger: Logger = createLogger(),
+  hooks: SettlementHooks = {},
 ): Promise<number> {
   let settled = 0;
   const pending = pendingSwaps(store, recovered);
   await creator.prune?.(pending.map((row) => row.swapId));
   for (const p of pending) {
-    if (await settleOne(store, creator, p, recovered, logger)) settled++;
+    if (await settleOne(store, creator, p, recovered, logger, hooks)) settled++;
   }
   return settled;
 }
@@ -80,6 +87,7 @@ export function startOfflineSettlementPoller(
   catchUpIntervalMs: number,
   recovered?: OfflineSwapStore,
   logger: Logger = createLogger(),
+  hooks: SettlementHooks = {},
 ): OfflineSettlementPoller {
   const running = new Map<string, Promise<boolean>>();
   const queued = new Set<string>();
@@ -90,7 +98,7 @@ export function startOfflineSettlementPoller(
     const existing = running.get(p.swapId);
     if (existing) return existing;
     const task = Promise.resolve()
-      .then(() => store.get(p.paymentHash)?.settled === false ? settleOne(store, creator, p, recovered, logger) : false)
+      .then(() => store.get(p.paymentHash)?.settled === false ? settleOne(store, creator, p, recovered, logger, hooks) : false)
       .finally(() => {
         running.delete(p.swapId);
         if (retry.delete(p.swapId)) queued.add(p.swapId);

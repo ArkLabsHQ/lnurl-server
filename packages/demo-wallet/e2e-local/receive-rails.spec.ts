@@ -202,7 +202,10 @@ test("arkade rail, static destination: the user's own address, no verify, settle
   expect(payRequest.paymentOptions).toContainEqual(expect.objectContaining({ id: "arkade", type: "arkade" }));
 
   const result = await payer.requestInvoice(payRequest, { amountSat: ARKADE_SATS, paymentOption: "arkade" });
-  expect(result).toEqual({ kind: "destination", paymentOption: "arkade", paymentDestination: user.arkadeAddress });
+  expect(result).toEqual({
+    kind: "destination", paymentOption: "arkade", paymentDestination: user.arkadeAddress,
+    paymentURI: `bitcoin:?ark=${user.arkadeAddress}&amount=${ARKADE_SATS / 1e8}`, expiresAt: expect.any(Number),
+  });
   // One address reused for every payment settles by amount/window correlation,
   // so the server hands out no verify it could not stand behind.
   expect("verify" in result).toBe(false);
@@ -237,7 +240,10 @@ test("onchain rail: the boarding address, no verify, and no settlement even once
   expect(payRequest.paymentOptions).toContainEqual(expect.objectContaining({ id: "onchain", type: "onchain" }));
 
   const result = await payer.requestInvoice(payRequest, { amountSat: ONCHAIN_SATS, paymentOption: "onchain" });
-  expect(result).toEqual({ kind: "destination", paymentOption: "onchain", paymentDestination: user.boardingAddress });
+  expect(result).toEqual({
+    kind: "destination", paymentOption: "onchain", paymentDestination: user.boardingAddress,
+    paymentURI: `bitcoin:${user.boardingAddress}?amount=${ONCHAIN_SATS / 1e8}`,
+  });
   expect("verify" in result).toBe(false);
 
   // Nothing here watches Bitcoin, so settlement is not provable locally — what
