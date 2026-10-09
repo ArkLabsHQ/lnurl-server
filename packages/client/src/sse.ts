@@ -98,7 +98,8 @@ export async function readSseStream(
       if (done) break;
     }
   } catch (err) {
-    await reader.cancel(err).catch(() => undefined);
+    // Not awaited: a body whose cancel never settles must not hold the error back.
+    void reader.cancel(err).catch(() => undefined);
     throw err;
   } finally {
     reader.releaseLock();

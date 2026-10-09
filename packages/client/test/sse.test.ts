@@ -23,6 +23,14 @@ describe("createSseParser", () => {
     expect(cancelled).toBe(true);
   });
 
+  it("fails an oversized frame even when cancelling the body never settles", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      pull: (c) => c.enqueue(new TextEncoder().encode("x".repeat(64 * 1024))),
+      cancel: () => new Promise<void>(() => {}),
+    });
+    await expect(readSseStream(body, () => {})).rejects.toBeInstanceOf(LnurlTransportError);
+  });
+
   it("parses a complete frame", () => {
     const p = createSseParser();
     expect(p.push('event: session_created\ndata: {"sessionId":"abc"}\n\n')).toEqual([
