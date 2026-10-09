@@ -188,7 +188,12 @@ export interface PollVerifyOptions {
   onUpdate?: (s: VerifyStatus) => void;
   /** Abort signal for caller-driven cancellation. */
   signal?: AbortSignal;
+  /** The payment the verify URL was issued for — the callback's answer will do.
+   *  An answer about any other payment then fails instead of resolving. */
+  expect?: VerifyExpectation;
 }
+/** The invoice, or the rail and destination, a verify answer must be about. */
+export type VerifyExpectation = Pick<Bolt11Result, "pr"> | Pick<DestinationResult, "paymentOption" | "paymentDestination">;
 
 /**
  * One page of address payment activity: what was paid to one address, who it

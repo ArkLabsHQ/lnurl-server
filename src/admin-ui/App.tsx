@@ -19,6 +19,7 @@ interface Domain {
   maxSendable: number | null;
 }
 interface Address { id: number; username: string; domain: string | null; status: string; online: boolean; disabledRails: string[]; rails: AddressRail[] }
+interface AddressPage { addresses: Address[]; nextCursor?: string }
 interface AddressRail { id: string; label: string; enabled: boolean; available: boolean; reason?: string }
 interface ServerRail { id: string; label: string; description: string; configured: boolean; ready: boolean; reason?: string }
 interface ApiKey { id: number; label: string | null; status: string; domainId: number | null }
@@ -96,13 +97,14 @@ const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 function Dashboard() {
   const domains = useList<Domain>("/domains");
-  const addresses = useList<Address>("/addresses");
   const sessions = useList<SessionRow>("/sessions");
-  const online = addresses.items.filter((a) => a.online).length;
+  const [addressCount, setAddressCount] = useState(0);
+  useEffect(() => { api.get<{ count: number }>("/addresses/count").then((r) => setAddressCount(r.count)).catch(() => undefined); }, []);
+  const online = sessions.items.reduce((n, s) => n + s.addresses.length, 0);
   return (
     <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
       <Card label="Domains" value={domains.items.length} />
-      <Card label="Addresses" value={addresses.items.length} />
+      <Card label="Addresses" value={addressCount} />
       <Card label="Online addresses" value={online} />
       <Card label="Live sessions" value={sessions.items.length} />
     </div>
@@ -508,7 +510,14 @@ function DomainEditor({ domain, onClose, onSaved }: { domain: Domain; onClose: (
 function Addresses({ onShowSettlements }: { onShowSettlements?: (id: number) => void } = {}) {
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("");
-  const { items, reload, err } = useList<Address>(`/addresses${qs({ q, status })}`, [q, status]);
+  // One cursor per page above this one, so Newer is a pop and a reload stays on this page.
+  const [cursors, setCursors] = useState<string[]>([]);
+  const cursor = cursors.at(-1) ?? "";
+  const [page, setPage] = useState<AddressPage>({ addresses: [] });
+  const [err, setErr] = useState<string>();
+  const reload = () => api.get<AddressPage>(`/addresses${qs({ q, status, cursor })}`).then((p) => { setPage(p); setErr(undefined); }).catch((e: Error) => setErr(String(e.message)));
+  useEffect(() => { reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [q, status, cursor]);
+  const items = page.addresses;
   const [domain, setDomain] = useState("");
   const [username, setUsername] = useState("");
   const [reveal, setReveal] = useState<string>();
@@ -541,8 +550,8 @@ function Addresses({ onShowSettlements }: { onShowSettlements?: (id: number) => 
         <button onClick={() => create("mint")} disabled={!domain || !username}>Mint</button>
       </div>
       <div style={{ marginBottom: 12, display: "flex", gap: 8 }}>
-        <input placeholder="search username…" value={q} onChange={(e) => setQ(e.target.value)} />
-        <select value={status} onChange={(e) => setStatus(e.target.value)}>
+        <input placeholder="search username…" value={q} onChange={(e) => { setQ(e.target.value); setCursors([]); }} />
+        <select value={status} onChange={(e) => { setStatus(e.target.value); setCursors([]); }}>
           <option value="">all statuses</option>
           <option value="reserved">reserved</option>
           <option value="active">active</option>
@@ -572,6 +581,10 @@ function Addresses({ onShowSettlements }: { onShowSettlements?: (id: number) => 
           </Fragment>
         ))}</tbody>
       </table>
+      <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+        <button onClick={() => setCursors(cursors.slice(0, -1))} disabled={cursors.length === 0}>← Newer</button>
+        <button onClick={() => page.nextCursor && setCursors([...cursors, page.nextCursor])} disabled={!page.nextCursor}>Older →</button>
+      </div>
     </div>
   );
 }

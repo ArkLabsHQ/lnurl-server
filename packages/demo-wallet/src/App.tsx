@@ -427,9 +427,9 @@ function Receive({ receiver: shown, onRenamed }: { receiver: Receiver; onRenamed
         watcherFor(value.verifyBatch).add(value.verify, {
           settled: () => mark(key, "settled"),
           gaveUp: (reason) => mark(key, `not settled: ${reason}`),
-        });
+        }, value);
       } else if (value.verify) {
-        void payer.pollVerify(value.verify, { timeoutMs: 300_000, intervalMs: 3_000 })
+        void payer.pollVerify(value.verify, { timeoutMs: 300_000, intervalMs: 3_000, expect: value })
           .then((v) => mark(key, v.settled ? "settled" : "not settled within the poll window"))
           .catch((e: Error) => mark(key, `verify failed: ${e.message}`));
       }
@@ -534,7 +534,7 @@ function Receive({ receiver: shown, onRenamed }: { receiver: Receiver; onRenamed
               ")",
               "stream.update([next.verify])         // each later request joins the same connection",
               "stream.update([], [settled.verify])  // each settled one leaves it",
-              "await payer.pollVerify(invoice.verify, { timeoutMs, intervalMs })  // no verifyBatch: LUD-21, preimage-checked",
+              "await payer.pollVerify(invoice.verify, { timeoutMs, intervalMs, expect: invoice })  // no verifyBatch: LUD-21, preimage-checked",
             ].join("\n")} />
           </div>
         )}
@@ -653,6 +653,7 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
         pendingConfirmations.add({
           verifyUrl: lnurlMeta.verify,
           ...(lnurlMeta.verifyBatch !== undefined ? { verifyBatch: lnurlMeta.verifyBatch } : {}),
+          ...(lnurlMeta.expect !== undefined ? { expect: lnurlMeta.expect } : {}),
           timeoutMs: 180_000,
           onSettled: (v) => {
             note({ receiverConfirmed: v.settled });
@@ -706,7 +707,7 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
         `const options = await router.options({ raw: target, amount: ${amount} }, { priority: DEFAULT_RAIL_PRIORITY })`,
         "const quote = await option.quote()  // Quote: priced on click, not on listing",
         "const handle = await quote.send()  // Pay: sends quote.total = quote.amount + quote.fee",
-        "pendingConfirmations.add({ verifyUrl, verifyBatch, onSettled, onError })",
+        "pendingConfirmations.add({ verifyUrl, verifyBatch, expect, onSettled, onError })",
         "// every 2s it runs batchVerify(verifyBatch, pendingVerifyUrls): one GET for every unconfirmed send",
       ].join("\n")} />
     </div>

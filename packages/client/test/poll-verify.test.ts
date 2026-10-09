@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
+import { hex } from "@scure/base";
+import { sha256 } from "@noble/hashes/sha2.js";
 import { pollVerify } from "../src/payer.js";
 import { LnurlError, LnurlTimeoutError } from "../src/errors.js";
-import { INVOICE, PREIMAGE } from "./invoice.js";
+import { INVOICE, PREIMAGE, buildInvoice } from "./invoice.js";
 
 const jsonResponse = (body: unknown) =>
   new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
@@ -28,6 +30,21 @@ describe("pollVerify", () => {
   it("rejects a settled status it cannot check against an invoice", async () => {
     const unverifiable = { status: "OK", settled: true, preimage: PREIMAGE, pr: "lnbc1..." };
     await expect(pollVerify("https://x/v/h", { intervalMs: 1 }, (async () => jsonResponse(unverifiable)) as never)).rejects.toThrow(/preimage/);
+  });
+
+  it("refuses another invoice's settled proof when told which invoice it watches", async () => {
+    const otherPreimage = "cd".repeat(32);
+    const other = buildInvoice(hex.encode(sha256(hex.decode(otherPreimage))));
+    const replay = async () => jsonResponse({ status: "OK", settled: true, preimage: otherPreimage, pr: other });
+    await expect(pollVerify("https://x/v/h", { intervalMs: 1, expect: { pr: INVOICE } }, replay as never)).rejects.toThrow(/different payment/);
+    await expect(pollVerify("https://x/v/h", { intervalMs: 1, expect: { pr: other } }, replay as never)).resolves.toMatchObject({ settled: true });
+  });
+
+  it("refuses a destination answer to an invoice, and another destination's", async () => {
+    const answer = async () => jsonResponse({ status: "OK", settled: true, paymentOption: "arkade", paymentDestination: "ark1xyz" });
+    await expect(pollVerify("https://x/v/h", { intervalMs: 1, expect: { pr: INVOICE } }, answer as never)).rejects.toThrow(/different payment/);
+    await expect(pollVerify("https://x/v/h", { intervalMs: 1, expect: { paymentOption: "arkade", paymentDestination: "ark1abc" } }, answer as never)).rejects.toThrow(/different payment/);
+    await expect(pollVerify("https://x/v/h", { intervalMs: 1, expect: { paymentOption: "arkade", paymentDestination: "ark1xyz" } }, answer as never)).resolves.toMatchObject({ settled: true });
   });
 
   it("treats a Not found ERROR body as terminal", async () => {

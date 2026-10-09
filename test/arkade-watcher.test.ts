@@ -135,6 +135,16 @@ describe("settleDestinationPayments", () => {
     expect(store.get("v2")!.settled).toBe(false);
   });
 
+  it("settles the same records whichever order the indexer lists same-second arrivals in", async () => {
+    const now = Date.now();
+    for (const order of [[200, 100], [100, 200]]) {
+      const store = storeWith({ hash: "small", amountMsat: 100_000, createdAt: now - 1000 }, { hash: "large", amountMsat: 200_000, createdAt: now });
+      indexerVtxos = order.map((valueSat) => wireVtxo({ txid: randomBytes(32).toString("hex"), valueSat, createdAtSec: Math.floor(now / 1000) }));
+
+      expect(await settleDestinationPayments(store, new RestIndexerProvider(indexerCtx.baseUrl))).toBe(2);
+    }
+  });
+
   it("never settles a later record from an already-used payment (cross-pass replay)", async () => {
     const store = storeWith({ hash: "r1", amountMsat: 50_000 });
     const createdAt = store.get("r1")!.createdAt;

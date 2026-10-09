@@ -48,6 +48,21 @@ export interface CovenantSweeper {
   sweep(): Promise<number>;
 }
 
+/** Record the sweep from the spend, not the emulator's reply: only a settling output
+ *  observed spent says arkd took it. `payoutReference` is terminal — it drops the
+ *  script from every scope — so an unsettled record must never get one. */
+function recordPayout(
+  store: SettlementStore,
+  script: string,
+  vtxos: readonly { txid: string; isSpent?: boolean; arkTxId?: string; settledBy?: string; spentBy?: string }[],
+): void {
+  const record = store.findByCovenantScript(script);
+  if (!record?.settled || record.payoutReference) return;
+  const spent = vtxos.find((v) => v.txid === record.paymentReference && v.isSpent);
+  const reference = spent && (spent.arkTxId || spent.settledBy || spent.spentBy);
+  if (reference) store.markPaidOut(record.paymentHash, reference);
+}
+
 export function createCovenantSweeper(opts: {
   contracts: IContractManager;
   arkServerUrl: string;
@@ -100,7 +115,11 @@ export function createCovenantSweeper(opts: {
       base64.encode(arkTx.toPSBT()),
       checkpoints.map((c) => base64.encode(c.toPSBT())),
     );
-    return Transaction.fromPSBT(base64.decode(res.signedArkTx)).id;
+    // The emulator only adds signatures, which a txid does not commit to, so any other
+    // id is another transaction — not the sweep, and no proof this one was accepted.
+    const signed = Transaction.fromPSBT(base64.decode(res.signedArkTx));
+    if (signed.id !== arkTx.id) throw new Error(`emulator signed ${signed.id}, not the sweep ${arkTx.id}`);
+    return signed.id;
   };
 
   return {
@@ -138,14 +157,18 @@ export function createCovenantSweeper(opts: {
               if (!path) continue;
               const arkTxid = await sweepOne(contract, vtxo, path, tapTree);
               moved++;
-              // What the user's wallet holds: the payment landed at the covenant.
-              const record = opts.settlements?.findByCovenantScript(contract.script);
-              if (record) opts.settlements?.markPaidOut(record.paymentHash, arkTxid);
               console.log(`covenant sweep: ${contract.script.slice(0, 16)}… -> ${arkTxid}`);
             } catch (err) {
               // One stuck destination must not stop the rest, and the next pass retries.
               console.warn(`covenant sweep failed for ${contract.script.slice(0, 16)}…:`, err);
             }
+          }
+          // A sweep this pass submitted is recorded by the next, when its spend is
+          // visible. After the money, and contained: the rest must still get swept.
+          try {
+            if (opts.settlements) recordPayout(opts.settlements, contract.script, vtxos);
+          } catch (err) {
+            console.warn(`covenant sweep: recording the payout for ${contract.script.slice(0, 16)}… failed:`, err);
           }
         }
       }

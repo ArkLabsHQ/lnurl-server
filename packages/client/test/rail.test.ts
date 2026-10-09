@@ -130,7 +130,10 @@ describe("lnurl rails", () => {
 
     const quote = await by(LNURL_ARKADE_RAIL).quote({ raw: "alice@arkadeos.com", amount: 500 }, ctx);
 
-    expect(lnurlQuoteMeta(quote)).toEqual({ target: "alice@arkadeos.com", via: "ark", verify: "https://x.test/verify/1" });
+    expect(lnurlQuoteMeta(quote)).toEqual({
+      target: "alice@arkadeos.com", via: "ark", verify: "https://x.test/verify/1",
+      expect: { paymentOption: "arkade", paymentDestination: "tark1qdest" },
+    });
     expect(lnurlQuoteMeta({ railId: "ark", amount: 1, fee: 0, total: 1 } as RouteQuote)).toBeUndefined();
   });
 

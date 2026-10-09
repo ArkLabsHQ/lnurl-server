@@ -142,9 +142,13 @@ export class AddressesRepo {
       .run(serializeDisabledRails(rails), Date.now(), id);
   }
 
-  list(filter: { domainId?: number; status?: AddressStatus; q?: string; withArkadeAddress?: boolean; limit?: number } = {}): AddressRow[] {
+  list(filter: {
+    domainId?: number; status?: AddressStatus; q?: string; withArkadeAddress?: boolean;
+    before?: { createdAt: number; id: number }; limit: number;
+  }): AddressRow[] {
     const where: string[] = [];
     const params: (string | number)[] = [];
+    // ponytail: a domainId page sorts its whole domain (the UNIQUE index wins); index (domain_id, created_at, id, status, username) if that bites.
     if (filter.domainId != null) { where.push("domain_id = ?"); params.push(filter.domainId); }
     if (filter.status) { where.push("status = ?"); params.push(filter.status); }
     if (filter.q) {
@@ -153,10 +157,14 @@ export class AddressesRepo {
       params.push(`%${escaped}%`);
     }
     if (filter.withArkadeAddress) where.push("arkade_address != ''");
-    const limit = filter.limit != null ? " LIMIT ?" : "";
-    if (filter.limit != null) params.push(filter.limit);
-    const sql = `SELECT * FROM addresses ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC${limit}`;
+    if (filter.before) { where.push("(created_at, id) < (?, ?)"); params.push(filter.before.createdAt, filter.before.id); }
+    params.push(filter.limit);
+    const sql = `SELECT * FROM addresses ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC, id DESC LIMIT ?`;
     return (this.db.prepare(sql).all(...params) as unknown as AddressRecord[]).map(rowToAddress);
+  }
+
+  count(): number {
+    return (this.db.prepare("SELECT COUNT(*) AS c FROM addresses").get() as { c: number }).c;
   }
 
   delete(id: number): void {

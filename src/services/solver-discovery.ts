@@ -13,10 +13,36 @@ import {
 import { solverLightningRendezvous } from "@arkade-os/swap/protocol";
 import type { SolverCardsRepo } from "../db/repositories/solver-cards.js";
 import type { SolverRegistryCacheRepo } from "../db/repositories/solver-registry-cache.js";
-import { ConfigError, UpstreamError } from "../errors.js";
+import { ConfigError, MalformedRecordError, UpstreamError } from "../errors.js";
 
 const DEFAULT_REFRESH_MS = 10 * 60_000;
 const MAX_CACHE_AGE_MS = DEFAULT_MAX_AGE_SECONDS * 1000;
+/** A registry index is kilobytes of cards; read whole, a larger body sizes our heap. */
+const MAX_REGISTRY_BODY_BYTES = 1024 * 1024;
+
+async function readCapped(response: Awaited<ReturnType<FetchLike>>, max: number): Promise<string> {
+  const tooLarge = () => new MalformedRecordError(`solver registry: body over ${max} bytes`);
+  const stream = (response as { body?: ReadableStream<Uint8Array> | null }).body;
+  if (!stream) {
+    const text = await response.text();
+    if (Buffer.byteLength(text) > max) throw tooLarge();
+    return text;
+  }
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel();
+      throw tooLarge();
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
 
 // A stand-in pin, because only a live request holds the covenant's emulator key:
 // every other clause of the SDK rule still decides, and a card pinning some other
@@ -306,7 +332,7 @@ export class DiscoveryService {
     try {
       const response = await this.upstreamFetch(input, init);
       if (!response.ok) throw new UpstreamError("solver registry", response.status);
-      const body = await response.text();
+      const body = await readCapped(response, MAX_REGISTRY_BODY_BYTES);
       this.fetchedBodies.set(input, body);
       return { ok: true, status: response.status, text: async () => body };
     } catch (error) {

@@ -81,7 +81,7 @@ describe("AddressService.register", () => {
     expect(again.created).toBe(false);
     expect(again.address.id).toBe(first.address.id);
     expect(again.lightningAddress).toBe("dup@domain.com");
-    expect(repos.addresses.list({ domainId })).toHaveLength(1);
+    expect(repos.addresses.list({ domainId, limit: 10 })).toHaveLength(1);
   });
 
   it("does not spend the per-session limit on a re-registration", () => {
@@ -234,7 +234,7 @@ describe("AddressService — session mode, nameless register, upgrade", () => {
     const { address } = svc.registerNameless({ domain: allModes, token: TOKEN });
     const up = svc.upgrade({ domain: allModes, handle: address.username, token: TOKEN, username: "bob", claimCode });
     expect(up.id).toBe(address.id);
-    expect(repos.addresses.list({ domainId: allModes.id }).filter((a) => a.username === "bob")).toHaveLength(1);
+    expect(repos.addresses.list({ domainId: allModes.id, limit: 10 }).filter((a) => a.username === "bob")).toHaveLength(1);
   });
 
   it("keeps the reserved row's rail policy when upgrading onto it", () => {

@@ -254,6 +254,30 @@ describe("DiscoveryService", () => {
     restarted.stop();
   });
 
+  it("falls back to the cache when a registry body is over the size limit, without reading all of it", async () => {
+    const cache = new CacheStore();
+    cache.row = { url: registryUrl, network: "bitcoin", body: JSON.stringify(registryIndex(solverCard("registry", 30), 1_000)), fetchedAt: 900_000 };
+    const chunk = 64 * 1024;
+    const total = 8 * 1024 * 1024;
+    let pulled = 0;
+    const oversized = () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulled >= total) return controller.close();
+        pulled += chunk;
+        controller.enqueue(new Uint8Array(chunk).fill(0x20));
+      },
+    }));
+    const service = new DiscoveryService({
+      network: "bitcoin", registryUrls: [registryUrl], cardStore: new CardStore(), cacheStore: cache,
+      fetchImpl: async () => oversized(), now: () => 1_000_000, refreshIntervalMs: 0,
+    });
+
+    await service.start();
+    expect(service.status()).toMatchObject({ ready: true, sources: [expect.objectContaining({ cache: "fresh" })] });
+    expect(pulled).toBeLessThan(total);
+    service.stop();
+  });
+
   it("keeps a pinned card's market when a stale registry lists the same one", async () => {
     const cache = new CacheStore();
     const card = legacyBtcSolverCard("registry", 30);
