@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { hex } from "@scure/base";
 import { invoiceTarget, type PaymentRail, type RouteQuote, type Wallet } from "@arkade-os/sdk";
@@ -6,6 +6,7 @@ import { arkadeLnurl, arkadePaymentRouter, DEFAULT_RAIL_PRIORITY, encodeLnurl, t
 import { deriveSessionId } from "../src/token.js";
 import { createLnurlClient, type LnurlClient } from "../src/index.js";
 import { LnurlError } from "../src/errors.js";
+import { PAY_REQUEST_TTL_MS } from "../src/rail.js";
 
 const PRIVATE_KEY = "22".repeat(32);
 const ARKADE_ADDRESS =
@@ -293,6 +294,115 @@ describe("arkadeLnurl", () => {
     await lnurl.capabilities();
 
     expect(client.domainCapabilities).toHaveBeenCalledWith({ domain: "lnurl.example.com" });
+  });
+});
+
+describe("Receiver.payRequest()", () => {
+  const BASE = "https://lnurl.example.com";
+  // Echoes the LNURL it was asked for, so a memo serving the wrong receiver shows in the value.
+  const echoing = (over: Partial<LnurlClient> = {}) =>
+    fakeClient({ resolve: vi.fn(async (lnurl: string) => ({ tag: "payRequest", lnurl }) as never), ...over });
+  const claimed = (client: LnurlClient) => arkadeLnurl({ wallet: fakeWallet(), baseUrl: BASE, client }).claim({ username: "alice" });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("fetches once for two calls within the TTL", async () => {
+    const client = echoing();
+    const rx = await claimed(client);
+
+    await rx.payRequest();
+    await rx.payRequest();
+
+    expect(client.resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it("shares one in-flight fetch between concurrent calls", async () => {
+    const client = echoing();
+    const rx = await claimed(client);
+
+    const [a, b] = await Promise.all([rx.payRequest(), rx.payRequest()]);
+
+    expect(a).toBe(b);
+    expect(client.resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it("fetches again once the TTL has passed", async () => {
+    vi.useFakeTimers();
+    const client = echoing();
+    const rx = await claimed(client);
+
+    await rx.payRequest();
+    vi.advanceTimersByTime(PAY_REQUEST_TTL_MS - 1);
+    await rx.payRequest();
+    expect(client.resolve).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(1);
+    await rx.payRequest();
+    expect(client.resolve).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not keep a failed fetch", async () => {
+    const client = echoing({
+      resolve: vi.fn().mockRejectedValueOnce(new LnurlError("down")).mockResolvedValue({ tag: "payRequest" }),
+    });
+    const rx = await claimed(client);
+
+    await expect(rx.payRequest()).rejects.toThrow("down");
+    await expect(rx.payRequest()).resolves.toMatchObject({ tag: "payRequest" });
+
+    expect(client.resolve).toHaveBeenCalledTimes(2);
+  });
+
+  it("fetches again after upgrade(), even one that failed", async () => {
+    const client = echoing({
+      registerAddress: vi.fn(async () => ({ handle: "SESSIONID", username: null, lightningAddress: null, sessionLnurl: "LNURL1flagged" }) as never),
+      upgradeAddress: vi.fn()
+        .mockRejectedValueOnce(new LnurlError("taken"))
+        .mockResolvedValue({ handle: "alice", username: "alice", lightningAddress: "alice@lnurl.example.com" }),
+    });
+    const rx = await arkadeLnurl({ wallet: fakeWallet(), baseUrl: BASE, client }).claim({ nameless: true });
+
+    await rx.payRequest();
+    await expect(rx.upgrade({ username: "alice" })).rejects.toThrow("taken");
+    await rx.payRequest();
+    await rx.upgrade({ username: "alice" });
+    await rx.payRequest();
+
+    expect(client.resolve).toHaveBeenCalledTimes(3);
+  });
+
+  it("fetches again after claim(), for a receiver it made earlier", async () => {
+    const client = echoing({
+      listAddresses: vi.fn(async () => [
+        { handle: "alice", username: "alice", lightningAddress: "alice@x", status: "active", sessionLnurl: null, domain: "lnurl.example.com" },
+      ]) as never,
+    });
+    const lnurl = arkadeLnurl({ wallet: fakeWallet(), baseUrl: BASE, client });
+    const rx = (await lnurl.owned())!;
+
+    await rx.payRequest();
+    await lnurl.claim({ username: "alice" });
+    await rx.payRequest();
+
+    expect(client.resolve).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps one memo per Receiver", async () => {
+    const client = echoing({
+      registerAddress: vi.fn(async (req: { username?: string }) =>
+        ({ handle: req.username, username: req.username, lightningAddress: `${req.username}@lnurl.example.com` }) as never),
+    });
+    const lnurl = arkadeLnurl({ wallet: fakeWallet(), baseUrl: BASE, client });
+    const alice = await lnurl.claim({ username: "alice" });
+    const bob = await lnurl.claim({ username: "bob" });
+
+    expect(await alice.payRequest()).toMatchObject({ lnurl: alice.lnurl });
+    expect(await bob.payRequest()).toMatchObject({ lnurl: bob.lnurl });
+    await alice.payRequest();
+
+    expect(client.resolve).toHaveBeenCalledTimes(2);
   });
 });
 

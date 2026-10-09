@@ -15,7 +15,7 @@ import { bech32 } from "@scure/base";
 import { arkadeIdentityRequest, deriveSessionTokenForIdentity, type ArkadeSigner } from "./arkade.js";
 import { LnurlError } from "./errors.js";
 import { createLnurlClient, type LnurlClient } from "./index.js";
-import { lnurlRails } from "./rail.js";
+import { lnurlRails, PAY_REQUEST_TTL_MS } from "./rail.js";
 import { deriveSessionId } from "./token.js";
 import { syncPayments, type PaymentSyncStore, type StoredPayment } from "./sync.js";
 import type { DomainCapabilities } from "./addresses.js";
@@ -62,7 +62,9 @@ export interface Receiver {
   readonly lightningAddress: string | undefined;
   /** For a QR. The session LNURL when flagged (survives {@link upgrade}), else `.well-known`. */
   readonly lnurl: string;
-  /** Addressed through `baseUrl`, not the LUD-16 domain, which drops the port. */
+  /** Addressed through `baseUrl`, not the LUD-16 domain, which drops the port.
+   *  One fetch answers every call for 30 s, or until a write through this facade
+   *  (`claim`, `upgrade`); `resolve(lnurl)` always asks the server. */
   payRequest(): Promise<PayRequest>;
   payments(opts?: { since?: number; limit?: number }): Promise<PaymentPage>;
   sync(): Promise<{ synced: number; failures: unknown[] }>;
@@ -154,6 +156,11 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
     }));
   };
 
+  // Any write through this facade may change what its addresses serve, so it
+  // retires every memoised payRequest; a failed one too, as it may have landed.
+  let writes = 0;
+  const wrote = () => { writes++; };
+
   const needStore = (): PaymentSyncStore => {
     if (!opts.store) throw new LnurlError("sync needs a store; pass one to arkadeLnurl");
     return opts.store;
@@ -167,19 +174,26 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
     const lnurl = flagged
       ? encodeLnurl(`${baseUrl}/lnurl/${deriveSessionId(held)}`)
       : encodeLnurl(`${baseUrl}/.well-known/lnurlp/${handle}`);
+    let memo: { at: number; writes: number; pr: Promise<PayRequest> } | undefined;
     return {
       handle,
       lightningAddress: lightningAddress ?? undefined,
       lnurl,
       // `resolve` ignores `baseUrl` and sends no token, so one client is enough.
-      payRequest: () => client.resolve(lnurl),
+      payRequest() {
+        if (memo && memo.writes === writes && Date.now() - memo.at < PAY_REQUEST_TTL_MS) return memo.pr;
+        const entry = { at: Date.now(), writes, pr: client.resolve(lnurl) };
+        memo = entry;
+        entry.pr.catch(() => { if (memo === entry) memo = undefined; });
+        return entry.pr;
+      },
       payments: (listOpts) => client.listPayments(held, handle, { domain, ...listOpts }),
       sync: async () => syncPayments(
         [{ baseUrl, token: held, handle, domain }],
         { client: (target) => createLnurlClient({ baseUrl: target }), store: needStore() },
       ),
       async upgrade(upgradeOpts) {
-        const registered = await client.upgradeAddress({ token: held, handle, domain, ...upgradeOpts });
+        const registered = await client.upgradeAddress({ token: held, handle, domain, ...upgradeOpts }).finally(wrote);
         return receiverFrom(held, registered.handle, registered.lightningAddress, flagged);
       },
     };
@@ -203,7 +217,7 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
         ...(claimOpts?.nameless ? { nameless: true as const } : {}),
         ...(claimOpts?.username !== undefined ? { username: claimOpts.username } : {}),
         ...(claimOpts?.claimCode !== undefined ? { claimCode: claimOpts.claimCode } : {}),
-      });
+      }).finally(wrote);
       // From the response, not the request: a server predating nameless ignores the flag and allocates a name.
       const flagged = registered.sessionLnurl != null;
       if (claimOpts?.nameless && !flagged) {
@@ -220,7 +234,7 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
           domain,
           ...(await addresses()),
         }),
-      );
+      ).finally(wrote);
       return receiverFrom(held, registered.handle, registered.lightningAddress, flagged);
     },
     router,

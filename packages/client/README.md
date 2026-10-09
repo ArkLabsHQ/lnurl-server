@@ -48,6 +48,8 @@ const handle = await (await best.quote()).send()
 | rank the ways to pay a target | `options(target, amountSat)` |
 | the router itself | `router()` |
 
+**`payRequest()` fetches once per 30 s.** Every call on one `Receiver` within that window shares a single fetch, in flight or done, so a screen asking on every amount change costs one GET; a failed fetch is not kept. `claim` and `upgrade` retire it at once, even when they fail; a change made anywhere else - another device, the operator - shows within 30 s. `createLnurlClient().resolve(receiver.lnurl)` always asks the server.
+
 `capabilities()` reads what a domain allows before you call it - `{ domain, allocationModes, usernameRules, requireApiKey }` - so onboarding can offer only the modes actually enabled instead of guessing and hitting `forbidden_mode`. A domain requiring an operator-reserved name takes a `claimCode` the same way on either call below: `claim({ username: 'alice', claimCode })`.
 
 **Nameless, and upgrading later.** `claim({ nameless: true })` returns a `Receiver` with no lightning address at all - offline receive, rails and payment sync all work off its stable `lnurl` alone. `receiver.upgrade({ username: 'alice' })` (or `{ username, claimCode }` for a reserved name) names it in place: the wallet keeps its history and the same `lnurl` keeps paying it, but the upgrade **publicly links** that LNURL to the new name. To keep them unlinked instead, call `lnurl.claim({ username: 'alice' })` on the side - a second, separate named address (counted against the domain's per-wallet limit) with no connection to the nameless one.
