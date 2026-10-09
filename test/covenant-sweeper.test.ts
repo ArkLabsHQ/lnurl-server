@@ -89,7 +89,27 @@ describe("createCovenantSweeper", () => {
 
     await sweeperWith(manager, settlements).sweep();
 
-    expect(getContractsWithVtxos).toHaveBeenCalledWith({ type: COVENANT_CONTRACT_TYPE, script: ["5120aa"] });
+    expect(getContractsWithVtxos).toHaveBeenCalledWith({ script: ["5120aa"] });
+  });
+
+  it("skips a contract of another type at a scoped script", async () => {
+    const getSpendablePaths = vi.fn(async (_q: { contractScript: string }) => [{ leaf: {} as never, extraWitness: [] }]);
+    const getContractsWithVtxos = vi.fn(async () => [
+      { contract: { ...contract("5120aa"), type: "swap-lockup", params: {} }, vtxos: [vtxo("tx-a")] },
+      { contract: contract("5120bb"), vtxos: [vtxo("tx-b")] },
+    ]);
+    const settlements = new MemorySettlementStore(3_600_000);
+    for (const script of ["5120aa", "5120bb"]) {
+      settlements.create({ paymentHash: `h-${script}`, pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: script });
+    }
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await sweeperWith({ getContractsWithVtxos, getSpendablePaths } as unknown as IContractManager, settlements).sweep();
+      expect(getSpendablePaths.mock.calls.map(([q]) => q.contractScript)).toEqual(["5120bb"]);
+      expect(warn.mock.calls.flat().join(" ")).toContain("1 of 2");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("queries nothing at all when no destination is owed a sweep", async () => {

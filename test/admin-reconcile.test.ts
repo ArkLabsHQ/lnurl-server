@@ -136,6 +136,31 @@ describe("admin reconcile, in bulk", () => {
     expect(res.body.addresses).toHaveLength(2);
   });
 
+  it("reads no more addresses than the 200 it reports", async () => {
+    for (let i = 0; i < 203; i++) addr(`user${i}`);
+    repos.addresses.create({ domainId, username: "bare", status: "active", sessionId: "s" });
+    const prepare = db.prepare.bind(db);
+    let widest = 0;
+    db.prepare = (sql: string) => {
+      const stmt = prepare(sql);
+      const all = stmt.all.bind(stmt);
+      stmt.all = ((...params: never[]) => {
+        const rows = all(...params);
+        widest = Math.max(widest, rows.length);
+        return rows;
+      }) as typeof stmt.all;
+      return stmt;
+    };
+    try {
+      const res = await request(app).get("/admin/api/reconcile");
+      expect(res.body.addresses).toHaveLength(200);
+      expect(res.body.addresses.filter((x: { error?: string }) => x.error)).toEqual([]);
+    } finally {
+      db.prepare = prepare;
+    }
+    expect(widest).toBe(200);
+  });
+
   it("refuses a batch larger than it will serve", async () => {
     const res = await request(app).get(`/admin/api/reconcile?ids=${Array.from({ length: 201 }, (_, i) => i + 1).join(",")}`);
     expect(res.status).toBe(400);

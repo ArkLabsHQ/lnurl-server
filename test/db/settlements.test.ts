@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { openDb } from "../../src/db/connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
 import { DbSettlementStore, MemorySettlementStore } from "../../src/settlement-store.js";
+import { OfflineSwapStore } from "../../src/offline-swap-store.js";
 
 // Both back the same interface, and the no-DB path is production too, so a
 // caller must not be able to tell which one it holds.
@@ -41,11 +42,22 @@ describe("store parity past the ttl", () => {
     memory.create(rec);
     sqlite.create(rec);
 
-    expect(memory.listPendingDestinations()).toEqual(sqlite.listPendingDestinations());
-    expect(sqlite.listPendingDestinations()[0]).toMatchObject({
-      covenantScript: "5120aa",
-    });
+    expect(memory.pendingByCovenantScript("5120aa")).toEqual(sqlite.pendingByCovenantScript("5120aa"));
+    expect(sqlite.pendingByCovenantScript("5120aa")).toMatchObject({ covenantScript: "5120aa" });
     expect(sqlite.get("vid1")?.covenantScript).toBe("5120aa");
+    db.close();
+  });
+
+  it("lists only static-address arkade destinations in both stores", () => {
+    const { db, memory, sqlite } = stores(() => 1000);
+    for (const store of [memory, sqlite]) {
+      store.create({ paymentHash: "static", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "tark1static", amountMsat: 1_000 });
+      store.create({ paymentHash: "covenant", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "tark1derived", amountMsat: 1_000, covenantScript: "5120aa" });
+      store.create({ paymentHash: "onchain", pr: "", sessionId: "s", paymentOption: "onchain", paymentDestination: "bcrt1pboarding", amountMsat: 1_000 });
+    }
+
+    expect(memory.listPendingDestinations().map((d) => d.paymentHash)).toEqual(["static"]);
+    expect(sqlite.listPendingDestinations().map((d) => d.paymentHash)).toEqual(["static"]);
     db.close();
   });
 
@@ -223,55 +235,36 @@ describe("DbSettlementStore", () => {
     db.close();
   });
 
-  // Both ran as a table scan before migration 17, on paths that repeat per worker
-  // pass and per candidate VTXO. The plan is the only thing that says so.
-  describe.each([
-    [
-      "the settled-but-unswept half of the covenant scope",
-      "SELECT covenant_script FROM settlements WHERE covenant_script IS NOT NULL AND payout_reference IS NULL AND settled = 1",
-      [],
-      "idx_settlements_active_covenants",
-    ],
-    [
-      "the still-attributable half of the covenant scope",
-      "SELECT covenant_script FROM settlements WHERE covenant_script IS NOT NULL AND payout_reference IS NULL AND settled = 0 AND created_at > ?",
-      [0],
-      "idx_settlements_active_covenants",
-    ],
-    [
-      "the reference check every observed payment makes",
-      "SELECT 1 FROM settlements WHERE payment_reference = ? LIMIT 1",
-      ["tx-a"],
-      "idx_settlements_reference",
-    ],
-    [
-      "the pending-swap read the offline poller makes every pass",
-      "SELECT payment_hash FROM settlements WHERE swap_id IS NOT NULL AND settled = 0 AND preimage IS NOT NULL AND created_at > ?",
-      [0],
-      "idx_settlements_pending_swaps_created",
-    ],
-    [
-      "the active-lockup scope retirement reads",
-      "SELECT o.lockup_address FROM settlements s JOIN offline_swaps o ON o.payment_hash = s.payment_hash WHERE s.swap_id IS NOT NULL AND s.settled = 0 AND s.preimage IS NOT NULL AND s.created_at > ?",
-      [0],
-      "idx_settlements_pending_swaps_created",
-    ],
-    [
-      "the pending-destination read the watched-script resync makes every second",
-      "SELECT payment_hash FROM settlements WHERE settled = 0 AND payment_option IS NOT NULL AND payment_option != 'lightning' AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
-      [0],
-      "idx_settlements_pending_destinations",
-    ],
-  ])("%s", (_name, sql, params, index) => {
+  // Each was once a table scan on a path run every worker pass. Planned from the SQL
+  // the call prepares, since a pasted copy can drift from it unnoticed.
+  type Stores = { settlements: DbSettlementStore; swaps: OfflineSwapStore };
+  describe.each<[string, (s: Stores) => unknown, string]>([
+    ["the covenant scope, both halves", (s) => s.settlements.listActiveCovenantScripts(), "idx_settlements_active_covenants"],
+    ["the reference check every observed payment makes", (s) => s.settlements.isReferenceUsed("tx-a"), "idx_settlements_reference"],
+    ["the pending-swap read the offline poller makes every pass", (s) => s.swaps.listPending(), "idx_settlements_pending_swaps_created"],
+    ["the same read without a recovery store", (s) => s.settlements.listPendingSwaps(), "idx_settlements_pending_swaps_created"],
+    ["the active-lockup scope retirement reads", (s) => s.swaps.listActiveLockupScripts(), "idx_settlements_pending_swaps_created"],
+    ["the pending-destination read the watched-script resync makes every second", (s) => s.settlements.listPendingDestinations(), "idx_settlements_pending_static_destinations"],
+  ])("%s", (_name, call, index) => {
     it(`is served by ${index}`, () => {
       const db = openDb(":memory:");
       runMigrations(db);
-      const plan = (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...(params as never[])) as { detail: string }[])
-        .map((r) => r.detail)
-        .join(" ");
-      expect(plan).toContain(index);
-      // A SEARCH, not a SCAN: the `OR` form named this index while scanning behind it.
-      expect(plan).toContain("SEARCH");
+      const stores = { settlements: new DbSettlementStore(db, 60_000), swaps: new OfflineSwapStore(db, 60_000) };
+      const prepare = db.prepare.bind(db);
+      const seen: string[] = [];
+      db.prepare = (sql: string) => (seen.push(sql), prepare(sql));
+      try {
+        call(stores);
+      } finally {
+        db.prepare = prepare;
+      }
+      expect(seen).not.toHaveLength(0);
+      for (const sql of seen) {
+        const plan = (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[]).map((r) => r.detail).join(" | ");
+        expect(plan).toContain(index);
+        // The `OR` form named its index while scanning behind it.
+        expect(plan).not.toContain("SCAN");
+      }
       db.close();
     });
   });

@@ -97,7 +97,8 @@ export interface SettlementStore {
   get(paymentHash: string): SettlementRecord | undefined;
   /** Unsettled offline swaps (have a swapId) for the settlement poller. */
   listPendingSwaps(): PendingSwap[];
-  /** Unsettled destination-rail records (non-lightning) with an amount, for the watcher. */
+  /** Unsettled static-address arkade records with an amount: the arkade watcher's whole
+   *  set. A covenant destination is found by its script instead. */
   listPendingDestinations(): PendingDestination[];
   /** One pending record by its covenant script — the covenant rail's attribution
    *  key, uniquely indexed. The covenant watcher has a script in hand for every
@@ -198,6 +199,7 @@ export class MemorySettlementStore implements SettlementStore {
       // does arrive is never observed, never swept, and never reaches its
       // owner's history.
       if (t - r.createdAt >= this.destinationWatchMs) continue;
+      if (r.paymentOption !== "arkade" || r.covenantScript !== null) continue;
       const pending = this.asPendingDestination(r);
       if (pending) out.push(pending);
     }
@@ -433,7 +435,7 @@ export class DbSettlementStore implements SettlementStore {
   listPendingDestinations(): PendingDestination[] {
     const rows = this.db
       .prepare(
-        "SELECT payment_hash, payment_destination, amount_msat, created_at, payment_option, covenant_script FROM settlements WHERE settled = 0 AND payment_option IS NOT NULL AND payment_option != 'lightning' AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
+        "SELECT payment_hash, payment_destination, amount_msat, created_at, payment_option, covenant_script FROM settlements WHERE settled = 0 AND payment_option = 'arkade' AND covenant_script IS NULL AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
       )
       // See the memory store: a destination outlives the verify TTL because it
       // stays payable and nothing tells the payer otherwise.

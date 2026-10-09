@@ -31,7 +31,7 @@ export function adminReconcileRoutes({ repos, indexer, settlements }: AdminDeps)
       res.json({ addresses: merged, unattributed: merged.reduce((n, r) => n + Number(r.unattributed ?? 0), 0) });
       return;
     }
-    const rows = repos.addresses.list({}).filter((a) => a.arkadeAddress).slice(0, RECONCILE_MAX)
+    const rows = repos.addresses.list({ withArkadeAddress: true, limit: RECONCILE_MAX })
       .map((a) => ({ id: a.id, arkadeAddress: a.arkadeAddress ?? null }));
     const results = await reconcileAddresses(source, settlements, rows);
     res.json({ addresses: results, unattributed: results.reduce((n, r) => n + Number(r.unattributed ?? 0), 0) });
