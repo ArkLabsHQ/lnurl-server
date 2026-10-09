@@ -26,6 +26,8 @@ import {
   upgradeAddress,
 } from "./addresses.js";
 import { syncPayments } from "./sync.js";
+import { isTokenAddress, tokenOptions } from "./token-options.js";
+import type { TokenAsset, TokenOption, TokenUnit } from "./token-options.js";
 import type { PaymentSyncStore, PaymentSyncTarget, StoredPayment } from "./sync.js";
 import type {
   AddressListEntry,
@@ -256,6 +258,8 @@ export {
   batchVerify,
   openVerifyBatchStream,
   upgradeAddress,
+  tokenOptions,
+  isTokenAddress,
 };
 export { browserPaymentStore, forgetStoredPayments, storedPayments } from "./stores.js";
 export type {
@@ -288,6 +292,9 @@ export type {
   RequestInvoiceOptions,
   StoredPayment,
   SessionHandlers,
+  TokenAsset,
+  TokenOption,
+  TokenUnit,
   Unit,
   VerifyStatus,
 };

@@ -11,6 +11,13 @@ export interface PaymentOption {
   minSendable?: number;
   /** Maximum sendable amount on this rail. */
   maxSendable?: number;
+  /** CAIP-19 id of the token a token option is paid in; its CAIP-2 namespace is `type`.
+   *  Read token options through `tokenOptions`, which validates them. */
+  asset?: string;
+  /** The `units[]` code a token option is quoted in. */
+  unit?: string;
+  /** The third party the payer hands funds to on this option, e.g. "FixedFloat". */
+  provider?: string;
 }
 /**
  * A unit the receiver prices in on the lightning rail (fiat or asset alongside
@@ -126,6 +133,17 @@ export interface DestinationResult {
   paymentOption: string;
   /** Where to pay on that rail, e.g. an Arkade address. */
   paymentDestination?: string;
+  /** A memo the payment must carry. A wallet that cannot attach one must not pay. */
+  paymentDestinationTag?: string;
+  /** Wallet-executable instruction carrying the amount (BIP21, EIP-681, Solana Pay); none on Tron. */
+  paymentURI?: string;
+  /** What the payer actually pays on a rail priced in a token. Its `expiresAt` is the
+   *  payer's deadline: a token answer carries no top-level `expiresAt`. */
+  paymentQuote?: PaymentQuote;
+  /** Unix seconds after which the server stops attributing payments to this destination. */
+  expiresAt?: number;
+  /** The third party the payer hands funds to, e.g. "FixedFloat". */
+  provider?: string;
   /** Verify URL tracking settlement; absent under the same conditions as the BOLT11 shape. */
   verify?: string;
   /** LUD-XX verifyBatch: batch/stream endpoint covering a whole tracked set. */

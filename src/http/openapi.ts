@@ -319,7 +319,14 @@ export const openApiSpec = {
                         settled: { type: "boolean" },
                         paymentOption: { type: "string" },
                         paymentDestination: { type: "string" },
-                        paymentReference: { type: "string", nullable: true, description: "Method-specific reference (e.g. a txid) once observed" },
+                        paymentReference: {
+                          type: "string",
+                          nullable: true,
+                          description:
+                            "Method-specific reference once settled: the observed Arkade txid, or on a token option the payer's deposit " +
+                            "txid on the token chain (0x hex on EVM, base58 on Solana, hex on Tron). A token row can settle before the " +
+                            "provider reports the deposit; the reference then follows.",
+                        },
                       },
                     },
                     {
@@ -713,12 +720,22 @@ export const openApiSpec = {
                         commentAllowed: { type: "number" },
                         paymentOptions: {
                           type: "array",
-                          description: "LUD-XX: advertised payment rails; present only when a non-lightning rail (e.g. arkade) is offered",
+                          description:
+                            "LUD-XX: advertised payment rails; present only when a non-lightning rail (e.g. arkade) is offered. " +
+                            "Token options (ids ff-<code>) always state both minSendable and maxSendable.",
                           items: {
                             type: "object",
                             properties: {
                               id: { type: "string" },
-                              type: { type: "string", description: "e.g. lightning, arkade" },
+                              type: { type: "string", description: "e.g. lightning, arkade, onchain; on a token option the asset's CAIP-2 namespace (eip155, solana, tron)" },
+                              asset: { type: "string", description: "Token options only: the CAIP-19 asset id, e.g. eip155:42161/erc20:0xfd08…" },
+                              unit: { type: "string", description: "Token options only: the `units[]` code the option is quoted in (USDT, USDC)" },
+                              provider: {
+                                type: "string",
+                                description:
+                                  "Token options only: the custodian the payer hands tokens to (FixedFloat, or Simulated off mainnet). " +
+                                  "The payer's tokens sit with it until it pays the corridor invoice, and this server cannot refund them.",
+                              },
                               available: {
                                 type: "boolean",
                                 description:
@@ -750,7 +767,7 @@ export const openApiSpec = {
                         },
                         units: {
                           type: "array",
-                          description: "LUD-XX: advertised denomination units; present only when a quote provider is configured",
+                          description: "LUD-XX: advertised denomination units; present when a quote provider is configured or a token option names one",
                           items: {
                             type: "object",
                             properties: {
@@ -797,8 +814,8 @@ export const openApiSpec = {
           { name: "username", in: "path", required: true, schema: { type: "string" }, description: "LN address local part" },
           { name: "amount", in: "query", required: true, schema: { type: "number" }, description: "Amount — millisatoshis, or the smallest unit of `unit` when set" },
           { name: "comment", in: "query", required: false, schema: { type: "string" }, description: "Optional payer comment" },
-          { name: "paymentOption", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: selected rail id (`arkade`, `onchain`); defaults to lightning" },
-          { name: "unit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: denomination unit (e.g. `USD`); `amount` becomes that unit's smallest integer" },
+          { name: "paymentOption", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: selected rail id (`arkade`, `onchain`, or a token option such as `ff-usdtarbitrum`); defaults to lightning" },
+          { name: "unit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: denomination unit (e.g. `USD`); `amount` becomes that unit's smallest integer. Refused on destination and token options, whose amount is always millisats" },
           { name: "receiveUnit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: desired receiver unit" },
         ],
         responses: {
@@ -814,30 +831,26 @@ export const openApiSpec = {
                         pr: { type: "string", description: "BOLT11 invoice" },
                         routes: { type: "array", items: {} },
                         verify: { type: "string", description: "LUD-21 verify URL (present when the bolt11 could be decoded)" },
-                        paymentQuote: {
-                          type: "object",
-                          description: "LUD-XX quote (present when the request was unit-denominated)",
-                          properties: {
-                            id: { type: "string" },
-                            expiresAt: { type: "string", description: "ISO 8601" },
-                            requested: { $ref: "#/components/schemas/AmountObject" },
-                            payment: { $ref: "#/components/schemas/AmountObject" },
-                            receive: { $ref: "#/components/schemas/AmountObject" },
-                            fees: { type: "array", items: { type: "object", properties: { amount: { type: "string" }, unit: { type: "string" }, description: { type: "string" } } } },
-                          },
-                          required: ["requested", "payment"],
-                        },
+                        paymentQuote: { $ref: "#/components/schemas/PaymentQuote" },
                         paymentOption: { type: "string", description: "LUD-XX: echoed as `lightning` when the wallet explicitly selected that rail" },
                       },
                       required: ["pr", "routes"],
                     },
                     {
                       type: "object",
-                      description: "LUD-XX non-`pr` payment option (e.g. arkade)",
+                      description: "LUD-XX non-`pr` payment option (e.g. arkade, or a token deposit)",
                       properties: {
                         status: { type: "string", enum: ["OK"] },
                         paymentOption: { type: "string" },
-                        paymentDestination: { type: "string", description: "Rail destination, e.g. an Arkade address" },
+                        paymentDestination: { type: "string", description: "Rail destination, e.g. an Arkade address, or the provider's deposit address on a token option" },
+                        paymentQuote: {
+                          $ref: "#/components/schemas/PaymentQuote",
+                          description:
+                            "Token options: payment is the deposit in the token's base units (e.g. USDT), requested and receive stay " +
+                            "in msat, and expiresAt is the payer's deadline, the earlier of the provider's and the corridor invoice's.",
+                        },
+                        provider: { type: "string", description: "Token options: the custodian holding the payer's tokens until it pays (FixedFloat, or Simulated)" },
+                        paymentDestinationTag: { type: "string", description: "A memo the deposit must carry. Not sent today: no advertised token chain uses one" },
                         expiresAt: {
                           type: "number",
                           description:
@@ -846,7 +859,8 @@ export const openApiSpec = {
                             "one exists. NOT a deadline on the money: past it a payment still reaches the destination, " +
                             "and on the covenant rail the sweeper still moves it — what lapses is the record, so verify " +
                             "stops answering and the payment leaves no trace in the address's history. Absent on rails " +
-                            "nothing here watches, such as onchain boarding.",
+                            "nothing here watches, such as onchain boarding, and on token options, whose deadline is " +
+                            "paymentQuote.expiresAt.",
                         },
                         paymentURI: {
                           type: "string",
@@ -900,6 +914,22 @@ export const openApiSpec = {
         description: "An amount denominated in a unit; strings avoid JSON integer-precision loss",
         properties: { amount: { type: "string" }, unit: { type: "string", description: "e.g. msat, USD" } },
         required: ["amount", "unit"],
+      },
+      PaymentQuote: {
+        type: "object",
+        description: "LUD-XX quote: on a unit-denominated lightning request, or on every token-option answer",
+        properties: {
+          id: { type: "string", description: "On a token option, the provider's order id" },
+          expiresAt: { type: "string", description: "ISO 8601" },
+          requested: { $ref: "#/components/schemas/AmountObject" },
+          payment: { $ref: "#/components/schemas/AmountObject" },
+          receive: { $ref: "#/components/schemas/AmountObject" },
+          fees: {
+            type: "array",
+            items: { type: "object", properties: { name: { type: "string", description: "e.g. provider, solver" }, amount: { $ref: "#/components/schemas/AmountObject" } } },
+          },
+        },
+        required: ["requested", "payment"],
       },
       HealthComponent: {
         type: "object",

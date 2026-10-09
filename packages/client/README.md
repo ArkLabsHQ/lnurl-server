@@ -100,6 +100,24 @@ stream.update([newVerifyUrl], [settledVerifyUrl]); // grow or shrink the set wit
 
 `batchVerify` splits the set and retries when the server answers `414`/`431`. The stream falls back to the one-shot snapshot when the server does not stream (including a `406`), and closing is final: reopening is the caller's job.
 
+### Token options
+
+A payRequest may offer a token on another chain (an lnurl-server with FixedFloat deposits, say): an option whose `type` is a CAIP-2 namespace, with a CAIP-19 `asset`, a `unit` naming a `units[]` entry, and the `provider` the payer hands the tokens to. Read them with `tokenOptions`, which accepts exactly what the BTCPay LNURLVerify plugin accepts:
+
+```ts
+import { tokenOptions } from "@arkade-os/lnurl-client";
+
+for (const option of tokenOptions(payRequest)) {
+  const answer = await payer.requestInvoice(payRequest, { amountSat: 10_000, paymentOption: option.id });
+  if (answer.kind !== "destination") continue;
+  // answer.paymentURI (EIP-681 or Solana Pay; absent on Tron), answer.paymentDestination,
+  // answer.paymentQuote.payment = { amount: base units, unit: option.unit.code },
+  // answer.paymentQuote.expiresAt = the payer's deadline (ISO 8601)
+}
+```
+
+`requestInvoice` refuses a token answer for another option, one whose destination is not an address on the token's chain, and one that quotes no whole amount of the token. The amount you request is still sats: what the receiver is paid before the swap's fee.
+
 ## Receiver
 
 Receiver and management calls need `baseUrl`. `deriveSessionToken` turns a wallet private key and a domain into a stable session token; opening a session with the same token reconnects the same session id.

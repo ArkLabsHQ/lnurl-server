@@ -21,10 +21,10 @@ export interface AmountObject {
   unit: string;
 }
 
+/** One named fee leg, in the shape the client package reads. */
 export interface FeeObject {
-  amount: string;
-  unit: string;
-  description?: string;
+  name?: string;
+  amount: AmountObject;
 }
 
 /** The quote echoed back to the wallet (LUD-XX). */

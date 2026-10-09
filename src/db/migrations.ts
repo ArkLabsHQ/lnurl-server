@@ -285,6 +285,33 @@ const MIGRATIONS: Migration[] = [
     `,
   },
   {
+    version: 18,
+    // FixedFloat orders behind token-deposit settlements. order_token is the order's
+    // bearer credential: it stays in this table. deposit_amount is base units, as TEXT.
+    up: `
+      CREATE TABLE IF NOT EXISTS ff_orders (
+        payment_hash       TEXT PRIMARY KEY REFERENCES settlements(payment_hash) ON DELETE CASCADE,
+        order_id           TEXT NOT NULL,
+        order_token        TEXT NOT NULL,
+        ff_code            TEXT NOT NULL,
+        asset              TEXT NOT NULL,
+        unit               TEXT NOT NULL,
+        deposit_address    TEXT NOT NULL,
+        deposit_amount     TEXT NOT NULL,
+        deposit_txid       TEXT,
+        invoice_amount_sat INTEGER NOT NULL,
+        status             TEXT NOT NULL,
+        emergency_json     TEXT,
+        expires_at         INTEGER NOT NULL,
+        created_at         INTEGER NOT NULL,
+        updated_at         INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_ff_orders_order_id ON ff_orders(order_id);
+      CREATE INDEX IF NOT EXISTS idx_ff_orders_created ON ff_orders(created_at);
+      CREATE INDEX IF NOT EXISTS idx_ff_orders_awaiting ON ff_orders(expires_at) WHERE status = 'NEW';
+    `,
+  },
+  {
     version: 19,
     // Migration 4's index keys the same rows by swap_id, so it holds every never-paid
     // swap forever and a created_at range over it depends on the planner's stats. The
