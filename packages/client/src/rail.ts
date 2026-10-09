@@ -17,7 +17,7 @@ import { isLnurl } from "@arkade-os/sdk";
 import type { PaymentRail, PaymentRequest, RouteQuote, RouterContext } from "@arkade-os/sdk";
 import { LnurlError } from "./errors.js";
 import type { LnurlClient } from "./index.js";
-import type { PayRequest } from "./types.js";
+import type { PayRequest, VerifyExpectation } from "./types.js";
 
 export const LNURL_ARKADE_RAIL = "lnurl-arkade";
 export const LNURL_LIGHTNING_RAIL = "lnurl-lightning";
@@ -30,6 +30,8 @@ export interface LnurlQuoteMeta {
   via: string;
   verify?: string;
   verifyBatch?: string;
+  /** What `verify` answers must be about: pass it as `pollVerify`'s `expect`. */
+  expect?: VerifyExpectation;
 }
 
 /** The lnurl meta of a quote, or undefined for a quote no lnurl rail made. */
@@ -142,7 +144,10 @@ function makeRail(
         throw new LnurlError(`${id}: ${inner.id} cannot pay the destination the callback returned`);
       }
       const quote = await inner.quote(delegated, ctx);
-      const lnurl: LnurlQuoteMeta = { target: req.raw, via: inner.id, verify: result.verify, verifyBatch: result.verifyBatch };
+      const expect: VerifyExpectation = result.kind === "bolt11"
+        ? { pr: result.pr }
+        : { paymentOption: result.paymentOption, paymentDestination: result.paymentDestination };
+      const lnurl: LnurlQuoteMeta = { target: req.raw, via: inner.id, verify: result.verify, verifyBatch: result.verifyBatch, expect };
       return { ...quote, railId: id, meta: { ...quote.meta, lnurl } };
     },
   };

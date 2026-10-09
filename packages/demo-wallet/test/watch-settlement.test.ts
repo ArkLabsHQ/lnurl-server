@@ -60,6 +60,17 @@ describe("settlementWatcher", () => {
     expect(w.pending()).toBe(1);
   });
 
+  it("gives up on a settled answer about another payment instead of confirming it", () => {
+    const { open, opened } = fakeOpener();
+    const a = handlers();
+    const w = settlementWatcher({ verifyBatchUrl: BATCH, open });
+    w.add(A, a, { paymentOption: "arkade", paymentDestination: "ark1mine" });
+    opened[0]!.onUpdate?.(A, { kind: "destination", settled: true, paymentOption: "arkade", paymentDestination: "ark1other" });
+    expect(a.settled).not.toHaveBeenCalled();
+    expect(a.gaveUp).toHaveBeenCalledWith("verify answered about a different payment");
+    expect(w.pending()).toBe(0);
+  });
+
   it("reopens a closed stream over only the still-pending set", async () => {
     const { open, opened, sets } = fakeOpener();
     const b = handlers();
