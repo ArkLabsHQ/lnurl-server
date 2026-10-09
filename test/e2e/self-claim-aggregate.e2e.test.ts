@@ -21,7 +21,7 @@ import {
   toXOnly,
   type NetworkName,
 } from "@arkade-os/sdk";
-import { paymentHashOf, receiveVtxoScript, unilateralClaimDelay } from "@arkade-os/swap";
+import { lightningReceiveContract, paymentHashOf, unilateralClaimDelay } from "@arkade-os/swap/protocol";
 import { createSelfClaimer } from "../../src/covenant/self-claim.js";
 import { ensureStack, pollUntil, mine, faucet, nodeSqliteStorage, ARKD_URL, EMULATOR_URL } from "./support/regtest.js";
 
@@ -36,7 +36,7 @@ const log = (s: string) => console.log(s);
 async function fundedWallet(): Promise<Wallet> {
   const wallet = await Wallet.create({
     identity: MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist), { isMainnet: false }),
-    arkServerUrl: ARKD_URL,
+    arkProvider: new RestArkProvider(ARKD_URL),
     storage: await nodeSqliteStorage(":memory:"),
     settlementConfig: false,
   });
@@ -61,7 +61,7 @@ describe("e2e: self-claim aggregates a piecemeal-funded lockup", () => {
   let payer: Wallet;
   let indexer: RestIndexerProvider;
   let claimer: ReturnType<typeof createSelfClaimer>;
-  let script: ReturnType<typeof receiveVtxoScript>;
+  let script: ReturnType<typeof lightningReceiveContract>;
   let lockupAddress: string;
   let payoutScriptHex: string;
   let preimageHex: string;
@@ -83,12 +83,12 @@ describe("e2e: self-claim aggregates a piecemeal-funded lockup", () => {
     const payoutPkScript = new Uint8Array([0x51, 0x20, ...payoutPubkey]);
     payoutScriptHex = hex.encode(payoutPkScript);
 
-    script = receiveVtxoScript({
+    script = lightningReceiveContract({
       solverPubkey: key(),
       // Wall-clock typed and well ahead: a height locktime leaves the deadline gate
       // disarmed, which would make this test pass for the wrong reason.
       refundLocktime: Math.floor(Date.now() / 1000) + 7_200,
-      serverPubkey: toXOnly(hex.decode(info.signerPubkey), "ark signer key"),
+      operatorPubkey: toXOnly(hex.decode(info.signerPubkey), "ark signer key"),
       paymentHash: paymentHashOf(preimage),
       claimDelay: unilateralClaimDelay(Number(info.unilateralExitDelay)),
       emulatorPubkey: toXOnly(hex.decode(emulatorInfo.signerPubkey), "emulator signer key"),
@@ -110,7 +110,7 @@ describe("e2e: self-claim aggregates a piecemeal-funded lockup", () => {
   it(
     "refuses one short output, then claims both in a single transaction",
     async () => {
-      await payer.sendBitcoin({ address: lockupAddress, amount: FIRST_SATS });
+      await payer.send({ address: lockupAddress, amount: FIRST_SATS });
       await pollUntil("first lockup output", async () => (await lockupVtxoCount()) >= 1, 60_000);
 
       // Short of the quote: the preimage must not be published for it.
@@ -118,7 +118,7 @@ describe("e2e: self-claim aggregates a piecemeal-funded lockup", () => {
       expect(short).toEqual({ state: "skipped", reason: "underfunded" });
       expect(await lockupVtxoCount()).toBe(1);
 
-      await payer.sendBitcoin({ address: lockupAddress, amount: SECOND_SATS });
+      await payer.send({ address: lockupAddress, amount: SECOND_SATS });
       await pollUntil("second lockup output", async () => (await lockupVtxoCount()) >= 2, 60_000);
 
       const claimed = await claimer.claim(swapId, preimageHex);

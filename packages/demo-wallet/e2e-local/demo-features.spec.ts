@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { join } from "node:path";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
-import { MnemonicIdentity, Wallet } from "@arkade-os/sdk";
+import { EsploraProvider, MnemonicIdentity, RestArkProvider, Wallet } from "@arkade-os/sdk";
 import { ESPLORA_URL, faucet, mine, nodeSqliteStorage, pollUntil } from "../../../test/e2e/support/regtest.js";
 import {
   CARDS_FILE,
@@ -122,7 +122,7 @@ test.describe("verifyBatch on the Receive tab", () => {
     await expect(page.getByText("watching 2 invoices on one connection")).toBeVisible({ timeout: 30_000 });
     expect(streams).toHaveLength(1);
 
-    for (const address of [first, second]) await payerWallet!.sendBitcoin({ address, amount: SATS });
+    for (const address of [first, second]) await payerWallet!.send({ address, amount: SATS });
     await expect(page.getByText("settled", { exact: true })).toHaveCount(2, { timeout: 180_000 });
   });
 });
@@ -130,8 +130,8 @@ test.describe("verifyBatch on the Receive tab", () => {
 async function fundedPayer(arkServer: string): Promise<Wallet> {
   const wallet = await Wallet.create({
     identity: MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist), { isMainnet: false }),
-    arkServerUrl: arkServer,
-    esploraUrl: ESPLORA_URL,
+    arkProvider: new RestArkProvider(arkServer),
+    onchainProvider: new EsploraProvider(ESPLORA_URL),
     storage: await nodeSqliteStorage(":memory:"),
     settlementConfig: false,
   });

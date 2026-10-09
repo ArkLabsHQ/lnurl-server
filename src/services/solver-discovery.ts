@@ -10,7 +10,7 @@ import {
   type Network,
   type SourceReport,
 } from "@arkade-os/solver-discovery";
-import { solverLightningRendezvous } from "@arkade-os/swap";
+import { solverLightningRendezvous } from "@arkade-os/swap/protocol";
 import type { SolverCardsRepo } from "../db/repositories/solver-cards.js";
 import type { SolverRegistryCacheRepo } from "../db/repositories/solver-registry-cache.js";
 import { ConfigError, UpstreamError } from "../errors.js";

@@ -5,7 +5,7 @@ import { base64, hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { ArkAddress, toXOnly } from "@arkade-os/sdk";
 import { createOfflineSwapCoordinator, type IntentSwapSettings, type OfflineSwapCreator } from "../src/services/offline-swaps.js";
-import { httpTransport, receiveVtxoScript, unilateralClaimDelay } from "@arkade-os/swap";
+import { httpTransport, lightningReceiveContract, unilateralClaimDelay } from "@arkade-os/swap/protocol";
 import type { SolverCandidate } from "../src/services/solver-discovery.js";
 import { buildInvoice } from "./helpers/bolt11.js";
 import { solverCard } from "./fixtures/solver-cards.js";
@@ -48,7 +48,7 @@ interface FakeSolver {
   baseUrl: string;
   requests: Record<string, any>[];
   statuses: Map<string, string>;
-  mode: { wrongHash?: boolean; fromAmountDelta?: number; bogusLockup?: boolean; amountsAsStrings?: boolean; invoiceExpirySeconds?: number };
+  mode: { wrongHash?: boolean; fromAmountDelta?: number; bogusLockup?: boolean; amountsAsStrings?: boolean; expired?: boolean; refundSoon?: boolean; invoiceExpirySeconds?: number };
   /** Unix seconds the last quote was stamped at. */
   issuedAt?: number;
   close: () => Promise<void>;
@@ -66,7 +66,8 @@ async function startFakeSolver(): Promise<FakeSolver> {
       requests.push(r);
       const now = Math.floor(Date.now() / 1000);
       fake.issuedAt = now;
-      const refundLocktime = now + 7200;
+      const validUntil = mode.expired ? now - 1 : now + 600;
+      const refundLocktime = mode.refundSoon ? validUntil + 1_799 : now + 7200;
       const paymentHash = mode.wrongHash ? "ff".repeat(32) : r.profile.payment_hash;
       // The payer commits to `amount` (amount_side "from"); the invoice names exactly it.
       const invoice = buildInvoice(paymentHash, {
@@ -74,10 +75,10 @@ async function startFakeSolver(): Promise<FakeSolver> {
         timestamp: now,
         ...(mode.invoiceExpirySeconds ? { expirySeconds: mode.invoiceExpirySeconds } : {}),
       });
-      const script = receiveVtxoScript({
+      const script = lightningReceiveContract({
         solverPubkey: toXOnly(hex.decode(solverPub), "solver"),
         refundLocktime,
-        serverPubkey: operatorXonly,
+        operatorPubkey: operatorXonly,
         paymentHash: r.profile.payment_hash,
         claimDelay: unilateralClaimDelay(UNILATERAL_EXIT_DELAY),
         emulatorPubkey: toXOnly(hex.decode(emulatorPub), "emulator"),
@@ -97,7 +98,7 @@ async function startFakeSolver(): Promise<FakeSolver> {
             : r.amount + (mode.fromAmountDelta ?? 0),
           to_amount: mode.amountsAsStrings ? String(r.amount - 1) : r.amount - 1,
           solver_pubkey: solverPub,
-          valid_until: now + 600,
+          valid_until: validUntil,
           refund_locktime: refundLocktime,
           profile: {
             payment_hash: r.profile.payment_hash,
@@ -214,7 +215,7 @@ describe("createOfflineSwapCoordinator", () => {
         requestQuote: async (request) => {
           attempts.push(candidate.name);
           if (candidate.name === "unavailable") throw new Error("timeout");
-          const transport = (await import("@arkade-os/swap")).httpTransport(solver.baseUrl);
+          const transport = (await import("@arkade-os/swap/protocol")).httpTransport(solver.baseUrl);
           try { return await transport.requestQuote(request); } finally { await transport.close(); }
         },
         status: async () => null,
@@ -419,6 +420,30 @@ describe("createOfflineSwapCoordinator", () => {
     } finally {
       solver.mode.amountsAsStrings = undefined;
     }
+  });
+
+  it("refuses a quote whose pay deadline has passed, before registering anything", async () => {
+    const createContract = vi.fn(async () => ({}) as never);
+    const gated = await createOfflineSwapCoordinator(swapSettings({ contracts: { createContract } }));
+    solver.mode.expired = true;
+    try {
+      await expect(gated.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY })).rejects.toThrow(/expired at/);
+    } finally {
+      solver.mode.expired = false;
+    }
+    expect(createContract).not.toHaveBeenCalled();
+  });
+
+  it("refuses a quote whose refund opens under 30 minutes after the pay deadline", async () => {
+    const createContract = vi.fn(async () => ({}) as never);
+    const gated = await createOfflineSwapCoordinator(swapSettings({ contracts: { createContract } }));
+    solver.mode.refundSoon = true;
+    try {
+      await expect(gated.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY })).rejects.toThrow(/refund_window check/);
+    } finally {
+      solver.mode.refundSoon = false;
+    }
+    expect(createContract).not.toHaveBeenCalled();
   });
 
   it("refuses a quote whose lockup address doesn't match the local derivation", async () => {

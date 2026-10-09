@@ -427,7 +427,7 @@ export async function applySolverOverlay(): Promise<void> {
  * other down when concurrent, so they never overlap. Topping up is harmless.
  */
 export async function fundSolverFloat(log: (s: string) => void = console.log): Promise<void> {
-  const { MnemonicIdentity, Wallet } = await import("@arkade-os/sdk");
+  const { EsploraProvider, MnemonicIdentity, RestArkProvider, Wallet } = await import("@arkade-os/sdk");
   log("funding the solver's Arkade float (solver paused while its wallet is borrowed)...");
   await compose(["stop", "intent-solver"]);
   try {
@@ -436,8 +436,8 @@ export async function fundSolverFloat(log: (s: string) => void = console.log): P
     log("  creating the borrowed wallet...");
     const wallet = await Wallet.create({
       identity,
-      arkServerUrl: ARKD_URL,
-      esploraUrl: ESPLORA_URL,
+      arkProvider: new RestArkProvider(ARKD_URL),
+      onchainProvider: new EsploraProvider(ESPLORA_URL),
       storage: await nodeSqliteStorage(":memory:"),
       settlementConfig: false,
     });

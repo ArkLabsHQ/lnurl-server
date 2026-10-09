@@ -15,7 +15,7 @@ import {
   toXOnly,
 } from "@arkade-os/sdk";
 import { createSelfClaimer } from "../src/covenant/self-claim.js";
-import { receiveVtxoScript, unilateralClaimDelay } from "@arkade-os/swap";
+import { lightningReceiveContract, unilateralClaimDelay } from "@arkade-os/swap/protocol";
 
 // Against a fake Arkade operator + emulator over real HTTP, repo style. The fake
 // echoes, so what these prove is the tx WE build: leaf, destination, no signature.
@@ -136,10 +136,10 @@ beforeEach(() => {
 /** A claimer plus the lockup a solver would have funded for it. */
 function registered(opts: { swapId: string; expectedAmount: number; refundLocktime?: number }) {
   const claimer = createSelfClaimer({ arkServerUrl: ark.baseUrl, emulatorUrl: ark.baseUrl });
-  const script = receiveVtxoScript({
+  const script = lightningReceiveContract({
     solverPubkey: solverXonly,
     refundLocktime: opts.refundLocktime ?? REFUND_LOCKTIME,
-    serverPubkey: operatorXonly,
+    operatorPubkey: operatorXonly,
     paymentHash: PAYMENT_HASH,
     claimDelay: unilateralClaimDelay(UNILATERAL_EXIT_DELAY),
     emulatorPubkey: emulatorXonly,

@@ -4,7 +4,7 @@ import { randomBytes, createHash } from "node:crypto";
 import { hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { ArkAddress, ContractManager, RestIndexerProvider, toXOnly } from "@arkade-os/sdk";
-import { receiveVtxoScript, registerLockupContract, unilateralClaimDelay, SWAP_LOCKUP_CONTRACT_TYPE } from "@arkade-os/swap";
+import { lightningReceiveContract, registerLockupContract, unilateralClaimDelay, SWAP_LOCKUP_CONTRACT_TYPE } from "@arkade-os/swap/protocol";
 import { sqliteContractStores } from "../src/contract-store.js";
 import { openDb } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
@@ -40,10 +40,10 @@ function emptyIndexer(): Promise<{ baseUrl: string; close: () => Promise<void> }
 
 function lockup() {
   const preimage = randomBytes(32);
-  return receiveVtxoScript({
+  return lightningReceiveContract({
     solverPubkey: solverXonly,
     refundLocktime: Math.floor(Date.now() / 1000) + 7200,
-    serverPubkey: operatorXonly,
+    operatorPubkey: operatorXonly,
     paymentHash: createHash("sha256").update(preimage).digest("hex"),
     claimDelay: unilateralClaimDelay(86_400),
     emulatorPubkey: emulatorXonly,

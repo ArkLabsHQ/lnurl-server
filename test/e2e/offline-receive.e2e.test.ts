@@ -28,7 +28,7 @@ import { join } from "node:path";
 import { hex, base64 } from "@scure/base";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
-import { MnemonicIdentity, Wallet, RestIndexerProvider, ArkAddress, Extension, Transaction } from "@arkade-os/sdk";
+import { MnemonicIdentity, Wallet, RestArkProvider, RestIndexerProvider, ArkAddress, Extension, Transaction } from "@arkade-os/sdk";
 import { deriveSessionId } from "../../src/session-token.js";
 import { createServer } from "../../src/http/server.js";
 import { openDb, type Db } from "../../src/db/connection.js";
@@ -41,7 +41,7 @@ import { OfflineSwapStore } from "../../src/offline-swap-store.js";
 import { staticSettings } from "../../src/services/settings.js";
 import { createOfflineSwapCoordinator, type OfflineSwapCreator } from "../../src/services/offline-swaps.js";
 import { createSelfClaimer } from "../../src/covenant/self-claim.js";
-import { httpTransport } from "@arkade-os/swap";
+import { httpTransport } from "@arkade-os/swap/protocol";
 import { solverCard } from "../fixtures/solver-cards.js";
 import { startOfflineSettlementPoller } from "../../src/workers/offline-poller.js";
 import {
@@ -185,7 +185,7 @@ describe.each([
     const identity = MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist), { isMainnet: false });
     const wallet = await Wallet.create({
       identity,
-      arkServerUrl: ARKD_URL,
+      arkProvider: new RestArkProvider(ARKD_URL),
       storage: await nodeSqliteStorage(":memory:"),
       settlementConfig: false,
     });
@@ -422,7 +422,7 @@ describe("e2e: nameless offline receive via the intents corridor (self-claim)", 
     const identity = MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist), { isMainnet: false });
     const wallet = await Wallet.create({
       identity,
-      arkServerUrl: ARKD_URL,
+      arkProvider: new RestArkProvider(ARKD_URL),
       storage: await nodeSqliteStorage(":memory:"),
       settlementConfig: false,
     });

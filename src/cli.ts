@@ -168,7 +168,7 @@ async function main(): Promise<void> {
           void checkEmulatorPairing({ covclaimdUrl: off.covclaimdUrl!, emulatorUrl: off.emulatorUrl! });
         }
       }
-      const { httpTransport } = await import("@arkade-os/swap");
+      const { httpTransport } = await import("@arkade-os/swap/protocol");
       offlineSwapCreator = await createOfflineSwapCoordinator({
         discovery,
         nostrSecretKey: off.nostrSecretKey,

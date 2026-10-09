@@ -44,7 +44,7 @@ test("pays an offline-receive invoice over Lightning and times the claim @funded
   // Guarded rather than assumed: the send corridor needs the network's x-only
   // emulator key to select a market, and without it the helper reports no solver
   // at all rather than a key problem.
-  const { discoverMarkets, solverLightningRendezvous } = await import("@arkade-os/swap");
+  const { discoverMarkets, solverLightningRendezvous } = await import("@arkade-os/swap/protocol");
   const { defaultRegistryUrls } = await import("@arkade-os/solver-discovery");
   const { getNetwork, resolveEmulatorPubkey, toXOnly } = await import("@arkade-os/sdk");
   const { hex } = await import("@scure/base");

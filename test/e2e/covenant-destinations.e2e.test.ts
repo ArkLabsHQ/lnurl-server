@@ -16,7 +16,7 @@ import { randomBytes } from "node:crypto";
 import { hex } from "@scure/base";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
-import { MnemonicIdentity, Wallet, RestIndexerProvider, ArkAddress, ContractManager, contractHandlers, type IContractManager } from "@arkade-os/sdk";
+import { MnemonicIdentity, Wallet, RestArkProvider, RestIndexerProvider, ArkAddress, ContractManager, contractHandlers, type IContractManager } from "@arkade-os/sdk";
 import { createServer } from "../../src/http/server.js";
 import { openDb, type Db } from "../../src/db/connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
@@ -70,7 +70,7 @@ async function fundedWallet(log: (s: string) => void): Promise<Wallet> {
   const identity = MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist), { isMainnet: false });
   const wallet = await Wallet.create({
     identity,
-    arkServerUrl: ARKD_URL,
+    arkProvider: new RestArkProvider(ARKD_URL),
     storage: await nodeSqliteStorage(":memory:"),
     settlementConfig: false,
   });
@@ -111,7 +111,7 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
     const identity = MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist), { isMainnet: false });
     const wallet = await Wallet.create({
       identity,
-      arkServerUrl: ARKD_URL,
+      arkProvider: new RestArkProvider(ARKD_URL),
       storage: await nodeSqliteStorage(":memory:"),
       settlementConfig: false,
     });
@@ -215,7 +215,7 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
       expect(registered).toHaveLength(2);
       expect(registered.every((c) => c.watch === "awaiting-funds")).toBe(true);
 
-      const txid = await payer.sendBitcoin({ address: second.destination, amount: AMOUNT_SATS });
+      const txid = await payer.send({ address: second.destination, amount: AMOUNT_SATS });
       expect(txid).toMatch(/^[0-9a-f]{64}$/);
 
       await pollUntil(

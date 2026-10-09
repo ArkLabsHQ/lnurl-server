@@ -6,7 +6,7 @@
 // it asks the indexer directly — a stronger answer than the contract store's copy.
 
 import { ArkAddress, isContractVtxoEvent, type IContractManager } from "@arkade-os/sdk";
-import { SWAP_LOCKUP_CONTRACT_TYPE } from "@arkade-os/swap";
+import { SWAP_LOCKUP_CONTRACT_TYPE } from "@arkade-os/swap/protocol";
 import { hex } from "@scure/base";
 import type { OfflineSwapStore } from "../offline-swap-store.js";
 import { createLogger, type Logger } from "../logger.js";
