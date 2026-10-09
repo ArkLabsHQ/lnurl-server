@@ -404,7 +404,8 @@ function Receive({ receiver: shown, onRenamed }: { receiver: Receiver; onRenamed
 
   const load = async () => {
     setBusy("options"); setErr("");
-    try { setPayRequest(await shown.payRequest()); }
+    // A reload must reach the server; the receiver's payRequest() is memoised for 30 s.
+    try { setPayRequest(await (payRequest ? payer.resolve(shown.lnurl) : shown.payRequest())); }
     catch (e) { setErr((e as Error).message); }
     finally { setBusy(""); }
   };
@@ -470,7 +471,10 @@ function Receive({ receiver: shown, onRenamed }: { receiver: Receiver; onRenamed
             style={{ padding: 8, borderRadius: 6, border: "1px solid #bbb", width: 120 }} />
           <span style={{ color: "#666", fontSize: 13 }}>sats</span>
         </div>
-        <Call code="const payRequest = await receiver.payRequest()" />
+        <Call code={[
+          "const payRequest = await receiver.payRequest()  // one fetch serves 30 s of calls",
+          "await payer.resolve(receiver.lnurl)  // Reload: always asks the server",
+        ].join("\n")} />
 
         {payRequest && (
           <p style={{ color: "#666", fontSize: 12, marginTop: 0 }}>

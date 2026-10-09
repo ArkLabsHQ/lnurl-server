@@ -21,6 +21,8 @@ import type { PayRequest, VerifyExpectation } from "./types.js";
 
 export const LNURL_ARKADE_RAIL = "lnurl-arkade";
 export const LNURL_LIGHTNING_RAIL = "lnurl-lightning";
+/** How long a payRequest is reused, here and by `Receiver.payRequest()`. */
+export const PAY_REQUEST_TTL_MS = 30_000;
 
 /** What an lnurl rail records on its quote, under `meta.lnurl`. */
 export interface LnurlQuoteMeta {
@@ -61,7 +63,7 @@ export interface LnurlRailDeps {
  * fetch the same payRequest.
  */
 export function lnurlRails(deps: LnurlRailDeps): PaymentRail[] {
-  const ttlMs = deps.ttlMs ?? 30_000;
+  const ttlMs = deps.ttlMs ?? PAY_REQUEST_TTL_MS;
   const cache = new Map<string, { at: number; pr: Promise<PayRequest> }>();
 
   const resolveOnce = (raw: string): Promise<PayRequest> => {
