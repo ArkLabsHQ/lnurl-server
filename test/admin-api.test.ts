@@ -321,10 +321,16 @@ describe("admin address list", () => {
     expect(capped.nextCursor).toBeDefined();
   });
 
-  it("refuses a cursor it did not issue", async () => {
+  it("refuses a malformed cursor", async () => {
     for (const cursor of ["abc", "1-2-3", "-1-2", "1.5-2"]) {
       expect((await request(app).get(`/admin/api/addresses?cursor=${cursor}`)).status).toBe(400);
     }
+  });
+
+  it("answers an empty last page for a well-formed cursor past the data", async () => {
+    const res = await request(app).get("/admin/api/addresses?cursor=1-1");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ addresses: [] });
   });
 
   it("counts every address, for the dashboard", async () => {

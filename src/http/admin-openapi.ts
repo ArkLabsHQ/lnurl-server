@@ -253,7 +253,7 @@ export const adminOpenApiSpec = {
               nextCursor: { type: "string", description: "Absent on the last page" },
             } } } },
           },
-          ...errorResponse("400", "cursor is not a nextCursor this endpoint answered"),
+          ...errorResponse("400", "cursor is malformed"),
         },
       },
       post: {
