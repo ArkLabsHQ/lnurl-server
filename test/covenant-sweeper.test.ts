@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
+import { base64, hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
-import { MultisigTapscript, VtxoScript, type IContractManager } from "@arkade-os/sdk";
+import { CSVMultisigTapscript, MultisigTapscript, Transaction, VtxoScript, type IContractManager } from "@arkade-os/sdk";
 import { createCovenantSweeper, startCovenantSweeper } from "../src/workers/covenant-sweeper.js";
 import { MemorySettlementStore, type SettlementStore } from "../src/settlement-store.js";
 import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler as handler } from "../src/covenant/contract.js";
@@ -56,6 +57,59 @@ function managerWith(
     getContractsWithVtxos,
     getSpendablePaths,
   };
+}
+
+const CHECKPOINT_TAPSCRIPT = hex.encode(
+  CSVMultisigTapscript.encode({ timelock: { type: "seconds", value: 1024n }, pubkeys: [xonly(3)] }).script,
+);
+const covenantPkScript = handler.createScript(realParams).pkScript;
+
+/** Keyed by the txid it hashes to, so PrevArkTx resolution can find it. */
+function fundingTx(valueSat: number, seed = 1) {
+  const tx = new Transaction({ version: 3, allowUnknownOutputs: true });
+  tx.addInput({ txid: new Uint8Array(32).fill(seed), index: 0 });
+  tx.addOutput({ script: covenantPkScript, amount: BigInt(valueSat) });
+  return { txid: tx.id, psbt: base64.encode(tx.toPSBT()) };
+}
+
+type Coin = ReturnType<typeof vtxo> & { arkTxId?: string };
+
+/** Real signing, not an echo: these tests also pin that it leaves the txid alone. */
+function signedReply(arkTx: string): string {
+  const tx = Transaction.fromPSBT(base64.decode(arkTx));
+  tx.signIdx(new Uint8Array(32).fill(3), 0, undefined, new Uint8Array(32).fill(0xab));
+  return base64.encode(tx.toPSBT());
+}
+
+/** Builds the sweep for real, so the emulator's answer is something it can be wrong about. */
+function realSweeper(opts: {
+  funding: { psbt: string };
+  vtxos: Coin[];
+  settlements?: SettlementStore;
+  reply?: (arkTx: string) => string;
+}) {
+  const contracts = {
+    getContractsWithVtxos: async () => [{ contract: contract("5120aa"), vtxos: opts.vtxos }],
+    getSpendablePaths: async () => [{ leaf: realLeaves[SWEEP_LEAF]!, extraWitness: [new Uint8Array(32).fill(7)] }],
+  } as unknown as IContractManager;
+  return createCovenantSweeper({
+    contracts,
+    arkServerUrl: "http://unused",
+    emulatorUrl: "http://unused",
+    arkProvider: { getInfo: async () => ({ checkpointTapscript: CHECKPOINT_TAPSCRIPT }) } as never,
+    indexer: { getVirtualTxs: async () => ({ txs: [opts.funding.psbt] }) } as never,
+    emulator: {
+      submitTx: async (arkTx: string) => ({ signedArkTx: (opts.reply ?? signedReply)(arkTx), signedCheckpointTxs: [] }),
+    },
+    ...(opts.settlements ? { settlements: opts.settlements } : {}),
+  });
+}
+
+function recorded(settlements: SettlementStore, amountMsat = 2_000_000) {
+  settlements.create({
+    paymentHash: "h", pr: "", sessionId: "s", paymentOption: "arkade",
+    paymentDestination: "ark1x", amountMsat, covenantScript: "5120aa",
+  });
 }
 
 const sweeperWith = (manager: IContractManager, settlements?: SettlementStore) =>
@@ -301,6 +355,68 @@ describe("createCovenantSweeper", () => {
     handle.trigger();
     await new Promise((r) => setTimeout(r, 50));
     expect(passes).toBe(0);
+  });
+
+  it("counts a sweep the emulator answered with a different transaction as failed", async () => {
+    const funding = fundingTx(2000);
+    const other = fundingTx(2000, 2);
+    const settlements = new MemorySettlementStore(3_600_000);
+    recorded(settlements);
+    settlements.markObserved("h", funding.txid);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const moved = await realSweeper({ funding, vtxos: [vtxo(funding.txid)], settlements, reply: () => other.psbt }).sweep();
+
+      expect(moved).toBe(0);
+      expect(settlements.get("h")!.payoutReference).toBeNull();
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("records the payout from the spend of the output that settled the record", async () => {
+    const funding = fundingTx(2000);
+    const settlements = new MemorySettlementStore(3_600_000);
+    recorded(settlements);
+    settlements.markObserved("h", funding.txid);
+    const swept: Coin = { ...vtxo(funding.txid, { spent: true }), arkTxId: "sweep-tx" };
+
+    await realSweeper({ funding, vtxos: [swept], settlements }).sweep();
+
+    expect(settlements.get("h")!.payoutReference).toBe("sweep-tx");
+  });
+
+  // Moving a sub-amount payment to the user's own address is right; the real payment may still follow.
+  it("records no payout for a sweep of an unsettled destination, and keeps it in scope", async () => {
+    const funding = fundingTx(1000);
+    const settlements = new MemorySettlementStore(3_600_000);
+    recorded(settlements);
+
+    const moved = await realSweeper({ funding, vtxos: [{ ...vtxo(funding.txid), value: 1000 }], settlements }).sweep();
+
+    expect(moved).toBe(1);
+    expect(settlements.get("h")!.payoutReference).toBeNull();
+    expect(settlements.listActiveCovenantScripts()).toContain("5120aa");
+  });
+
+  // One pass behind is the accepted cost of not trusting the emulator's answer.
+  it("records the payout on the pass after the one that swept", async () => {
+    const funding = fundingTx(2000);
+    const settlements = new MemorySettlementStore(3_600_000);
+    recorded(settlements);
+    const coin: Coin = vtxo(funding.txid);
+    const sweeper = realSweeper({ funding, vtxos: [coin], settlements });
+
+    expect(await sweeper.sweep()).toBe(1);
+    expect(settlements.get("h")!.payoutReference).toBeNull();
+
+    settlements.markObserved("h", funding.txid);
+    coin.isSpent = true;
+    coin.arkTxId = "sweep-tx";
+
+    expect(await sweeper.sweep()).toBe(0);
+    expect(settlements.get("h")!.payoutReference).toBe("sweep-tx");
   });
 
   it("keeps going after one destination throws", async () => {

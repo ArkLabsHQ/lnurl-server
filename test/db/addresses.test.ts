@@ -69,3 +69,57 @@ describe("AddressesRepo", () => {
     ).toThrow();
   });
 });
+
+describe("AddressesRepo.list pages", () => {
+  // b, c and d share a created_at, so only their ids order them.
+  const seed = () => {
+    const at = { a: 1000, b: 2000, c: 2000, d: 2000, e: 3000 };
+    for (const [username, createdAt] of Object.entries(at)) {
+      const { id } = repo.create({ domainId, username, status: "active" });
+      db.prepare("UPDATE addresses SET created_at = ? WHERE id = ?").run(createdAt, id);
+    }
+  };
+  const names = (rows: { username: string }[]) => rows.map((r) => r.username);
+  const after = (rows: { createdAt: number; id: number }[]) => ({ createdAt: rows.at(-1)!.createdAt, id: rows.at(-1)!.id });
+
+  it("pages newest first, ordering equal created_at by id", () => {
+    seed();
+    const first = repo.list({ limit: 2 });
+    expect(names(first)).toEqual(["e", "d"]);
+    const second = repo.list({ before: after(first), limit: 2 });
+    expect(names(second)).toEqual(["c", "b"]);
+    expect(names(repo.list({ before: after(second), limit: 2 }))).toEqual(["a"]);
+  });
+
+  it("filters before it limits, on every page", () => {
+    seed();
+    for (const username of ["b", "d"]) repo.updateStatus(repo.getByDomainAndUsername(domainId, username)!.id, "revoked");
+    const first = repo.list({ status: "active", limit: 2 });
+    expect(names(first)).toEqual(["e", "c"]);
+    expect(names(repo.list({ status: "active", before: after(first), limit: 2 }))).toEqual(["a"]);
+    expect(names(repo.list({ q: "d", limit: 2 }))).toEqual(["d"]);
+  });
+
+  describe.each<[string, (r: AddressesRepo) => unknown, RegExp]>([
+    ["the first page", (r) => r.list({ limit: 201 }), /^SCAN addresses USING INDEX idx_addresses_created$/],
+    ["a later page", (r) => r.list({ before: { createdAt: 2000, id: 7 }, limit: 201 }), /^SEARCH addresses USING INDEX idx_addresses_created /],
+    ["a later page of a username search", (r) => r.list({ q: "ali", before: { createdAt: 2000, id: 7 }, limit: 201 }), /^SEARCH addresses USING INDEX idx_addresses_created /],
+    ["a status filter", (r) => r.list({ status: "revoked", limit: 201 }), /^SCAN addresses USING INDEX idx_addresses_created$/],
+    ["the bulk reconcile read", (r) => r.list({ withArkadeAddress: true, limit: 200 }), /^SCAN addresses USING INDEX idx_addresses_created$/],
+  ])("%s", (_name, call, plan) => {
+    it("walks idx_addresses_created in order, without sorting", () => {
+      const prepare = db.prepare.bind(db);
+      const seen: string[] = [];
+      db.prepare = (sql: string) => (seen.push(sql), prepare(sql));
+      try {
+        call(repo);
+      } finally {
+        db.prepare = prepare;
+      }
+      expect(seen).toHaveLength(1);
+      const detail = (db.prepare(`EXPLAIN QUERY PLAN ${seen[0]}`).all() as { detail: string }[]).map((r) => r.detail).join(" | ");
+      expect(detail).toMatch(plan);
+      expect(detail).not.toContain("TEMP B-TREE");
+    });
+  });
+});

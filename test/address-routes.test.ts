@@ -210,7 +210,7 @@ describe("re-claiming after a failed identity bind", () => {
     const again = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "domain.com", body: { username: "retry", token: TOKEN } });
     expect(again.status).toBe(200);
     expect(again.body.lightningAddress).toBe("retry@domain.com");
-    expect(repos.addresses.list({ domainId }).filter((a) => a.username === "retry")).toHaveLength(1);
+    expect(repos.addresses.list({ domainId, limit: 10 }).filter((a) => a.username === "retry")).toHaveLength(1);
 
     const bind = await req("POST", `${ctx.baseUrl}/lnurl/address/retry/arkade`, { host: "domain.com", bearer: TOKEN, body: IDENTITY });
     expect(bind.status).toBe(200);
