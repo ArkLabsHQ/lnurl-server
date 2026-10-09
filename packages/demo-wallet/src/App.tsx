@@ -404,6 +404,7 @@ function Receive({ receiver: shown, onRenamed }: { receiver: Receiver; onRenamed
 
   const load = async () => {
     setBusy("options"); setErr("");
+    // A reload must reach the server; the receiver's payRequest() is memoised for 30 s.
     try { setPayRequest(await (payRequest ? payer.resolve(shown.lnurl) : shown.payRequest())); }
     catch (e) { setErr((e as Error).message); }
     finally { setBusy(""); }
