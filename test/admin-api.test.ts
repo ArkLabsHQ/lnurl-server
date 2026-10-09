@@ -123,8 +123,8 @@ describe("admin API", () => {
     expect(res.status).toBe(201);
     expect(res.body.claimCode).toMatch(/^[0-9a-f]+$/);
     const list = await request(app).get("/admin/api/addresses?status=reserved");
-    expect(list.body[0].username).toBe("vip");
-    expect(list.body[0].online).toBe(false);
+    expect(list.body.addresses[0].username).toBe("vip");
+    expect(list.body.addresses[0].online).toBe(false);
   });
 
   it("mints an address and returns the secret once", async () => {
@@ -181,7 +181,7 @@ describe("admin API", () => {
     expect(spec.status).toBe(200);
     expect(spec.body.info.title).toMatch(/admin/i);
     expect(Object.keys(spec.body.paths)).toEqual(
-      expect.arrayContaining(["/domains", "/addresses", "/api-keys", "/blacklist", "/sessions", "/settings", "/settlements"]),
+      expect.arrayContaining(["/domains", "/addresses", "/addresses/count", "/api-keys", "/blacklist", "/sessions", "/settings", "/settlements"]),
     );
 
     const docs = await request(app).get("/admin/api/docs");
@@ -253,5 +253,88 @@ describe("admin API", () => {
     settlements.create({ paymentHash: "p1", pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000 });
     const res = await request(app).get("/admin/api/settlements?settled=false&limit=3");
     expect(res.body.map((r: { paymentHash: string }) => r.paymentHash)).toEqual(["p1", "p0"]);
+  });
+});
+
+describe("admin address list", () => {
+  type Page = { addresses: { username: string }[]; nextCursor?: string };
+  let domainId: number;
+  beforeEach(() => { domainId = repos.domains.create({ domain: "paged.com", allocationModes: ["self"] }).id; });
+  const add = (username: string, createdAt: number, status: "active" | "revoked" = "active") => {
+    const { id } = repos.addresses.create({ domainId, username, status });
+    db.prepare("UPDATE addresses SET created_at = ? WHERE id = ?").run(createdAt, id);
+  };
+  const page = async (query: string) => {
+    const res = await request(app).get(`/admin/api/addresses${query}`);
+    expect(res.status).toBe(200);
+    return res.body as Page;
+  };
+  const names = (p: Page) => p.addresses.map((a) => a.username);
+
+  it("answers a page newest first, with a cursor to the next while there is one", async () => {
+    add("a", 1000); add("b", 2000); add("c", 3000);
+    const first = await page("?limit=2");
+    expect(names(first)).toEqual(["c", "b"]);
+    expect(typeof first.nextCursor).toBe("string");
+    const last = await page(`?limit=2&cursor=${first.nextCursor}`);
+    expect(names(last)).toEqual(["a"]);
+    expect(last).not.toHaveProperty("nextCursor");
+  });
+
+  it("has no cursor after a last page that is exactly full", async () => {
+    add("a", 1000); add("b", 2000);
+    const only = await page("?limit=2");
+    expect(names(only)).toEqual(["b", "a"]);
+    expect(only).not.toHaveProperty("nextCursor");
+  });
+
+  it("pages through equal created_at values without skipping or repeating one", async () => {
+    for (const username of ["a", "b", "c", "d", "e"]) add(username, 5000);
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const p = await page(`?limit=2${cursor ? `&cursor=${cursor}` : ""}`);
+      seen.push(...names(p));
+      cursor = p.nextCursor;
+    } while (cursor);
+    expect(seen).toEqual(["e", "d", "c", "b", "a"]);
+  });
+
+  it("filters before it pages", async () => {
+    add("alice", 1000); add("bob", 2000, "revoked"); add("alina", 3000); add("carol", 4000);
+    const first = await page("?q=ali&limit=1");
+    expect(names(first)).toEqual(["alina"]);
+    const second = await page(`?q=ali&limit=1&cursor=${first.nextCursor}`);
+    expect(names(second)).toEqual(["alice"]);
+    expect(second).not.toHaveProperty("nextCursor");
+    expect(names(await page("?status=revoked"))).toEqual(["bob"]);
+    expect(names(await page(`?domainId=${domainId}&status=active&limit=2`))).toEqual(["carol", "alina"]);
+  });
+
+  it("defaults limit to 200 and caps it at 1000", async () => {
+    for (let i = 0; i < 1001; i++) repos.addresses.create({ domainId, username: `u${i}`, status: "active" });
+    for (const query of ["", "?limit=0", "?limit=-5", "?limit=abc", "?limit=2.5"]) {
+      expect((await page(query)).addresses).toHaveLength(200);
+    }
+    const capped = await page("?limit=5000");
+    expect(capped.addresses).toHaveLength(1000);
+    expect(capped.nextCursor).toBeDefined();
+  });
+
+  it("refuses a malformed cursor", async () => {
+    for (const cursor of ["abc", "1-2-3", "-1-2", "1.5-2"]) {
+      expect((await request(app).get(`/admin/api/addresses?cursor=${cursor}`)).status).toBe(400);
+    }
+  });
+
+  it("answers an empty last page for a well-formed cursor past the data", async () => {
+    const res = await request(app).get("/admin/api/addresses?cursor=1-1");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ addresses: [] });
+  });
+
+  it("counts every address, for the dashboard", async () => {
+    add("a", 1000); add("b", 2000, "revoked");
+    expect((await request(app).get("/admin/api/addresses/count")).body).toEqual({ count: 2 });
   });
 });

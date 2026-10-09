@@ -330,6 +330,21 @@ const MIGRATIONS: Migration[] = [
         WHERE settled = 0 AND payment_option = 'arkade' AND covenant_script IS NULL;
     `,
   },
+  {
+    version: 21,
+    // No query has read 17's destination index since 20 took the watcher's read; it only cost writes.
+    up: `
+      DROP INDEX IF EXISTS idx_settlements_pending_destinations;
+    `,
+  },
+  {
+    version: 22,
+    // The admin list's pages. status and username let its filters reject a row from the
+    // index alone; without them a search seeks the table per row, slower than a scan.
+    up: `
+      CREATE INDEX IF NOT EXISTS idx_addresses_created ON addresses(created_at, id, status, username);
+    `,
+  },
 ];
 
 export const LATEST_MIGRATION = Math.max(...MIGRATIONS.map((m) => m.version));
