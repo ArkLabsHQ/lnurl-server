@@ -132,10 +132,7 @@ describe("startCovenantWatcher", () => {
 
     await catchUp(store, manager);
 
-    expect(manager.getContractsWithVtxos).toHaveBeenCalledWith({
-      type: COVENANT_CONTRACT_TYPE,
-      script: ["512011"],
-    });
+    expect(manager.getContractsWithVtxos).toHaveBeenCalledWith({ script: ["512011"] });
   });
 
   it("warns once a pass when the manager resolves fewer contracts than it asked about", async () => {

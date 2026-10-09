@@ -18,14 +18,22 @@ const SCOPE_CHUNK = 500;
 type ContractScope = NonNullable<Parameters<IContractManager["getContracts"]>[0]>;
 
 /** The destinations still worth querying, as manager filters. Empty means nothing
- *  to do — not "everything", so a caller without a store must say so explicitly. */
+ *  to do — not "everything", so a caller without a store must say so explicitly.
+ *  Scripts alone, the primary key: `type = ?` beside three or more made SQLite read
+ *  every covenant ever issued. {@link resolveCovenants} checks the type instead. */
 export function activeCovenantFilters(store: SettlementStore): ContractScope[] {
   const scripts = store.listActiveCovenantScripts();
   const filters: ContractScope[] = [];
   for (let i = 0; i < scripts.length; i += SCOPE_CHUNK) {
-    filters.push({ type: COVENANT_CONTRACT_TYPE, script: scripts.slice(i, i + SCOPE_CHUNK) });
+    filters.push({ script: scripts.slice(i, i + SCOPE_CHUNK) });
   }
   return filters;
+}
+
+/** One scope's covenant contracts, with their vtxos. Another type would reach the
+ *  sweeper's covenant handler, whose throw ends the whole pass. */
+export async function resolveCovenants(contracts: IContractManager, scope: ContractScope) {
+  return (await contracts.getContractsWithVtxos(scope)).filter(({ contract }) => contract.type === COVENANT_CONTRACT_TYPE);
 }
 
 /** How many scripts a scope named; 0 for the unscoped fallback, which promises none. */

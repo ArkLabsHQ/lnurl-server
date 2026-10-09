@@ -23,6 +23,7 @@ import { DbSettlementStore, MemorySettlementStore } from "../src/settlement-stor
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
 import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler as handler } from "../src/covenant/contract.js";
 import { COVENANT_V1 } from "../src/covenant/destination.js";
+import { catchUp } from "../src/workers/covenant-watcher.js";
 import { SWAP_LOCKUP_CONTRACT_TYPE } from "@arkade-os/swap/protocol";
 import {
   activeCovenantFilters,
@@ -237,9 +238,7 @@ describe("activeCovenantFilters", () => {
     store.markObserved("v2", "tx-in");
     store.markPaidOut("v2", "sweep-tx");
 
-    expect(activeCovenantFilters(store)).toEqual([
-      { type: COVENANT_CONTRACT_TYPE, script: [scriptOf(1)] },
-    ]);
+    expect(activeCovenantFilters(store)).toEqual([{ script: [scriptOf(1)] }]);
   });
 
   // `script IN (...)` has a parameter ceiling; a burst must not break the sweep.
@@ -449,6 +448,26 @@ describe("the watch set at scale", () => {
       const visited = (await Promise.all(filters.map((f) => contracts.getContractsWithVtxos(f)))).flat();
       expect(visited).toHaveLength(LIVE);
     } finally {
+      close();
+    }
+  }, 120_000);
+
+  it("resolves a pass's scope by primary key, not by contract type", async () => {
+    const { db, settlements, contracts, close } = await boot(await seeded("scope-plan", 20));
+    const prepare = db.prepare.bind(db);
+    const seen: string[] = [];
+    db.prepare = (sql: string) => (seen.push(sql), prepare(sql));
+    try {
+      await catchUp(settlements, contracts);
+      db.prepare = prepare;
+      const scopes = seen.filter((sql) => sql.includes("FROM ark_contracts WHERE script IN (?, ?, ?"));
+      expect(scopes).not.toHaveLength(0);
+      for (const sql of scopes) {
+        const plan = (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[]).map((r) => r.detail).join(" | ");
+        expect(plan).toContain("sqlite_autoindex_ark_contracts_1");
+      }
+    } finally {
+      db.prepare = prepare;
       close();
     }
   }, 120_000);

@@ -142,7 +142,7 @@ export class AddressesRepo {
       .run(serializeDisabledRails(rails), Date.now(), id);
   }
 
-  list(filter: { domainId?: number; status?: AddressStatus; q?: string } = {}): AddressRow[] {
+  list(filter: { domainId?: number; status?: AddressStatus; q?: string; withArkadeAddress?: boolean; limit?: number } = {}): AddressRow[] {
     const where: string[] = [];
     const params: (string | number)[] = [];
     if (filter.domainId != null) { where.push("domain_id = ?"); params.push(filter.domainId); }
@@ -152,7 +152,10 @@ export class AddressesRepo {
       where.push("username LIKE ? ESCAPE '\\'");
       params.push(`%${escaped}%`);
     }
-    const sql = `SELECT * FROM addresses ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC`;
+    if (filter.withArkadeAddress) where.push("arkade_address != ''");
+    const limit = filter.limit != null ? " LIMIT ?" : "";
+    if (filter.limit != null) params.push(filter.limit);
+    const sql = `SELECT * FROM addresses ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC${limit}`;
     return (this.db.prepare(sql).all(...params) as unknown as AddressRecord[]).map(rowToAddress);
   }
 

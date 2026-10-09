@@ -98,12 +98,13 @@ export class OfflineSwapStore {
 
   listPending(): PendingOfflineSwap[] {
     // Recovery shares the settlement TTL. Swaps that expire while this process
-    // is down are intentionally not resumed on restart.
+    // is down are intentionally not resumed on restart. `swap_id IS NOT NULL` drops no
+    // row (it is written with the recovery row) but lets the pending-swap index serve this.
     const rows = this.db.prepare(
       `SELECT s.payment_hash, s.preimage, o.rfq_id, o.solver_name, o.solver_pubkey,
               o.relays_json, o.recovery_version, o.recovery_json, o.lockup_address, o.expected_amount
        FROM settlements s JOIN offline_swaps o ON o.payment_hash = s.payment_hash
-       WHERE s.settled = 0 AND s.preimage IS NOT NULL AND s.created_at > ?`,
+       WHERE s.swap_id IS NOT NULL AND s.settled = 0 AND s.preimage IS NOT NULL AND s.created_at > ?`,
     ).all(this.now() - this.ttlMs) as unknown as PendingRow[];
     return rows.map((row) => ({ paymentHash: row.payment_hash, preimage: row.preimage, recovery: recoveryOf(row) }));
   }
