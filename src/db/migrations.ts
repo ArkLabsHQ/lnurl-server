@@ -321,6 +321,15 @@ const MIGRATIONS: Migration[] = [
         WHERE swap_id IS NOT NULL AND settled = 0;
     `,
   },
+  {
+    version: 20,
+    // The static-address watcher's read, every second. Migration 17's index also holds
+    // every unpaid covenant destination, which that watcher only discards.
+    up: `
+      CREATE INDEX IF NOT EXISTS idx_settlements_pending_static_destinations ON settlements(created_at)
+        WHERE settled = 0 AND payment_option = 'arkade' AND covenant_script IS NULL;
+    `,
+  },
 ];
 
 export const LATEST_MIGRATION = Math.max(...MIGRATIONS.map((m) => m.version));

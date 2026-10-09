@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { openDb } from "../../src/db/connection.js";
 import { LATEST_MIGRATION, MIGRATION_COUNT, runMigrations } from "../../src/db/migrations.js";
+import { DbSettlementStore } from "../../src/settlement-store.js";
 
 function tableNames(db = openDb(":memory:")) {
   runMigrations(db);
@@ -85,6 +86,21 @@ describe("runMigrations", () => {
 
     expect(indexes()).toContain("idx_settlements_pending_swaps_created");
     expect(indexes()).toContain("idx_settlements_pending_destinations");
+    db.close();
+  });
+
+  it("indexes the static destinations already in a database at 19", () => {
+    const db = openDb(":memory:");
+    runMigrations(db, { upToVersion: 19 });
+    const insert = "INSERT INTO settlements (payment_hash, pr, session_id, settled, payment_option, payment_destination, amount_msat, covenant_script, created_at) VALUES (?, '', 's', 0, 'arkade', ?, 1000, ?, ?)";
+    db.prepare(insert).run("static", "tark1static", null, Date.now());
+    db.prepare(insert).run("covenant", "tark1derived", "5120aa", Date.now());
+
+    runMigrations(db);
+
+    const indexes = (db.prepare("SELECT name FROM pragma_index_list('settlements')").all() as { name: string }[]).map((r) => r.name);
+    expect(indexes).toContain("idx_settlements_pending_static_destinations");
+    expect(new DbSettlementStore(db, 60_000).listPendingDestinations().map((d) => d.paymentHash)).toEqual(["static"]);
     db.close();
   });
 

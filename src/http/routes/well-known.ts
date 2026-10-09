@@ -40,7 +40,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
   // Tighter per-IP guard on callback branches that cost resources without a live
   // wallet session: each offline-swap hit asks the solver for a fresh quote, and
   // each destination hit writes a store record.
-  const addressCallbackLimiter = new RateLimiter(30, 60_000);
+  const addressCallbackLimiter = new RateLimiter(config.callbackRateLimitPerMin ?? 30, 60_000);
   let offlineQuotes = 0;
   // Each token callback spends one of a handful of provider orders a minute, so one IP or
   // one receiver must not be able to hold them all.

@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { randomUUID } from "node:crypto";
+import { isIP } from "node:net";
 import { SessionManager } from "../services/sessions.js";
 import { MemorySettlementStore } from "../settlement-store.js";
 import { HealthRegistry } from "../health.js";
@@ -49,8 +50,17 @@ export function createServer(config: LnurlServiceConfig, deps?: ServerDeps): exp
 
   // Default: trust exactly one proxy hop so req.ip reflects the real client IP behind
   // a single LB/CDN. Set trustProxy to a higher number for deeper proxy stacks, or false
-  // to disable entirely (direct connections only).
-  app.set("trust proxy", config.trustProxy ?? 1);
+  // to disable entirely (direct connections only). Express walks from the socket outward,
+  // asking trust(addr, i) of each hop, and req.ip is the first one refused; a listed
+  // forwarder is trusted at any depth.
+  const hops = config.trustProxy === true ? Infinity : config.trustProxy === false ? 0 : (config.trustProxy ?? 1);
+  const forwarders = config.trustedForwarders;
+  app.set("trust proxy", (addr: string, i: number) => {
+    if (i < hops) return true;
+    // Also screens out an undefined socket address, which check() throws on.
+    const family = isIP(addr);
+    return family !== 0 && forwarders !== undefined && forwarders.check(addr, family === 6 ? "ipv6" : "ipv4");
+  });
 
   app.use(
     cors({

@@ -9,7 +9,7 @@ import { isContractVtxoEvent, type IContractManager } from "@arkade-os/sdk";
 import type { SettlementStore } from "../settlement-store.js";
 import { COVENANT_CONTRACT_TYPE } from "../covenant/contract.js";
 import { startCatchUpLoop } from "./catch-up-loop.js";
-import { activeCovenantFilters, scopeShortfall, scopeSize } from "./covenant-retirement.js";
+import { activeCovenantFilters, resolveCovenants, scopeShortfall, scopeSize } from "./covenant-retirement.js";
 
 /** Settle `record` from any output at its script that covers the agreed amount. */
 function settleFrom(
@@ -75,7 +75,7 @@ export async function catchUp(store: SettlementStore, contracts: IContractManage
   let asked = 0;
   let found = 0;
   for (const scope of activeCovenantFilters(store)) {
-    const resolved = await contracts.getContractsWithVtxos(scope);
+    const resolved = await resolveCovenants(contracts, scope);
     asked += scopeSize(scope);
     found += resolved.length;
     for (const { contract, vtxos } of resolved) {
