@@ -117,6 +117,19 @@ describe("runMigrations", () => {
     db.close();
   });
 
+  it("adds the address paging index to a database at 21", () => {
+    const db = openDb(":memory:");
+    const columns = () =>
+      (db.prepare("SELECT name FROM pragma_index_info('idx_addresses_created')").all() as { name: string }[]).map((c) => c.name);
+    runMigrations(db, { upToVersion: 21 });
+    expect(columns()).toEqual([]);
+
+    runMigrations(db);
+
+    expect(columns()).toEqual(["created_at", "id", "status", "username"]);
+    db.close();
+  });
+
   it("blocks migration 9 while legacy offline swaps remain unsettled", () => {
     const db = openDb(":memory:");
     runMigrations(db);

@@ -30,8 +30,8 @@ let other: LnurlServerHandle;
 const name = (prefix: string) => `${prefix}${Date.now().toString(36)}${randomBytes(2).toString("hex")}`;
 
 const adminUsernames = async (adminBase: string, q: string): Promise<string[]> =>
-  ((await (await fetch(`${adminBase}/admin/api/addresses?q=${q}`)).json()) as Array<{ username: string }>)
-    .map((a) => a.username);
+  ((await (await fetch(`${adminBase}/admin/api/addresses?q=${q}`)).json()) as { addresses: Array<{ username: string }> })
+    .addresses.map((a) => a.username);
 
 async function onboard(page: Page, prefix: string): Promise<string> {
   const username = name(prefix);

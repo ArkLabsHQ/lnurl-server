@@ -16,9 +16,9 @@ describe("AddressesRepo.list / delete", () => {
   it("filters by domain, status, and username substring", () => {
     repos.addresses.create({ domainId, username: "devious", status: "active", sessionId: "s", encryptedToken: encryptToken("a".repeat(64), KEY) });
     repos.addresses.create({ domainId, username: "dormant", status: "revoked", sessionId: "s", encryptedToken: encryptToken("b".repeat(64), KEY) });
-    expect(repos.addresses.list({ domainId })).toHaveLength(2);
-    expect(repos.addresses.list({ domainId, status: "active" })).toHaveLength(1);
-    expect(repos.addresses.list({ q: "dev" })).toHaveLength(1);
+    expect(repos.addresses.list({ domainId, limit: 10 })).toHaveLength(2);
+    expect(repos.addresses.list({ domainId, status: "active", limit: 10 })).toHaveLength(1);
+    expect(repos.addresses.list({ q: "dev", limit: 10 })).toHaveLength(1);
   });
 
   it("hard-deletes an address", () => {

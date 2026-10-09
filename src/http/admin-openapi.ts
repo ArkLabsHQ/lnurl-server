@@ -220,31 +220,40 @@ export const adminOpenApiSpec = {
     // ── Addresses ────────────────────────────────────────────
     "/addresses": {
       get: {
-        summary: "List addresses",
+        summary: "List addresses, one page at a time",
+        description:
+          "Newest first, by `createdAt` then `id`. Filters apply before the limit. Pass `nextCursor` back as " +
+          "`cursor` for the next page; it is absent on the last one.",
         tags: ["Addresses"],
         parameters: [
           { name: "domainId", in: "query", required: false, schema: { type: "integer" } },
           { name: "status", in: "query", required: false, schema: { type: "string", enum: ["reserved", "active", "revoked"] } },
           { name: "q", in: "query", required: false, schema: { type: "string" }, description: "Username substring search" },
+          { name: "limit", in: "query", required: false, schema: { type: "integer", default: 200, maximum: 1000 }, description: "Max addresses on the page" },
+          { name: "cursor", in: "query", required: false, schema: { type: "string" }, description: "The previous page's nextCursor" },
         ],
         responses: {
           "200": {
-            description: "Matching addresses (with live-session flag)",
-            content: { "application/json": { schema: { type: "array", items: {
-              type: "object",
-              properties: {
-                id: { type: "integer" },
-                username: { type: "string" },
-                domain: { type: "string", nullable: true },
-                status: { type: "string", enum: ["reserved", "active", "revoked"] },
-                sessionId: { type: "string", nullable: true },
-                online: { type: "boolean", description: "Whether the bound session is currently connected" },
-                disabledRails: { type: "array", items: { type: "string" }, description: "Rail ids the operator disabled for this address" },
-                rails: { type: "array", items: { type: "object", properties: { id: { type: "string" }, label: { type: "string" }, enabled: { type: "boolean" }, available: { type: "boolean" }, reason: { type: "string", description: "Present when disabled or unavailable" } } }, description: "Effective per-address rail states" },
-                createdAt: { type: "integer" },
-              },
+            description: "A page of matching addresses (with live-session flag)",
+            content: { "application/json": { schema: { type: "object", properties: {
+              addresses: { type: "array", items: {
+                type: "object",
+                properties: {
+                  id: { type: "integer" },
+                  username: { type: "string" },
+                  domain: { type: "string", nullable: true },
+                  status: { type: "string", enum: ["reserved", "active", "revoked"] },
+                  sessionId: { type: "string", nullable: true },
+                  online: { type: "boolean", description: "Whether the bound session is currently connected" },
+                  disabledRails: { type: "array", items: { type: "string" }, description: "Rail ids the operator disabled for this address" },
+                  rails: { type: "array", items: { type: "object", properties: { id: { type: "string" }, label: { type: "string" }, enabled: { type: "boolean" }, available: { type: "boolean" }, reason: { type: "string", description: "Present when disabled or unavailable" } } }, description: "Effective per-address rail states" },
+                  createdAt: { type: "integer" },
+                },
+              } },
+              nextCursor: { type: "string", description: "Absent on the last page" },
             } } } },
           },
+          ...errorResponse("400", "cursor is not a nextCursor this endpoint answered"),
         },
       },
       post: {
@@ -281,6 +290,15 @@ export const adminOpenApiSpec = {
           ...errorResponse("400", "Missing username or invalid mode"),
           ...errorResponse("404", "Unknown domain"),
           ...errorResponse("409", "Username taken or invalid"),
+        },
+      },
+    },
+    "/addresses/count": {
+      get: {
+        summary: "Count every address",
+        tags: ["Addresses"],
+        responses: {
+          "200": { description: "The total", content: { "application/json": { schema: { type: "object", properties: { count: { type: "integer" } } } } } },
         },
       },
     },

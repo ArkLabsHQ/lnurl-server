@@ -312,7 +312,8 @@ The Docker image binds to `0.0.0.0` so isolation happens at the container/proxy 
 | POST | `/admin/api/domains` | Create domain |
 | PATCH | `/admin/api/domains/:id` | Update domain |
 | DELETE | `/admin/api/domains/:id` | Delete domain |
-| GET | `/admin/api/addresses` | List addresses (filter: `domainId`, `status`, `q`) |
+| GET | `/admin/api/addresses` | List addresses newest first, one page at a time: `{ addresses, nextCursor }` (filter: `domainId`, `status`, `q`; `limit` defaults to 200, at most 1000; pass `nextCursor` back as `cursor`, absent on the last page) |
+| GET | `/admin/api/addresses/count` | Count every address: `{ count }` |
 | POST | `/admin/api/addresses` | Reserve or mint an address |
 | PATCH | `/admin/api/addresses/:id` | Update address status (`active`/`revoked`) |
 | DELETE | `/admin/api/addresses/:id` | Delete address |

@@ -337,6 +337,14 @@ const MIGRATIONS: Migration[] = [
       DROP INDEX IF EXISTS idx_settlements_pending_destinations;
     `,
   },
+  {
+    version: 22,
+    // The admin list's pages. status and username let its filters reject a row from the
+    // index alone; without them a search seeks the table per row, slower than a scan.
+    up: `
+      CREATE INDEX IF NOT EXISTS idx_addresses_created ON addresses(created_at, id, status, username);
+    `,
+  },
 ];
 
 export const LATEST_MIGRATION = Math.max(...MIGRATIONS.map((m) => m.version));
