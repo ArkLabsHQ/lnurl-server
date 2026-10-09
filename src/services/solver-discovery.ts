@@ -36,7 +36,7 @@ async function readCapped(response: Awaited<ReturnType<FetchLike>>, max: number)
     if (done) break;
     size += value.byteLength;
     if (size > max) {
-      await reader.cancel();
+      void reader.cancel().catch(() => undefined);
       throw tooLarge();
     }
     chunks.push(value);
