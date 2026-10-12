@@ -43,7 +43,7 @@ function paymentDetails(p: StoredPayment): Detail[] {
   ];
   if (p.swapId) details.push(["swap", p.swapId]);
   if (p.preimage) details.push(["preimage", p.preimage]);
-  if (p.covenantScript) details.push(["covenant", p.covenantScript]);
+  if (p.paymentDestination) details.push([p.paymentOption === "arkade" ? "arkade address" : "destination", p.paymentDestination]);
   if (p.settledAt) details.push(["server saw it", new Date(p.settledAt).toLocaleString()]);
   return details;
 }

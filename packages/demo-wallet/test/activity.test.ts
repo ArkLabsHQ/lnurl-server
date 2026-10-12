@@ -68,6 +68,16 @@ describe("mergeFeed, on a payment this wallet made", () => {
 });
 
 describe("mergeFeed", () => {
+  it.each([false, true])("shows the Arkade destination on activity details (received=%s)", (received) => {
+    const script = "5120" + "ab".repeat(32);
+    const destination = "tark1qpaymentdestination";
+    const p = { ...payment({ settled: received, covenantScript: script }), paymentDestination: destination };
+    const rows = mergeFeed(received ? [activity(`lnurl:${p.key}`)] : [], [p]);
+
+    expect(rows[0]!.details).toContainEqual(["arkade address", destination]);
+    expect(rows[0]!.details.some(([, value]) => value === script)).toBe(false);
+  });
+
   it("shows an absorbed payment once, on the wallet row", () => {
     const p = payment({ payoutReference: "abc123" });
     const rows = mergeFeed([activity(`lnurl:${p.key}`, { settled: true })], [p]);
