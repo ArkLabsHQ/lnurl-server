@@ -3,6 +3,8 @@ export interface PaymentOption {
   id: string;
   /** Rail family, e.g. `lightning` or `arkade`. */
   type: string;
+  /** The rail as a CAIP-19 asset id; `id` is still what the callback takes back. */
+  caip19Id?: string;
   /** Whether the rail can currently be selected. */
   available?: boolean;
   /** Whether callback answers on this rail carry a LUD-21 `verify` URL; absent means unknown. */

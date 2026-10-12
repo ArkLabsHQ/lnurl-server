@@ -108,7 +108,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     // falls through to the BOLT11 flow below; a destination rail (arkade) returns the
     // registered address + a non-`pr` verify record.
     const railCaps = currentRailCaps();
-    const resolved = resolvePaymentOption(paymentOptionId, address, railCaps.fixedFloat?.rails ?? []);
+    const resolved = resolvePaymentOption(paymentOptionId, address, railCaps.fixedFloat?.rails ?? [], railCaps.network);
     if (resolved.kind === "error") throw new LnurlError(resolved.reason);
     // Per-address rail policy: a disabled rail fails loudly instead of serving.
     const railStates = railStatesFor(address, railCaps);
@@ -124,7 +124,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     if (unit !== undefined || receiveUnit !== undefined) {
       // A token rail quotes its own payment, but only for an amount in millisats.
       if (resolved.kind === "destination" || resolved.kind === "fixedfloat") throw new LnurlError("unit is not supported for this paymentOption");
-      const q = applyQuote(quoteProvider, { amount: amountMsat, unit, receiveUnit, paymentOption: paymentOptionId });
+      const q = applyQuote(quoteProvider, { amount: amountMsat, unit, receiveUnit, paymentOption: paymentOptionId?.includes(":") ? "lightning" : paymentOptionId });
       if (!q.ok) throw new LnurlError(q.reason);
       amountMsat = q.amountMsat;
       paymentQuote = q.paymentQuote;

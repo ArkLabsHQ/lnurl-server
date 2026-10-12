@@ -1,3 +1,4 @@
+import type { Network } from "@arkade-os/solver-discovery";
 import type { Repositories } from "../db/repositories/index.js";
 import type { AddressService } from "../services/addresses.js";
 import type { RateLimiter } from "../rate-limit.js";
@@ -34,6 +35,7 @@ export interface ServerDeps {
   solverDiscovery?: { status(): { ready: boolean; reason?: string; receiveBounds?: { minSat: number; maxSat: number } } };
   /** Arkade indexer base URL (settlement observation for the arkade rail). */
   arkServerUrl?: string;
+  network?: Network;
   /** Per-rail amount bounds, narrowing the server/domain pair for the rails that
    *  cannot carry it. Absent leaves every rail on the server/domain bounds. */
   railLimits?: ServerRailCaps["limits"];

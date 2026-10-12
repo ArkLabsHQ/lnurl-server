@@ -18,7 +18,9 @@
 // like OfflineSwapCreator plus the covenant destinations when the SDK exposes
 // it; no plumbing changes are needed beyond a new entry here.
 
+import type { Network } from "@arkade-os/solver-discovery";
 import type { PaymentOption } from "./payment-options.js";
+import { caip19Id, isRailType } from "./caip.js";
 import type { ServerDeps } from "./http/server-context.js";
 import type { FfRail } from "./rails/fixedfloat/rates.js";
 import { ffPaymentOptions } from "./rails/fixedfloat/options.js";
@@ -132,6 +134,7 @@ export interface ServerRailCaps {
   arkServerUrl?: string;
   /** A covenant destination provider is wired. */
   covenantDestinations: boolean;
+  network?: Network;
   /** Token deposits are configured; absent means not at all. */
   fixedFloat?: FfRailCaps;
 }
@@ -427,7 +430,7 @@ function withSolverRange(
  *  range must move the next payRequest. Unknown discovery state (none injected, e.g.
  *  unit scope) assumes ready; the coordinator still fails loudly per request. */
 export function currentRailCaps(wiring: Pick<ServerDeps,
-  "offlineSwapCreator" | "covenantDestinations" | "solverDiscovery" | "arkServerUrl" | "railLimits" | "arkDustSat" | "onchainMinSat" | "fixedFloat"
+  "offlineSwapCreator" | "covenantDestinations" | "solverDiscovery" | "arkServerUrl" | "railLimits" | "arkDustSat" | "onchainMinSat" | "fixedFloat" | "network"
 > = {}): ServerRailCaps {
   const discoveryStatus = wiring.solverDiscovery?.status();
   // Dust last: it is the protocol's floor, so it must survive whatever the
@@ -442,6 +445,7 @@ export function currentRailCaps(wiring: Pick<ServerDeps,
     ...(discoveryStatus?.reason ? { discoveryReason: discoveryStatus.reason } : {}),
     ...(wiring.arkServerUrl ? { arkServerUrl: wiring.arkServerUrl } : {}),
     covenantDestinations: Boolean(wiring.covenantDestinations),
+    ...(wiring.network ? { network: wiring.network } : {}),
     ...(limits ? { limits } : {}),
     ...(wiring.fixedFloat ? { fixedFloat: ffRailCaps(wiring.fixedFloat) } : {}),
   };
@@ -554,7 +558,11 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
   if (lightning.offer) options.push({ id: "lightning", type: "lightning", verifiable: true, ...(lightning.available ? {} : { available: false }) });
   if (arkadeReady) options.push({ id: "arkade", type: "arkade", verifiable: arkadeVerifiable, ...(arkadeState.available ? {} : { available: false }) });
   if (onchainReady) options.push({ id: "onchain", type: "onchain", verifiable: false, ...(onchainState.available ? {} : { available: false }) });
-  if (!base) return [...options, ...tokenOptions];
+  const network = caps.network;
+  const withCaip = (opts: PaymentOption[]): PaymentOption[] => network === undefined
+    ? opts
+    : opts.map((option) => isRailType(option.type) ? { ...option, caip19Id: caip19Id(option.type, network) } : option);
+  if (!base) return [...withCaip(options), ...tokenOptions];
   // Emitted relative to the pair the payRequest actually advertises, not to the
   // envelope. A client falls back to the top-level pair for an option that
   // publishes nothing, and the top level is the lightning rail's — so an option
@@ -562,7 +570,7 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
   // the server would accept. Equal to the top level means nothing to emit, so
   // an operator who configured no rail limits sees the payRequest as before.
   const advertised = advertisedBounds(address, caps, base);
-  return [...options.map((option) => {
+  return [...withCaip(options.map((option) => {
     const bounds = optionBounds(option.id, address, caps, base);
     if (!bounds) return option;
     return {
@@ -570,5 +578,5 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
       ...(bounds.min !== advertised.min ? { minSendable: bounds.min } : {}),
       ...(bounds.max !== advertised.max ? { maxSendable: bounds.max } : {}),
     };
-  }), ...tokenOptions];
+  })), ...tokenOptions];
 }

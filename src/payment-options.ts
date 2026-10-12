@@ -1,3 +1,6 @@
+import type { Network } from "@arkade-os/solver-discovery";
+import { matchCaip19Id } from "./caip.js";
+
 // LUD-XX paymentOptions: advertise multiple payment rails on a LUD-06 payRequest
 // and resolve the wallet's selection. The rail registry lives in ./rails.js -
 // this module keeps the historical identity-only rule for unit scope. The rail-aware
@@ -7,6 +10,7 @@
 export interface PaymentOption {
   id: string;
   type: string;
+  caip19Id?: string;
   available?: boolean;
   /** Whether callback answers for this option carry a LUD-21 `verify` URL; absent means unknown. */
   verifiable?: boolean;
@@ -64,9 +68,20 @@ export function resolvePaymentOption(
   optionId: string | undefined,
   address: OptionAddress,
   tokenRails: readonly TokenRailRef[] = [],
+  network?: Network,
 ): ResolvedPaymentOption {
   // Ids are canonical lowercase; be liberal about the case payers send.
-  const id = optionId?.toLowerCase();
+  const raw = optionId?.toLowerCase();
+  let id = raw;
+  if (raw?.includes(":")) {
+    if (!network) return { kind: "error", reason: "Unsupported paymentOption" };
+    const match = matchCaip19Id(raw, network);
+    if (match.kind === "wrong-network") {
+      return { kind: "error", reason: `paymentOption settles on ${match.got}, this service settles on ${network}` };
+    }
+    if (match.kind === "unknown") return { kind: "error", reason: "Unsupported paymentOption" };
+    id = match.type;
+  }
   if (id === undefined || id === "lightning") return { kind: "lightning" };
   if (id === "arkade") {
     return address.arkadeAddress
