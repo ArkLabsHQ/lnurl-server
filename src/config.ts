@@ -60,8 +60,8 @@ export interface OfflineReceiveConfig {
    *  static one, so concurrent payments are told apart by script rather than by
    *  amount and arrival window. Needs {@link emulatorUrl} for the sweep. */
   covenantDestinations: boolean;
-  /** CSV delay, seconds, before the user may sweep a covenant destination alone. */
-  covenantRecoveryDelaySeconds: number;
+  /** CSV delay override, seconds; unset uses arkd's unilateral exit delay. */
+  covenantRecoveryDelaySeconds?: number;
   covenantRenewalMnemonic?: string;
   /** Settlement-pass interval, ms. Not what claims a lockup — src/workers/lockup-watcher.ts
    *  does that on the funding event — so what is left on it is the backstop for a
@@ -337,11 +337,11 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   // than rounded: BIP68 throws on anything else, and the only place that surfaces
   // is per-payment derivation, which falls back to the static address and hands
   // the payer the ambiguity this flag exists to remove.
-  const covenantRecoveryDelaySeconds = recoveryRaw ? Number(recoveryRaw) : 86_528;
-  if (!Number.isInteger(covenantRecoveryDelaySeconds) || covenantRecoveryDelaySeconds <= 0) {
+  const covenantRecoveryDelaySeconds = recoveryRaw ? Number(recoveryRaw) : undefined;
+  if (covenantRecoveryDelaySeconds !== undefined && (!Number.isInteger(covenantRecoveryDelaySeconds) || covenantRecoveryDelaySeconds <= 0)) {
     throw new ConfigError(`OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS must be a positive integer (got "${recoveryRaw}")`);
   }
-  if (covenantRecoveryDelaySeconds % 512 !== 0) {
+  if (covenantRecoveryDelaySeconds !== undefined && covenantRecoveryDelaySeconds % 512 !== 0) {
     const near = Math.round(covenantRecoveryDelaySeconds / 512) * 512;
     throw new ConfigError(
       `OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS must be a multiple of 512 (BIP68 encodes seconds in 512s units); got ${covenantRecoveryDelaySeconds}, nearest is ${near}`,

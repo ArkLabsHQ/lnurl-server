@@ -126,8 +126,8 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
     bootstrap(db, { bootstrapDomain: "localhost" });
     const repos = createRepositories(db);
     settlements = new DbSettlementStore(db, 3_600_000);
-    // The shipped default, not a chosen value: a delay BIP68 cannot encode makes
-    // derivation throw and every payment fall back to the static address.
+    // Resolve the default from the same arkd info response as cli.ts.
+    const info = await (await fetch(`${ARKD_URL}/v1/info`)).json() as { unilateralExitDelay: string };
     const recoveryDelaySeconds = loadConfig({
       NODE_ENV: "test",
       DB_PATH: "unused-e2e.sqlite",
@@ -148,6 +148,7 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
       arkServerUrl: ARKD_URL,
       covclaimdUrl: COVCLAIMD_URL,
       recoveryDelaySeconds,
+      unilateralExitDelay: Number(info.unilateralExitDelay),
       contracts,
     });
     const defaults = { baseUrl: "", minSendable: 1000, maxSendable: 100_000_000_000, invoiceTimeoutMs: 30_000, registrationRateLimitPerMin: 1000 };
