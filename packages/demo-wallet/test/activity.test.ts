@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import type { Activity } from "@arkade-os/sdk";
+import { ArkAddress, type Activity } from "@arkade-os/sdk";
+import { hex } from "@scure/base";
 import type { StoredPayment } from "@arkade-os/lnurl-client";
 import { mergeFeed } from "../src/activity.js";
 
@@ -68,6 +69,19 @@ describe("mergeFeed, on a payment this wallet made", () => {
 });
 
 describe("mergeFeed", () => {
+  it.each(["ark", "tark"])("derives covenant addresses from the script on %s", (hrp) => {
+    const server = hex.decode("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798");
+    const walletAddress = new ArkAddress(server, new Uint8Array(32).fill(1), hrp);
+    const destination = new ArkAddress(server, new Uint8Array(32).fill(2), hrp);
+    const script = hex.encode(destination.pkScript);
+    const p = payment({ covenantScript: script });
+    for (const received of [false, true]) {
+      const rows = mergeFeed(received ? [activity(`lnurl:${p.key}`)] : [], [p], walletAddress);
+      expect(rows[0]!.details).toContainEqual(["arkade address", destination.encode()]);
+      expect(rows[0]!.details.some(([, value]) => value === script)).toBe(false);
+    }
+  });
+
   it("shows an absorbed payment once, on the wallet row", () => {
     const p = payment({ payoutReference: "abc123" });
     const rows = mergeFeed([activity(`lnurl:${p.key}`, { settled: true })], [p]);
