@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { browserPaymentStore, forgetStoredPayments, storedPayments } from "../src/stores.js";
+import { browserPaymentStore, storedPayments } from "../src/stores.js";
 import type { StoredPayment } from "../src/sync.js";
 
 const record = (over: Partial<StoredPayment>): StoredPayment => ({
@@ -21,22 +21,6 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("storedPayments", () => {
-  it("refreshes legacy cached payments once to fill their destinations", async () => {
-    const prefix = "test:";
-    const store = browserPaymentStore(prefix);
-    const cached = record({ identifier: "old", kind: "destination" });
-    await store.upsert([cached]);
-    localStorage.setItem(`${prefix}arkade-lnurl.watermarks`, JSON.stringify({ "b|h@pay.example": 100 }));
-
-    expect(await store.readWatermark("b", "h@pay.example")).toBeUndefined();
-    expect(storedPayments({ domain: "pay.example", handle: "h" }, prefix)).toEqual([cached]);
-    await store.writeWatermark("b", "h@pay.example", 200);
-    expect(await store.readWatermark("b", "h@pay.example")).toBe(200);
-    forgetStoredPayments(prefix);
-    expect(await store.readWatermark("b", "h@pay.example")).toBeUndefined();
-    expect(localStorage.getItem(`${prefix}arkade-lnurl.watermarks`)).toBeNull();
-  });
-
   it("selects a nameless receiver's records by domain and handle", async () => {
     const sid = "0".repeat(32);
     await browserPaymentStore().upsert([

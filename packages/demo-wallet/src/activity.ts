@@ -1,4 +1,5 @@
-import type { Activity, Wallet } from "@arkade-os/sdk";
+import { ArkAddress, type Activity, type Wallet } from "@arkade-os/sdk";
+import { hex } from "@scure/base";
 import type { StoredPayment } from "@arkade-os/lnurl-client";
 import { absorbedPaymentKey, railOf } from "@arkade-os/lnurl-client/arkade";
 
@@ -35,7 +36,7 @@ const quoteStatus = (p: StoredPayment): FeedStatus =>
 
 const sats = (msat: number | null): string => (msat === null ? "any" : `${msat / 1000} sats`);
 
-function paymentDetails(p: StoredPayment): Detail[] {
+function paymentDetails(p: StoredPayment, walletAddress?: ArkAddress): Detail[] {
   const details: Detail[] = [
     ["rail", railOf(p)],
     ["paid to", p.lightningAddress ?? p.handle],
@@ -43,7 +44,10 @@ function paymentDetails(p: StoredPayment): Detail[] {
   ];
   if (p.swapId) details.push(["swap", p.swapId]);
   if (p.preimage) details.push(["preimage", p.preimage]);
-  if (p.paymentDestination) details.push([p.paymentOption === "arkade" ? "arkade address" : "destination", p.paymentDestination]);
+  if (p.covenantScript && walletAddress && /^5120[0-9a-f]{64}$/i.test(p.covenantScript)) {
+    const address = new ArkAddress(walletAddress.serverPubKey, hex.decode(p.covenantScript.slice(4)), walletAddress.hrp, walletAddress.version);
+    details.push(["arkade address", address.encode()]);
+  }
   if (p.settledAt) details.push(["server saw it", new Date(p.settledAt).toLocaleString()]);
   return details;
 }
@@ -96,7 +100,7 @@ function feeDetail(quotedMsat: number | null, receivedSat: number): Detail[] {
  * beside its own payment reads as a double charge. Display-only: nothing here
  * decides what settles what.
  */
-export function mergeFeed(activities: Activity[], payments: StoredPayment[]): FeedRow[] {
+export function mergeFeed(activities: Activity[], payments: StoredPayment[], walletAddress?: ArkAddress): FeedRow[] {
   const byKey = new Map(payments.map((p) => [p.key, p]));
   const claimed = new Set<string>();
 
@@ -124,7 +128,7 @@ export function mergeFeed(activities: Activity[], payments: StoredPayment[]): Fe
       ...(txid ? { txid } : {}),
       details: [
         ...(txid ? ([["txid", txid]] as Detail[]) : []),
-        ...(payment ? paymentDetails(payment) : intentDetails(a)),
+        ...(payment ? paymentDetails(payment, walletAddress) : intentDetails(a)),
         ...(payment ? feeDetail(payment.amountMsat, a.amount) : []),
         ...(inferred ? ([["matched", "by amount and timing, pending the server's confirmation"]] as Detail[]) : []),
       ],
@@ -140,7 +144,7 @@ export function mergeFeed(activities: Activity[], payments: StoredPayment[]): Fe
       amountSat: p.amountMsat === null ? null : p.amountMsat / 1000,
       createdAt: p.createdAt,
       status: quoteStatus(p),
-      details: paymentDetails(p),
+      details: paymentDetails(p, walletAddress),
     }));
 
   return [...rows, ...quotes].sort((a, b) => b.createdAt - a.createdAt);

@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { PaymentOption, RouteQuote, WalletBalance } from "@arkade-os/sdk";
+import { ArkAddress, type PaymentOption, type RouteQuote, type WalletBalance } from "@arkade-os/sdk";
 import type { DomainCapabilities, InvoiceResult, PayRequest } from "@arkade-os/lnurl-client";
 import type { ClaimOptions, Receiver, SentPayment } from "@arkade-os/lnurl-client/arkade";
 import { lnurlActivityResolver, lnurlQuoteMeta, sentActivityResolver } from "@arkade-os/lnurl-client/arkade";
@@ -784,7 +784,7 @@ function Activity({ receiver: shown, wallet }: { receiver: Receiver; wallet: Dem
       const { activities, error } = await readWalletActivity(wallet.wallet);
       if (!live) return;
       setWalletErr(error ?? "");
-      setRows(mergeFeed(activities, mine()));
+      setRows(mergeFeed(activities, mine(), ArkAddress.decode(wallet.arkadeAddress)));
     };
     void show();
     // The receiver on screen, never a fresh `owned()`: a token holding two rows

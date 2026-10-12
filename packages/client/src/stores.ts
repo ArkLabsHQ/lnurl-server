@@ -2,9 +2,7 @@ import { LnurlError } from "./errors.js";
 import type { PaymentSyncStore, StoredPayment } from "./sync.js";
 
 const RECORDS = "arkade-lnurl.payments";
-const LEGACY_WATERMARKS = "arkade-lnurl.watermarks";
-// Re-read cached history once to retain destinations dropped by older clients.
-const WATERMARKS = `${LEGACY_WATERMARKS}.v2`;
+const WATERMARKS = "arkade-lnurl.watermarks";
 
 const area = (): Storage => {
   if (typeof localStorage === "undefined") {
@@ -64,5 +62,4 @@ export function storedPayments(
 export function forgetStoredPayments(prefix = ""): void {
   area().removeItem(`${prefix}${RECORDS}`);
   area().removeItem(`${prefix}${WATERMARKS}`);
-  area().removeItem(`${prefix}${LEGACY_WATERMARKS}`);
 }

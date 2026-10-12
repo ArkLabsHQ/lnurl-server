@@ -207,7 +207,6 @@ describe("syncPayments", () => {
       paymentReference: "txid-9",
       swapId: null,
       paymentOption: "arkade",
-      paymentDestination: "ark1qptest",
       covenantScript: null,
       preimage: null,
       domain: DOMAIN,
@@ -230,7 +229,6 @@ describe("syncPayments", () => {
       paymentReference: null,
       preimage: "pre-1",
       paymentOption: null,
-      paymentDestination: null,
     });
   });
 
