@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { openDb } from "../../src/db/connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
 import { DbSettlementStore, MemorySettlementStore } from "../../src/settlement-store.js";
+import { OfflineSwapStore } from "../../src/offline-swap-store.js";
 
 // Both back the same interface, and the no-DB path is production too, so a
 // caller must not be able to tell which one it holds.
@@ -41,11 +42,22 @@ describe("store parity past the ttl", () => {
     memory.create(rec);
     sqlite.create(rec);
 
-    expect(memory.listPendingDestinations()).toEqual(sqlite.listPendingDestinations());
-    expect(sqlite.listPendingDestinations()[0]).toMatchObject({
-      covenantScript: "5120aa",
-    });
+    expect(memory.pendingByCovenantScript("5120aa")).toEqual(sqlite.pendingByCovenantScript("5120aa"));
+    expect(sqlite.pendingByCovenantScript("5120aa")).toMatchObject({ covenantScript: "5120aa" });
     expect(sqlite.get("vid1")?.covenantScript).toBe("5120aa");
+    db.close();
+  });
+
+  it("lists only static-address arkade destinations in both stores", () => {
+    const { db, memory, sqlite } = stores(() => 1000);
+    for (const store of [memory, sqlite]) {
+      store.create({ paymentHash: "static", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "tark1static", amountMsat: 1_000 });
+      store.create({ paymentHash: "covenant", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "tark1derived", amountMsat: 1_000, covenantScript: "5120aa" });
+      store.create({ paymentHash: "onchain", pr: "", sessionId: "s", paymentOption: "onchain", paymentDestination: "bcrt1pboarding", amountMsat: 1_000 });
+    }
+
+    expect(memory.listPendingDestinations().map((d) => d.paymentHash)).toEqual(["static"]);
+    expect(sqlite.listPendingDestinations().map((d) => d.paymentHash)).toEqual(["static"]);
     db.close();
   });
 
@@ -221,5 +233,39 @@ describe("DbSettlementStore", () => {
     t = 1000 + 5000;
     expect(s.listPendingSwaps()).toEqual([]);
     db.close();
+  });
+
+  // Each was once a table scan on a path run every worker pass. Planned from the SQL
+  // the call prepares, since a pasted copy can drift from it unnoticed.
+  type Stores = { settlements: DbSettlementStore; swaps: OfflineSwapStore };
+  describe.each<[string, (s: Stores) => unknown, string]>([
+    ["the covenant scope, both halves", (s) => s.settlements.listActiveCovenantScripts(), "idx_settlements_active_covenants"],
+    ["the reference check every observed payment makes", (s) => s.settlements.isReferenceUsed("tx-a"), "idx_settlements_reference"],
+    ["the pending-swap read the offline poller makes every pass", (s) => s.swaps.listPending(), "idx_settlements_pending_swaps_created"],
+    ["the same read without a recovery store", (s) => s.settlements.listPendingSwaps(), "idx_settlements_pending_swaps_created"],
+    ["the active-lockup scope retirement reads", (s) => s.swaps.listActiveLockupScripts(), "idx_settlements_pending_swaps_created"],
+    ["the pending-destination read the watched-script resync makes every second", (s) => s.settlements.listPendingDestinations(), "idx_settlements_pending_static_destinations"],
+  ])("%s", (_name, call, index) => {
+    it(`is served by ${index}`, () => {
+      const db = openDb(":memory:");
+      runMigrations(db);
+      const stores = { settlements: new DbSettlementStore(db, 60_000), swaps: new OfflineSwapStore(db, 60_000) };
+      const prepare = db.prepare.bind(db);
+      const seen: string[] = [];
+      db.prepare = (sql: string) => (seen.push(sql), prepare(sql));
+      try {
+        call(stores);
+      } finally {
+        db.prepare = prepare;
+      }
+      expect(seen).not.toHaveLength(0);
+      for (const sql of seen) {
+        const plan = (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[]).map((r) => r.detail).join(" | ");
+        expect(plan).toContain(index);
+        // The `OR` form named its index while scanning behind it.
+        expect(plan).not.toContain("SCAN");
+      }
+      db.close();
+    });
   });
 });

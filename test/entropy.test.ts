@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkedPreimage, randomEntropy, PREIMAGE_BYTES, type EntropyProvider } from "../src/entropy.js";
+import { checkedPreimage, randomEntropy, PREIMAGE_BYTES, type EntropyProvider } from "../src/covenant/entropy.js";
 
 const fixed = (byte: number, length = PREIMAGE_BYTES): EntropyProvider => ({
   preimage: () => new Uint8Array(length).fill(byte),

@@ -13,27 +13,28 @@
     }
   },
   "scripts": {
+    "artifact": "node scripts/gen-covenant-artifact.mjs",
     "build": "pnpm build:server && pnpm build:client",
     "build:server": "tsup && vite build && node scripts/smoke-dist.mjs",
     "build:client": "tsup --config packages/client/tsup.config.ts",
     "dev": "cross-env NODE_OPTIONS=--experimental-sqlite tsx watch src/cli.ts",
-    "start": "node --experimental-sqlite dist/cli.js",
+    "start": "node --experimental-sqlite --experimental-eventsource dist/cli.js",
     "test": "cross-env NODE_OPTIONS=--experimental-sqlite vitest run",
     "test:e2e": "cross-env NODE_OPTIONS=--experimental-sqlite vitest run --config vitest.e2e.config.ts",
     "test:watch": "cross-env NODE_OPTIONS=--experimental-sqlite vitest",
-    "type-check": "tsc --noEmit && tsc -p tsconfig.test.json && tsc -p tsconfig.ui.json && tsc -p packages/client/tsconfig.json && tsc -p packages/demo-wallet/tsconfig.json && tsc -p packages/demo-wallet/tsconfig.e2e.json",
+    "type-check": "tsc --noEmit && tsc -p tsconfig.test.json && tsc -p tsconfig.ui.json && tsc -p packages/client/tsconfig.json && tsc -p packages/demo-wallet/tsconfig.json && tsc -p packages/demo-wallet/tsconfig.e2e.json && tsc -p packages/demo-wallet/tsconfig.test.json",
     "test:browser": "pnpm --filter @arkade-os/lnurl-demo-wallet test:e2e",
-    "test:browser:local": "cross-env NODE_OPTIONS=\"--experimental-sqlite --experimental-eventsource\" pnpm --filter @arkade-os/lnurl-demo-wallet test:e2e:local"
+    "test:browser:local": "cross-env NODE_OPTIONS=\"--experimental-sqlite --experimental-eventsource\" pnpm --filter @arkade-os/lnurl-demo-wallet test:e2e:local",
+    "test:bench:local": "cross-env NODE_OPTIONS=\"--experimental-sqlite --experimental-eventsource\" pnpm --filter @arkade-os/lnurl-demo-wallet test:e2e:bench"
   },
   "dependencies": {
-    "@arkade-os/sdk": "0.4.74",
+    "@arkade-os/sdk": "0.5.0-rc.17",
     "@arkade-os/solver-discovery": "0.2.7",
-    "@arkade-os/swap": "0.0.20",
-    "@noble/ciphers": "2.1.1",
-    "@noble/curves": "2.0.1",
-    "@noble/hashes": "2.0.1",
+    "@arkade-os/swap": "0.1.0-rc.20",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
     "@scure/base": "^2.4.0",
-    "@scure/btc-signer": "2.0.1",
+    "@scure/btc-signer": "2.4.1",
     "cors": "^2.8.6",
     "express": "5.2.1",
     "nostr-tools": "^2.25.2"
@@ -61,7 +62,7 @@
     "overrides": {
       "esbuild": "^0.28.1",
       "form-data": "^4.0.6",
-      "@arkade-os/sdk": "0.4.74"
+      "@arkade-os/sdk": "0.5.0-rc.17"
     }
   },
   "engines": {

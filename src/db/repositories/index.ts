@@ -15,6 +15,7 @@ export interface Repositories {
   settings: SettingsRepo;
   solverCards: SolverCardsRepo;
   solverRegistryCache: SolverRegistryCacheRepo;
+  transaction<T>(fn: () => T): T;
 }
 
 export function createRepositories(db: Db): Repositories {
@@ -26,5 +27,16 @@ export function createRepositories(db: Db): Repositories {
     settings: new SettingsRepo(db),
     solverCards: new SolverCardsRepo(db),
     solverRegistryCache: new SolverRegistryCacheRepo(db),
+    transaction<T>(fn: () => T): T {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const result = fn();
+        db.exec("COMMIT");
+        return result;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
   };
 }

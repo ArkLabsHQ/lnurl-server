@@ -45,8 +45,10 @@ Wallet                    Service                     Payer
 | GET | `/.well-known/lnurlp/:username/callback` | Payer | Invoice callback for LN address payments |
 | POST | `/lnurl/address` | Wallet | Register/claim a Lightning address |
 | GET | `/lnurl/address` | Wallet | List own addresses (`Authorization: Bearer <token>`) |
-| DELETE | `/lnurl/address/:username` | Wallet | Revoke own address (`Authorization: Bearer <token>`) |
-| POST | `/lnurl/address/:username/arkade` | Wallet | Register Arkade receive identity for offline receive (`Authorization: Bearer <token>`) |
+| GET | `/lnurl/domain` | Wallet | What the domain allows: allocation modes (`self`, `random`, `admin`, `session`) and username rules |
+| PATCH | `/lnurl/address/:handle` | Wallet | Give a nameless receiver a name in place; its LNURL keeps working (`Authorization: Bearer <token>`) |
+| DELETE | `/lnurl/address/:handle` | Wallet | Revoke own address (`Authorization: Bearer <token>`) |
+| POST | `/lnurl/address/:handle/arkade` | Wallet | Register Arkade receive identity for offline receive (`Authorization: Bearer <token>`) |
 
 ## Usage
 
@@ -151,7 +153,7 @@ Wallets register a Lightning address via `POST /lnurl/address`. The request body
 | `username` + `claimCode` provided | Wallet claims a pre-reserved address |
 
 Constraints enforced per domain:
-- **`allocationModes`** — which of `"self"`, `"random"`, `"admin"` the domain permits.
+- **`allocationModes`** — which of `"self"`, `"random"`, `"admin"`, `"session"` the domain permits. `"session"` allows a receiver with no lightning address, reachable at `/lnurl/<sessionId>`.
 - **`requireApiKey`** — if true, requests must include a valid `X-API-Key` header.
 - **`max_per_session`** — cap on active addresses per wallet session.
 - **`username_min_len` / `username_max_len` / `username_pattern`** — username validation rules.
@@ -206,19 +208,26 @@ The `arkade` rail hands the payer an address, and the server is not in the payme
 
 With `OFFLINE_COVENANT_DESTINATIONS=true` each callback derives its own address instead, and the script becomes the identifier. A VTXO there belongs to exactly one record, so attribution is exact rather than inferred.
 
-The address is a three-leaf Taproot script:
+New addresses use a four-leaf Taproot script compiled from [`contracts/forwarding.ark`](contracts/forwarding.ark):
 
 | leaf | who can spend | what it is for |
 | --- | --- | --- |
 | `condition(H(P))` + operator + covenant cosigner | anyone holding `P` | the sweep, pinned by the covenant |
 | user + operator | the user, collaboratively | recovery without waiting |
 | user alone, after a CSV delay | the user | recovery if the operator is gone |
+| operator + renewal covenant cosigner | any batch participant | renew into the same script with all sats and assets preserved |
 
 Only the first leaf carries `H(P)`, so a fresh preimage moves the address while the covenant bytes stay fixed. **The preimage is not a secret** — the covenant means whoever holds it can only pay the user's registered address — which is why the two recovery leaves are keyed to the user and need neither `P` nor this server.
 
 A sweeper moves each funded destination on to the static address, so the user's wallet sees an ordinary arrival there and needs to know nothing about any of this. It costs one extra Arkade transaction per payment, and the rail gains a dependency on the emulator co-signing that sweep. If derivation fails at request time the callback falls back to the static address: that payment is ambiguous again, which beats refusing to be paid.
 
 `OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS` (default 86528) sets the CSV delay on the third leaf. It must be a multiple of 512: BIP68 encodes seconds in 512s units and rejects anything else, so 86400 — 24h exactly — is not a legal value and is refused at startup.
+
+Expired or operator-swept v3 outputs are recovered through a batch before forwarding. The service keeps the original payment reference and persists the current covenant outpoint across renewals; a renewal commitment is never payout evidence. Already-unrolled outputs remain on the user's unilateral recovery path. Stored v1/v2 contracts retain their original scripts and addresses.
+
+Renewal preserves the entire payment, so its batch fees require separate funding. On networks with nonzero intent fees, set `OFFLINE_COVENANT_RENEWAL_MNEMONIC` to a dedicated fee-payer wallet and fund the address printed at startup. Without it, positive-fee renewal fails visibly and retries; it never deducts fees from the user's payment. Zero-fee renewal needs no wallet key.
+
+Run `pnpm artifact` to regenerate the digest-pinned compiler artifact. CI checks that regeneration leaves the committed JSON and TypeScript artifact unchanged.
 
 ## Payment options (LUD-XX)
 
@@ -258,9 +267,21 @@ Where it is present, the `verify` URL reports the non-`pr` LUD-21 shape: `{ stat
 
 ### Receive rails
 
-Every backend is one entry in the rail registry (`src/rails.ts`): `interactive-lightning` (live wallet session), `offline-swap` (solver-mediated `bolt11->arkade-btc` while offline), `arkade` (direct destination), `covenant` (per-payment destinations for the arkade rail), and `onchain` (the owner's boarding address — an ordinary on-chain payment, not a swap, which is why nothing here observes it). New rails — assets, stablecoin swaps, an onchain-BTC-to-arkade-BTC offline receive in the same family as `offline-swap` — slot in there with no plumbing changes.
+Every backend is one entry in the rail registry (`src/rails.ts`): `interactive-lightning` (live wallet session), `offline-swap` (solver-mediated `bolt11->arkade-btc` while offline), `arkade` (direct destination), `covenant` (per-payment destinations for the arkade rail), `onchain` (the owner's boarding address — an ordinary on-chain payment, not a swap, which is why nothing here observes it), and `fixedfloat` (token deposits, below). New rails — assets, an onchain-BTC-to-arkade-BTC offline receive in the same family as `offline-swap` — slot in there with no plumbing changes.
 
 Server-wide capability comes from configuration; per-address policy comes from the operator. `GET /admin/api/rails` lists what this process wired, each address carries its own disabled set (stored in SQLite, edited in the admin UI Addresses tab under Rails, or via `PATCH /admin/api/addresses/{id}/rails`), and the payRequest advertises only the rails that survive both. A disabled or unavailable rail never fails silently: its callbacks answer `{ "status": "ERROR" }` naming the rail, while the process keeps serving the rest.
+
+### Token deposits (FixedFloat, opt-in, mainnet only)
+
+With `FIXEDFLOAT_API_KEY` and `FIXEDFLOAT_API_SECRET` set, an address with an Arkade identity also advertises one option per stablecoin network (`ff-usdtarbitrum`, `ff-usdcsol`, `ff-usdttrc`, …): `type` is the CAIP-2 namespace, `asset` the CAIP-19 id, `unit` a `units[]` code (`USDT`, `USDC`), `provider` the custodian. The payer deposits the token with FixedFloat, which pays the corridor's hold invoice, and the covenant pays arkade BTC to the receiver. The callback (`?amount=<msat>&paymentOption=ff-…`) answers the deposit address, an EIP-681 or Solana Pay `paymentURI` (none on Tron), and a `paymentQuote` whose `payment` is the deposit in the token's base units and whose `expiresAt` is the payer's deadline: the earlier of FixedFloat's own deadline and the corridor invoice's less `FIXEDFLOAT_SETTLE_MARGIN_SECONDS`, refused when that leaves under `FIXEDFLOAT_MIN_PAY_WINDOW_SECONDS`. `verify` answers the destination shape; once settled, `paymentReference` is the payer's deposit txid on the token chain.
+
+**A deposit after the quote's `expiresAt` may not be paid out.** FixedFloat often keeps an order open longer than the corridor invoice allows; a payer who deposits after our deadline but inside FixedFloat's may find the invoice already dead, and FixedFloat then holds the tokens in its emergency/refund flow. The order poller keeps watching expired orders until the TTL so such a deposit is logged (`ff_order_emergency`) and shown in the admin Settlements view.
+
+**The trust model, plainly.** While the swap is in flight the payer's tokens sit with **FixedFloat**, a no-KYC custodial exchange, and the sats sit in the **solver's** VHTLC. This server holds no user funds and no user keys, and it cannot compel either party to perform. The two legs are not equally trust-minimised: the last one is covenant-enforced (a settled swap can only pay the receiver's registered address), the first is ordinary exchange counterparty risk. **This server cannot refund a payer**: it never holds their tokens, has no address to return them to, and never drives FixedFloat's emergency flow. A late, short or over deposit lands the order in FixedFloat's `EMERGENCY` state, which the payer resolves with FixedFloat; the admin Settlements view shows it.
+
+**Mainnet only.** FixedFloat has no testnet, so the server refuses to start with FixedFloat keys while arkd reports any network but `bitcoin`: a test deployment would take a payer's real tokens for test sats. `FIXEDFLOAT_SIMULATE=true` is the reverse — an in-process stand-in, refused on `bitcoin` and with real keys, that advertises `ffsim-` options with `provider: "Simulated"` on testnet chains so wallet and checkout UIs can be exercised end to end. It takes no deposit; a test that needs a settled order pays the corridor invoice itself.
+
+FixedFloat allows 250 request-weight units a minute per key and an order costs 50, so the rail takes at most a handful of orders a minute. So that no single party can hold them all, the callback answers HTTP 429 past `FIXEDFLOAT_ORDERS_PER_IP` token callbacks from one IP, past `FIXEDFLOAT_MAX_OPEN_ORDERS_PER_ADDRESS` unfunded orders for one receiver, and past `FIXEDFLOAT_MAX_OPEN_ORDERS` in all. FixedFloat blocks a key that exceeds its limit, for longer each time, so after an HTTP 429 or five errors in a row every FixedFloat call pauses for two minutes and the options read `available: false`; two invoices FixedFloat cannot route (code 304) close one receiver's token callbacks for ten minutes. Token deposits need a file-backed `DB_PATH` and offline receive (the corridor is what pays the order).
 
 ## Payment quote (LUD-XX)
 
@@ -298,7 +319,8 @@ The Docker image binds to `0.0.0.0` so isolation happens at the container/proxy 
 | POST | `/admin/api/domains` | Create domain |
 | PATCH | `/admin/api/domains/:id` | Update domain |
 | DELETE | `/admin/api/domains/:id` | Delete domain |
-| GET | `/admin/api/addresses` | List addresses (filter: `domainId`, `status`, `q`) |
+| GET | `/admin/api/addresses` | List addresses newest first, one page at a time: `{ addresses, nextCursor }` (filter: `domainId`, `status`, `q`; `limit` defaults to 200, at most 1000; pass `nextCursor` back as `cursor`, absent on the last page) |
+| GET | `/admin/api/addresses/count` | Count every address: `{ count }` |
 | POST | `/admin/api/addresses` | Reserve or mint an address |
 | PATCH | `/admin/api/addresses/:id` | Update address status (`active`/`revoked`) |
 | DELETE | `/admin/api/addresses/:id` | Delete address |
@@ -345,6 +367,7 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `OFFLINE_EMULATOR_URL` | — | Emulator base URL backing `OFFLINE_SELF_CLAIM` and `OFFLINE_COVENANT_DESTINATIONS` — it co-signs the covenant leaf after checking the spend pays the user. With `COVCLAIMD_URL` set, must be the emulator whose `emulator_pub_key` it reports; without it, must be the solver's emulator. Missing with either flag on, the server refuses to start. |
 | `OFFLINE_COVENANT_DESTINATIONS` | `false` | `true` gives each arkade-rail payment its own covenant address, so concurrent payments are told apart by script instead of by amount and arrival window. Requires `OFFLINE_EMULATOR_URL` and `ARK_SERVER_URL` (`COVCLAIMD_URL` optional — only needed alongside the lightning offline swap). See [Per-payment destinations](#per-payment-destinations-offline_covenant_destinations-default-off). |
 | `OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS` | `86528` | CSV delay before the user may sweep a covenant destination alone. |
+| `OFFLINE_COVENANT_RENEWAL_MNEMONIC` | — | Optional dedicated wallet paying v3 renewal batch fees. Requires covenant destinations; fund its startup address with BTC. The payment's sats and assets are preserved in full. |
 | `OFFLINE_POLL_INTERVAL_MS` | `15000` | Offline settlement pass interval, and the covenant watcher's catch-up cadence. Neither is what normally settles a payment — a funding event does — so what is left on both is the backstop for a dropped subscription, plus the solver status check the RFQ transport cannot push. The covenant half matters because that subscription does drop in normal operation: an event lost to a reconnect window is only recovered by the next catch-up pass. Lower it to see settlement sooner, at the cost of solver requests. |
 | `DB_PATH` | — | Path to SQLite database file. Omit for in-memory-only mode. |
 | `TOKEN_ENCRYPTION_KEY` | — | 32-byte AES key (hex or base64). Required with `DB_PATH` unless the insecure fallback is explicitly allowed. |
@@ -353,11 +376,24 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `ADMIN_BIND` | `127.0.0.1` | Admin bind address (`0.0.0.0` in Docker) |
 | `BOOTSTRAP_DOMAIN` | — | Domain name to create on first startup if no domains exist |
 | `REGISTRATION_RATE_LIMIT` | `10` | Max address registration requests per minute per IP |
+| `CALLBACK_RATE_LIMIT_PER_MINUTE` | `30` | Max Lightning-address callbacks per minute per client IP on the branches that cost the server without a live wallet session — an offline-swap quote or a destination. One budget, shared by both. |
 | `TRUST_PROXY` | `1` | Express `trust proxy` value — number of hops or `false` |
+| `TRUSTED_FORWARDERS` | — | Comma-separated IPs and CIDRs (IPv4 or IPv6) whose `X-Forwarded-For` is believed at any hop, on top of the `TRUST_PROXY` hops. For a server that calls callbacks for its payers, such as BTCPay Server: it forwards each payer's IP, so per-IP limits apply per payer rather than to all of its checkouts at once. **Only list hosts you control or trust: a trusted forwarder decides which IP each of its requests is limited as.** Anyone else's `X-Forwarded-For` is ignored as before. The reverse proxy in front must append to the forwarder's header rather than replace it; many proxies replace it by default for clients they don't trust. With `TRUST_PROXY=false`, a listed forwarder that connects directly also has its `X-Forwarded-Proto` believed, which sets the scheme of the URLs in its own responses. |
 | `TRACE_REQUESTS` | — | Set to `1` to log one structured line per request — method, path, `Host`, status, duration, request id, and the `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Real-Ip` headers — on both the public and admin servers, plus the resolved startup config. Unmatched 404s are logged too, so no line at all means the request never reached the process. Off by default. |
 | `MAX_SESSIONS` | `5000` | Global concurrent SSE session cap |
 | `MAX_SESSIONS_PER_IP` | `50` | Concurrent SSE session cap per resolved client IP |
 | `MAX_CONCURRENT_OFFLINE_QUOTES` | `20` | Global in-flight offline RFQ cap |
+| `FIXEDFLOAT_API_KEY` / `FIXEDFLOAT_API_SECRET` | — | Turn on [token deposits](#token-deposits-fixedfloat-opt-in-mainnet-only); both or neither. Mainnet (`bitcoin`) only — the server refuses to start with them elsewhere. **Credentials**: the secret signs every request and is held only by the signer. |
+| `FIXEDFLOAT_REFCODE` / `FIXEDFLOAT_AFFTAX` | — | FixedFloat affiliate code, and the affiliate percentage it adds to every quote. |
+| `FIXEDFLOAT_ALLOW` / `FIXEDFLOAT_DENY` | all / none | Comma-separated FixedFloat codes to offer, from the 13 stablecoin networks whose decimals the server knows (`src/rails/fixedfloat/catalogue.ts`); deny applies after allow. |
+| `FIXEDFLOAT_SETTLE_MARGIN_SECONDS` | `600` | What FixedFloat may need between a deposit and paying the invoice: the payer's deadline ends this long before the corridor invoice's. |
+| `FIXEDFLOAT_MIN_PAY_WINDOW_SECONDS` | `300` | The shortest deadline a payer is handed. Checked before an order is created (invoice less margin) and after (the earlier of that and FixedFloat's deadline); less, and the callback refuses. |
+| `FIXEDFLOAT_MAX_OPEN_ORDERS` | `20` | Unfunded, unexpired orders allowed at once. |
+| `FIXEDFLOAT_MAX_OPEN_ORDERS_PER_ADDRESS` | `5` | Unfunded, unexpired orders one receiving address may have at once. |
+| `FIXEDFLOAT_ORDERS_PER_IP` / `FIXEDFLOAT_ORDERS_PER_IP_WINDOW_SECONDS` | `10` / `600` | Token callbacks one IP may make per window. A BTCPay server is one IP for all its checkouts, so raise this for a busy one. Before this limit applies, each token callback also spends one of the 30 callbacks a minute per IP that the offline Lightning and Arkade destination callbacks share. That limit is fixed in code, with no setting: a burst of token callbacks can refuse the same server's other callbacks for the rest of that minute, and a rate here above 30 a minute has no effect. |
+| `FIXEDFLOAT_REFRESH_MS` | `300000` | Rates and currency-list refresh interval. |
+| `FIXEDFLOAT_BASE_URL` / `FIXEDFLOAT_RATES_URL` | `https://ff.io/api/v2` / `https://ff.io/rates/fixed.xml` | FixedFloat's API and public rates export. |
+| `FIXEDFLOAT_SIMULATE` | `false` | `true` runs the simulated provider instead; never on `bitcoin`, never with keys. |
 | `SHUTDOWN_TIMEOUT_MS` | `15000` | Grace period before lingering HTTP connections are forced closed |
 
 ## Development

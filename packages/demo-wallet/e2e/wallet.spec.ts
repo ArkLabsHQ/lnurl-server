@@ -57,14 +57,17 @@ test("loads and offers onboarding", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
-test("keeps Create disabled until the username is long enough", async ({ page }) => {
+test("keeps Create disabled until the username meets the server's minimum", async ({ page }) => {
+  const { usernameRules } = await createLnurlClient({ baseUrl: LNURL_BASE }).domainCapabilities({ domain: LNURL_DOMAIN });
   await page.goto("./");
   const create = page.getByRole("button", { name: "Create wallet" });
 
   await expect(create).toBeDisabled();
-  await page.getByPlaceholder("username").fill("ab");
-  await expect(create).toBeDisabled();
-  await page.getByPlaceholder("username").fill("abc");
+  if (usernameRules.minLen > 1) {
+    await page.getByPlaceholder("username").fill("a".repeat(usernameRules.minLen - 1));
+    await expect(create).toBeDisabled();
+  }
+  await page.getByPlaceholder("username").fill("a".repeat(usernameRules.minLen));
   await expect(create).toBeEnabled();
 });
 

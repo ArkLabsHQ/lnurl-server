@@ -1,5 +1,5 @@
 import type { Db } from "../connection.js";
-import type { SolverRegistryCacheRow } from "../types.js";
+import type { SolverRegistryCacheRow } from "../../types/index.js";
 
 interface Row {
   url: string;

@@ -1,7 +1,31 @@
 import { lnurlFetch, type FetchImpl } from "./http.js";
 import { LnurlError, LnurlTimeoutError, LnurlTransportError } from "./errors.js";
 import { toPayRequestUrl } from "./encoding.js";
-import type { Bolt11Result, InvoiceResult, PayRequest, PaymentQuote, PollVerifyOptions, RequestInvoiceOptions, VerifyStatus } from "./types.js";
+import type { Bolt11Result, DestinationResult, InvoiceResult, PayRequest, PaymentQuote, PollVerifyOptions, RequestInvoiceOptions, VerifyExpectation, VerifyStatus } from "./types.js";
+import { isTokenAddress, tokenOptions, type TokenOption } from "./token-options.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { hex } from "@scure/base";
+import { amountMsatOf, paymentHashOf } from "./bolt11.js";
+
+function preimageOpens(preimage: string, pr: string): boolean {
+  const hash = paymentHashOf(pr);
+  if (!hash || !/^[0-9a-f]{64}$/i.test(preimage)) return false;
+  return hex.encode(sha256(hex.decode(preimage.toLowerCase()))) === hash;
+}
+
+/** The checks the BTCPay plugin makes of a token answer (LnurlTokenRequester.cs): the
+ *  option it asked for, an address on the token's own chain, and a whole amount of the token. */
+function assertTokenAnswer(token: TokenOption, answer: DestinationResult): void {
+  if (answer.paymentOption !== token.id) throw new LnurlError(`The callback answered for ${answer.paymentOption}, not ${token.id}`);
+  if (!answer.paymentDestination || !isTokenAddress(token.asset.namespace, answer.paymentDestination)) {
+    throw new LnurlError(`The callback returned no ${token.asset.namespace} address to pay`);
+  }
+  const payment = answer.paymentQuote?.payment as { amount?: unknown; unit?: unknown } | undefined;
+  const whole = typeof payment?.amount === "string" && /^[0-9]{1,78}$/.test(payment.amount) && /[1-9]/.test(payment.amount);
+  if (!whole || typeof payment?.unit !== "string" || payment.unit.toUpperCase() !== token.unit.code) {
+    throw new LnurlError(`The callback quoted no whole amount of ${token.unit.code}`);
+  }
+}
 
 /**
  * Fetches the payRequest for a lightning address or bech32 LNURL.
@@ -26,9 +50,8 @@ export async function resolve(input: string, fetchImpl: FetchImpl): Promise<PayR
  *
  * `amountSat` is sats and is converted to millisats on the wire; it is
  * range-checked locally against the payRequest bounds before any network
- * call. `paymentOption` and `unit` apply only to an address payRequest and
- * are rejected on a session one, because the session callback reads `amount`
- * and `comment` only and the server would silently ignore the rail choice.
+ * call. `paymentOption` and `unit` are rejected on a session payRequest that
+ * does not advertise them: a live session's callback would silently ignore them.
  * `verify` on the result is optional: the server omits it when the BOLT11
  * payment hash will not decode.
  *
@@ -42,8 +65,10 @@ export async function requestInvoice(
   opts: RequestInvoiceOptions,
   fetchImpl: FetchImpl,
 ): Promise<InvoiceResult> {
-  if (payRequest.source.surface === "session" && (opts.paymentOption !== undefined || opts.unit !== undefined)) {
-    throw new LnurlError("paymentOption and unit are only supported on address payRequests, not on a session payRequest");
+  const unadvertised =
+    (opts.paymentOption !== undefined && !payRequest.paymentOptions) || (opts.unit !== undefined && !payRequest.units);
+  if (payRequest.source.surface === "session" && unadvertised) {
+    throw new LnurlError("paymentOption and unit need a session payRequest that advertises them; this one does not");
   }
   const amountMsat = opts.amountSat * 1000;
   // The top-level pair describes the rail a payer gets by sending no option, so
@@ -52,9 +77,14 @@ export async function requestInvoice(
   const selected = opts.paymentOption
     ? payRequest.paymentOptions?.find((option) => option.id === opts.paymentOption)
     : undefined;
+  const token = selected?.asset !== undefined ? tokenOptions(payRequest).find((o) => o.id === selected.id) : undefined;
+  if (selected?.asset !== undefined && !token) throw new LnurlError(`paymentOption ${selected.id} is not a token this client can pay`);
   const min = selected?.minSendable ?? payRequest.minSendable;
   const max = selected?.maxSendable ?? payRequest.maxSendable;
-  if (!Number.isFinite(amountMsat) || amountMsat < min || amountMsat > max) {
+  if (!Number.isSafeInteger(amountMsat)) {
+    throw new LnurlError("Amount must be a whole number of millisats");
+  }
+  if (amountMsat < min || amountMsat > max) {
     throw new LnurlError(`Amount must be between ${min} and ${max} millisats`);
   }
   // Checked locally for the same reason the amount is: the server would reject
@@ -78,30 +108,51 @@ export async function requestInvoice(
   const sep = payRequest.callback.includes("?") ? "&" : "?";
   const body = await lnurlFetch<Record<string, unknown>>(`${payRequest.callback}${sep}${params.toString()}`, undefined, fetchImpl);
   if (typeof body.pr === "string") {
+    if (token) throw new LnurlError(`The callback answered token option ${token.id} with an invoice`);
+    const invoiceMsat = amountMsatOf(body.pr);
+    if (invoiceMsat === undefined) throw new LnurlError("The callback returned an invoice that does not decode");
+    // An amountless invoice answering an amounted request is refused too: the
+    // payer asked for a fixed amount, and paying it could settle for any amount.
+    if (invoiceMsat !== amountMsat) {
+      throw new LnurlError(`The callback returned an invoice for ${invoiceMsat ?? "no"} millisats, not the requested ${amountMsat}`);
+    }
     const result: Bolt11Result = { kind: "bolt11", pr: body.pr, verify: typeof body.verify === "string" ? body.verify : undefined };
+    if (typeof body.verifyBatch === "string") result.verifyBatch = body.verifyBatch;
     if (typeof body.paymentOption === "string") result.paymentOption = body.paymentOption;
     if (body.paymentQuote !== undefined) result.paymentQuote = body.paymentQuote as PaymentQuote;
     return result;
   }
   if (typeof body.paymentOption === "string") {
-    return {
+    const result: DestinationResult = {
       kind: "destination",
       paymentOption: body.paymentOption,
       ...(typeof body.paymentDestination === "string" ? { paymentDestination: body.paymentDestination } : {}),
+      ...(typeof body.paymentDestinationTag === "string" ? { paymentDestinationTag: body.paymentDestinationTag } : {}),
+      ...(typeof body.paymentURI === "string" ? { paymentURI: body.paymentURI } : {}),
+      ...(body.paymentQuote && typeof body.paymentQuote === "object" ? { paymentQuote: body.paymentQuote as PaymentQuote } : {}),
+      ...(typeof body.expiresAt === "number" ? { expiresAt: body.expiresAt } : {}),
+      ...(typeof body.provider === "string" ? { provider: body.provider } : {}),
       ...(typeof body.verify === "string" ? { verify: body.verify } : {}),
+      ...(typeof body.verifyBatch === "string" ? { verifyBatch: body.verifyBatch } : {}),
     };
+    if (token) assertTokenAnswer(token, result);
+    return result;
   }
   throw new LnurlError("Unexpected callback response");
 }
 
-function parseVerifyStatus(body: Record<string, unknown>): VerifyStatus {
+/** Parses one verify answer — the per-invoice route, one `results` entry of the
+ *  batch endpoint, or one streamed frame payload all share the shape. */
+export function parseVerifyStatus(body: Record<string, unknown>): VerifyStatus {
   if (typeof body.pr === "string") {
-    return {
-      kind: "bolt11",
-      settled: body.settled === true,
-      preimage: typeof body.preimage === "string" ? body.preimage : null,
-      pr: body.pr,
-    };
+    const settled = body.settled === true;
+    const preimage = typeof body.preimage === "string" ? body.preimage : null;
+    // A settled claim is only proof when the preimage opens this invoice; one
+    // that cannot be checked is treated like one that fails.
+    if (settled && (!preimage || !preimageOpens(preimage, body.pr))) {
+      throw new LnurlError("Verify reported settled with a preimage that does not match the invoice's payment hash");
+    }
+    return { kind: "bolt11", settled, preimage, pr: body.pr };
   }
   // Without this the cast would hand back `undefined` typed as `string` for any
   // body that is neither a bolt11 nor a well-formed destination.
@@ -115,6 +166,20 @@ function parseVerifyStatus(body: Record<string, unknown>): VerifyStatus {
     ...(typeof body.paymentDestination === "string" ? { paymentDestination: body.paymentDestination } : {}),
     ...(typeof body.paymentReference === "string" ? { paymentReference: body.paymentReference } : {}),
   };
+}
+
+/**
+ * Whether a verify answer is about `expected`: a BOLT11 status for the same payment
+ * hash, or a destination status on the same rail and, when both name one, the same
+ * destination. The preimage check alone only proves the answer's own invoice.
+ */
+export function verifyStatusIsFor(status: VerifyStatus, expected: VerifyExpectation): boolean {
+  if ("pr" in expected) {
+    const hash = paymentHashOf(expected.pr);
+    return status.kind === "bolt11" && hash !== null && paymentHashOf(status.pr) === hash;
+  }
+  return status.kind === "destination" && status.paymentOption === expected.paymentOption &&
+    (status.paymentDestination === undefined || expected.paymentDestination === undefined || status.paymentDestination === expected.paymentDestination);
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -165,6 +230,7 @@ export async function pollVerify(
     if (opts?.signal?.aborted) throw opts.signal.reason ?? new LnurlError("Aborted");
     const body = await lnurlFetch<Record<string, unknown>>(verifyUrl, undefined, fetchImpl);
     const status = parseVerifyStatus(body);
+    if (opts?.expect && !verifyStatusIsFor(status, opts.expect)) throw new LnurlError("Verify answered about a different payment");
     lastSnapshot = status;
     opts?.onUpdate?.(status);
     if (status.settled) return status;

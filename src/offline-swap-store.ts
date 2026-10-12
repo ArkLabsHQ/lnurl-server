@@ -1,5 +1,8 @@
+import { ArkAddress } from "@arkade-os/sdk";
+import { hex } from "@scure/base";
 import type { Db } from "./db/connection.js";
-import type { OfflineSwapRecoveryV1 } from "./intent-swap.js";
+import type { OfflineSwapRecoveryV1 } from "./services/offline-swaps.js";
+import { MalformedRecordError } from "./errors.js";
 
 export interface AcceptedOfflineSwap {
   paymentHash: string;
@@ -46,10 +49,10 @@ function isRelayUrl(value: unknown): value is string {
 function recoveryOf(row: PendingRow): OfflineSwapRecoveryV1 {
   const relays = JSON.parse(row.relays_json) as unknown;
   const body = JSON.parse(row.recovery_json) as { script?: unknown };
-  if (row.recovery_version !== 1) throw new Error(`unsupported offline swap recovery version ${row.recovery_version}`);
-  if (!Array.isArray(relays) || relays.length === 0 || !relays.every(isRelayUrl)) throw new Error("invalid offline swap relays");
-  if (!body.script || typeof body.script !== "object" || Array.isArray(body.script)) throw new Error("invalid offline swap script recovery");
-  if (!Object.values(body.script).every((value) => typeof value === "string")) throw new Error("invalid offline swap script parameter");
+  if (row.recovery_version !== 1) throw new MalformedRecordError(`unsupported offline swap recovery version ${row.recovery_version}`);
+  if (!Array.isArray(relays) || relays.length === 0 || !relays.every(isRelayUrl)) throw new MalformedRecordError("invalid offline swap relays");
+  if (!body.script || typeof body.script !== "object" || Array.isArray(body.script)) throw new MalformedRecordError("invalid offline swap script recovery");
+  if (!Object.values(body.script).every((value) => typeof value === "string")) throw new MalformedRecordError("invalid offline swap script parameter");
   return {
     version: 1,
     solverName: row.solver_name,
@@ -62,6 +65,24 @@ function recoveryOf(row: PendingRow): OfflineSwapRecoveryV1 {
   };
 }
 
+/** The restart-recovery row for a corridor swap; the caller owns the transaction. */
+export function insertOfflineSwap(db: Db, paymentHash: string, recovery: OfflineSwapRecoveryV1, createdAt: number): void {
+  db.prepare(
+    "INSERT INTO offline_swaps (payment_hash, rfq_id, solver_name, solver_pubkey, relays_json, recovery_version, recovery_json, lockup_address, expected_amount, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(
+    paymentHash,
+    recovery.rfqId,
+    recovery.solverName,
+    recovery.solverPubkey,
+    JSON.stringify(recovery.relays),
+    recovery.version,
+    JSON.stringify({ script: recovery.script }),
+    recovery.lockupAddress,
+    recovery.expectedAmount,
+    createdAt,
+  );
+}
+
 export class OfflineSwapStore {
   constructor(private db: Db, private ttlMs: number, private now: () => number = Date.now) {}
 
@@ -70,22 +91,9 @@ export class OfflineSwapStore {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.prepare(
-        "INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, amount_msat, address_id, created_at) VALUES (?, ?, ?, 0, ?, ?, 'lightning', ?, ?, ?)",
-      ).run(record.paymentHash, record.pr, record.sessionId, record.preimage, record.recovery.rfqId, record.amountMsat, record.addressId ?? null, createdAt);
-      this.db.prepare(
-        "INSERT INTO offline_swaps (payment_hash, rfq_id, solver_name, solver_pubkey, relays_json, recovery_version, recovery_json, lockup_address, expected_amount, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(
-        record.paymentHash,
-        record.recovery.rfqId,
-        record.recovery.solverName,
-        record.recovery.solverPubkey,
-        JSON.stringify(record.recovery.relays),
-        record.recovery.version,
-        JSON.stringify({ script: record.recovery.script }),
-        record.recovery.lockupAddress,
-        record.recovery.expectedAmount,
-        createdAt,
-      );
+        "INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, amount_msat, address_id, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?, 'lightning', ?, ?, ?, ?)",
+      ).run(record.paymentHash, record.pr, record.sessionId, record.preimage, record.recovery.rfqId, record.amountMsat, record.addressId ?? null, createdAt, createdAt);
+      insertOfflineSwap(this.db, record.paymentHash, record.recovery, createdAt);
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -95,19 +103,41 @@ export class OfflineSwapStore {
 
   listPending(): PendingOfflineSwap[] {
     // Recovery shares the settlement TTL. Swaps that expire while this process
-    // is down are intentionally not resumed on restart.
+    // is down are intentionally not resumed on restart. `swap_id IS NOT NULL` drops no
+    // row (it is written with the recovery row) but lets the pending-swap index serve this.
     const rows = this.db.prepare(
       `SELECT s.payment_hash, s.preimage, o.rfq_id, o.solver_name, o.solver_pubkey,
               o.relays_json, o.recovery_version, o.recovery_json, o.lockup_address, o.expected_amount
        FROM settlements s JOIN offline_swaps o ON o.payment_hash = s.payment_hash
-       WHERE s.settled = 0 AND s.preimage IS NOT NULL AND s.created_at > ?`,
+       WHERE s.swap_id IS NOT NULL AND s.settled = 0 AND s.preimage IS NOT NULL AND s.created_at > ?`,
     ).all(this.now() - this.ttlMs) as unknown as PendingRow[];
     return rows.map((row) => ({ paymentHash: row.payment_hash, preimage: row.preimage, recovery: recoveryOf(row) }));
   }
 
+  /** Lockup pkScripts still worked: unsettled and inside {@link listPending}'s window, so
+   *  retirement never outlives a claim attempt. `swap_id IS NOT NULL` is implied by the
+   *  join, but stated so idx_settlements_pending_swaps_created serves the range. */
+  listActiveLockupScripts(): string[] {
+    const rows = this.db.prepare(
+      `SELECT o.lockup_address
+       FROM settlements s JOIN offline_swaps o ON o.payment_hash = s.payment_hash
+       WHERE s.swap_id IS NOT NULL AND s.settled = 0 AND s.preimage IS NOT NULL AND s.created_at > ?`,
+    ).all(this.now() - this.ttlMs) as unknown as { lockup_address: string }[];
+    const scripts: string[] = [];
+    for (const row of rows) {
+      try {
+        scripts.push(hex.encode(ArkAddress.decode(row.lockup_address).pkScript));
+      } catch {
+        // Costs this lockup its watch, the fast path, never the whole pass.
+      }
+    }
+    return scripts;
+  }
+
   markSettled(paymentHash: string, preimage: string): boolean {
+    const at = this.now();
     return this.db.prepare(
-      "UPDATE settlements SET settled = 1, preimage = ?, settled_at = ? WHERE payment_hash = ? AND settled = 0 AND created_at > ?",
-    ).run(preimage, this.now(), paymentHash, this.now() - this.ttlMs).changes > 0;
+      "UPDATE settlements SET settled = 1, preimage = ?, settled_at = ?, updated_at = ? WHERE payment_hash = ? AND settled = 0 AND created_at > ?",
+    ).run(preimage, at, at, paymentHash, at - this.ttlMs).changes > 0;
   }
 }

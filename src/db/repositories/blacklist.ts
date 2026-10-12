@@ -1,5 +1,5 @@
 import type { Db } from "../connection.js";
-import type { BlacklistRow } from "../types.js";
+import type { BlacklistRow } from "../../types/index.js";
 
 interface BlacklistRecord {
   id: number;

@@ -49,6 +49,6 @@ export function CopyableQr({ uri, caption }: { uri: string; caption: string }) {
   );
 }
 
-export function ReceiveQr({ lightningAddress }: { lightningAddress: string }) {
-  return <CopyableQr uri={receiveUri(lightningAddress)} caption="Lightning address" />;
+export function ReceiveQr({ target, caption }: { target: string; caption: string }) {
+  return <CopyableQr uri={receiveUri(target)} caption={caption} />;
 }

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { hkdfSync, createDecipheriv } from "node:crypto";
 import { base64, hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
-import { sealClaimPacket } from "@arkade-os/swap";
+import { sealClaimPacket } from "@arkade-os/swap/protocol";
 
 // Cross-implementation check: the published sealClaimPacket must produce blobs that
 // covclaimd's pkg/preimage/crypto.go Decrypt accepts. This mirror is written directly

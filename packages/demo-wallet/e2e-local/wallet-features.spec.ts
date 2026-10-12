@@ -30,8 +30,8 @@ let other: LnurlServerHandle;
 const name = (prefix: string) => `${prefix}${Date.now().toString(36)}${randomBytes(2).toString("hex")}`;
 
 const adminUsernames = async (adminBase: string, q: string): Promise<string[]> =>
-  ((await (await fetch(`${adminBase}/admin/api/addresses?q=${q}`)).json()) as Array<{ username: string }>)
-    .map((a) => a.username);
+  ((await (await fetch(`${adminBase}/admin/api/addresses?q=${q}`)).json()) as { addresses: Array<{ username: string }> })
+    .addresses.map((a) => a.username);
 
 async function onboard(page: Page, prefix: string): Promise<string> {
   const username = name(prefix);
@@ -93,6 +93,69 @@ test("backup: the revealed phrase is the stored key, and erasing destroys it", a
   }
 });
 
+test("boot: lnurl-server down keeps a returning wallet out of onboarding until Retry finds its address", async ({ browser }) => {
+  const { context, page, username } = await freshWallet(browser, "down", { keepExisting: true });
+  try {
+    const listing = (url: URL) => url.href.startsWith(stack.lnurlBase) && url.pathname === "/lnurl/address";
+    await page.route(listing, (route) => route.fulfill({ status: 503, body: "down" }));
+    await page.reload();
+    await expect(page.getByRole("button", { name: "Retry" })).toBeVisible({ timeout: 120_000 });
+    await expect(page.getByRole("heading", { name: "Create your wallet" })).toHaveCount(0);
+
+    await page.unroute(listing);
+    await page.getByRole("button", { name: "Retry" }).click();
+    await expect(page.getByText(`${username}@${stack.lnurlDomain}`)).toBeVisible({ timeout: 120_000 });
+    expect(await adminUsernames(GLOBAL_ADMIN, username)).toEqual([username]);
+  } finally {
+    await context.close();
+  }
+});
+
+/** Records across every store in the SDK's IndexedDB. Summed rather than named,
+ *  so a store added by a later SDK counts without editing this. */
+const sdkRecords = (page: Page): Promise<number> =>
+  page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const req = indexedDB.open("arkade-service-worker");
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    const names = Array.from(db.objectStoreNames);
+    const counts = await Promise.all(
+      names.map((n) => new Promise<number>((resolve) => {
+        const req = db.transaction(n, "readonly").objectStore(n).count();
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(0);
+      })),
+    );
+    db.close();
+    return counts.reduce((a, b) => a + b, 0);
+  });
+
+test("erase empties the SDK store, so the next wallet cannot inherit it", async ({ browser }) => {
+  const { context, page } = await freshWallet(browser, "wipe");
+  try {
+    // Opening a wallet writes its arkd snapshot, so there is something to erase.
+    await expect.poll(() => sdkRecords(page), { timeout: 60_000 }).toBeGreaterThan(0);
+
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: "Erase wallet…" }).click();
+    await page.getByPlaceholder("ERASE").fill("ERASE");
+    await page.getByRole("button", { name: "Erase wallet", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Create your wallet" })).toBeVisible();
+
+    // The regression: erase cleared localStorage only, leaving the next identity
+    // the previous one's VTXOs and unsignable contracts.
+    expect(await sdkRecords(page)).toBe(0);
+
+    await onboard(page, "wipe2");
+    await expect(page.locator("div").filter({ hasText: /^0 sats$/ }).first())
+      .toBeVisible({ timeout: 120_000 });
+  } finally {
+    await context.close();
+  }
+});
+
 test("restore: adopting another phrase takes over the name that key owns", async ({ browser }) => {
   const first = await freshWallet(browser, "r1");
   const phrase = await first.page.evaluate((k) => localStorage.getItem(k), MNEMONIC_KEY);
@@ -135,18 +198,25 @@ test("settings: an endpoint override sends the next registration to the other se
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByText("Saved. Reload the page to use it.")).toBeVisible();
 
+    // The same key owns nothing on the other server, so the wallet boots into onboarding there.
     await page.reload();
-    await page.getByRole("button", { name: "Settings" }).click();
-    await expect(page.getByText(other.base, { exact: true })).toBeVisible();
-
-    // Erase rather than a second browser: the override lives beside the keys and
-    // survives wiping them, so this is the one path that onboards against it.
-    await page.getByRole("button", { name: "Erase wallet…" }).click();
-    await page.getByPlaceholder("ERASE").fill("ERASE");
-    await page.getByRole("button", { name: "Erase wallet", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Create your wallet" })).toBeVisible({ timeout: 120_000 });
     const moved = await onboard(page, "sy");
     expect(await adminUsernames(OTHER_ADMIN, moved)).toEqual([moved]);
     expect(await adminUsernames(GLOBAL_ADMIN, moved)).toEqual([]);
+
+    await page.getByRole("button", { name: "Settings" }).click();
+    await expect(page.getByText(other.base, { exact: true })).toBeVisible();
+
+    // The override lives beside the keys and must survive wiping them.
+    await page.getByRole("button", { name: "Erase wallet…" }).click();
+    await page.getByPlaceholder("ERASE").fill("ERASE");
+    await page.getByRole("button", { name: "Erase wallet", exact: true }).click();
+    const again = await onboard(page, "sz");
+    expect(await adminUsernames(OTHER_ADMIN, again)).toEqual([again]);
+    expect(await adminUsernames(GLOBAL_ADMIN, again)).toEqual([]);
+    await page.getByRole("button", { name: "Settings" }).click();
+    await expect(page.getByText(other.base, { exact: true })).toBeVisible();
   } finally {
     await context.close();
   }
@@ -223,13 +293,13 @@ test.describe("a wallet that stays open", () => {
     expect(quote.status, `arkade quote refused: ${quote.reason}`).toBe("OK");
 
     await page.getByRole("button", { name: "Activity" }).click();
-    const row = page.locator("div").filter({ hasText: /lnurlarkade2500 sats/ }).first();
+    const row = page.locator("div").filter({ hasText: /arkade2500 sats/ }).first();
     await expect(row).toBeVisible({ timeout: 60_000 });
     await expect(row).toContainText("pending");
 
     await page.reload();
     await page.getByRole("button", { name: "Activity" }).click();
     await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible({ timeout: 120_000 });
-    await expect(page.locator("div").filter({ hasText: /lnurlarkade2500 sats/ }).first()).toBeVisible();
+    await expect(page.locator("div").filter({ hasText: /arkade2500 sats/ }).first()).toBeVisible();
   });
 });

@@ -1,17 +1,23 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { PaymentOption, WalletBalance } from "@arkade-os/sdk";
-import type { InvoiceResult, PayRequest } from "@arkade-os/lnurl-client";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { PaymentOption, RouteQuote, WalletBalance } from "@arkade-os/sdk";
+import type { DomainCapabilities, InvoiceResult, PayRequest } from "@arkade-os/lnurl-client";
+import type { ClaimOptions, Receiver, SentPayment } from "@arkade-os/lnurl-client/arkade";
+import { lnurlActivityResolver, lnurlQuoteMeta, sentActivityResolver } from "@arkade-os/lnurl-client/arkade";
 import { EXPLORER, LNURL_DOMAIN, USERNAME_KEY } from "./config.js";
 import { mergeFeed, readWalletActivity, type FeedRow, type FeedStatus } from "./activity.js";
 import { balanceView } from "./balance.js";
 import { createMnemonic, loadMnemonic, openWallet, wipeWallet, type DemoWallet } from "./wallet.js";
-import { lnurl } from "./lnurl.js";
+import { bootState, claimOrAdopt, domainCapabilities, payer, receiver } from "./lnurl.js";
 import { createRouter, RAIL_PRIORITY } from "./router.js";
-import { localPaymentStore, storedPayments } from "./payment-store.js";
+import { sendAmountFor } from "./send-amount.js";
+import { CHOICE_ARGS, nameChoices } from "./name-choice.js";
+import { pendingConfirmations, settlementWatcher, type SettlementWatcher } from "./batch-verify.js";
+import { storedPayments } from "@arkade-os/lnurl-client";
 import { autoSettleBoarding, type BoardingState } from "./boarding.js";
 import { Backup } from "./Backup.js";
 import { Settings } from "./Settings.js";
-import { forgetPayments } from "./payment-store.js";
+import { forgetStoredPayments } from "@arkade-os/lnurl-client";
+import { forgetSent, recordSent, sentPayments } from "./sent-store.js";
 import { CopyableQr, ReceiveQr } from "./Qr.js";
 
 type Tab = "Receive" | "Send" | "Activity" | "Settings";
@@ -32,6 +38,16 @@ function Copy({ value }: { value: string }) {
   );
 }
 
+/** The client code an action runs, so the demo doubles as its own usage guide. */
+function Call({ code }: { code: string }) {
+  return (
+    <details style={{ marginTop: 4, fontSize: 12, color: "#666" }}>
+      <summary style={{ cursor: "pointer" }}>the call behind this</summary>
+      <pre style={{ ...mono, fontSize: 12, whiteSpace: "pre-wrap", margin: "4px 0 0", padding: 8, background: "#f6f6f6", borderRadius: 4 }}>{code}</pre>
+    </details>
+  );
+}
+
 function Field({ label, value }: { label: string; value: string }) {
   return (
     <div style={{ marginBottom: 10 }}>
@@ -43,27 +59,28 @@ function Field({ label, value }: { label: string; value: string }) {
 
 export function App() {
   const [wallet, setWallet] = useState<DemoWallet | null>(null);
-  const [username, setUsername] = useState<string | null>(() => localStorage.getItem(USERNAME_KEY));
-  const [token, setToken] = useState<string | null>(null);
+  const [shown, setShown] = useState<Receiver | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [booting, setBooting] = useState(true);
+  const [unreachable, setUnreachable] = useState<{ error: string; mnemonic: string } | null>(null);
   const opened = useRef(false);
 
   const adopt = useCallback(async (mnemonic: string) => {
     setBooting(true);
     setErr(null);
+    setShown(null);
+    setUnreachable(null);
     try {
       const w = await openWallet(mnemonic);
       setWallet(w);
-      setToken(await lnurl.deriveToken(w.identity));
-
-      // The username is not in the phrase, so on a fresh browser ask the server
-      // which one this token owns. Re-registering it would fail: the server
-      // refuses any existing username, owner or not.
-      const token = await lnurl.deriveToken(w.identity);
-      const owned = localStorage.getItem(USERNAME_KEY) ?? (await lnurl.ownedUsername(token).catch(() => undefined));
-      if (owned) localStorage.setItem(USERNAME_KEY, owned);
-      setUsername(owned ?? null);
+      // Asked every boot, not read from storage: the phrase carries no handle,
+      // and only the server can hand back a Receiver to act through.
+      const boot = await bootState(receiver({ wallet: w.wallet }));
+      if (boot.kind === "unreachable") setUnreachable({ error: boot.error, mnemonic });
+      if (boot.kind === "ready") {
+        localStorage.setItem(USERNAME_KEY, boot.receiver.handle);
+        setShown(boot.receiver);
+      }
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -85,8 +102,7 @@ export function App() {
 
   const forget = useCallback(() => {
     setWallet(null);
-    setUsername(null);
-    setToken(null);
+    setShown(null);
   }, []);
 
   if (booting) return <div style={page}>Opening wallet…</div>;
@@ -96,23 +112,113 @@ export function App() {
       <h1 style={{ fontSize: 20, marginBottom: 2 }}>Arkade demo wallet</h1>
       <p style={{ color: "#666", marginTop: 0, fontSize: 13 }}>mutinynet · receives through lnurl-server</p>
       {err && <p style={{ color: "crimson" }}>{err}</p>}
-      {!wallet || !username || !token
-        ? <Onboarding wallet={wallet} username={username} onReady={(w, u, t) => { setWallet(w); setUsername(u); setToken(t); }} onError={setErr} />
-        : <Wallet wallet={wallet} username={username} token={token} onRestored={adopt} onReset={forget} />}
+      {unreachable
+        ? (
+          <div style={card}>
+            <p style={{ color: "crimson", marginTop: 0 }}>Could not reach {LNURL_DOMAIN} to find this wallet's address: {unreachable.error}</p>
+            <button style={btn} onClick={() => void adopt(unreachable.mnemonic)}>Retry</button>
+          </div>
+        )
+        : !wallet || !shown
+        ? <Onboarding wallet={wallet} onReady={(w, r) => { setWallet(w); setShown(r); }} onError={setErr} />
+        : <Wallet wallet={wallet} receiver={shown} onRenamed={setShown} onRestored={adopt} onReset={forget} />}
     </div>
   );
 }
 
-function Onboarding({ wallet, username, onReady, onError }: {
-  wallet: DemoWallet | null;
-  username: string | null;
-  onReady: (w: DemoWallet, u: string, t: string) => void;
-  onError: (m: string) => void;
+/** What the domain lets a wallet do for itself. A server predating the route
+ *  only ever offered a chosen name, so that is what a failed read falls back to. */
+function useCapabilities(): { caps: DomainCapabilities | null; note: string } {
+  const [caps, setCaps] = useState<DomainCapabilities | null>(null);
+  const [note, setNote] = useState("");
+  useEffect(() => {
+    let live = true;
+    domainCapabilities()
+      .then((c) => { if (live) setCaps(c); })
+      .catch((e: Error) => {
+        if (!live) return;
+        setNote(`could not read what ${LNURL_DOMAIN} allows (${e.message}); offering a chosen name`);
+        setCaps({ domain: LNURL_DOMAIN, allocationModes: ["self"], usernameRules: { minLen: 3, maxLen: 64, pattern: "" }, requireApiKey: false });
+      });
+    return () => { live = false; };
+  }, []);
+  return { caps, note };
+}
+
+const input = { padding: 8, borderRadius: 6, border: "1px solid #bbb", minWidth: 200 } as const;
+const choiceRow = { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } as const;
+
+function NameChoice({ caps, note, busy, selfLabel, withSession, call, onPick }: {
+  caps: DomainCapabilities | null; note: string; busy: boolean; selfLabel: string; withSession: boolean;
+  call: (args: string) => string;
+  onPick: (opts: ClaimOptions) => void;
 }) {
   const [name, setName] = useState("");
+  const [reserved, setReserved] = useState({ open: false, name: "", code: "" });
+  if (!caps) return <p style={{ color: "#666", fontSize: 13 }}>Reading what {LNURL_DOMAIN} allows…</p>;
+  const offer = nameChoices(caps.allocationModes, { nameless: withSession });
+  const { minLen, maxLen } = caps.usernameRules;
+  const length = name.trim().length;
+  return (
+    <>
+      {note && <p style={{ ...mono, color: "#946200", fontSize: 12 }}>{note}</p>}
+      {!Object.values(offer).some(Boolean) && (
+        <p style={{ color: "crimson" }}>{caps.domain} does not let a wallet claim an address for itself.</p>
+      )}
+      {offer.self && (
+        <div style={{ marginTop: 10 }}>
+          <div style={choiceRow}>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="username" style={input} />
+            <button style={btn} disabled={busy || length < minLen || length > maxLen}
+              onClick={() => onPick({ username: name.trim() })}>{busy ? "Working…" : selfLabel}</button>
+          </div>
+          <Call code={call(CHOICE_ARGS.self)} />
+        </div>
+      )}
+      {offer.random && (
+        <div style={{ marginTop: 10 }}>
+          <button style={btn} disabled={busy} onClick={() => onPick({})}>Pick a name for me</button>
+          <Call code={call(CHOICE_ARGS.random)} />
+        </div>
+      )}
+      {offer.nameless && (
+        <div style={{ marginTop: 10 }}>
+          <button style={btn} disabled={busy} onClick={() => onPick({ nameless: true })}>Skip — just a LNURL</button>
+          <Call code={call(CHOICE_ARGS.nameless)} />
+        </div>
+      )}
+      {offer.claimCode && (
+        <div style={{ marginTop: 10 }}>
+          {!reserved.open
+            ? <button style={btn} disabled={busy} onClick={() => setReserved({ ...reserved, open: true })}>I have a claim code</button>
+            : (
+              <div style={choiceRow}>
+                <input value={reserved.name} onChange={(e) => setReserved({ ...reserved, name: e.target.value })}
+                  placeholder="reserved name" style={input} />
+                <input value={reserved.code} onChange={(e) => setReserved({ ...reserved, code: e.target.value })}
+                  placeholder="claim code" style={input} />
+                <button style={btn} disabled={busy || !reserved.name.trim() || !reserved.code.trim()}
+                  onClick={() => onPick({ username: reserved.name.trim(), claimCode: reserved.code.trim() })}>
+                  {busy ? "Working…" : "Claim reserved name"}
+                </button>
+              </div>
+            )}
+          <Call code={call(CHOICE_ARGS.claimCode)} />
+        </div>
+      )}
+    </>
+  );
+}
+
+function Onboarding({ wallet, onReady, onError }: {
+  wallet: DemoWallet | null;
+  onReady: (w: DemoWallet, r: Receiver) => void;
+  onError: (m: string) => void;
+}) {
+  const { caps, note } = useCapabilities();
   const [busy, setBusy] = useState(false);
 
-  const go = useCallback(async () => {
+  const go = useCallback(async (opts: ClaimOptions) => {
     setBusy(true);
     onError("");
     try {
@@ -120,60 +226,72 @@ function Onboarding({ wallet, username, onReady, onError }: {
       // Claim the name and bind the identity in one step: an address without a
       // bound identity advertises no rails, so a half-done onboarding is a
       // wallet that silently cannot receive.
-      const result = username
-        ? { token: await lnurl.deriveToken(w.identity), username }
-        : await lnurl.onboard(w.identity, w.arkadeAddress, name.trim(), w.boardingAddress);
-      localStorage.setItem(USERNAME_KEY, result.username);
-      onReady(w, result.username, result.token);
+      const rx = receiver({ wallet: w.wallet });
+      const claimed = await claimOrAdopt(rx, opts);
+      localStorage.setItem(USERNAME_KEY, claimed.handle);
+      onReady(w, claimed);
     } catch (e) {
       onError((e as Error).message);
     } finally {
       setBusy(false);
     }
-  }, [wallet, username, name, onReady, onError]);
+  }, [wallet, onReady, onError]);
 
   return (
     <div style={card}>
       <h2 style={{ fontSize: 16, marginTop: 0 }}>Create your wallet</h2>
       <p style={{ color: "#555", fontSize: 14 }}>
-        Generates an Arkade identity, claims a Lightning address, and binds the identity
+        Generates an Arkade identity, claims an address to be paid at, and binds the identity
         so payments can arrive while this page is closed.
       </p>
-      <input
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        placeholder="username"
-        style={{ padding: 8, borderRadius: 6, border: "1px solid #bbb", marginRight: 8, minWidth: 200 }}
-      />
-      <button style={btn} disabled={busy || name.trim().length < 3} onClick={() => void go()}>
-        {busy ? "Working…" : "Create wallet"}
-      </button>
+      <Call code={[
+        "const { allocationModes } = await createLnurlClient({ baseUrl }).domainCapabilities({ domain })",
+        "const lnurl = arkadeLnurl({ wallet, baseUrl, domain, store: browserPaymentStore() })",
+      ].join("\n")} />
+      <NameChoice caps={caps} note={note} busy={busy} selfLabel="Create wallet" withSession
+        call={(args) => `(await lnurl.owned()) ?? (await lnurl.claim(${args}))`} onPick={(o) => void go(o)} />
     </div>
   );
 }
 
-function Wallet({ wallet, username, token, onRestored, onReset }: {
-  wallet: DemoWallet; username: string; token: string;
+function Wallet({ wallet, receiver: shown, onRenamed, onRestored, onReset }: {
+  wallet: DemoWallet; receiver: Receiver; onRenamed: (r: Receiver) => void;
   onRestored: (mnemonic: string) => void; onReset: () => void;
 }) {
   const [tab, setTab] = useState<Tab>("Receive");
   const [balance, setBalance] = useState<WalletBalance | null>(null);
   const view = balanceView(balance);
-  // From the pinned domain, never location.hostname: this is served from GitHub
-  // Pages, where the page's own host has nothing to do with the LNURL server.
-  const lightningAddress = `${username}@${LNURL_DOMAIN}`;
 
   const [boarding, setBoarding] = useState<BoardingState>({ status: "idle" });
 
-  const refresh = useCallback(() => {
-    wallet.wallet.getBalance().then(setBalance).catch(() => undefined);
+  const [balanceErr, setBalanceErr] = useState("");
+  // `getBalance` syncs against the indexer itself, and the SDK persists a funded
+  // contract before it emits — so a push needs nothing more. `refreshVtxos` stays
+  // on the pull paths: it alone advances the global sync cursor.
+  const refresh = useCallback((mode: "sync" | "read" = "sync") => {
+    void (async () => {
+      try {
+        if (mode === "sync") await (await wallet.wallet.getContractManager()).refreshVtxos();
+        setBalance(await wallet.wallet.getBalance());
+        setBalanceErr("");
+      } catch (e) {
+        setBalanceErr((e as Error).message);
+      }
+    })();
   }, [wallet]);
 
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, 5000);
-    return () => clearInterval(id);
-  }, [refresh]);
+    // Pushed, not polled: an arrival lands here the moment the SDK sees it, and
+    // the interval is only the net behind a subscription that drops.
+    let stop: (() => void) | undefined;
+    let live = true;
+    void wallet.wallet.notifyIncomingFunds(() => refresh("read"))
+      .then((unsubscribe) => { if (live) stop = unsubscribe; else unsubscribe(); })
+      .catch((e: Error) => setBalanceErr(`incoming funds unwatched: ${e.message}`));
+    const id = setInterval(() => refresh(), 30_000);
+    return () => { live = false; stop?.(); clearInterval(id); };
+  }, [wallet, refresh]);
 
   // Onchain arrivals are otherwise inert: they sit as boarding funds until
   // somebody settles them, and nothing in a receive demo should need a manual
@@ -196,6 +314,8 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
               {view.settling} sats settling — returns when the batch completes
             </div>
           )}
+          {/* A stalled balance used to be indistinguishable from an idle one. */}
+          {balanceErr && <div style={{ ...mono, color: "crimson", fontSize: 12 }}>balance not updating: {balanceErr}</div>}
         </div>
         {boarding.status !== "idle" && (
           <span style={{ ...mono, fontSize: 12, color: boarding.status === "failed" ? "crimson" : "#946200" }}>
@@ -204,8 +324,8 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
             {boarding.status === "failed" && `boarding failed: ${boarding.reason}`}
           </span>
         )}
-        <button style={{ ...btn, marginLeft: "auto" }} onClick={refresh}>Refresh</button>
-        <button style={btn} onClick={() => { wipeWallet(); forgetPayments(); onReset(); }}>Reset</button>
+        <button style={{ ...btn, marginLeft: "auto" }} onClick={() => refresh()}>Refresh</button>
+        <button style={btn} onClick={async () => { await wipeWallet(); forgetStoredPayments(); forgetSent(); pendingConfirmations.forget(); onReset(); }}>Reset</button>
       </div>
 
       <nav style={{ display: "flex", gap: 12, borderBottom: "1px solid #ccc", marginBottom: 16 }}>
@@ -218,12 +338,12 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
         ))}
       </nav>
 
-      {tab === "Receive" && <Receive lightningAddress={lightningAddress} />}
+      {tab === "Receive" && <Receive key={shown.handle} receiver={shown} onRenamed={onRenamed} />}
       {tab === "Send" && <Send wallet={wallet} onSent={refresh} />}
-      {tab === "Activity" && <Activity token={token} username={username} lightningAddress={lightningAddress} wallet={wallet} />}
+      {tab === "Activity" && <Activity receiver={shown} wallet={wallet} />}
       {tab === "Settings" && (
         <>
-          <Backup onRestored={onRestored} onReset={() => { forgetPayments(); onReset(); }} />
+          <Backup onRestored={onRestored} onReset={() => { forgetStoredPayments(); forgetSent(); onReset(); }} />
           <Settings onChanged={() => undefined} />
         </>
       )}
@@ -242,47 +362,94 @@ function Wallet({ wallet, username, token, onRestored, onReset }: {
  * callback mints a destination and files a settlement record, so rendering the
  * list by calling every rail would leave a trail of quotes nobody asked for.
  */
-function Receive({ lightningAddress }: { lightningAddress: string }) {
+interface Requested { key: number; option: string; amount: number; value: InvoiceResult; payable: string; status: string }
+type WatchStates = Record<string, { pending: number; connected: boolean }>;
+
+const invoices = (n: number) => `${n} invoice${n === 1 ? "" : "s"}`;
+
+function watchLine(states: WatchStates): string {
+  const live = Object.values(states).filter((s) => s.pending > 0);
+  const pending = live.reduce((n, s) => n + s.pending, 0);
+  const connections = live.filter((s) => s.connected).length;
+  if (!pending) return "";
+  if (!connections) return `reconnecting — ${invoices(pending)} pending`;
+  return `watching ${invoices(pending)} on ${connections === 1 ? "one connection" : `${connections} connections`}`;
+}
+
+function Receive({ receiver: shown, onRenamed }: { receiver: Receiver; onRenamed: (r: Receiver) => void }) {
+  const { lightningAddress } = shown;
   const [payRequest, setPayRequest] = useState<PayRequest | null>(null);
   const [amount, setAmount] = useState(1000);
-  const [result, setResult] = useState<{ option: string; value: InvoiceResult } | null>(null);
-  const [settled, setSettled] = useState<string>("");
+  const [requests, setRequests] = useState<Requested[]>([]);
+  const [watching, setWatching] = useState<WatchStates>({});
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
+  const watchers = useRef(new Map<string, SettlementWatcher>());
+  useEffect(() => () => {
+    for (const w of watchers.current.values()) w.stop();
+    watchers.current.clear();
+  }, []);
+
+  const mark = (key: number, status: string) =>
+    setRequests((rs) => rs.map((r) => (r.key === key ? { ...r, status } : r)));
+
+  const watcherFor = (endpoint: string): SettlementWatcher => {
+    let w = watchers.current.get(endpoint);
+    if (!w) {
+      w = settlementWatcher({ verifyBatchUrl: endpoint, onChange: (s) => setWatching((prev) => ({ ...prev, [endpoint]: s })) });
+      watchers.current.set(endpoint, w);
+    }
+    return w;
+  };
 
   const load = async () => {
-    setBusy("options"); setErr(""); setResult(null); setSettled("");
-    try { setPayRequest(await lnurl.ownPayRequest(lightningAddress.split("@")[0]!)); }
+    setBusy("options"); setErr("");
+    // A reload must reach the server; the receiver's payRequest() is memoised for 30 s.
+    try { setPayRequest(await (payRequest ? payer.resolve(shown.lnurl) : shown.payRequest())); }
     catch (e) { setErr((e as Error).message); }
     finally { setBusy(""); }
   };
 
   const request = async (optionId: string) => {
-    setBusy(optionId); setErr(""); setResult(null); setSettled("");
+    setBusy(optionId); setErr("");
     try {
-      const value = await lnurl.requestPayment(payRequest!, amount, optionId === "lightning" ? undefined : optionId);
-      setResult({ option: optionId, value });
+      const value = await payer.requestInvoice(payRequest!, {
+        amountSat: amount,
+        ...(optionId === "lightning" ? {} : { paymentOption: optionId }),
+      });
+      const key = Date.now();
+      const payable = (value.kind === "bolt11" ? value.pr : value.paymentDestination) ?? "";
       // Absence is "no answer available", not failure: only a destination that
       // identifies the payment gets a verify URL. @see lnurl.ts
-      if (value.verify) {
-        void lnurl.pollVerify(value.verify, { timeoutMs: 300_000, intervalMs: 3_000 })
-          .then((v) => setSettled(v.settled ? "settled" : "not settled within the poll window"))
-          .catch((e: Error) => setSettled(`verify failed: ${e.message}`));
+      const status = !value.verify ? "" : value.verifyBatch ? "watching" : "polling verify…";
+      setRequests((rs) => [{ key, option: optionId, amount, value, payable, status }, ...rs]);
+      if (value.verify && value.verifyBatch) {
+        watcherFor(value.verifyBatch).add(value.verify, {
+          settled: () => mark(key, "settled"),
+          gaveUp: (reason) => mark(key, `not settled: ${reason}`),
+        }, value);
+      } else if (value.verify) {
+        void payer.pollVerify(value.verify, { timeoutMs: 300_000, intervalMs: 3_000, expect: value })
+          .then((v) => mark(key, v.settled ? "settled" : "not settled within the poll window"))
+          .catch((e: Error) => mark(key, `verify failed: ${e.message}`));
       }
     } catch (e) { setErr((e as Error).message); }
     finally { setBusy(""); }
   };
 
+  const result = requests[0];
+  const tracked = requests.filter((r) => r.status);
+  const line = watchLine(watching);
   const options = payRequest?.paymentOptions ?? (payRequest ? [{ id: "lightning", type: "lightning" }] : []);
 
   return (
     <>
       <div style={card}>
-        <h2 style={{ fontSize: 16, marginTop: 0 }}>Your Lightning address</h2>
+        <h2 style={{ fontSize: 16, marginTop: 0 }}>{lightningAddress ? "Your Lightning address" : "Your LNURL"}</h2>
         <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "flex-start" }}>
-          <ReceiveQr lightningAddress={lightningAddress} />
+          <ReceiveQr target={lightningAddress ?? shown.lnurl} caption={lightningAddress ? "Lightning address" : "LNURL"} />
           <div style={{ flex: 1, minWidth: 260 }}>
-            <Field label="Lightning address" value={lightningAddress} />
+            <Field label={lightningAddress ? "Lightning address" : "LNURL"} value={lightningAddress ?? shown.lnurl} />
             <p style={{ color: "#555", fontSize: 13 }}>
               Everything this wallet receives arrives through this one address, open page or
               not — the server takes the swap or destination on your behalf, constrained to
@@ -291,6 +458,7 @@ function Receive({ lightningAddress }: { lightningAddress: string }) {
             </p>
           </div>
         </div>
+        {!lightningAddress && <AddName receiver={shown} onRenamed={onRenamed} />}
 
         {/* Same card as the address: the rails are what the address IS, and a
             separate panel read as a second, unrelated thing to configure. */}
@@ -303,6 +471,10 @@ function Receive({ lightningAddress }: { lightningAddress: string }) {
             style={{ padding: 8, borderRadius: 6, border: "1px solid #bbb", width: 120 }} />
           <span style={{ color: "#666", fontSize: 13 }}>sats</span>
         </div>
+        <Call code={[
+          "const payRequest = await receiver.payRequest()  // one fetch serves 30 s of calls",
+          "await payer.resolve(receiver.lnurl)  // Reload: always asks the server",
+        ].join("\n")} />
 
         {payRequest && (
           <p style={{ color: "#666", fontSize: 12, marginTop: 0 }}>
@@ -324,28 +496,81 @@ function Receive({ lightningAddress }: { lightningAddress: string }) {
             </button>
           </div>
         ))}
+        {options.length > 0 && (
+          <Call code={[
+            "const payer = createLnurlClient()",
+            `await payer.requestInvoice(payRequest, { amountSat: ${amount} })  // lightning`,
+            `await payer.requestInvoice(payRequest, { amountSat: ${amount}, paymentOption: "arkade" })  // any other rail, by id`,
+          ].join("\n")} />
+        )}
 
         {err && <p style={{ ...mono, color: "crimson" }}>{err}</p>}
-        {result && (() => {
-          const payable = (result.value.kind === "bolt11" ? result.value.pr : result.value.paymentDestination) ?? "";
-          return (
-            <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12, display: "flex", gap: 20, flexWrap: "wrap" }}>
-              <CopyableQr uri={payable} caption={`${result.option} · ${amount} sats`} />
-              <div style={{ flex: 1, minWidth: 240 }}>
-                <Field label={`${result.option} — pay this`} value={payable} />
-                <p style={{ color: "#666", fontSize: 12 }}>
-                  {result.value.verify
-                    ? settled || "polling verify…"
-                    : "no verify on this rail — the server cannot say whether this was paid"}
-                </p>
-              </div>
+        {result && (
+          <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12, display: "flex", gap: 20, flexWrap: "wrap" }}>
+            <CopyableQr uri={result.payable} caption={`${result.option} · ${result.amount} sats`} />
+            <div style={{ flex: 1, minWidth: 240 }}>
+              <Field label={`${result.option} — pay this`} value={result.payable} />
+              {!result.value.verify && (
+                <p style={{ color: "#666", fontSize: 12 }}>no verify on this rail — the server cannot say whether this was paid</p>
+              )}
             </div>
-          );
-        })()}
+          </div>
+        )}
+        {tracked.length > 0 && (
+          <div style={{ marginTop: 12, fontSize: 12 }}>
+            {line && <p style={{ ...mono, color: "#946200", fontSize: 12 }}>{line}</p>}
+            {tracked.map((r) => (
+              <div key={r.key} style={{ display: "flex", gap: 12, padding: "4px 0", borderTop: "1px solid #eee" }}>
+                <span style={{ width: 80 }}>{r.option}</span>
+                <span style={{ width: 80 }}>{r.amount} sats</span>
+                <span title={r.payable} style={{ ...mono, fontSize: 12, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.payable}</span>
+                <span style={{ color: r.status === "settled" ? "#16834b" : "#946200" }}>{r.status}</span>
+              </div>
+            ))}
+            <Call code={[
+              "const stream = payer.openVerifyBatchStream(",
+              "  { verifyBatchUrl: invoice.verifyBatch, verifyUrls: [invoice.verify] },",
+              "  { onUpdate: (url, status) => { /* status.settled */ }, onClose: () => { /* reopen with what is still pending */ } },",
+              ")",
+              "stream.update([next.verify])         // each later request joins the same connection",
+              "stream.update([], [settled.verify])  // each settled one leaves it",
+              "await payer.pollVerify(invoice.verify, { timeoutMs, intervalMs, expect: invoice })  // no verifyBatch: LUD-21, preimage-checked",
+            ].join("\n")} />
+          </div>
+        )}
         <a href={EXPLORER} target="_blank" rel="noreferrer" style={{ color: "#06c", fontSize: 13 }}>explorer</a>
         </div>
       </div>
     </>
+  );
+}
+
+function AddName({ receiver: shown, onRenamed }: { receiver: Receiver; onRenamed: (r: Receiver) => void }) {
+  const { caps, note } = useCapabilities();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const name = async (opts: ClaimOptions) => {
+    setBusy(true); setErr("");
+    try {
+      const named = await shown.upgrade(opts);
+      localStorage.setItem(USERNAME_KEY, named.handle);
+      onRenamed(named);
+    } catch (e) { setErr((e as Error).message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ borderTop: "1px solid #eee", marginTop: 16, paddingTop: 16 }}>
+      <h3 style={{ fontSize: 14, marginTop: 0 }}>Add a name</h3>
+      <p style={{ color: "#555", fontSize: 13, marginTop: 0 }}>
+        This LNURL keeps paying you, and anyone holding it will see the name: naming it links the two publicly.
+        To stay unlinked, claim a separate name with <code>lnurl.claim({"{ username }"})</code> instead.
+      </p>
+      <NameChoice caps={caps} note={note} busy={busy} selfLabel="Add a name" withSession={false}
+        call={(args) => `await receiver.upgrade(${args})`} onPick={(o) => void name(o)} />
+      {err && <p style={{ ...mono, color: "crimson" }}>{err}</p>}
+    </div>
   );
 }
 
@@ -354,12 +579,16 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
   const [target, setTarget] = useState("");
   const [amount, setAmount] = useState(1000);
   const [options, setOptions] = useState<PaymentOption[] | null>(null);
+  const [quoted, setQuoted] = useState<{ railId: string; quote: RouteQuote }>();
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [paying, setPaying] = useState<string>();
 
+  // An option closes over the request it was listed for, so an edit must not leave it payable.
+  useEffect(() => { setOptions(null); setQuoted(undefined); }, [target, amount]);
+
   const findRoutes = async () => {
-    setBusy(true); setStatus(""); setOptions(null);
+    setBusy(true); setStatus(""); setOptions(null); setQuoted(undefined);
     try {
       const found = await router.options({ raw: target.trim(), amount }, { priority: RAIL_PRIORITY });
       setOptions(found);
@@ -370,20 +599,46 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
 
   // Quoted only on click: a quote asks the callback for an invoice, so pricing
   // every option up front would mint one per rail and abandon all but one.
-  const pay = async (option: PaymentOption) => {
+  const getQuote = async (option: PaymentOption) => {
     // Quoting a swap rail is a live round trip to a solver and can take a
     // while or stall; without this the button only greys out and the wallet
     // looks like it ignored the click.
     setPaying(option.railId);
-    setBusy(true); setStatus("");
+    setBusy(true); setStatus(""); setQuoted(undefined);
+    try { setQuoted({ railId: option.railId, quote: await option.quote() }); }
+    catch (e) { setStatus(`quote failed: ${(e as Error).message}`); }
+    finally { setBusy(false); setPaying(undefined); }
+  };
+
+  const pay = async (quote: RouteQuote) => {
+    setBusy(true); setStatus(""); setQuoted(undefined);
     try {
-      const quote = await option.quote();
       const handle = await quote.send();
       setStatus(`sent ${quote.amount} sats via ${quote.railId} · fee ${quote.fee} · ${handle.status}`);
+      // Unless the wallet writes this down, nothing ever knows who it paid.
+      // `startedAt` is fixed so a later verify result updates the row, not its date.
+      const startedAt = Date.now();
+      const lnurlMeta = lnurlQuoteMeta(quote);
+      const paidTo = lnurlMeta?.target ?? target.trim();
+      let sentTxid: string | undefined;
+      const note = (over: Partial<SentPayment> = {}): void => {
+        if (!sentTxid) return;
+        recordSent({
+          txid: sentTxid, target: paidTo, railId: quote.railId,
+          amountSat: quote.amount, feeSat: quote.fee, createdAt: startedAt, ...over,
+        });
+      };
       // Not awaiting settled(): a fire-and-forget rail is allowed never to
       // resolve it, which would hang the button forever.
       handle.subscribe((u) => {
         setStatus(`${quote.railId} · ${u.status}${u.error ? ` · ${String(u.error)}` : ""}`);
+        if (u.result?.txid) {
+          sentTxid = u.result.txid;
+          note({
+            ...(u.result.swapId ? { swapId: u.result.swapId } : {}),
+            ...(u.result.preimage ? { preimage: u.result.preimage } : {}),
+          });
+        }
         if (u.status === "settled") onSent();
       });
       onSent();
@@ -392,16 +647,25 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
       // Sending says the payment left; only this says the receiver got it —
       // and a rail whose destination cannot identify the payment supplies none,
       // so absence is "no answer available" rather than a failure.
-      const verifyUrl = (quote.meta?.lnurl as { verify?: string } | undefined)?.verify;
-      if (verifyUrl) {
-        void lnurl.pollVerify(verifyUrl, { timeoutMs: 180_000, intervalMs: 2_000 })
-          .then((v) => setStatus(v.settled
-            ? `receiver confirmed settled via ${quote.railId}`
-            : `receiver has not confirmed settlement via ${quote.railId}`))
-          .catch((e: Error) => setStatus(`sent via ${quote.railId}, but verify failed: ${e.message}`));
+      if (lnurlMeta?.verify) {
+        // One LUD-XX verifyBatch GET per endpoint per cycle covers the whole
+        // pending send set; a verify-less endpoint keeps plain LUD-21 polling.
+        pendingConfirmations.add({
+          verifyUrl: lnurlMeta.verify,
+          ...(lnurlMeta.verifyBatch !== undefined ? { verifyBatch: lnurlMeta.verifyBatch } : {}),
+          ...(lnurlMeta.expect !== undefined ? { expect: lnurlMeta.expect } : {}),
+          timeoutMs: 180_000,
+          onSettled: (v) => {
+            note({ receiverConfirmed: v.settled });
+            setStatus(v.settled
+              ? `receiver confirmed settled via ${quote.railId}`
+              : `receiver has not confirmed settlement via ${quote.railId}`);
+          },
+          onError: (e) => setStatus(`sent via ${quote.railId}, but receiver settled unconfirmed: ${e.message}`),
+        });
       }
     } catch (e) { setStatus(`payment failed: ${(e as Error).message}`); }
-    finally { setBusy(false); setPaying(undefined); }
+    finally { setBusy(false); }
   };
 
   return (
@@ -411,7 +675,8 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
         A Lightning address, an LNURL, an Arkade address or an on-chain address — the
         router decides which rails can serve it.
       </p>
-      <input value={target} onChange={(e) => setTarget(e.target.value)} placeholder="name@domain, LNURL1…, tark1…, tb1…"
+      <input value={target} onChange={(e) => { setTarget(e.target.value); setAmount((a) => sendAmountFor(e.target.value, a)); }}
+        placeholder="name@domain, LNURL1…, tark1…, tb1…, bitcoin:…"
         style={{ padding: 8, borderRadius: 6, border: "1px solid #bbb", width: "100%", marginBottom: 8 }} />
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
         <input type="number" value={amount} min={1} onChange={(e) => setAmount(Number(e.target.value))}
@@ -422,16 +687,29 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
         </button>
       </div>
 
-      {options?.map((option) => (
-        <div key={option.railId} style={{ borderLeft: "4px solid #16834b", paddingLeft: 12, marginBottom: 8,
-          display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ ...mono }}>{option.railId}</span>
-          <button style={{ ...btn, marginLeft: "auto" }} disabled={busy} onClick={() => void pay(option)}>
-            {paying === option.railId ? "Quoting…" : `Pay ${amount} sats`}
-          </button>
-        </div>
-      ))}
+      {options?.map((option) => {
+        const q = quoted?.railId === option.railId ? quoted.quote : undefined;
+        return (
+          <div key={option.railId} style={{ borderLeft: "4px solid #16834b", paddingLeft: 12, marginBottom: 8,
+            display: "flex", alignItems: "center", gap: 12 }}>
+            <span style={{ ...mono }}>{option.railId}</span>
+            {q && <span style={{ ...mono, color: "#555" }}>{q.amount} sats + {q.fee} fee</span>}
+            <button style={{ ...btn, marginLeft: "auto" }} disabled={busy}
+              onClick={() => void (q ? pay(q) : getQuote(option))}>
+              {paying === option.railId ? "Quoting…" : q ? `Pay ${q.total} sats` : "Quote"}
+            </button>
+          </div>
+        );
+      })}
       {status && <p style={{ ...mono, color: status.includes("failed") ? "crimson" : "#16834b" }}>{status}</p>}
+      <Call code={[
+        "const router = arkadePaymentRouter({ wallet, lightning })",
+        `const options = await router.options({ raw: target, amount: ${amount} }, { priority: DEFAULT_RAIL_PRIORITY })`,
+        "const quote = await option.quote()  // Quote: priced on click, not on listing",
+        "const handle = await quote.send()  // Pay: sends quote.total = quote.amount + quote.fee",
+        "pendingConfirmations.add({ verifyUrl, verifyBatch, expect, onSettled, onError })",
+        "// every 2s it runs batchVerify(verifyBatch, pendingVerifyUrls): one GET for every unconfirmed send",
+      ].join("\n")} />
     </div>
   );
 }
@@ -446,16 +724,59 @@ const STATUS_STYLE: Record<FeedStatus, { color: string; text: string; title: str
   },
 };
 
-function Activity({ token, username, lightningAddress, wallet }: {
-  token: string; username: string; lightningAddress: string; wallet: DemoWallet;
-}) {
-  const store = useMemo(() => localPaymentStore(), []);
+/** One event. A wallet row shows no settled/pending: the money is either in the
+ *  history or it is not, and the detail a holder can act on is the transaction
+ *  and what the rail charged. A quote keeps its status — that is all it has. */
+function ActivityRow({ row }: { row: FeedRow }) {
+  const [open, setOpen] = useState(false);
+  const status = row.status ? STATUS_STYLE[row.status] : undefined;
+  return (
+    <div style={{ borderTop: "1px solid #eee", fontSize: 13 }}>
+      <div style={{ display: "flex", gap: 12, padding: "8px 0", alignItems: "baseline" }}>
+        <button
+          onClick={() => setOpen(!open)}
+          disabled={row.details.length === 0}
+          style={{ width: 22, border: "none", background: "none", cursor: row.details.length ? "pointer" : "default", color: "#999" }}
+        >{row.details.length ? (open ? "▾" : "▸") : ""}</button>
+        <span
+          title={row.label}
+          style={{ width: 168, color: "#666", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+        >{row.label}</span>
+        <span style={{ width: 96 }}>
+          {row.amountSat === null ? "—" : `${row.amountSat > 0 && row.kind === "wallet" ? "+" : ""}${row.amountSat} sats`}
+        </span>
+        {status
+          ? <span style={{ color: status.color }} title={status.title}>{status.text}</span>
+          : row.txid && <a href={`${EXPLORER}/tx/${row.txid}`} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>explorer</a>}
+        <span style={{ marginLeft: "auto", color: "#666" }}>{new Date(row.createdAt).toLocaleString()}</span>
+      </div>
+      {open && (
+        <div style={{ padding: "0 0 10px 34px", display: "grid", gridTemplateColumns: "auto 1fr", gap: "4px 12px" }}>
+          {row.details.map(([label, value]) => (
+            <Fragment key={label}>
+              <span style={{ color: "#999", fontSize: 12 }}>{label}</span>
+              <span style={{ ...mono, fontSize: 12 }}>{value}</span>
+            </Fragment>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Activity({ receiver: shown, wallet }: { receiver: Receiver; wallet: DemoWallet }) {
   const [rows, setRows] = useState<FeedRow[] | null>(null);
   const [err, setErr] = useState("");
   const [walletErr, setWalletErr] = useState("");
 
   useEffect(() => {
     let live = true;
+    const mine = () => storedPayments({ domain: LNURL_DOMAIN, handle: shown.handle });
+    // Registered on the wallet rather than merged afterwards, so the server's
+    // record lands on the SDK's own activity row. `use` is keyed by id, so
+    // re-running this effect replaces the resolver instead of stacking copies.
+    wallet.wallet.activity.use(lnurlActivityResolver(mine));
+    wallet.wallet.activity.use(sentActivityResolver(sentPayments));
     // The wallet half comes from the SDK and needs no server, so it renders even
     // when the sync fails — which is also why the error does not replace the list.
     const show = async () => {
@@ -463,16 +784,18 @@ function Activity({ token, username, lightningAddress, wallet }: {
       const { activities, error } = await readWalletActivity(wallet.wallet);
       if (!live) return;
       setWalletErr(error ?? "");
-      setRows(mergeFeed(activities, storedPayments(lightningAddress)));
+      setRows(mergeFeed(activities, mine()));
     };
     void show();
-    const load = () => lnurl.syncActivity(token, username, store)
+    // The receiver on screen, never a fresh `owned()`: a token holding two rows
+    // would sync whichever that prefers.
+    const load = () => shown.sync()
       .then(() => show())
       .catch((e: Error) => { if (live) setErr(e.message); });
     void load();
     const id = setInterval(() => void load(), 8000);
     return () => { live = false; clearInterval(id); };
-  }, [token, username, lightningAddress, store, wallet]);
+  }, [shown, wallet]);
 
   if (!rows) return <div style={card}>Loading…</div>;
 
@@ -480,27 +803,17 @@ function Activity({ token, username, lightningAddress, wallet }: {
     <div style={card}>
       <h2 style={{ fontSize: 16, marginTop: 0 }}>Activity</h2>
       <p style={{ color: "#555", fontSize: 13, marginTop: 0 }}>
-        This wallet's own transactions, and everything quoted against {username} — including
+        This wallet's own transactions, and everything quoted against {shown.lightningAddress ?? "its LNURL"} — including
         quotes nobody paid, which have no transaction to show up as.
       </p>
+      <Call code={[
+        "await receiver.sync()  // every 8s",
+        "const rows = storedPayments({ domain, handle: receiver.handle })",
+      ].join("\n")} />
       {err && <p style={{ ...mono, color: "crimson", fontSize: 12 }}>payment sync failed: {err}</p>}
       {walletErr && <p style={{ ...mono, color: "crimson", fontSize: 12 }}>wallet history unavailable: {walletErr}</p>}
       {!rows.length && <p style={{ color: "#666" }}>Nothing yet.</p>}
-      {rows.map((r) => {
-        const status = STATUS_STYLE[r.status];
-        return (
-          <div key={r.key}
-            style={{ display: "flex", gap: 12, padding: "8px 0", borderTop: "1px solid #eee", fontSize: 13 }}>
-            <span style={{ width: 58, color: "#999", fontSize: 11, textTransform: "uppercase" }}>{r.source}</span>
-            <span style={{ width: 80, color: "#666" }}>{r.label}</span>
-            <span style={{ width: 90 }}>
-              {r.amountSat === null ? "—" : `${r.amountSat > 0 && r.source === "wallet" ? "+" : ""}${r.amountSat} sats`}
-            </span>
-            <span style={{ color: status.color }} title={status.title}>{status.text}</span>
-            <span style={{ marginLeft: "auto", color: "#666" }}>{new Date(r.createdAt).toLocaleString()}</span>
-          </div>
-        );
-      })}
+      {rows.map((r) => <ActivityRow key={r.key} row={r} />)}
     </div>
   );
 }

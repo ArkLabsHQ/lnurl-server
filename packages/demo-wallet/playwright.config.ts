@@ -30,7 +30,7 @@ export default defineConfig({
     ? {}
     : {
         webServer: {
-          command: `npx vite build && npx vite preview --port ${PORT} --strictPort --host 127.0.0.1`,
+          command: `pnpm -w run build:client && npx vite build && npx vite preview --port ${PORT} --strictPort --host 127.0.0.1`,
           url: `http://127.0.0.1:${PORT}`,
           reuseExistingServer: !process.env.CI,
           timeout: 180_000,

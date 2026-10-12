@@ -16,21 +16,21 @@ import { randomBytes } from "node:crypto";
 import { hex } from "@scure/base";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
-import { MnemonicIdentity, Wallet, RestIndexerProvider, ArkAddress, ContractManager, contractHandlers, type IContractManager } from "@arkade-os/sdk";
-import { createServer } from "../../src/server.js";
+import { MnemonicIdentity, Wallet, RestArkProvider, RestIndexerProvider, ArkAddress, ContractManager, contractHandlers, type IContractManager } from "@arkade-os/sdk";
+import { createServer } from "../../src/http/server.js";
 import { openDb, type Db } from "../../src/db/connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
 import { bootstrap } from "../../src/bootstrap.js";
 import { createRepositories } from "../../src/db/repositories/index.js";
-import { AddressService } from "../../src/address-service.js";
+import { AddressService } from "../../src/services/addresses.js";
 import { DbSettlementStore } from "../../src/settlement-store.js";
-import { staticSettings } from "../../src/settings.js";
-import { createCovenantDestinationProvider } from "../../src/covenant-destination.js";
-import { covenantDestinationHandler, COVENANT_CONTRACT_TYPE } from "../../src/covenant-contract.js";
+import { staticSettings } from "../../src/services/settings.js";
+import { createCovenantDestinationProvider } from "../../src/covenant/destination.js";
+import { covenantDestinationHandler, COVENANT_CONTRACT_TYPE } from "../../src/covenant/contract.js";
 import { sqliteContractStores } from "../../src/contract-store.js";
 import { loadConfig } from "../../src/config.js";
-import { createCovenantSweeper, startCovenantSweeper } from "../../src/covenant-sweeper.js";
-import { startCovenantWatcher } from "../../src/covenant-watcher.js";
+import { createCovenantSweeper, startCovenantSweeper } from "../../src/workers/covenant-sweeper.js";
+import { startCovenantWatcher } from "../../src/workers/covenant-watcher.js";
 import { ensureStack, pollUntil, mine, faucet, nodeSqliteStorage, ARKD_URL, COVCLAIMD_URL } from "./support/regtest.js";
 
 const AMOUNT_SATS = 3000;
@@ -70,7 +70,7 @@ async function fundedWallet(log: (s: string) => void): Promise<Wallet> {
   const identity = MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist), { isMainnet: false });
   const wallet = await Wallet.create({
     identity,
-    arkServerUrl: ARKD_URL,
+    arkProvider: new RestArkProvider(ARKD_URL),
     storage: await nodeSqliteStorage(":memory:"),
     settlementConfig: false,
   });
@@ -100,7 +100,7 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
   let baseUrl: string;
   let payer: Wallet;
   let stopWatcher: () => void;
-  let stopSweeper: () => void;
+  let sweeper: import("../../src/workers/covenant-sweeper.js").CovenantSweeperHandle;
   let receiver: { arkadeAddress: string; claimPublicKey: string };
   const token = randomBytes(32).toString("hex");
 
@@ -111,7 +111,7 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
     const identity = MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist), { isMainnet: false });
     const wallet = await Wallet.create({
       identity,
-      arkServerUrl: ARKD_URL,
+      arkProvider: new RestArkProvider(ARKD_URL),
       storage: await nodeSqliteStorage(":memory:"),
       settlementConfig: false,
     });
@@ -166,11 +166,11 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
     });
     baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     defaults.baseUrl = baseUrl;
-    stopWatcher = startCovenantWatcher(settlements, contracts);
-    stopSweeper = startCovenantSweeper(
+    sweeper = startCovenantSweeper(
       createCovenantSweeper({ contracts, arkServerUrl: ARKD_URL, emulatorUrl: EMULATOR_URL }),
       3000,
     );
+    stopWatcher = startCovenantWatcher(settlements, contracts, 3000, sweeper.trigger);
 
     expect((await post(`${baseUrl}/lnurl/address`, { token, username: "alice" })).status).toBe(201);
     expect((await post(`${baseUrl}/lnurl/address/alice/arkade`, receiver, token)).status).toBe(200);
@@ -178,7 +178,7 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
 
   afterAll(async () => {
     stopWatcher?.();
-    stopSweeper?.();
+    sweeper?.stop();
     // The manager holds an indexer subscription; leaving it open leaks it into the
     // next file in the suite, which shares this stack.
     //
@@ -215,7 +215,7 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
       expect(registered).toHaveLength(2);
       expect(registered.every((c) => c.watch === "awaiting-funds")).toBe(true);
 
-      const txid = await payer.sendBitcoin({ address: second.destination, amount: AMOUNT_SATS });
+      const txid = await payer.send({ address: second.destination, amount: AMOUNT_SATS });
       expect(txid).toMatch(/^[0-9a-f]{64}$/);
 
       await pollUntil(

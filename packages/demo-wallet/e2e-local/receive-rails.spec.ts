@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { bech32, hex } from "@scure/base";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
-import { ArkAddress, MnemonicIdentity, RestIndexerProvider, Wallet } from "@arkade-os/sdk";
+import { ArkAddress, EsploraProvider, MnemonicIdentity, RestArkProvider, RestIndexerProvider, Wallet } from "@arkade-os/sdk";
 import { createLnurlClient, type PayRequest } from "@arkade-os/lnurl-client";
 import {
   ESPLORA_URL,
@@ -56,8 +56,8 @@ async function newWallet(): Promise<{ wallet: Wallet; identity: MnemonicIdentity
   const identity = MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist), { isMainnet: false });
   const wallet = await Wallet.create({
     identity,
-    arkServerUrl: stack.arkServer,
-    esploraUrl: ESPLORA_URL,
+    arkProvider: new RestArkProvider(stack.arkServer),
+    onchainProvider: new EsploraProvider(ESPLORA_URL),
     storage: await nodeSqliteStorage(":memory:"),
     settlementConfig: false,
   });
@@ -100,7 +100,7 @@ async function register(base: string, username: string, user: User, opts?: { boa
   await owner.registerAddress({ token, username });
   await owner.registerArkadeIdentity({
     token,
-    username,
+    handle: username,
     arkadeAddress: user.arkadeAddress,
     claimPublicKey: user.claimPublicKey,
     ...(opts?.boarding ? { boardingAddress: user.boardingAddress } : {}),
@@ -202,12 +202,15 @@ test("arkade rail, static destination: the user's own address, no verify, settle
   expect(payRequest.paymentOptions).toContainEqual(expect.objectContaining({ id: "arkade", type: "arkade" }));
 
   const result = await payer.requestInvoice(payRequest, { amountSat: ARKADE_SATS, paymentOption: "arkade" });
-  expect(result).toEqual({ kind: "destination", paymentOption: "arkade", paymentDestination: user.arkadeAddress });
+  expect(result).toEqual({
+    kind: "destination", paymentOption: "arkade", paymentDestination: user.arkadeAddress,
+    paymentURI: `bitcoin:?ark=${user.arkadeAddress}&amount=${ARKADE_SATS / 1e8}`, expiresAt: expect.any(Number),
+  });
   // One address reused for every payment settles by amount/window correlation,
   // so the server hands out no verify it could not stand behind.
   expect("verify" in result).toBe(false);
 
-  const txid = await payerWallet.sendBitcoin({ address: user.arkadeAddress, amount: ARKADE_SATS });
+  const txid = await payerWallet.send({ address: user.arkadeAddress, amount: ARKADE_SATS });
   expect(txid).toMatch(/^[0-9a-f]{64}$/);
   await pollUntil(
     "the arkade watcher settles the record",
@@ -218,6 +221,13 @@ test("arkade rail, static destination: the user's own address, no verify, settle
     SETTLE_TIMEOUT_MS,
     3000,
   );
+
+  // The join the activity resolver depends on: what the server recorded is a txid
+  // the receiving wallet's own history carries.
+  await expect
+    .poll(async () => (await user.wallet.getTransactionHistory()).map((t) => t.key.arkTxid),
+      { timeout: SETTLE_TIMEOUT_MS, intervals: [3_000] })
+    .toContain(txid);
 });
 
 test("onchain rail: the boarding address, no verify, and no settlement even once it is funded", async () => {
@@ -230,7 +240,10 @@ test("onchain rail: the boarding address, no verify, and no settlement even once
   expect(payRequest.paymentOptions).toContainEqual(expect.objectContaining({ id: "onchain", type: "onchain" }));
 
   const result = await payer.requestInvoice(payRequest, { amountSat: ONCHAIN_SATS, paymentOption: "onchain" });
-  expect(result).toEqual({ kind: "destination", paymentOption: "onchain", paymentDestination: user.boardingAddress });
+  expect(result).toEqual({
+    kind: "destination", paymentOption: "onchain", paymentDestination: user.boardingAddress,
+    paymentURI: `bitcoin:${user.boardingAddress}?amount=${ONCHAIN_SATS / 1e8}`,
+  });
   expect("verify" in result).toBe(false);
 
   // Nothing here watches Bitcoin, so settlement is not provable locally — what
@@ -269,7 +282,7 @@ test.describe("arkade rail, per-payment covenant destinations", () => {
     const user = await newUser();
     opened.push(user.wallet);
     const username = name("cov");
-    await register(server.base, username, user);
+    const { token, owner } = await register(server.base, username, user);
 
     const payRequest = await payRequestFor(server.base, username);
     const quote = async () => {
@@ -286,7 +299,7 @@ test.describe("arkade rail, per-payment covenant destinations", () => {
     expect(first.verify).toMatch(/\/lnurl\/verify\/[0-9a-f]{32}$/);
     expect(second.verify).toMatch(/\/lnurl\/verify\/[0-9a-f]{32}$/);
 
-    const txid = await payerWallet.sendBitcoin({ address: second.paymentDestination!, amount: COVENANT_SATS });
+    const txid = await payerWallet.send({ address: second.paymentDestination!, amount: COVENANT_SATS });
     const settled = await payer.pollVerify(second.verify!, { timeoutMs: SETTLE_TIMEOUT_MS, intervalMs: 3000 });
     expect(settled).toMatchObject({
       kind: "destination",
@@ -308,6 +321,29 @@ test.describe("arkade rail, per-payment covenant destinations", () => {
         const { vtxos } = await indexer.getVtxos({ scripts: [staticScript], spendableOnly: true });
         return vtxos.some((v) => v.value === COVENANT_SATS);
       },
+      SETTLE_TIMEOUT_MS,
+      3000,
+    );
+
+    // From the owner's authenticated sync, never from public verify.
+    let payoutReference = "";
+    await pollUntil(
+      "the sweep recorded as the payout reference",
+      async () => {
+        const page = await owner.listPayments(token, username);
+        payoutReference = page.payments.find((p) => p.kind === "destination" && p.verifyId === second.verify!.split("/").pop())?.payoutReference ?? "";
+        return Boolean(payoutReference);
+      },
+      SETTLE_TIMEOUT_MS,
+      3000,
+    );
+    expect(await (await fetch(second.verify!)).json()).not.toHaveProperty("payoutReference");
+    // Never the observed txid: that output sat at the covenant, which the user's
+    // keys never held. Only the sweep appears in their own history.
+    expect(payoutReference).not.toBe(txid);
+    await pollUntil(
+      "the swept txid in the user's own transaction history",
+      async () => (await user.wallet.getTransactionHistory()).some((t) => t.key.arkTxid === payoutReference),
       SETTLE_TIMEOUT_MS,
       3000,
     );

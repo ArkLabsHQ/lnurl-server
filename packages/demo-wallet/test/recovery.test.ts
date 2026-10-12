@@ -95,14 +95,14 @@ describe("restoreMnemonic", () => {
 });
 
 describe("wipeWallet", () => {
-  it("drops this wallet's keys and leaves the rest of the origin alone", () => {
+  it("drops this wallet's keys and leaves the rest of the origin alone", async () => {
     const { store, entries } = fakeStore({
       [MNEMONIC_KEY]: generateMnemonic(wordlist),
       [USERNAME_KEY]: "alice",
       "some-other-app": "keep me",
     });
 
-    wipeWallet(store);
+    await wipeWallet(store);
 
     expect(entries.has(MNEMONIC_KEY)).toBe(false);
     expect(entries.has(USERNAME_KEY)).toBe(false);

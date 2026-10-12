@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import request from "supertest";
 import { HealthRegistry } from "../src/health.js";
-import { createServer } from "../src/server.js";
+import { createServer } from "../src/http/server.js";
 
 const config = { port: 0, baseUrl: "http://localhost", minSendable: 1_000, maxSendable: 1_000_000 };
 

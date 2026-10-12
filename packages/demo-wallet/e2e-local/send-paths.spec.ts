@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { bech32, hex } from "@scure/base";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
-import { ArkAddress, MnemonicIdentity, RestIndexerProvider, Wallet } from "@arkade-os/sdk";
+import { ArkAddress, EsploraProvider, MnemonicIdentity, RestArkProvider, RestIndexerProvider, Wallet } from "@arkade-os/sdk";
 import { ESPLORA_URL, faucet, mine, nodeSqliteStorage } from "../../../test/e2e/support/regtest.js";
 import {
   CARDS_FILE,
@@ -85,9 +85,13 @@ async function payOver(page: Page, railId: string, target: string, amount: numbe
   await page.getByPlaceholder(/name@domain/).fill(target);
   await page.locator('input[type="number"]').fill(String(amount));
   await page.getByRole("button", { name: "Find routes" }).click();
-  const option = page.locator("div").filter({ hasText: new RegExp(`^${railId}Pay `) }).first();
+  const option = page.locator("div").filter({ hasText: new RegExp(`^${railId}Quote`) }).first();
   await expect(option, `${railId} offered no route`).toBeVisible({ timeout: 120_000 });
-  await option.getByRole("button", { name: `Pay ${amount} sats` }).click();
+  await option.getByRole("button", { name: "Quote" }).click();
+  // A refused quote leaves no Pay button; the caller's statusReaches reports it.
+  const confirm = page.getByRole("button", { name: /^Pay \d+ sats$/ });
+  await expect(confirm.or(page.getByText(/^quote failed/))).toBeVisible({ timeout: 120_000 });
+  if (await confirm.isVisible()) await confirm.click();
 }
 
 /** Accumulated, not sampled: the send path writes one status line that the rail
@@ -174,7 +178,23 @@ test("lnurl-arkade: one wallet pays another's LNURL and the receiver confirms it
     .filter({ has: recipient.page.getByRole("heading", { name: "Activity" }) })
     .last();
   await expect(activity).toContainText(`${LNURL_SATS} sats`, { timeout: 60_000 });
-  await expect(activity).toContainText("settled");
+  // Not "settled": a wallet row carries no status, because the transaction being
+  // in the history IS the fact. The rail label is what says the server's record
+  // was folded into it rather than listed beside it as a second row.
+  await expect(activity).toContainText("arkade");
+  await expect(activity).toContainText("explorer");
+
+  // The payer's own row. No record of theirs describes a send — the server that
+  // recorded this payment was the recipient's — so without what the wallet wrote
+  // down at send time this row can say nothing but "sent".
+  await payer.getByRole("button", { name: "Activity" }).click();
+  const payerFeed = payer.locator("div")
+    .filter({ has: payer.getByRole("heading", { name: "Activity" }) })
+    .last();
+  await expect(payerFeed).toContainText(`→ ${lnurl}`, { timeout: 60_000 });
+  await payerFeed.getByRole("button", { name: "▸" }).first().click();
+  await expect(payerFeed).toContainText("paid to");
+  await expect(payerFeed).toContainText("lnurl-arkade");
 });
 
 test("ark: a bare tark1 address pasted into the send box pays it directly", async () => {
@@ -183,8 +203,8 @@ test("ark: a bare tark1 address pasted into the send box pays it directly", asyn
   // the assertion can read it. The rail under test is indifferent to whose it is.
   const sink = await Wallet.create({
     identity: MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist), { isMainnet: false }),
-    arkServerUrl: stack.arkServer,
-    esploraUrl: ESPLORA_URL,
+    arkProvider: new RestArkProvider(stack.arkServer),
+    onchainProvider: new EsploraProvider(ESPLORA_URL),
     storage: await nodeSqliteStorage(":memory:"),
     settlementConfig: false,
   });

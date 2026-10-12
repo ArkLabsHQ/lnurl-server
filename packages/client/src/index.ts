@@ -1,6 +1,14 @@
 import { LnurlError, LnurlTransportError, LnurlTimeoutError } from "./errors.js";
 import type { FetchImpl } from "./http.js";
-import { resolve, requestInvoice, pollVerify } from "./payer.js";
+import { resolve, requestInvoice, pollVerify, verifyStatusIsFor } from "./payer.js";
+import { batchVerify, openVerifyBatchStream } from "./verify-batch.js";
+import type {
+  BatchVerifyOptions,
+  OpenVerifyBatchStreamOptions,
+  VerifyBatchResult,
+  VerifyBatchStream,
+  VerifyBatchStreamHandlers,
+} from "./verify-batch.js";
 import { openSession } from "./session.js";
 import type { InvoiceResponder, LnurlSession, OpenSessionOptions, SessionHandlers } from "./session.js";
 import { deriveSessionToken, deriveSessionTokenWithSigner, deriveSessionId } from "./token.js";
@@ -8,11 +16,22 @@ import { deriveSessionToken, deriveSessionTokenWithSigner, deriveSessionId } fro
 // the wallet's send form and its tests need isValidLnUrl on its own.
 import { isLnAddress, isLnUrl, isValidLnUrl, toPayRequestUrl } from "./encoding.js";
 import type { LnurlSurface } from "./encoding.js";
-import { listAddresses, listPayments, registerAddress, registerArkadeIdentity, revokeAddress } from "./addresses.js";
+import {
+  domainCapabilities,
+  listAddresses,
+  listPayments,
+  registerAddress,
+  registerArkadeIdentity,
+  revokeAddress,
+  upgradeAddress,
+} from "./addresses.js";
 import { syncPayments } from "./sync.js";
+import { isTokenAddress, tokenOptions } from "./token-options.js";
+import type { TokenAsset, TokenOption, TokenUnit } from "./token-options.js";
 import type { PaymentSyncStore, PaymentSyncTarget, StoredPayment } from "./sync.js";
 import type {
   AddressListEntry,
+  DomainCapabilities,
   RegisterAddressRequest,
   RegisterArkadeIdentityRequest,
   RegisteredAddress,
@@ -34,6 +53,7 @@ import type {
   PollVerifyOptions,
   RequestInvoiceOptions,
   Unit,
+  VerifyExpectation,
   VerifyStatus,
 } from "./types.js";
 
@@ -90,6 +110,18 @@ export interface LnurlClient {
    */
   pollVerify(verifyUrl: string, opts?: PollVerifyOptions): Promise<VerifyStatus>;
   /**
+   * One-shot LUD-XX verifyBatch: N invoice statuses on one GET.
+   *
+   * @param verifyBatchUrl - The endpoint advertised next to the verify URLs.
+   * @param verifyUrls - The verify URLs currently pending, grouped by endpoint.
+   * @param opts - Optional abort signal and `fetch` override.
+   */
+  batchVerify(
+    verifyBatchUrl: string,
+    verifyUrls: readonly string[],
+    opts?: BatchVerifyOptions & { fetchImpl?: FetchImpl },
+  ): Promise<VerifyBatchResult>;
+  /**
    * Opens a receiver session as POST-SSE; resolves on `session_created`.
    * Requires `baseUrl`.
    *
@@ -99,12 +131,25 @@ export interface LnurlClient {
    */
   openSession(opts: OpenSessionOptions, handlers: SessionHandlers): Promise<LnurlSession>;
   /**
+   * LUD-XX verifyBatch stream: snapshot burst first, then live settlements, and
+   * in-place tracked-set updates without reopening the connection.
+   *
+   * @param opts - Endpoint plus the initially pending verify URLs.
+   * @param handlers - Frame, removal and close callbacks.
+   */
+  openVerifyBatchStream(
+    opts: OpenVerifyBatchStreamOptions & { fetchImpl?: FetchImpl },
+    handlers: VerifyBatchStreamHandlers,
+  ): VerifyBatchStream;
+  /**
    * Registers a LUD-16 lightning address. Requires `baseUrl`.
    *
    * @param req - Token, optional username/claimCode/domain, and optional API key.
    * @returns The registered address and how to reach it.
    */
   registerAddress(req: RegisterAddressRequest): Promise<RegisteredAddress>;
+  upgradeAddress(req: { token: string; handle: string; username?: string; claimCode?: string; domain?: string }): Promise<RegisteredAddress>;
+  domainCapabilities(opts?: { domain?: string }): Promise<DomainCapabilities>;
   /**
    * Lists the LUD-16 addresses owned by a token. Requires `baseUrl`.
    *
@@ -116,15 +161,15 @@ export interface LnurlClient {
    * Revokes one address owned by a token. Requires `baseUrl`.
    *
    * @param token - Token owning the address.
-   * @param username - Username of the address to revoke.
+   * @param handle - Handle of the address to revoke.
    * @param opts - Optional domain scoping the revocation.
    * @returns A promise settling when the server revokes the address.
    */
-  revokeAddress(token: string, username: string, opts?: { domain?: string }): Promise<void>;
+  revokeAddress(token: string, handle: string, opts?: { domain?: string }): Promise<void>;
   /**
    * Binds an Arkade identity to a registered address. Requires `baseUrl`.
    *
-   * @param req - Token, username, Arkade address, claim key, optional boarding address and domain.
+   * @param req - Token, handle, Arkade address, claim key, optional boarding address and domain.
    * @returns A promise settling when the server records the identity.
    */
   registerArkadeIdentity(req: RegisterArkadeIdentityRequest): Promise<void>;
@@ -132,11 +177,11 @@ export interface LnurlClient {
    * Lists the payments made to one address owned by a token. Requires `baseUrl`.
    *
    * @param token - Token owning the address.
-   * @param username - Username of the address whose payments to list.
+   * @param handle - Handle of the address whose payments to list.
    * @param opts - Optional domain, inclusive since cursor and page limit.
    * @returns The payment page with rail-discriminated activity entries.
    */
-  listPayments(token: string, username: string, opts?: { domain?: string; since?: number; limit?: number }): Promise<PaymentPage>;
+  listPayments(token: string, handle: string, opts?: { domain?: string; since?: number; limit?: number }): Promise<PaymentPage>;
 }
 
 /**
@@ -166,18 +211,25 @@ export function createLnurlClient(opts?: LnurlClientOptions): LnurlClient {
     resolve: (input) => resolve(input, fetchImpl),
     requestInvoice: (payRequest, reqOpts) => requestInvoice(payRequest, reqOpts, fetchImpl),
     pollVerify: (verifyUrl, pollOpts) => pollVerify(verifyUrl, pollOpts, fetchImpl),
+    batchVerify: (verifyBatchUrl, verifyUrls, opts) => batchVerify(verifyBatchUrl, verifyUrls, opts, opts?.fetchImpl),
     openSession: async (sessionOpts, handlers) =>
       openSession(needBase("openSession"), sessionOpts, handlers, fetchImpl),
+    openVerifyBatchStream: (streamOpts, handlers) =>
+      openVerifyBatchStream(streamOpts, handlers, streamOpts?.fetchImpl),
     registerAddress: async (req) =>
       registerAddress(needBase("registerAddress"), req, fetchImpl),
+    upgradeAddress: async (req) =>
+      upgradeAddress(needBase("upgradeAddress"), req, fetchImpl),
+    domainCapabilities: async (capOpts) =>
+      domainCapabilities(needBase("domainCapabilities"), capOpts, fetchImpl),
     listAddresses: async (token) =>
       listAddresses(needBase("listAddresses"), token, fetchImpl),
-    revokeAddress: async (token, username, revokeOpts) =>
-      revokeAddress(needBase("revokeAddress"), token, username, revokeOpts, fetchImpl),
+    revokeAddress: async (token, handle, revokeOpts) =>
+      revokeAddress(needBase("revokeAddress"), token, handle, revokeOpts, fetchImpl),
     registerArkadeIdentity: async (req) =>
       registerArkadeIdentity(needBase("registerArkadeIdentity"), req, fetchImpl),
-    listPayments: async (token, username, listOpts) =>
-      listPayments(needBase("listPayments"), token, username, listOpts, fetchImpl),
+    listPayments: async (token, handle, listOpts) =>
+      listPayments(needBase("listPayments"), token, handle, listOpts, fetchImpl),
   };
 }
 
@@ -186,6 +238,7 @@ export {
   deriveSessionId,
   deriveSessionToken,
   deriveSessionTokenWithSigner,
+  domainCapabilities,
   isLnAddress,
   isLnUrl,
   isValidLnUrl,
@@ -203,7 +256,14 @@ export {
   resolve,
   revokeAddress,
   syncPayments,
+  batchVerify,
+  openVerifyBatchStream,
+  upgradeAddress,
+  tokenOptions,
+  isTokenAddress,
+  verifyStatusIsFor,
 };
+export { browserPaymentStore, forgetStoredPayments, storedPayments } from "./stores.js";
 export type {
   AddressListEntry,
   AmountObject,
@@ -213,6 +273,7 @@ export type {
   DestinationActivity,
   DestinationResult,
   DestinationVerifyStatus,
+  DomainCapabilities,
   FetchImpl,
   InvoiceResponder,
   InvoiceResult,
@@ -225,6 +286,7 @@ export type {
   PaymentPage,
   PaymentQuote,
   PollVerifyOptions,
+  VerifyExpectation,
   RegisterAddressRequest,
   RegisterArkadeIdentityRequest,
   RegisteredAddress,
@@ -233,6 +295,17 @@ export type {
   RequestInvoiceOptions,
   StoredPayment,
   SessionHandlers,
+  TokenAsset,
+  TokenOption,
+  TokenUnit,
   Unit,
   VerifyStatus,
 };
+export type {
+  BatchVerifyOptions,
+  OpenVerifyBatchStreamOptions,
+  VerifyBatchResult,
+  VerifyBatchResultItem,
+  VerifyBatchStream,
+  VerifyBatchStreamHandlers,
+} from "./verify-batch.js";

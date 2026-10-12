@@ -15,8 +15,8 @@ import http from "node:http";
 import { hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { ArkAddress, getNetwork, resolveEmulatorPubkey } from "@arkade-os/sdk";
-import { createOfflineSwapCoordinator } from "../src/intent-swap.js";
-import type { SolverCandidate } from "../src/solver-discovery.js";
+import { createOfflineSwapCoordinator } from "../src/services/offline-swaps.js";
+import type { SolverCandidate } from "../src/services/solver-discovery.js";
 
 const solverPubkey = process.argv[2] ?? "3f831510a6d7678d0c90d7d6fbc4057720517e2e30681ef4c87cc57aaf57e8d5";
 const relay = process.argv[3] ?? "wss://nostr.arkade.sh";

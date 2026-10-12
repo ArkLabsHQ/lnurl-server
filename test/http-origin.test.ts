@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { domainFromHost } from "../src/http-origin.js";
+import { domainFromHost } from "../src/http/origin.js";
 
 describe("domainFromHost", () => {
   it("strips port and lowercases", () => {

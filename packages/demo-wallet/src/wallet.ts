@@ -1,7 +1,15 @@
-import { MnemonicIdentity, RestArkProvider, Wallet, type WalletBalance } from "@arkade-os/sdk";
+import {
+  IndexedDBContractRepository,
+  IndexedDBWalletRepository,
+  MnemonicIdentity,
+  RestArkProvider,
+  Wallet,
+  type WalletBalance,
+} from "@arkade-os/sdk";
+import { hex } from "@scure/base";
 import { generateMnemonic, validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
-import { ARK_SERVER, browserStore, IS_MAINNET, MNEMONIC_KEY, USERNAME_KEY, type KeyValueStore } from "./config.js";
+import { ARK_SERVER, browserStore, IS_MAINNET, MNEMONIC_KEY, STORE_OWNER_KEY, USERNAME_KEY, type KeyValueStore } from "./config.js";
 
 export interface DemoWallet {
   identity: MnemonicIdentity;
@@ -54,11 +62,25 @@ export function restoreMnemonic(input: string, store: KeyValueStore = browserSto
   return checked;
 }
 
+/** Drops the SDK's cached chain data. Its IndexedDB is keyed by database name, not
+ *  by identity, so a new key otherwise inherits the previous wallet's VTXOs and its
+ *  contracts — which it cannot sign (`MissingSigningDescriptorError`). */
+export async function clearWalletData(): Promise<void> {
+  // Absent under Node; a real browser failure still propagates.
+  if (typeof indexedDB === "undefined") return;
+  await Promise.all([
+    new IndexedDBWalletRepository().clear(),
+    new IndexedDBContractRepository().clear(),
+  ]);
+}
+
 /** Drops this wallet's keys only, where `forgetWallet` clears the whole origin
  *  — on a Pages host that is shared with every other app served from it. */
-export function wipeWallet(store: KeyValueStore = browserStore()): void {
+export async function wipeWallet(store: KeyValueStore = browserStore()): Promise<void> {
   store.removeItem(MNEMONIC_KEY);
   store.removeItem(USERNAME_KEY);
+  store.removeItem(STORE_OWNER_KEY);
+  await clearWalletData();
 }
 
 /**
@@ -67,8 +89,14 @@ export function wipeWallet(store: KeyValueStore = browserStore()): void {
  * No `storage` is passed: the SDK defaults to IndexedDB, which exists here and
  * is why this demo is a browser app rather than a script.
  */
-export async function openWallet(mnemonic: string): Promise<DemoWallet> {
+export async function openWallet(mnemonic: string, store: KeyValueStore = browserStore()): Promise<DemoWallet> {
   const identity = MnemonicIdentity.fromMnemonic(mnemonic, { isMainnet: IS_MAINNET });
+  // One identity's chain data at a time; cleared before the wallet opens.
+  const owner = hex.encode(await identity.xOnlyPublicKey());
+  if (store.getItem(STORE_OWNER_KEY) !== owner) {
+    await clearWalletData();
+    store.setItem(STORE_OWNER_KEY, owner);
+  }
   const wallet = await Wallet.create({ identity, arkProvider: new RestArkProvider(ARK_SERVER) });
   const [offchain, boarding] = await wallet.getNewAddresses({ types: ["default", "boarding"] });
   return { identity, wallet, arkadeAddress: offchain.address, boardingAddress: boarding.address };

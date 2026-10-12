@@ -10,12 +10,18 @@ import { matchCaip19Id } from "./caip.js";
 export interface PaymentOption {
   id: string;
   type: string;
-  /** The same option in the CAIP-19 vocabulary the solver registry validates.
-   *  Additive: `id` stays the selector, so a payer ignoring this is unaffected. */
   caip19Id?: string;
   available?: boolean;
+  /** Whether callback answers for this option carry a LUD-21 `verify` URL; absent means unknown. */
+  verifiable?: boolean;
   minSendable?: number;
   maxSendable?: number;
+  /** CAIP-19 id of a token option; `type` is its CAIP-2 namespace. */
+  asset?: string;
+  /** The units[] code a token option is quoted in. */
+  unit?: string;
+  /** The third party the payer hands funds to, on a custodial rail. */
+  provider?: string;
 }
 
 /** The address fields the option logic depends on. */
@@ -24,11 +30,20 @@ export interface OptionAddress {
   claimPublicKey: string | null;
   /** Arkade boarding address; the onchain rail resolves to it. */
   boardingAddress?: string | null;
+  /** Rail ids the operator disabled for this address. */
+  disabledRails?: readonly unknown[];
+}
+
+/** A token option the provider currently offers. */
+export interface TokenRailRef {
+  optionId: string;
+  ffCode: string;
 }
 
 /** Options advertised in the LUD-06 payRequest. Emitted only when there is a
  *  non-lightning option to offer (an Arkade identity); otherwise the address stays
- *  pure LUD-06 and `paymentOptions` is omitted. Add rails here as they land. */
+ *  pure LUD-06 and `paymentOptions` is omitted. Add rails here as they land.
+ *  States no `verifiable`: without the server's rail caps it is unknown. */
 export function advertisedOptions(address: OptionAddress): PaymentOption[] {
   if (!address.arkadeAddress) return [];
   return [
@@ -43,18 +58,20 @@ export function advertisedOptions(address: OptionAddress): PaymentOption[] {
 export type ResolvedPaymentOption =
   | { kind: "lightning" }
   | { kind: "destination"; paymentOption: string; paymentDestination: string }
+  | { kind: "fixedfloat"; optionId: string; ffCode: string }
   | { kind: "error"; reason: string };
 
-/** Resolve the wallet's `paymentOption` query value. Extend with new rails here. */
+/** Resolve the wallet's `paymentOption` query value. Extend with new rails here. A token
+ *  option resolves only from `tokenRails`, never from its prefix, so an id the provider
+ *  stopped offering is refused rather than half-served. */
 export function resolvePaymentOption(
   optionId: string | undefined,
   address: OptionAddress,
+  tokenRails: readonly TokenRailRef[] = [],
   network?: Network,
 ): ResolvedPaymentOption {
   // Ids are canonical lowercase; be liberal about the case payers send.
   const raw = optionId?.toLowerCase();
-  // A CAIP-19 id is folded to its bare rail name and resolved by the same path
-  // below, so the two spellings cannot drift apart.
   let id = raw;
   if (raw?.includes(":")) {
     if (!network) return { kind: "error", reason: "Unsupported paymentOption" };
@@ -75,6 +92,13 @@ export function resolvePaymentOption(
     return address.boardingAddress
       ? { kind: "destination", paymentOption: "onchain", paymentDestination: address.boardingAddress }
       : { kind: "error", reason: "Unsupported paymentOption" };
+  }
+  const token = tokenRails.find((rail) => rail.optionId === id);
+  if (token && address.arkadeAddress && address.claimPublicKey) {
+    if (address.disabledRails?.includes("fixedfloat")) {
+      return { kind: "error", reason: `paymentOption ${token.optionId} is disabled for this address` };
+    }
+    return { kind: "fixedfloat", optionId: token.optionId, ffCode: token.ffCode };
   }
   return { kind: "error", reason: "Unsupported paymentOption" };
 }

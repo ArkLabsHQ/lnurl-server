@@ -2,14 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import http from "node:http";
 import { bech32 } from "@scure/base";
 import { createHash, randomBytes } from "node:crypto";
-import { createServer } from "../src/server.js";
+import { createServer } from "../src/http/server.js";
 import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
-import { AddressService } from "../src/address-service.js";
+import { AddressService } from "../src/services/addresses.js";
 import { RateLimiter } from "../src/rate-limit.js";
 import { DbSettlementStore } from "../src/settlement-store.js";
-import type { LnurlServiceConfig } from "../src/types.js";
+import type { LnurlServiceConfig } from "../src/types/index.js";
 import {
   createLnurlClient,
   deriveSessionId,
@@ -19,10 +19,21 @@ import {
   LnurlTimeoutError,
 } from "../packages/client/src/index.js";
 import type { LnurlSession, PaymentSyncStore, StoredPayment } from "../packages/client/src/index.js";
+import { tokenOptions } from "../packages/client/src/index.js";
+import { OfflineSwapStore } from "../src/offline-swap-store.js";
+import { FfOrderStore } from "../src/ff-order-store.js";
+import type { OfflineSwapCreator } from "../src/services/offline-swaps.js";
+import { FfBudget, ffAuth, ffClient, ffHttpTransport } from "../src/rails/fixedfloat/client.js";
+import { ffRates, ffRatesXml } from "../src/rails/fixedfloat/rates.js";
+import { FIXEDFLOAT } from "../src/rails/fixedfloat/provider.js";
+import { fakeFixedFloat, type FakeFf } from "./helpers/fake-fixedfloat.js";
 
 const CONFIG: LnurlServiceConfig = { port: 0, baseUrl: "", minSendable: 1_000, maxSendable: 100_000_000, invoiceTimeoutMs: 3_000 };
 
-function buildInvoice(paymentHashHex: string): string {
+// amountSat, when given, is encoded in the HRP with the `n` multiplier
+// (value = amountSat * 10, so value * 100 msat == amountSat * 1000 msat
+// exactly) — the client now decodes and checks it against the request.
+function buildInvoice(paymentHashHex: string, amountSat?: number): string {
   const words: number[] = [];
   for (let i = 0; i < 7; i++) words.push(0);
   const desc = bech32.toWords(new TextEncoder().encode("hello"));
@@ -30,7 +41,8 @@ function buildInvoice(paymentHashHex: string): string {
   const hw = bech32.toWords(Uint8Array.from(Buffer.from(paymentHashHex, "hex")));
   words.push(1, 52 >> 5, 52 & 31, ...hw);
   for (let i = 0; i < 104; i++) words.push(0);
-  return bech32.encode("lnbc", words, 2000);
+  const hrp = amountSat === undefined ? "lnbc" : `lnbc${amountSat * 10}n`;
+  return bech32.encode(hrp, words, 2000);
 }
 
 function startServer() {
@@ -65,7 +77,7 @@ describe("client contract against the real server", () => {
   });
 
   it("payer requestInvoice receives the exact pr the receiver answered, with a verify URL", async () => {
-    const pr = buildInvoice(HASH);
+    const pr = buildInvoice(HASH, 50);
     const receiver = createLnurlClient({ baseUrl: ctx.baseUrl });
     const session = await receiver.openSession({}, {
       onInvoiceRequest: (_req, respond) => { void respond.answerInvoice(pr); },
@@ -81,7 +93,7 @@ describe("client contract against the real server", () => {
   });
 
   it("pollVerify is unsettled until reportSettled flips it with the preimage", async () => {
-    const pr = buildInvoice(HASH);
+    const pr = buildInvoice(HASH, 50);
     const receiver = createLnurlClient({ baseUrl: ctx.baseUrl });
     const session = await receiver.openSession({}, {
       onInvoiceRequest: (_req, respond) => { void respond.answerInvoice(pr); },
@@ -148,7 +160,7 @@ describe("listPayments contract against a DB-backed server", () => {
     db = openDb(":memory:");
     runMigrations(db);
     repos = createRepositories(db);
-    repos.domains.create({ domain: "domain.com", allocationModes: ["self", "random"] });
+    repos.domains.create({ domain: "domain.com", allocationModes: ["self", "random", "session"] });
     clock = 1_000;
     settlements = new DbSettlementStore(db, 86_400_000, () => clock);
     const addressService = new AddressService(repos, KEY);
@@ -198,7 +210,7 @@ describe("listPayments contract against a DB-backed server", () => {
       const callback = await getCallback(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000`, "domain.com");
       expect(callback.pr).toBe(pr);
       const page = await owner.listPayments(TOKEN, "alice", { domain: "domain.com" });
-      expect(page.source).toEqual({ domain: "domain.com", lightningAddress: "alice@domain.com" });
+      expect(page.source).toEqual({ domain: "domain.com", lightningAddress: "alice@domain.com", handle: "alice" });
       expect(page.payments.map((entry) => (entry.kind === "bolt11" ? entry.paymentHash : entry.verifyId))).toContain(HASH);
       const found = page.payments.find((entry) => entry.kind === "bolt11" && entry.paymentHash === HASH);
       expect(found).toMatchObject({ pr, settled: false });
@@ -229,7 +241,7 @@ describe("listPayments contract against a DB-backed server", () => {
         watermarks.set(`${b}|${a}`, since);
       },
     };
-    const target = { baseUrl: ctx.baseUrl, token: TOKEN, username: "alice", domain: "domain.com" };
+    const target = { baseUrl: ctx.baseUrl, token: TOKEN, handle: "alice", domain: "domain.com" };
     const client = () => owner;
 
     // limit 2 forces a second page, so the cursor is genuinely walked.
@@ -266,7 +278,7 @@ describe("listPayments contract against a DB-backed server", () => {
         watermarks.set(`${b}|${a}`, since);
       },
     };
-    const target = { baseUrl: ctx.baseUrl, token: TOKEN, username: "alice", domain: "domain.com" };
+    const target = { baseUrl: ctx.baseUrl, token: TOKEN, handle: "alice", domain: "domain.com" };
 
     const first = await syncPayments([target], { client: () => owner, store });
     expect(first.failures).toEqual([]);
@@ -297,7 +309,7 @@ describe("listPayments contract against a DB-backed server", () => {
       readWatermark: async () => undefined,
       writeWatermark: async () => {},
     };
-    const result = await syncPayments([{ baseUrl: ctx.baseUrl, token: TOKEN, username: "alice", domain: "domain.com" }], {
+    const result = await syncPayments([{ baseUrl: ctx.baseUrl, token: TOKEN, handle: "alice", domain: "domain.com" }], {
       client: () => owner,
       store,
       limit: 2,
@@ -306,6 +318,59 @@ describe("listPayments contract against a DB-backed server", () => {
     expect(result.failures).toHaveLength(1);
     expect(String((result.failures[0]?.error as LnurlError).message)).toContain("stalled");
     expect((result.failures[0]?.error as LnurlError).retryable).toBe(false);
+  });
+
+  // `/lnurl/:id` resolves the domain from the Host header only; this replays requests at the real port while keeping domain.com as the Host.
+  function hostedFetch(baseUrl: string) {
+    const real = new URL(baseUrl);
+    return (url: string, init?: RequestInit) =>
+      new Promise<Response>((res, reject) => {
+        const target = new URL(url);
+        const req = http.request(
+          {
+            hostname: real.hostname,
+            port: real.port,
+            path: `${target.pathname}${target.search}`,
+            method: init?.method ?? "GET",
+            headers: { ...(init?.headers as Record<string, string> | undefined), Host: target.host },
+          },
+          (response) => {
+            const chunks: Buffer[] = [];
+            response.on("data", (c) => chunks.push(c));
+            response.on("end", () =>
+              res(
+                new Response(Buffer.concat(chunks), {
+                  status: response.statusCode ?? 500,
+                  headers: { "content-type": String(response.headers["content-type"] ?? "application/json") },
+                }),
+              ),
+            );
+          },
+        );
+        req.on("error", reject);
+        if (init?.body) req.write(init.body as string);
+        req.end();
+      });
+  }
+
+  it("registers nameless, resolves the session lnurl, upgrades to a name, and keeps listing the same sessionLnurl", async () => {
+    const owner = createLnurlClient({ baseUrl: ctx.baseUrl, fetchImpl: hostedFetch(ctx.baseUrl) });
+    const reg = await owner.registerAddress({ token: TOKEN, nameless: true, domain: "domain.com" });
+    expect(reg).toMatchObject({ lightningAddress: null, username: null });
+    expect(reg.handle).toMatch(/^[0-9a-f]{32}$/);
+
+    const sessionPayRequest = await owner.resolve(reg.lnurl);
+    expect(sessionPayRequest.tag).toBe("payRequest");
+
+    const upgraded = await owner.upgradeAddress({ token: TOKEN, handle: reg.handle, username: "carol", domain: "domain.com" });
+    expect(upgraded).toMatchObject({ lightningAddress: "carol@domain.com", username: "carol", handle: "carol" });
+
+    const namedPayRequest = await owner.resolve("carol@domain.com");
+    expect(namedPayRequest.tag).toBe("payRequest");
+
+    const list = await owner.listAddresses(TOKEN);
+    const row = list.find((a) => a.handle === "carol");
+    expect(row?.sessionLnurl).toBe(reg.lnurl);
   });
 });
 
@@ -376,7 +441,7 @@ describe("per-rail bounds contract", () => {
 
     // Top level is the lightning rail's, and arkade publishes the wider floor.
     expect(payRequest.minSendable).toBe(50_000_000);
-    expect(payRequest.paymentOptions).toContainEqual({ id: "arkade", type: "arkade", minSendable: 1_000 });
+    expect(payRequest.paymentOptions).toContainEqual({ id: "arkade", type: "arkade", verifiable: false, minSendable: 1_000 });
 
     // The server builds the callback origin from the registered domain, which
     // carries no port, so the advertised URL is port 80. Put the test port back
@@ -439,7 +504,7 @@ describe("onchain rail contract", () => {
     const owner = createLnurlClient({ baseUrl: ctx.baseUrl });
     await owner.registerAddress({ token: TOKEN, username: "alice" });
     await owner.registerArkadeIdentity({
-      token: TOKEN, username: "alice", arkadeAddress: ARK, claimPublicKey: CLAIMPK, boardingAddress: BOARDING,
+      token: TOKEN, handle: "alice", arkadeAddress: ARK, claimPublicKey: CLAIMPK, boardingAddress: BOARDING,
     });
 
     const payer = createLnurlClient();
@@ -449,18 +514,18 @@ describe("onchain rail contract", () => {
       1023,
     );
     const payRequest = await payer.resolve(lnurl);
-    expect(payRequest.paymentOptions).toContainEqual({ id: "onchain", type: "onchain" });
+    expect(payRequest.paymentOptions).toContainEqual({ id: "onchain", type: "onchain", verifiable: false });
 
     const reachable = { ...payRequest, callback: payRequest.callback.replace("127.0.0.1", new URL(ctx.baseUrl).host) };
     const result = await payer.requestInvoice(reachable, { amountSat: 1_000, paymentOption: "onchain" });
-    expect(result).toEqual({ kind: "destination", paymentOption: "onchain", paymentDestination: BOARDING });
+    expect(result).toEqual({ kind: "destination", paymentOption: "onchain", paymentDestination: BOARDING, paymentURI: `bitcoin:${BOARDING}?amount=0.00001` });
     expect("verify" in result).toBe(false);
   });
 
   it("leaves a registered boarding address alone when a later call omits it", async () => {
     const owner = createLnurlClient({ baseUrl: ctx.baseUrl });
     await owner.registerAddress({ token: TOKEN, username: "bob" });
-    const identity = { token: TOKEN, username: "bob", arkadeAddress: ARK, claimPublicKey: CLAIMPK };
+    const identity = { token: TOKEN, handle: "bob", arkadeAddress: ARK, claimPublicKey: CLAIMPK };
     await owner.registerArkadeIdentity({ ...identity, boardingAddress: BOARDING });
     await owner.registerArkadeIdentity(identity);
 
@@ -471,6 +536,69 @@ describe("onchain rail contract", () => {
       1023,
     );
     const payRequest = await payer.resolve(lnurl);
-    expect(payRequest.paymentOptions).toContainEqual({ id: "onchain", type: "onchain" });
+    expect(payRequest.paymentOptions).toContainEqual({ id: "onchain", type: "onchain", verifiable: false });
+  });
+});
+
+describe("token rail contract", () => {
+  const ARK = "tark1qpf3lesxsy69q0f8yvfnyf7gv7kglfkg83fhaxjyc0zmm0wtrl3n024rshrsa8fnnv73w38094qfl9jp5g7pzdc8j2m58metfpd8rcd37nqs45";
+  let db: Db; let ff: FakeFf; let ctx: { baseUrl: string; close: () => Promise<void> };
+
+  beforeEach(async () => {
+    db = openDb(":memory:"); runMigrations(db);
+    const repos = createRepositories(db);
+    const domain = repos.domains.create({ domain: "127.0.0.1", allocationModes: ["self"] });
+    const reg = repos.addresses.create({ domainId: domain.id, username: "alice", status: "active", sessionId: "s-alice" });
+    repos.addresses.setOfflineReceive(reg.id, ARK, "02" + "ab".repeat(32));
+    ff = await fakeFixedFloat();
+    const client = ffClient({ transport: ffHttpTransport({ baseUrl: ff.baseUrl, auth: ffAuth(ff.apiKey, ff.secret) }), budget: new FfBudget() });
+    const rates = ffRates({ client, fetchRatesXml: ffRatesXml(ff.ratesUrl), idPrefix: "ff-", staleAfterMs: 900_000 });
+    await rates.refresh();
+    const corridor: OfflineSwapCreator = {
+      isSettled: async () => false,
+      create: async (p) => {
+        const preimage = randomBytes(32).toString("hex");
+        const hash = createHash("sha256").update(Buffer.from(preimage, "hex")).digest("hex");
+        return { swapId: `rfq-${hash.slice(0, 8)}`, invoice: buildInvoice(hash, p.amountSat), preimage, preimageHash: hash, lockupAddress: ARK,
+          invoiceExpiresAt: Math.floor(Date.now() / 1000) + 1_800,
+          recovery: { version: 1, solverName: "s", solverPubkey: "11".repeat(32), relays: ["wss://relay.example"], rfqId: `rfq-${hash.slice(0, 8)}`, lockupAddress: ARK, expectedAmount: p.amountSat - 20, script: {} } };
+      },
+    };
+    const server = http.createServer();
+    ctx = await new Promise<typeof ctx>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        const baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+        server.on("request", createServer({ ...CONFIG, baseUrl }, {
+          repos, addressService: new AddressService(repos, randomBytes(32)), settlements: new DbSettlementStore(db, 86_400_000),
+          offlineSwapCreator: corridor, offlineSwaps: new OfflineSwapStore(db, 86_400_000),
+          fixedFloat: { provider: FIXEDFLOAT, rates, client, orders: new FfOrderStore(db, 86_400_000), settleMarginSeconds: 600, minPayWindowSeconds: 300, maxOpenOrders: 20, maxOpenOrdersPerAddress: 2, ordersPerIp: 2, ipWindowSeconds: 600 },
+        }));
+        resolve({ baseUrl, close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }) });
+      });
+    });
+  });
+
+  afterEach(async () => {
+    await ctx.close();
+    await ff.close();
+    db.close();
+  });
+
+  it("parses asset, unit and provider off a payment option, and pays one for a quoted destination", async () => {
+    const payer = createLnurlClient();
+    const lnurl = bech32.encode("lnurl", bech32.toWords(new TextEncoder().encode(`${ctx.baseUrl}/.well-known/lnurlp/alice`)), 1023);
+    const payRequest = await payer.resolve(lnurl);
+    const [usdt] = tokenOptions(payRequest);
+    expect(usdt).toMatchObject({ id: "ff-usdtarbitrum", provider: "FixedFloat", unit: { code: "USDT", decimals: 6 }, asset: { chainId: "eip155:42161" } });
+    expect(tokenOptions(payRequest)).toHaveLength(13);
+
+    const reachable = { ...payRequest, callback: payRequest.callback.replace("127.0.0.1", new URL(ctx.baseUrl).host) };
+    const result = await payer.requestInvoice(reachable, { amountSat: 10_000, paymentOption: "ff-usdtarbitrum" });
+    expect(result).toMatchObject({
+      kind: "destination", paymentOption: "ff-usdtarbitrum", provider: "FixedFloat",
+      paymentQuote: { payment: { amount: "8426000", unit: "USDT" }, requested: { amount: "10000000", unit: "msat" } },
+      paymentURI: expect.stringMatching(/^ethereum:0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9@42161\/transfer\?address=0x[0-9a-f]{40}&uint256=8426000$/),
+    });
+    expect(result).not.toHaveProperty("expiresAt");
   });
 });

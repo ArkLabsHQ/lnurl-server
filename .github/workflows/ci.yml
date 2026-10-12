@@ -34,6 +34,11 @@ jobs:
       - name: Unit and integration tests
         run: pnpm test
 
+      - name: Reproduce covenant artifact
+        run: |
+          pnpm artifact
+          git diff --exit-code -- contracts/forwarding.json src/covenant/forwarding-artifact.ts
+
       - name: Type check
         run: pnpm type-check
 

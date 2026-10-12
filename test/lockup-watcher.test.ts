@@ -1,13 +1,13 @@
 import { describe, it, expect, vi } from "vitest";
 import { ArkAddress, type IContractManager } from "@arkade-os/sdk";
-import { SWAP_LOCKUP_CONTRACT_TYPE } from "@arkade-os/swap";
+import { SWAP_LOCKUP_CONTRACT_TYPE } from "@arkade-os/swap/protocol";
 import { hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
-import { startLockupWatcher } from "../src/lockup-watcher.js";
-import { startOfflineSettlementPoller } from "../src/offline-poller.js";
+import { startLockupWatcher } from "../src/workers/lockup-watcher.js";
+import { startOfflineSettlementPoller } from "../src/workers/offline-poller.js";
 import { DbSettlementStore } from "../src/settlement-store.js";
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
-import type { OfflineSwapCreator } from "../src/intent-swap.js";
+import type { OfflineSwapCreator } from "../src/services/offline-swaps.js";
 import { openDb } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 
@@ -62,6 +62,7 @@ describe("startLockupWatcher", () => {
     push("vtxo_received", scriptOf(lockup));
 
     expect(trigger).toHaveBeenCalledTimes(1);
+    expect(trigger).toHaveBeenCalledWith("00".repeat(32));
     db.close();
   });
 
@@ -91,9 +92,10 @@ describe("startLockupWatcher", () => {
   });
 
   // Our own claim spends the lockup, so the spend event is the echo of work already done.
-  it("ignores the spend its own claim produces", () => {
+  it("ignores the spend of a lockup whose swap is already settled", () => {
     const lockup = address();
     const { db, swaps } = storeWith([lockup]);
+    swaps.markSettled("00".repeat(32), "bb".repeat(32));
     const { manager, push } = fakeManager();
     const trigger = vi.fn();
 
@@ -101,6 +103,23 @@ describe("startLockupWatcher", () => {
     push("vtxo_spent", scriptOf(lockup));
 
     expect(trigger).not.toHaveBeenCalled();
+    db.close();
+  });
+
+  it("settles on covclaimd's claim of a still-pending lockup, then re-asks", () => {
+    vi.useFakeTimers();
+    const lockup = address();
+    const { db, swaps } = storeWith([lockup]);
+    const { manager, push } = fakeManager();
+    const trigger = vi.fn();
+
+    startLockupWatcher(manager, swaps, trigger);
+    push("vtxo_spent", scriptOf(lockup));
+    expect(trigger).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(3000);
+    expect(trigger).toHaveBeenCalledTimes(3);
+
+    vi.useRealTimers();
     db.close();
   });
 
@@ -115,6 +134,26 @@ describe("startLockupWatcher", () => {
 
     expect(trigger).not.toHaveBeenCalled();
     db.close();
+  });
+
+  it("cancels pending spend rechecks when unsubscribed", () => {
+    vi.useFakeTimers();
+    const lockup = address();
+    const { db, swaps } = storeWith([lockup]);
+    try {
+      const { manager, push } = fakeManager();
+      const trigger = vi.fn();
+      const stop = startLockupWatcher(manager, swaps, trigger);
+      push("vtxo_spent", scriptOf(lockup));
+      expect(trigger).toHaveBeenCalledTimes(1);
+
+      stop();
+      vi.advanceTimersByTime(3000);
+      expect(trigger).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      db.close();
+    }
   });
 
   it("still matches other swaps when one row carries an address it cannot decode", () => {

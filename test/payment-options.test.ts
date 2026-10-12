@@ -36,6 +36,32 @@ describe("resolvePaymentOption", () => {
     expect(resolvePaymentOption("onchain", withArkade)).toEqual({ kind: "error", reason: "Unsupported paymentOption" });
   });
 
+  const TOKENS = [{ optionId: "ff-usdtarbitrum", ffCode: "USDTARBITRUM" }, { optionId: "ff-usdttrc", ffCode: "USDTTRC" }];
+
+  it("resolves an advertised ff- id to its FF code", () => {
+    expect(resolvePaymentOption("ff-usdttrc", withArkade, TOKENS)).toEqual({ kind: "fixedfloat", optionId: "ff-usdttrc", ffCode: "USDTTRC" });
+    expect(resolvePaymentOption("FF-USDTTRC", withArkade, TOKENS)).toEqual({ kind: "fixedfloat", optionId: "ff-usdttrc", ffCode: "USDTTRC" });
+  });
+
+  it("errors on an ff- id that is not currently advertised", () => {
+    expect(resolvePaymentOption("ff-usdcsol", withArkade, TOKENS)).toEqual({ kind: "error", reason: "Unsupported paymentOption" });
+    expect(resolvePaymentOption("ff-usdttrc", withArkade)).toEqual({ kind: "error", reason: "Unsupported paymentOption" });
+    expect(resolvePaymentOption("ff-usdttrc", noArkade, TOKENS)).toEqual({ kind: "error", reason: "Unsupported paymentOption" });
+  });
+
+  it("errors on an ff- id the address has disabled", () => {
+    expect(resolvePaymentOption("ff-usdttrc", { ...withArkade, disabledRails: ["fixedfloat"] }, TOKENS))
+      .toEqual({ kind: "error", reason: "paymentOption ff-usdttrc is disabled for this address" });
+  });
+
+  it("still resolves lightning, arkade, onchain and the absent case exactly as before", () => {
+    const boarding = { ...withArkade, boardingAddress: "tb1qboarding" };
+    expect(resolvePaymentOption(undefined, boarding, TOKENS)).toEqual({ kind: "lightning" });
+    expect(resolvePaymentOption("lightning", boarding, TOKENS)).toEqual({ kind: "lightning" });
+    expect(resolvePaymentOption("arkade", boarding, TOKENS)).toEqual({ kind: "destination", paymentOption: "arkade", paymentDestination: "ark1xyz" });
+    expect(resolvePaymentOption("onchain", boarding, TOKENS)).toEqual({ kind: "destination", paymentOption: "onchain", paymentDestination: "tb1qboarding" });
+  });
+
   it("normalizes option id case (ids are canonical lowercase)", () => {
     expect(resolvePaymentOption("Arkade", withArkade)).toEqual({
       kind: "destination",

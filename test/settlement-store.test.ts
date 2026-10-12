@@ -1,5 +1,151 @@
 import { describe, it, expect } from "vitest";
-import { MemorySettlementStore } from "../src/settlement-store.js";
+import { DbSettlementStore, MemorySettlementStore, type SettlementStore } from "../src/settlement-store.js";
+import { openDb } from "../src/db/connection.js";
+import { runMigrations } from "../src/db/migrations.js";
+
+/** Both stores: a drift would leave one deployment's activity silently unlabelled. */
+const stores: Array<[string, () => SettlementStore]> = [
+  ["MemorySettlementStore", () => new MemorySettlementStore(86_400_000)],
+  ["DbSettlementStore", () => { const db = openDb(":memory:"); runMigrations(db); return new DbSettlementStore(db, 86_400_000); }],
+];
+
+describe.each(stores)("%s payout references", (_name, make) => {
+  it("credits the static rail from the observed payment itself", () => {
+    const s = make();
+    s.create({ paymentHash: "v1", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000 });
+    expect(s.markObserved("v1", "tx-a")).toBe(true);
+    expect(s.get("v1")).toMatchObject({ paymentReference: "tx-a", payoutReference: "tx-a" });
+  });
+
+  it("leaves a covenant payment uncredited until its sweep", () => {
+    const s = make();
+    s.create({ paymentHash: "v2", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014beef" });
+    expect(s.markObserved("v2", "covenant-tx")).toBe(true);
+    // Observed at the covenant script, which the user's wallet never holds.
+    expect(s.get("v2")).toMatchObject({ paymentReference: "covenant-tx", payoutReference: null });
+
+    expect(s.markPaidOut("v2", "sweep-tx")).toBe(true);
+    expect(s.get("v2")).toMatchObject({ paymentReference: "covenant-tx", payoutReference: "sweep-tx" });
+  });
+
+  it("keeps the first credit, so a repeated sweep pass cannot rewrite it", () => {
+    const s = make();
+    s.create({ paymentHash: "v3", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014cafe" });
+    expect(s.markPaidOut("v3", "sweep-1")).toBe(true);
+    expect(s.markPaidOut("v3", "sweep-2")).toBe(false);
+    expect(s.get("v3")).toMatchObject({ payoutReference: "sweep-1" });
+    expect(s.markPaidOut("unknown", "tx")).toBe(false);
+  });
+
+  it("credits a lightning swap from its claim", () => {
+    const s = make();
+    s.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "s", swapId: "rfq-1", preimage: "bb" });
+    expect(s.get("aa")).toMatchObject({ payoutReference: null });
+    expect(s.markPaidOut("aa", "claim-tx")).toBe(true);
+    expect(s.get("aa")).toMatchObject({ payoutReference: "claim-tx" });
+  });
+
+  it("finds a covenant record after it has settled, which the pending lookup cannot", () => {
+    const s = make();
+    s.create({ paymentHash: "v4", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014feed" });
+    s.markObserved("v4", "covenant-tx");
+    expect(s.pendingByCovenantScript("0014feed")).toBeUndefined();
+    expect(s.findByCovenantScript("0014feed")).toMatchObject({ paymentHash: "v4" });
+    expect(s.findByCovenantScript("0014none")).toBeUndefined();
+  });
+
+  it("holds a covenant script active until its sweep is recorded", () => {
+    const s = make();
+    s.create({ paymentHash: "v5", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014aa" });
+    s.create({ paymentHash: "v6", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014bb" });
+    // Settled is not finished: the money sits at the covenant until it is swept.
+    s.markObserved("v5", "tx-in");
+    expect(s.listActiveCovenantScripts().sort()).toEqual(["0014aa", "0014bb"]);
+
+    s.markPaidOut("v5", "sweep-tx");
+    expect(s.listActiveCovenantScripts()).toEqual(["0014bb"]);
+  });
+
+  it("never reports a record that has no covenant script", () => {
+    const s = make();
+    s.create({ paymentHash: "v7", pr: "lnbc1", sessionId: "s" });
+    s.create({ paymentHash: "v8", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000 });
+    expect(s.listActiveCovenantScripts()).toEqual([]);
+  });
+});
+
+/** The two halves of the active set answer to different clocks. */
+const clocked: Array<[string, (now: () => number, watchMs: number) => SettlementStore]> = [
+  ["MemorySettlementStore", (now, watchMs) => new MemorySettlementStore(watchMs, now, watchMs)],
+  ["DbSettlementStore", (now, watchMs) => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    return new DbSettlementStore(db, watchMs, now, watchMs);
+  }],
+];
+
+describe.each(clocked)("%s active covenant window", (_name, make) => {
+  const WATCH = 86_400_000;
+
+  it("drops an unpaid destination the instant a payment there could no longer settle", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    s.create({ paymentHash: "unpaid", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014aa" });
+    expect(s.listActiveCovenantScripts()).toEqual(["0014aa"]);
+
+    t = 1000 + WATCH;
+    expect(s.listActiveCovenantScripts()).toEqual([]);
+    expect(s.markObserved("unpaid", "tx-late")).toBe(false);
+  });
+
+  it("keeps a settled destination active past the window until its sweep lands", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    s.create({ paymentHash: "paid", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014bb" });
+    expect(s.markObserved("paid", "tx-in")).toBe(true);
+
+    t = 1000 + WATCH * 14;
+    expect(s.listActiveCovenantScripts()).toEqual(["0014bb"]);
+
+    expect(s.markPaidOut("paid", "sweep-tx")).toBe(true);
+    expect(s.listActiveCovenantScripts()).toEqual([]);
+    expect(s.findByCovenantScript("0014bb")).toMatchObject({ payoutReference: "sweep-tx" });
+  });
+
+  it("records a sweep that lands after the destination window", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    s.create({ paymentHash: "late", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014cc" });
+    s.markObserved("late", "tx-in");
+
+    t = 1000 + WATCH * 3;
+    expect(s.markPaidOut("late", "sweep-tx")).toBe(true);
+    expect(s.listActiveCovenantScripts()).toEqual([]);
+  });
+
+  it("keeps a settled, unswept destination through an expired read", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    s.create({ paymentHash: "owed", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014dd" });
+    s.markObserved("owed", "tx-in");
+
+    t = 1000 + WATCH * 3;
+    expect(s.get("owed")).toBeUndefined();
+    expect(s.listActiveCovenantScripts()).toEqual(["0014dd"]);
+    expect(s.markPaidOut("owed", "sweep-tx")).toBe(true);
+  });
+});
+
+it("MemorySettlementStore's periodic sweep keeps a destination still owed a sweep", () => {
+  let t = 1000;
+  const s = new MemorySettlementStore(5000, () => t, 5000);
+  s.create({ paymentHash: "owed", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "0014ee" });
+  s.markObserved("owed", "tx-in");
+
+  t = 1000 + 5000 * 3;
+  for (let i = 0; i < 1000; i++) s.create({ paymentHash: `fill-${i}`, pr: "lnbc1", sessionId: "s" });
+  expect(s.listActiveCovenantScripts()).toEqual(["0014ee"]);
+});
 
 describe("MemorySettlementStore", () => {
 
@@ -67,7 +213,8 @@ describe("MemorySettlementStore", () => {
 
     expect(s.markObserved("missing", "tx")).toBe(false);
     expect(s.markObserved("vid1", "txid1")).toBe(true);
-    expect(s.get("vid1")).toMatchObject({ settled: true, paymentReference: "txid1", preimage: null });
+    // The static rail's payment lands at the user, so observing it IS the credit.
+    expect(s.get("vid1")).toMatchObject({ settled: true, paymentReference: "txid1", payoutReference: "txid1", preimage: null });
     // A second observation never overwrites the first's reference.
     expect(s.markObserved("vid1", "txid2")).toBe(false);
     expect(s.get("vid1")).toMatchObject({ paymentReference: "txid1" });

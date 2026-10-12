@@ -1,7 +1,12 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import request from "supertest";
 import { caip19Id, matchCaip19Id, isRailType } from "../src/caip.js";
 import { advertisedRailOptions } from "../src/rails.js";
 import { resolvePaymentOption } from "../src/payment-options.js";
+import { createServer } from "../src/http/server.js";
+import { openDb, type Db } from "../src/db/connection.js";
+import { runMigrations } from "../src/db/migrations.js";
+import { createRepositories } from "../src/db/repositories/index.js";
 
 const ADDRESS = {
   arkadeAddress: "tark1qexample",
@@ -75,18 +80,18 @@ describe("advertisedRailOptions", () => {
 describe("resolvePaymentOption", () => {
   it("resolves a CAIP-19 id to the same destination as the bare name", () => {
     const bare = resolvePaymentOption("arkade", ADDRESS);
-    const caip = resolvePaymentOption("arkade:mutinynet/slip44:1", ADDRESS, "mutinynet");
+    const caip = resolvePaymentOption("arkade:mutinynet/slip44:1", ADDRESS, [], "mutinynet");
     expect(caip).toEqual(bare);
     expect(caip).toMatchObject({ kind: "destination", paymentDestination: ADDRESS.arkadeAddress });
   });
 
   it("still accepts the bare name with a network configured", () => {
-    expect(resolvePaymentOption("onchain", ADDRESS, "mutinynet"))
+    expect(resolvePaymentOption("onchain", ADDRESS, [], "mutinynet"))
       .toMatchObject({ kind: "destination", paymentOption: "onchain" });
   });
 
   it("names the network in the error when a payer is pointed at the wrong one", () => {
-    const result = resolvePaymentOption("arkade:bitcoin/slip44:0", ADDRESS, "mutinynet");
+    const result = resolvePaymentOption("arkade:bitcoin/slip44:0", ADDRESS, [], "mutinynet");
     expect(result).toMatchObject({ kind: "error" });
     expect((result as { reason: string }).reason).toContain("mutinynet");
     expect((result as { reason: string }).reason).toContain("bitcoin");
@@ -97,6 +102,58 @@ describe("resolvePaymentOption", () => {
   });
 
   it("maps the bolt11 namespace onto the lightning flow", () => {
-    expect(resolvePaymentOption("bolt11:mutinynet/slip44:1", ADDRESS, "mutinynet")).toEqual({ kind: "lightning" });
+    expect(resolvePaymentOption("bolt11:mutinynet/slip44:1", ADDRESS, [], "mutinynet")).toEqual({ kind: "lightning" });
+  });
+
+  it("keeps token deposit selectors available with a network configured", () => {
+    expect(resolvePaymentOption("ff-usdttrc", ADDRESS, [{ optionId: "ff-usdttrc", ffCode: "USDTTRC" }], "mutinynet"))
+      .toEqual({ kind: "fixedfloat", optionId: "ff-usdttrc", ffCode: "USDTTRC" });
+  });
+});
+
+describe.each([
+  { label: "named", path: "/.well-known/lnurlp/alice", sessionLnurl: false },
+  { label: "nameless", path: "/lnurl/sess-alice", sessionLnurl: true },
+])("CAIP-19 $label HTTP payment flow", ({ path, sessionLnurl }) => {
+  let db: Db;
+  let app: ReturnType<typeof createServer>;
+
+  beforeEach(() => {
+    db = openDb(":memory:");
+    runMigrations(db);
+    const repos = createRepositories(db);
+    const domain = repos.domains.create({ domain: "domain.com", allocationModes: ["self"] });
+    const address = repos.addresses.create({ domainId: domain.id, username: "alice", status: "active", sessionId: "sess-alice", sessionLnurl });
+    repos.addresses.setOfflineReceive(address.id, ADDRESS.arkadeAddress, ADDRESS.claimPublicKey);
+    app = createServer(
+      { port: 0, baseUrl: "http://domain.com", minSendable: 1000, maxSendable: 100_000_000 },
+      {
+        repos, arkServerUrl: CAPS.arkServerUrl, network: "mutinynet",
+        quoteProvider: {
+          units: (option) => option === undefined || option === "lightning" ? [{ code: "usd", decimals: 2, maxAmount: "10" }] : [],
+          quote: (req) => ({ requested: { amount: String(req.amount), unit: "usd" }, payment: { amount: "50000", unit: "msat" } }),
+        },
+      },
+    );
+  });
+
+  afterEach(() => db.close());
+
+  it("advertises the sidecar and resolves its callback through the current router", async () => {
+    const metadata = await request(app).get(path).set("Host", "domain.com");
+    expect(metadata.body.paymentOptions).toContainEqual({ id: "arkade", type: "arkade", caip19Id: "arkade:mutinynet/slip44:1", verifiable: false });
+    const callback = await request(app).get(`${path}/callback`).query({ amount: 50000, paymentOption: "arkade:mutinynet/slip44:1" }).set("Host", "domain.com");
+    expect(callback.body).toMatchObject({ paymentOption: "arkade", paymentDestination: ADDRESS.arkadeAddress });
+  });
+
+  it("rejects the wrong network before issuing a destination", async () => {
+    const callback = await request(app).get(`${path}/callback`).query({ amount: 50000, paymentOption: "arkade:bitcoin/slip44:0" }).set("Host", "domain.com");
+    expect(callback.body).toMatchObject({ status: "ERROR", reason: "paymentOption settles on bitcoin, this service settles on mutinynet" });
+    expect(callback.body.paymentDestination).toBeUndefined();
+  });
+
+  it("enforces the Lightning quote provider's unit bounds for its CAIP alias", async () => {
+    const callback = await request(app).get(`${path}/callback`).query({ amount: 20, unit: "usd", paymentOption: "bolt11:mutinynet/slip44:1" }).set("Host", "domain.com");
+    expect(callback.body).toMatchObject({ status: "ERROR", reason: "Amount above usd maximum (10)" });
   });
 });

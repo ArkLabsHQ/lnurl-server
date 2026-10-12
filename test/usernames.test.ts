@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateUsername, randomUsername, isValidToken } from "../src/usernames.js";
+import { validateUsername, randomUsername } from "../src/usernames.js";
 
 const rules = { usernameMinLen: 1, usernameMaxLen: 32, usernamePattern: "a-z0-9._-" };
 
@@ -19,13 +19,5 @@ describe("validateUsername", () => {
 describe("randomUsername", () => {
   it("produces an adjective-noun name that passes validation", () => {
     for (let i = 0; i < 20; i++) expect(validateUsername(randomUsername(), rules)).toBe(true);
-  });
-});
-
-describe("isValidToken", () => {
-  it("requires hex of length >= 32", () => {
-    expect(isValidToken("ab".repeat(16))).toBe(true);
-    expect(isValidToken("xyz")).toBe(false);
-    expect(isValidToken("abc")).toBe(false);
   });
 });

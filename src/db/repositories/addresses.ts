@@ -1,6 +1,6 @@
 import type { Db } from "../connection.js";
 import type { EncryptedToken } from "../../crypto.js";
-import type { AddressRow, AddressStatus, CreateAddressParams } from "../types.js";
+import type { AddressRow, AddressStatus, CreateAddressParams } from "../../types/index.js";
 import { parseDisabledRails, serializeDisabledRails, type RailId } from "../../rails.js";
 
 interface AddressRecord {
@@ -18,6 +18,7 @@ interface AddressRecord {
   claim_public_key: string | null;
   boarding_address: string | null;
   disabled_rails: string | null;
+  session_lnurl: number;
   created_at: number;
   updated_at: number;
 }
@@ -44,6 +45,7 @@ function rowToAddress(r: AddressRecord): AddressRow {
     claimPublicKey: r.claim_public_key,
     boardingAddress: r.boarding_address,
     disabledRails: parseDisabledRails(r.disabled_rails),
+    sessionLnurl: r.session_lnurl === 1,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -59,8 +61,8 @@ export class AddressesRepo {
       .prepare(
         `INSERT INTO addresses
            (domain_id, username, session_id, token_ciphertext, token_iv, token_tag,
-            claim_code_hash, status, metadata, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            claim_code_hash, status, metadata, session_lnurl, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         p.domainId,
@@ -72,6 +74,7 @@ export class AddressesRepo {
         p.claimCodeHash ?? null,
         p.status,
         p.metadata ?? null,
+        p.sessionLnurl ? 1 : 0,
         now,
         now,
       );
@@ -88,6 +91,17 @@ export class AddressesRepo {
       .prepare("SELECT * FROM addresses WHERE domain_id = ? AND username = ?")
       .get(domainId, username.toLowerCase()) as AddressRecord | undefined;
     return r ? rowToAddress(r) : undefined;
+  }
+
+  getSessionLnurl(domainId: number, sessionId: string): AddressRow | undefined {
+    const r = this.db
+      .prepare("SELECT * FROM addresses WHERE domain_id = ? AND session_id = ? AND session_lnurl = 1 AND status = 'active'")
+      .get(domainId, sessionId) as AddressRecord | undefined;
+    return r ? rowToAddress(r) : undefined;
+  }
+
+  rename(id: number, username: string): void {
+    this.db.prepare("UPDATE addresses SET username = ?, updated_at = ? WHERE id = ?").run(username.toLowerCase(), Date.now(), id);
   }
 
   listBySessionId(sessionId: string): AddressRow[] {
@@ -128,9 +142,13 @@ export class AddressesRepo {
       .run(serializeDisabledRails(rails), Date.now(), id);
   }
 
-  list(filter: { domainId?: number; status?: AddressStatus; q?: string } = {}): AddressRow[] {
+  list(filter: {
+    domainId?: number; status?: AddressStatus; q?: string; withArkadeAddress?: boolean;
+    before?: { createdAt: number; id: number }; limit: number;
+  }): AddressRow[] {
     const where: string[] = [];
     const params: (string | number)[] = [];
+    // ponytail: a domainId page sorts its whole domain (the UNIQUE index wins); index (domain_id, created_at, id, status, username) if that bites.
     if (filter.domainId != null) { where.push("domain_id = ?"); params.push(filter.domainId); }
     if (filter.status) { where.push("status = ?"); params.push(filter.status); }
     if (filter.q) {
@@ -138,8 +156,15 @@ export class AddressesRepo {
       where.push("username LIKE ? ESCAPE '\\'");
       params.push(`%${escaped}%`);
     }
-    const sql = `SELECT * FROM addresses ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC`;
+    if (filter.withArkadeAddress) where.push("arkade_address != ''");
+    if (filter.before) { where.push("(created_at, id) < (?, ?)"); params.push(filter.before.createdAt, filter.before.id); }
+    params.push(filter.limit);
+    const sql = `SELECT * FROM addresses ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC, id DESC LIMIT ?`;
     return (this.db.prepare(sql).all(...params) as unknown as AddressRecord[]).map(rowToAddress);
+  }
+
+  count(): number {
+    return (this.db.prepare("SELECT COUNT(*) AS c FROM addresses").get() as { c: number }).c;
   }
 
   delete(id: number): void {

@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { collectContracts } from "@arkade-os/sdk";
 import { openDb } from "../src/db/connection.js";
 import { sqliteContractStores } from "../src/contract-store.js";
 
@@ -17,7 +18,7 @@ describe("contract stores", () => {
     const { contractRepository } = await sqliteContractStores(openDb(":memory:"));
     await contractRepository.saveContract(contract(`5120${"bb".repeat(32)}`));
 
-    const [saved] = await contractRepository.getContracts({ type: "lnurl-covenant-destination" });
+    const [saved] = await collectContracts(contractRepository, { type: "lnurl-covenant-destination" });
     expect(saved).toMatchObject({ type: "lnurl-covenant-destination", watch: "awaiting-funds", state: "active" });
     expect(saved!.params.preimage).toBe("07".repeat(32));
   });
@@ -33,7 +34,7 @@ describe("contract stores", () => {
     const { contractRepository } = await sqliteContractStores(db);
     expect(tables()).not.toContain("ark_contracts");
 
-    await contractRepository.getContracts();
+    await collectContracts(contractRepository);
     expect(tables()).toContain("ark_contracts");
   });
 

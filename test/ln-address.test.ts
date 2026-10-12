@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import http from "node:http";
 import { randomBytes, createHash } from "node:crypto";
-import { createServer } from "../src/server.js";
+import { createServer } from "../src/http/server.js";
 import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
 import { encryptToken } from "../src/crypto.js";
-import type { LnurlServiceConfig } from "../src/types.js";
+import type { LnurlServiceConfig } from "../src/types/index.js";
 
 const KEY = randomBytes(32);
 const CONFIG: LnurlServiceConfig = { port: 0, baseUrl: "", minSendable: 1000, maxSendable: 100_000_000, invoiceTimeoutMs: 3000 };

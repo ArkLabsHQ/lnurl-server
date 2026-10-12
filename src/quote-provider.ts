@@ -1,3 +1,4 @@
+import { QuoteError } from "./errors.js";
 // LUD-XX paymentQuote: quote payments in units other than millisatoshis (USD, USDT, ...).
 // This server has no rate oracle, so quoting is delegated to an injected QuoteProvider;
 // without one, `units` is not advertised and any unit-denominated request is rejected.
@@ -20,10 +21,10 @@ export interface AmountObject {
   unit: string;
 }
 
+/** One named fee leg, in the shape the client package reads. */
 export interface FeeObject {
-  amount: string;
-  unit: string;
-  description?: string;
+  name?: string;
+  amount: AmountObject;
 }
 
 /** The quote echoed back to the wallet (LUD-XX). */
@@ -43,9 +44,6 @@ export interface QuoteRequest {
   receiveUnit?: string;
   paymentOption?: string;
 }
-
-/** Thrown by a provider for an unsupported / out-of-range / malformed unit. */
-export class QuoteError extends Error {}
 
 export interface QuoteProvider {
   /** Units advertised in the payRequest. `paymentOption` scopes per-option units when supported. */

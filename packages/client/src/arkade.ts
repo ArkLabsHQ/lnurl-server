@@ -12,8 +12,22 @@ import { hex } from "@scure/base";
 import { LnurlError } from "./errors.js";
 import { deriveSessionTokenWithSigner } from "./token.js";
 
-export { LNURL_ARKADE_RAIL, LNURL_LIGHTNING_RAIL, lnurlRails } from "./rail.js";
-export type { LnurlRailDeps } from "./rail.js";
+export { LNURL_ARKADE_RAIL, LNURL_LIGHTNING_RAIL, lnurlQuoteMeta, lnurlRails } from "./rail.js";
+export type { LnurlQuoteMeta, LnurlRailDeps } from "./rail.js";
+export { arkadeLnurl, arkadePaymentRouter, encodeLnurl, DEFAULT_RAIL_PRIORITY } from "./wallet.js";
+export type { ArkadeLnurl, ArkadeLnurlConfig, ArkadeLnurlOptions, ArkadeLnurlSource, ClaimOptions, NameOptions, Receiver } from "./wallet.js";
+export {
+  absorbedPaymentKey,
+  lnurlActivityResolver,
+  mergeSentPayment,
+  railOf,
+  sentActivityResolver,
+  LNURL_GROUP_PREFIX,
+  LNURL_RESOLVER_ID,
+  SENT_GROUP_PREFIX,
+  SENT_RESOLVER_ID,
+} from "./activity.js";
+export type { SentPayment } from "./activity.js";
 
 /** The slice of `@arkade-os/sdk`'s `Identity` these helpers need. */
 export interface ArkadeSigner {
@@ -87,19 +101,19 @@ export async function claimPublicKeyOf(identity: ArkadeSigner): Promise<string> 
  * An optional `boardingAddress` registers the onchain rail in the same call,
  * unchecked: it is a Bitcoin address on a network this helper cannot know.
  *
- * @param params - The identity, its Arkade address, the owning token and username.
+ * @param params - The identity, its Arkade address, the owning token and handle.
  * @returns The request body to hand to `registerArkadeIdentity`.
  */
 export async function arkadeIdentityRequest(params: {
   identity: ArkadeSigner;
   arkadeAddress: string;
   token: string;
-  username: string;
+  handle: string;
   boardingAddress?: string;
   domain?: string;
 }): Promise<{
   token: string;
-  username: string;
+  handle: string;
   arkadeAddress: string;
   claimPublicKey: string;
   boardingAddress?: string;
@@ -110,7 +124,7 @@ export async function arkadeIdentityRequest(params: {
   }
   return {
     token: params.token,
-    username: params.username,
+    handle: params.handle,
     arkadeAddress: params.arkadeAddress,
     claimPublicKey: await claimPublicKeyOf(params.identity),
     ...(params.boardingAddress !== undefined ? { boardingAddress: params.boardingAddress } : {}),

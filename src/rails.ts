@@ -21,9 +21,14 @@
 import type { Network } from "@arkade-os/solver-discovery";
 import type { PaymentOption } from "./payment-options.js";
 import { caip19Id, isRailType } from "./caip.js";
+import type { ServerDeps } from "./http/server-context.js";
+import type { FfRail } from "./rails/fixedfloat/rates.js";
+import { ffPaymentOptions } from "./rails/fixedfloat/options.js";
+import { ffRailCaps } from "./rails/fixedfloat/provider.js";
+import { InvalidRailPolicyError } from "./errors.js";
 
 /** Every receive rail the server knows. The order is the advertise order. */
-export const RAIL_IDS = ["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain"] as const;
+export const RAIL_IDS = ["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat"] as const;
 
 /** A backend that can satisfy a receive on an LN address. */
 export type RailId = (typeof RAIL_IDS)[number];
@@ -81,11 +86,18 @@ export const RAIL_DEFS: Record<RailId, RailDef> = {
     paymentOption: "arkade",
     direction: null,
   },
+  fixedfloat: {
+    id: "fixedfloat",
+    label: "Token deposits",
+    description:
+      "The payer deposits a stablecoin with a custodial swap provider (FixedFloat on mainnet, a simulator elsewhere), " +
+      "which pays a corridor hold invoice; the covenant then pays arkade BTC to the user. One paymentOption per token network.",
+    // Many ids, one per token network, so the single-option field cannot describe it.
+    paymentOption: null,
+    direction: "token->bolt11->arkade-btc",
+  },
 };
 
-/** A refusal safe to quote to the payer verbatim. Anything else a rail throws
- *  stays generic, because it may name a solver, a key, or this server's wiring. */
-export class RailRefusedError extends Error {}
 
 /** Amount bounds one rail can serve, in millisats. Either half may be absent,
  *  meaning that end is not narrowed beyond the server/domain bound. */
@@ -122,9 +134,18 @@ export interface ServerRailCaps {
   arkServerUrl?: string;
   /** A covenant destination provider is wired. */
   covenantDestinations: boolean;
-  /** The network arkd reports. Absent leaves `caip19Id` off every option, since
-   *  an id guessing its own network is worse than no id. */
   network?: Network;
+  /** Token deposits are configured; absent means not at all. */
+  fixedFloat?: FfRailCaps;
+}
+
+/** What the token-deposit provider offers right now. */
+export interface FfRailCaps {
+  /** Shown to payers and operators alike: "FixedFloat", or "Simulated" off mainnet. */
+  provider: string;
+  rails: readonly FfRail[];
+  ready: boolean;
+  reason?: string;
 }
 
 /** Server-level state of one rail: configured in this process or not. */
@@ -191,6 +212,19 @@ export function describeServerRails(caps: ServerRailCaps): ServerRailState[] {
   if (!caps.covenantDestinations) {
     states[3].reason = "per-payment destinations need OFFLINE_COVENANT_DESTINATIONS=true";
   }
+  const ff = caps.fixedFloat;
+  const tokens: ServerRailState = {
+    id: "fixedfloat",
+    label: ff ? `${RAIL_DEFS.fixedfloat.label} (${ff.provider})` : RAIL_DEFS.fixedfloat.label,
+    description: RAIL_DEFS.fixedfloat.description,
+    configured: Boolean(ff),
+    ready: Boolean(ff?.ready) && caps.offlineSwapCreator && caps.discoveryReady,
+  };
+  if (!ff) tokens.reason = "not configured (FIXEDFLOAT_API_KEY + FIXEDFLOAT_API_SECRET on mainnet, or FIXEDFLOAT_SIMULATE=true elsewhere)";
+  else if (!ff.ready) tokens.reason = ff.reason ?? `${ff.provider} is unavailable`;
+  else if (!caps.offlineSwapCreator) tokens.reason = "token deposits pay through the offline swap rail, which is not configured";
+  else if (!caps.discoveryReady) tokens.reason = "offline receive unavailable: " + discoveryReason;
+  states.push(tokens);
   return states;
 }
 
@@ -235,10 +269,10 @@ function disabledSet(address: RailAddress): Set<string> {
 
 /** Normalize a caller-supplied disabled-rails list; throws on unknown ids. */
 export function normalizeDisabledRails(value: unknown): RailId[] {
-  if (!Array.isArray(value)) throw new Error("disabledRails must be an array of rail ids");
+  if (!Array.isArray(value)) throw new InvalidRailPolicyError("disabledRails must be an array of rail ids");
   const out: RailId[] = [];
   for (const entry of value) {
-    if (!isRailId(entry)) throw new Error("unknown rail id: " + JSON.stringify(entry) + " (known: " + RAIL_IDS.join(", ") + ")");
+    if (!isRailId(entry)) throw new InvalidRailPolicyError("unknown rail id: " + JSON.stringify(entry) + " (known: " + RAIL_IDS.join(", ") + ")");
     if (!out.includes(entry)) out.push(entry);
   }
   return out;
@@ -315,7 +349,22 @@ export function effectiveRails(address: RailAddress, caps: ServerRailCaps): Addr
   };
   if (!onchain.enabled) onchain.reason = "disabled for this address";
   else if (!address.boardingAddress) onchain.reason = "address has no registered boarding address";
-  return [interactive, offline, arkade, covenant, onchain];
+  // The corridor pays the user's Arkade identity, so the token rail needs one too.
+  const ff = caps.fixedFloat;
+  const tokens: AddressRailState = {
+    id: "fixedfloat",
+    label: RAIL_DEFS.fixedfloat.label,
+    enabled: !disabled.has("fixedfloat"),
+    applicable: hasIdentity,
+    available: !disabled.has("fixedfloat") && hasIdentity && Boolean(ff?.ready) && caps.offlineSwapCreator && caps.discoveryReady,
+  };
+  if (!tokens.enabled) tokens.reason = "disabled for this address";
+  else if (!hasIdentity) tokens.reason = noIdentityReason;
+  else if (!ff) tokens.reason = "token deposits are not configured";
+  else if (!ff.ready) tokens.reason = ff.reason ?? `${ff.provider} is unavailable`;
+  else if (!caps.offlineSwapCreator) tokens.reason = "offline receive is not configured";
+  else if (!caps.discoveryReady) tokens.reason = "offline receive unavailable: " + discoveryReason;
+  return [interactive, offline, arkade, covenant, onchain, tokens];
 }
 
 /** Rails whose payment lands as a VTXO or a boarding UTXO, so arkd's own floor
@@ -357,6 +406,49 @@ export function withVtxoFloors(
     };
   }
   return next;
+}
+
+/** Fold what the discovered solvers will quote into the offline-swap rail's
+ *  limits. Both are real caps, so the tighter of the two wins on each end. */
+function withSolverRange(
+  configured: ServerRailCaps["limits"],
+  range?: { minSat: number; maxSat: number },
+): ServerRailCaps["limits"] {
+  if (!range) return configured;
+  const own = configured?.["offline-swap"];
+  return {
+    ...configured,
+    "offline-swap": {
+      minSendable: Math.max(range.minSat * 1000, own?.minSendable ?? 0),
+      maxSendable: Math.min(range.maxSat * 1000, own?.maxSendable ?? Infinity),
+    },
+  };
+}
+
+/** Which backends this process wired, derived per request rather than frozen at boot:
+ *  discovery refreshes on a timer, so a rail going dark or republishing a narrower
+ *  range must move the next payRequest. Unknown discovery state (none injected, e.g.
+ *  unit scope) assumes ready; the coordinator still fails loudly per request. */
+export function currentRailCaps(wiring: Pick<ServerDeps,
+  "offlineSwapCreator" | "covenantDestinations" | "solverDiscovery" | "arkServerUrl" | "railLimits" | "arkDustSat" | "onchainMinSat" | "fixedFloat" | "network"
+> = {}): ServerRailCaps {
+  const discoveryStatus = wiring.solverDiscovery?.status();
+  // Dust last: it is the protocol's floor, so it must survive whatever the
+  // operator and the solver narrowed to, not be averaged with them.
+  const limits = withVtxoFloors(withSolverRange(wiring.railLimits, discoveryStatus?.receiveBounds), {
+    ...(wiring.arkDustSat ? { dustSat: wiring.arkDustSat } : {}),
+    ...(wiring.onchainMinSat ? { onchainMinSat: wiring.onchainMinSat } : {}),
+  });
+  return {
+    offlineSwapCreator: Boolean(wiring.offlineSwapCreator),
+    discoveryReady: discoveryStatus?.ready ?? true,
+    ...(discoveryStatus?.reason ? { discoveryReason: discoveryStatus.reason } : {}),
+    ...(wiring.arkServerUrl ? { arkServerUrl: wiring.arkServerUrl } : {}),
+    covenantDestinations: Boolean(wiring.covenantDestinations),
+    ...(wiring.network ? { network: wiring.network } : {}),
+    ...(limits ? { limits } : {}),
+    ...(wiring.fixedFloat ? { fixedFloat: ffRailCaps(wiring.fixedFloat) } : {}),
+  };
 }
 
 /** Narrow `base` by one rail's configured bounds. Never widens: a rail cannot
@@ -451,22 +543,26 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
   const onchainState = offered("onchain");
   const arkadeReady = arkadeState.offer;
   const onchainReady = onchainState.offer;
+  const tokenState = offered("fixedfloat");
+  const tokenOptions = caps.fixedFloat && tokenState.offer
+    ? ffPaymentOptions(caps.fixedFloat, railBounds("offline-swap", caps, base ?? { min: 1, max: Number.MAX_SAFE_INTEGER }), tokenState.available)
+    : [];
   // paymentOptions exists to name a non-lightning rail; with none to offer the
   // address stays pure LUD-06 even though lightning may still serve it.
-  if (!arkadeReady && !onchainReady) return [];
+  if (!arkadeReady && !onchainReady && tokenOptions.length === 0) return [];
   const options: PaymentOption[] = [];
   // `available` is emitted only when false: LUD-XX says an absent one means true,
-  // so stating it on every healthy option would be noise.
-  if (lightning.offer) options.push({ id: "lightning", type: "lightning", ...(lightning.available ? {} : { available: false }) });
-  if (arkadeReady) options.push({ id: "arkade", type: "arkade", ...(arkadeState.available ? {} : { available: false }) });
-  if (onchainReady) options.push({ id: "onchain", type: "onchain", ...(onchainState.available ? {} : { available: false }) });
-  // Attached last and never as the selector: `id` is what a payer sends back.
+  // so stating it on every healthy option would be noise. `verifiable` is always
+  // stated, since absent means unknown: arkade answers with verify only for a covenant destination.
+  const arkadeVerifiable = states.get("covenant")?.available === true;
+  if (lightning.offer) options.push({ id: "lightning", type: "lightning", verifiable: true, ...(lightning.available ? {} : { available: false }) });
+  if (arkadeReady) options.push({ id: "arkade", type: "arkade", verifiable: arkadeVerifiable, ...(arkadeState.available ? {} : { available: false }) });
+  if (onchainReady) options.push({ id: "onchain", type: "onchain", verifiable: false, ...(onchainState.available ? {} : { available: false }) });
   const network = caps.network;
-  const withCaip = (opts: PaymentOption[]): PaymentOption[] =>
-    network === undefined
-      ? opts
-      : opts.map((o) => (isRailType(o.type) ? { ...o, caip19Id: caip19Id(o.type, network) } : o));
-  if (!base) return withCaip(options);
+  const withCaip = (opts: PaymentOption[]): PaymentOption[] => network === undefined
+    ? opts
+    : opts.map((option) => isRailType(option.type) ? { ...option, caip19Id: caip19Id(option.type, network) } : option);
+  if (!base) return [...withCaip(options), ...tokenOptions];
   // Emitted relative to the pair the payRequest actually advertises, not to the
   // envelope. A client falls back to the top-level pair for an option that
   // publishes nothing, and the top level is the lightning rail's — so an option
@@ -474,7 +570,7 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
   // the server would accept. Equal to the top level means nothing to emit, so
   // an operator who configured no rail limits sees the payRequest as before.
   const advertised = advertisedBounds(address, caps, base);
-  return withCaip(options.map((option) => {
+  return [...withCaip(options.map((option) => {
     const bounds = optionBounds(option.id, address, caps, base);
     if (!bounds) return option;
     return {
@@ -482,5 +578,5 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
       ...(bounds.min !== advertised.min ? { minSendable: bounds.min } : {}),
       ...(bounds.max !== advertised.max ? { maxSendable: bounds.max } : {}),
     };
-  }));
+  })), ...tokenOptions];
 }

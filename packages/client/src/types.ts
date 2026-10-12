@@ -1,10 +1,3 @@
-/**
- * One payment rail the receiver advertised on an address payRequest, such as
- * `lightning` or `arkade`. Rails exist only on the address surface: a session
- * payRequest never carries them, which is why `requestInvoice` rejects
- * `paymentOption`/`unit` there instead of letting the server silently ignore
- * the choice.
- */
 export interface PaymentOption {
   /** Rail identifier the callback expects back as `paymentOption`. */
   id: string;
@@ -14,10 +7,19 @@ export interface PaymentOption {
   caip19Id?: string;
   /** Whether the rail can currently be selected. */
   available?: boolean;
+  /** Whether callback answers on this rail carry a LUD-21 `verify` URL; absent means unknown. */
+  verifiable?: boolean;
   /** Minimum sendable amount on this rail. */
   minSendable?: number;
   /** Maximum sendable amount on this rail. */
   maxSendable?: number;
+  /** CAIP-19 id of the token a token option is paid in; its CAIP-2 namespace is `type`.
+   *  Read token options through `tokenOptions`, which validates them. */
+  asset?: string;
+  /** The `units[]` code a token option is quoted in. */
+  unit?: string;
+  /** The third party the payer hands funds to on this option, e.g. "FixedFloat". */
+  provider?: string;
 }
 /**
  * A unit the receiver prices in on the lightning rail (fiat or asset alongside
@@ -65,12 +67,7 @@ export interface PaymentQuote {
   /** Named fee legs making up the difference. */
   fees?: { name?: string; amount: AmountObject }[];
 }
-/**
- * An LUD-06 payRequest plus the `source` it was fetched from. The source
- * records both the URL and which surface (`address` or `session`) served it,
- * because `requestInvoice` keys its rail guards off the surface: rails,
- * units and the offline path exist only on the address side.
- */
+/** An LUD-06 payRequest plus the `source` (URL and surface) it was fetched from. */
 export interface PayRequest {
   /** LUD-06 tag; `resolve` rejects anything that is not a payRequest. */
   tag: "payRequest";
@@ -84,9 +81,7 @@ export interface PayRequest {
   metadata: string;
   /** Maximum comment length in characters, when the receiver accepts one. */
   commentAllowed?: number;
-  /** Rails the receiver offers; address surface only. */
   paymentOptions?: PaymentOption[];
-  /** Units the receiver prices in; address surface, lightning rail only. */
   units?: Unit[];
   /** Where this payRequest came from; drives the rail guards downstream. */
   source: { url: string; surface: "address" | "session" };
@@ -101,9 +96,8 @@ export interface RequestInvoiceOptions {
   amountSat: number;
   /** Optional payer comment, sent when the payRequest allows one. */
   comment?: string;
-  /** Address surface only. Rejected on a session payRequest. */
   paymentOption?: string;
-  /** Address surface only, lightning rail only. */
+  /** Lightning rail only. */
   unit?: string;
 }
 /**
@@ -123,6 +117,8 @@ export interface Bolt11Result {
   pr: string;
   /** Verify URL tracking settlement; absent when the server could not decode the payment hash. */
   verify?: string;
+  /** LUD-XX verifyBatch: endpoint that batch-styles or streams settlement for a whole tracked set. */
+  verifyBatch?: string;
   /** Rail the invoice was issued for, echoed back when one was selected. */
   paymentOption?: string;
   /** Quote for a unit-converted payment, when one was requested. */
@@ -139,8 +135,21 @@ export interface DestinationResult {
   paymentOption: string;
   /** Where to pay on that rail, e.g. an Arkade address. */
   paymentDestination?: string;
+  /** A memo the payment must carry. A wallet that cannot attach one must not pay. */
+  paymentDestinationTag?: string;
+  /** Wallet-executable instruction carrying the amount (BIP21, EIP-681, Solana Pay); none on Tron. */
+  paymentURI?: string;
+  /** What the payer actually pays on a rail priced in a token. Its `expiresAt` is the
+   *  payer's deadline: a token answer carries no top-level `expiresAt`. */
+  paymentQuote?: PaymentQuote;
+  /** Unix seconds after which the server stops attributing payments to this destination. */
+  expiresAt?: number;
+  /** The third party the payer hands funds to, e.g. "FixedFloat". */
+  provider?: string;
   /** Verify URL tracking settlement; absent under the same conditions as the BOLT11 shape. */
   verify?: string;
+  /** LUD-XX verifyBatch: batch/stream endpoint covering a whole tracked set. */
+  verifyBatch?: string;
 }
 /** The settlement state `pollVerify` resolves with, in either rail shape. */
 export type VerifyStatus = Bolt11VerifyStatus | DestinationVerifyStatus;
@@ -181,7 +190,12 @@ export interface PollVerifyOptions {
   onUpdate?: (s: VerifyStatus) => void;
   /** Abort signal for caller-driven cancellation. */
   signal?: AbortSignal;
+  /** The payment the verify URL was issued for — the callback's answer will do.
+   *  An answer about any other payment then fails instead of resolving. */
+  expect?: VerifyExpectation;
 }
+/** The invoice, or the rail and destination, a verify answer must be about. */
+export type VerifyExpectation = Pick<Bolt11Result, "pr"> | Pick<DestinationResult, "paymentOption" | "paymentDestination">;
 
 /**
  * One page of address payment activity: what was paid to one address, who it
@@ -189,11 +203,11 @@ export interface PollVerifyOptions {
  * re-fetching from it dedupes on paymentHash/verifyId.
  */
 export interface PaymentPage {
-  /** Where the payments were earned: serving domain and full address. */
-  source: { domain: string; lightningAddress: string };
-  /** Activity entries, oldest first. */
+  /** Where the payments were earned: domain, full address (null when nameless), and handle. */
+  source: { domain: string; lightningAddress: string | null; handle: string };
+  /** Activity entries, least recently changed first. */
   payments: PaymentActivity[];
-  /** created_at of the last row, or the request's since when empty. */
+  /** The last row's updatedAt (createdAt on older servers), or the request's since when empty. */
   nextSince: number;
 }
 /**
@@ -217,6 +231,9 @@ export interface Bolt11Activity {
   preimage: string | null;
   /** RFQ id when this was an offline swap, null for relay invoices. */
   swapId: string | null;
+  /** Arkade txid of the claim that paid the covenant out to the owner — a swap
+   *  settles on a preimage, so this is the only txid their wallet holds. */
+  payoutReference: string | null;
   /** Whether the payment has settled. */
   settled: boolean;
   /** Agreed amount in millisats, when recorded. */
@@ -244,6 +261,9 @@ export interface DestinationActivity {
   covenantScript: string | null;
   /** Arkade txid once observed, null until then. */
   paymentReference: string | null;
+  /** Arkade txid that credited the owner's own address — the payment itself on
+   *  the static rail, the sweep on a covenant one. */
+  payoutReference: string | null;
   /** Whether the payment has settled. */
   settled: boolean;
   /** Agreed amount in millisats, when recorded. */

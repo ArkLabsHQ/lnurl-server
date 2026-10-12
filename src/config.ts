@@ -1,3 +1,31 @@
+import { BlockList, isIP } from "node:net";
+import { ConfigError } from "./errors.js";
+import { ffAuth, type FfAuth } from "./rails/fixedfloat/client.js";
+import { FF_ASSETS } from "./rails/fixedfloat/catalogue.js";
+
+/** Token deposits through FixedFloat, or through the simulator off mainnet. */
+export interface FixedFloatConfig {
+  mode: "live" | "simulate";
+  /** The signer, closed over the key and secret so neither is a field of any config object. */
+  auth?: FfAuth;
+  refcode?: string;
+  afftax?: number;
+  /** FixedFloat codes; absent means the whole asset table. */
+  allow?: string[];
+  deny: string[];
+  baseUrl: string;
+  ratesUrl: string;
+  /** What FixedFloat may need between a deposit and paying the invoice. */
+  settleMarginSeconds: number;
+  /** The shortest pay window a payer is handed; less, and the request is refused. */
+  minPayWindowSeconds: number;
+  maxOpenOrdersPerAddress: number;
+  ordersPerIp: number;
+  ipWindowSeconds: number;
+  refreshMs: number;
+  maxOpenOrders: number;
+}
+
 /** Server-orchestrated offline receive over the Arkade intents corridor. */
 export interface OfflineReceiveConfig {
   enabled: boolean;
@@ -34,7 +62,8 @@ export interface OfflineReceiveConfig {
   covenantDestinations: boolean;
   /** CSV delay, seconds, before the user may sweep a covenant destination alone. */
   covenantRecoveryDelaySeconds: number;
-  /** Settlement-pass interval, ms. Not what claims a lockup — src/lockup-watcher.ts
+  covenantRenewalMnemonic?: string;
+  /** Settlement-pass interval, ms. Not what claims a lockup — src/workers/lockup-watcher.ts
    *  does that on the funding event — so what is left on it is the backstop for a
    *  dropped subscription and the solver status check the RFQ transport cannot push. */
   pollIntervalMs: number;
@@ -59,13 +88,16 @@ export interface AppConfig {
   allowInsecureTokenStorage: boolean;
   bootstrapDomain?: string;
   registrationRateLimitPerMin: number;
+  callbackRateLimitPerMin: number;
   trustProxy: number | boolean;
+  trustedForwarders: BlockList;
   traceRequests: boolean;
   maxSessions: number;
   maxSessionsPerIp: number;
   maxConcurrentOfflineQuotes: number;
   shutdownTimeoutMs: number;
   offlineReceive: OfflineReceiveConfig;
+  fixedFloat?: FixedFloatConfig;
 }
 
 type Env = Record<string, string | undefined>;
@@ -78,7 +110,7 @@ function integer(env: Env, name: string, fallback: number, opts: { min: number; 
   const value = Number(raw);
   if (!Number.isInteger(value) || value < opts.min || (opts.max !== undefined && value > opts.max)) {
     const range = opts.max === undefined ? `>= ${opts.min}` : `${opts.min}..${opts.max}`;
-    throw new Error(`${name} must be an integer in ${range}`);
+    throw new ConfigError(`${name} must be an integer in ${range}`);
   }
   return value;
 }
@@ -88,10 +120,10 @@ function httpUrl(raw: string, name: string): string {
   try {
     value = new URL(raw);
   } catch {
-    throw new Error(`${name} must be an absolute http(s) URL`);
+    throw new ConfigError(`${name} must be an absolute http(s) URL`);
   }
   if (!/^https?:$/.test(value.protocol) || value.username || value.password) {
-    throw new Error(`${name} must be an absolute http(s) URL without credentials`);
+    throw new ConfigError(`${name} must be an absolute http(s) URL without credentials`);
   }
   return raw;
 }
@@ -103,13 +135,13 @@ function csvHttpUrls(raw: string | undefined, name: string): string[] {
 
 function rejectRemovedSolverConfig(env: Env): void {
   for (const name of REMOVED_SOLVER_CONFIG) {
-    if (env[name] !== undefined) throw new Error(`${name} has been removed; configure solver cards instead`);
+    if (env[name] !== undefined) throw new ConfigError(`${name} has been removed; configure solver cards instead`);
   }
 }
 
 function parseKey(raw: string): Buffer {
   const buf = /^[0-9a-fA-F]+$/.test(raw) && raw.length % 2 === 0 ? Buffer.from(raw, "hex") : Buffer.from(raw, "base64");
-  if (buf.length !== 32) throw new Error("TOKEN_ENCRYPTION_KEY must decode to 32 bytes (hex or base64)");
+  if (buf.length !== 32) throw new ConfigError("TOKEN_ENCRYPTION_KEY must decode to 32 bytes (hex or base64)");
   return buf;
 }
 
@@ -126,12 +158,12 @@ export function loadConfig(env: Env = process.env): AppConfig {
     tokenEncryptionKey = parseKey(env.TOKEN_ENCRYPTION_KEY);
   }
   if (dbPath && !tokenEncryptionKey && !allowInsecureTokenStorage) {
-    throw new Error(
+    throw new ConfigError(
       "TOKEN_ENCRYPTION_KEY is required when DB_PATH is set (or set ALLOW_INSECURE_TOKEN_STORAGE=1 for dev)",
     );
   }
   if (offlineReceive.covenantDestinations && (!dbPath || dbPath === ":memory:")) {
-    throw new Error("OFFLINE_COVENANT_DESTINATIONS=true requires a file-backed DB_PATH (contracts and settlement attribution must survive restart)");
+    throw new ConfigError("OFFLINE_COVENANT_DESTINATIONS=true requires a file-backed DB_PATH (contracts and settlement attribution must survive restart)");
   }
 
   // Sats, and policy rather than protocol: arkd's dust says what it will accept,
@@ -142,10 +174,11 @@ export function loadConfig(env: Env = process.env): AppConfig {
   const onchainMinSendableSats = integer(env, "ONCHAIN_MIN_SENDABLE_SATS", 10_000, { min: 1 });
   const minSendable = integer(env, "MIN_SENDABLE", 1_000, { min: 1 });
   const maxSendable = integer(env, "MAX_SENDABLE", 100_000_000_000, { min: 1 });
-  if (maxSendable < minSendable) throw new Error("MAX_SENDABLE must be greater than or equal to MIN_SENDABLE");
+  if (maxSendable < minSendable) throw new ConfigError("MAX_SENDABLE must be greater than or equal to MIN_SENDABLE");
   const baseUrl = env.BASE_URL ? httpUrl(env.BASE_URL, "BASE_URL") : `http://localhost:${port}`;
   const adminPort = integer(env, "ADMIN_PORT", 3001, { min: 1, max: 65_535 });
-  if (dbPath && adminPort === port) throw new Error("ADMIN_PORT must differ from PORT when DB_PATH is set");
+  if (dbPath && adminPort === port) throw new ConfigError("ADMIN_PORT must differ from PORT when DB_PATH is set");
+  const fixedFloat = buildFixedFloat(env, dbPath, offlineReceive);
 
   return {
     port,
@@ -163,14 +196,81 @@ export function loadConfig(env: Env = process.env): AppConfig {
     allowInsecureTokenStorage,
     bootstrapDomain: env.BOOTSTRAP_DOMAIN || undefined,
     registrationRateLimitPerMin: integer(env, "REGISTRATION_RATE_LIMIT", 10, { min: 1 }),
+    callbackRateLimitPerMin: integer(env, "CALLBACK_RATE_LIMIT_PER_MINUTE", 30, { min: 1 }),
     trustProxy: parseTrustProxy(env.TRUST_PROXY),
+    trustedForwarders: parseTrustedForwarders(env.TRUSTED_FORWARDERS),
     traceRequests,
     maxSessions: integer(env, "MAX_SESSIONS", 5_000, { min: 1 }),
     maxSessionsPerIp: integer(env, "MAX_SESSIONS_PER_IP", 50, { min: 1 }),
     maxConcurrentOfflineQuotes: integer(env, "MAX_CONCURRENT_OFFLINE_QUOTES", 20, { min: 1 }),
     shutdownTimeoutMs: integer(env, "SHUTDOWN_TIMEOUT_MS", 15_000, { min: 1 }),
     offlineReceive,
+    ...(fixedFloat ? { fixedFloat } : {}),
   };
+}
+
+function ffCodes(raw: string | undefined, name: string): string[] | undefined {
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const codes = raw.split(",").map((c) => c.trim().toUpperCase()).filter(Boolean);
+  const unknown = codes.filter((c) => !(c in FF_ASSETS));
+  if (unknown.length) throw new ConfigError(`${name} names ${unknown.join(", ")}, not in the token table (known: ${Object.keys(FF_ASSETS).join(", ")})`);
+  return codes;
+}
+
+function buildFixedFloat(env: Env, dbPath: string | undefined, offlineReceive: OfflineReceiveConfig): FixedFloatConfig | undefined {
+  const apiKey = env.FIXEDFLOAT_API_KEY || undefined;
+  const apiSecret = env.FIXEDFLOAT_API_SECRET || undefined;
+  const simulateRaw = env.FIXEDFLOAT_SIMULATE;
+  if (simulateRaw !== undefined && simulateRaw !== "" && simulateRaw !== "true" && simulateRaw !== "false") {
+    throw new ConfigError("FIXEDFLOAT_SIMULATE must be true or false");
+  }
+  const simulate = simulateRaw === "true";
+  if (Boolean(apiKey) !== Boolean(apiSecret)) throw new ConfigError("FIXEDFLOAT_API_KEY and FIXEDFLOAT_API_SECRET go together: set both or neither");
+  if (simulate && apiKey) {
+    throw new ConfigError("FIXEDFLOAT_SIMULATE=true cannot run with FIXEDFLOAT_API_KEY set: a simulated rail must never be mistaken for the real one");
+  }
+  if (!apiKey && !simulate) return undefined;
+  if (!dbPath || dbPath === ":memory:") {
+    throw new ConfigError("token deposits need a file-backed DB_PATH: an order lost on restart is a payer's support case nobody can resolve");
+  }
+  if (!offlineReceive.enabled) {
+    throw new ConfigError("token deposits pay out over offline receive, which is not configured (ARK_SERVER_URL, solver cards, and COVCLAIMD_URL or OFFLINE_SELF_CLAIM)");
+  }
+  const afftaxRaw = env.FIXEDFLOAT_AFFTAX;
+  const afftax = afftaxRaw === undefined || afftaxRaw === "" ? undefined : Number(afftaxRaw);
+  if (afftax !== undefined && !(Number.isFinite(afftax) && afftax >= 0)) throw new ConfigError("FIXEDFLOAT_AFFTAX must be a non-negative number (a percentage)");
+  const allow = ffCodes(env.FIXEDFLOAT_ALLOW, "FIXEDFLOAT_ALLOW");
+  return {
+    mode: simulate ? "simulate" : "live",
+    ...(apiKey && apiSecret ? { auth: ffAuth(apiKey, apiSecret) } : {}),
+    ...(env.FIXEDFLOAT_REFCODE ? { refcode: env.FIXEDFLOAT_REFCODE } : {}),
+    ...(afftax !== undefined ? { afftax } : {}),
+    ...(allow ? { allow } : {}),
+    deny: ffCodes(env.FIXEDFLOAT_DENY, "FIXEDFLOAT_DENY") ?? [],
+    baseUrl: env.FIXEDFLOAT_BASE_URL ? httpUrl(env.FIXEDFLOAT_BASE_URL, "FIXEDFLOAT_BASE_URL") : "https://ff.io/api/v2",
+    ratesUrl: env.FIXEDFLOAT_RATES_URL ? httpUrl(env.FIXEDFLOAT_RATES_URL, "FIXEDFLOAT_RATES_URL") : "https://ff.io/rates/fixed.xml",
+    settleMarginSeconds: integer(env, "FIXEDFLOAT_SETTLE_MARGIN_SECONDS", 600, { min: 0 }),
+    minPayWindowSeconds: integer(env, "FIXEDFLOAT_MIN_PAY_WINDOW_SECONDS", 300, { min: 60 }),
+    refreshMs: integer(env, "FIXEDFLOAT_REFRESH_MS", 300_000, { min: 10_000 }),
+    maxOpenOrders: integer(env, "FIXEDFLOAT_MAX_OPEN_ORDERS", 20, { min: 1 }),
+    // A BTCPay merchant is one IP and one receiver serving many checkouts at once.
+    maxOpenOrdersPerAddress: integer(env, "FIXEDFLOAT_MAX_OPEN_ORDERS_PER_ADDRESS", 5, { min: 1 }),
+    ordersPerIp: integer(env, "FIXEDFLOAT_ORDERS_PER_IP", 10, { min: 1 }),
+    ipWindowSeconds: integer(env, "FIXEDFLOAT_ORDERS_PER_IP_WINDOW_SECONDS", 600, { min: 1 }),
+  };
+}
+
+/** Called once arkd has said which network it is on. FixedFloat has no testnet, so real keys
+ *  anywhere but mainnet would take a payer's real tokens for test sats; the simulator is the
+ *  reverse. Every push to main auto-deploys to mutinynet, so this refuses to start. */
+export function assertFixedFloatNetwork(ff: FixedFloatConfig | undefined, network: unknown): void {
+  if (!ff) return;
+  if (ff.mode === "live" && network !== "bitcoin") {
+    throw new ConfigError(`FIXEDFLOAT_API_KEY is set but arkd is on ${String(network)}: FixedFloat has no testnet, so real tokens would buy ${String(network)} sats (use FIXEDFLOAT_SIMULATE=true off mainnet)`);
+  }
+  if (ff.mode === "simulate" && network === "bitcoin") {
+    throw new ConfigError("FIXEDFLOAT_SIMULATE=true refuses to run on bitcoin: the simulator takes no real deposit");
+  }
 }
 
 function buildOfflineReceive(env: Env): OfflineReceiveConfig {
@@ -180,7 +280,7 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   const cardsFile = env.SOLVER_CARDS_FILE?.trim() || undefined;
   const nostrSecretKey = env.NOSTR_SECRET_KEY || undefined;
   if (nostrSecretKey && !/^[0-9a-f]{64}$/i.test(nostrSecretKey)) {
-    throw new Error("NOSTR_SECRET_KEY must be 64-char hex");
+    throw new ConfigError("NOSTR_SECRET_KEY must be 64-char hex");
   }
   const covclaimdUrl = env.COVCLAIMD_URL ? httpUrl(env.COVCLAIMD_URL, "COVCLAIMD_URL") : undefined;
   const arkServerUrl = env.ARK_SERVER_URL ? httpUrl(env.ARK_SERVER_URL, "ARK_SERVER_URL") : undefined;
@@ -196,11 +296,15 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   const selfClaim = env.OFFLINE_SELF_CLAIM === undefined ? Boolean(emulatorUrl) : env.OFFLINE_SELF_CLAIM === "true";
   const stampClaimPacket = env.OFFLINE_STAMP_CLAIM_PACKET === "true";
   const covenantDestinations = env.OFFLINE_COVENANT_DESTINATIONS === "true";
+  const covenantRenewalMnemonic = env.OFFLINE_COVENANT_RENEWAL_MNEMONIC?.trim();
+  if (covenantRenewalMnemonic && !covenantDestinations) {
+    throw new ConfigError("OFFLINE_COVENANT_RENEWAL_MNEMONIC requires OFFLINE_COVENANT_DESTINATIONS=true");
+  }
   if (selfClaim && !emulatorUrl) {
-    throw new Error("OFFLINE_SELF_CLAIM=true requires OFFLINE_EMULATOR_URL (the emulator co-signs the covenant claim)");
+    throw new ConfigError("OFFLINE_SELF_CLAIM=true requires OFFLINE_EMULATOR_URL (the emulator co-signs the covenant claim)");
   }
   if (emulatorUrl && !selfClaim && !covenantDestinations) {
-    throw new Error("OFFLINE_EMULATOR_URL requires OFFLINE_SELF_CLAIM=true or OFFLINE_COVENANT_DESTINATIONS=true");
+    throw new ConfigError("OFFLINE_EMULATOR_URL requires OFFLINE_SELF_CLAIM=true or OFFLINE_COVENANT_DESTINATIONS=true");
   }
   const anyOfflineSetting = hasCards || covclaimdUrl || arkServerUrl || nostrSecretKey || selfClaim || emulatorUrl || stampClaimPacket || covenantDestinations || rfqHttpUrl;
   // The claim packet is optional on the wire (solver funds without covclaimd and
@@ -212,21 +316,21 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   const offlineSwapRequested =
     hasCards || Boolean(covclaimdUrl) || Boolean(rfqHttpUrl) || Boolean(nostrSecretKey) || env.OFFLINE_SELF_CLAIM === "true";
   if (stampClaimPacket && !covclaimdUrl) {
-    throw new Error("OFFLINE_STAMP_CLAIM_PACKET=true requires COVCLAIMD_URL (there is no packet to stamp without one)");
+    throw new ConfigError("OFFLINE_STAMP_CLAIM_PACKET=true requires COVCLAIMD_URL (there is no packet to stamp without one)");
   }
   if (anyOfflineSetting && !arkServerUrl) {
-    throw new Error("offline receive requires ARK_SERVER_URL; cards may come from env, file, or the admin database (COVCLAIMD_URL may be omitted with OFFLINE_SELF_CLAIM=true + OFFLINE_EMULATOR_URL)");
+    throw new ConfigError("offline receive requires ARK_SERVER_URL; cards may come from env, file, or the admin database (COVCLAIMD_URL may be omitted with OFFLINE_SELF_CLAIM=true + OFFLINE_EMULATOR_URL)");
   }
   if ((hasCards || nostrSecretKey || stampClaimPacket) && !covclaimdUrl && !selfClaimMode) {
-    throw new Error("offline receive requires COVCLAIMD_URL (or OFFLINE_SELF_CLAIM=true with OFFLINE_EMULATOR_URL to run without covclaimd); cards may come from env, file, or the admin database");
+    throw new ConfigError("offline receive requires COVCLAIMD_URL (or OFFLINE_SELF_CLAIM=true with OFFLINE_EMULATOR_URL to run without covclaimd); cards may come from env, file, or the admin database");
   }
   // Same reasoning as selfClaim: a payer must never be handed an address nothing
   // can sweep, and by then their money is already at it.
   if (covenantDestinations && !emulatorUrl) {
-    throw new Error("OFFLINE_COVENANT_DESTINATIONS=true requires OFFLINE_EMULATOR_URL (the emulator co-signs the sweep)");
+    throw new ConfigError("OFFLINE_COVENANT_DESTINATIONS=true requires OFFLINE_EMULATOR_URL (the emulator co-signs the sweep)");
   }
   if (covenantDestinations && !(arkServerUrl && emulatorUrl)) {
-    throw new Error("OFFLINE_COVENANT_DESTINATIONS=true requires ARK_SERVER_URL and OFFLINE_EMULATOR_URL (the covenant commits to their keys; COVCLAIMD_URL is only needed alongside the lightning offline swap)");
+    throw new ConfigError("OFFLINE_COVENANT_DESTINATIONS=true requires ARK_SERVER_URL and OFFLINE_EMULATOR_URL (the covenant commits to their keys; COVCLAIMD_URL is only needed alongside the lightning offline swap)");
   }
   const recoveryRaw = env.OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS;
   // 512-second granularity, and 24h is not a multiple of it. Rejected here rather
@@ -235,11 +339,11 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   // the payer the ambiguity this flag exists to remove.
   const covenantRecoveryDelaySeconds = recoveryRaw ? Number(recoveryRaw) : 86_528;
   if (!Number.isInteger(covenantRecoveryDelaySeconds) || covenantRecoveryDelaySeconds <= 0) {
-    throw new Error(`OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS must be a positive integer (got "${recoveryRaw}")`);
+    throw new ConfigError(`OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS must be a positive integer (got "${recoveryRaw}")`);
   }
   if (covenantRecoveryDelaySeconds % 512 !== 0) {
     const near = Math.round(covenantRecoveryDelaySeconds / 512) * 512;
-    throw new Error(
+    throw new ConfigError(
       `OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS must be a multiple of 512 (BIP68 encodes seconds in 512s units); got ${covenantRecoveryDelaySeconds}, nearest is ${near}`,
     );
   }
@@ -254,6 +358,7 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
     selfClaim,
     covenantDestinations,
     covenantRecoveryDelaySeconds,
+    ...(covenantRenewalMnemonic ? { covenantRenewalMnemonic } : {}),
     pollIntervalMs: integer(env, "OFFLINE_POLL_INTERVAL_MS", 15_000, { min: 1 }),
     ...(emulatorUrl ? { emulatorUrl } : {}),
     ...(cardsFile ? { cardsFile } : {}),
@@ -267,6 +372,23 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
 function parseTrustProxy(raw: string | undefined): number | boolean {
   if (raw === undefined || raw === "") return 1;
   if (raw === "false") return false;
-  if (!/^\d+$/.test(raw)) throw new Error("TRUST_PROXY must be false or a non-negative integer");
+  if (!/^\d+$/.test(raw)) throw new ConfigError("TRUST_PROXY must be false or a non-negative integer");
   return Number(raw);
+}
+
+function parseTrustedForwarders(raw: string | undefined): BlockList {
+  const list = new BlockList();
+  for (const entry of (raw ?? "").split(",").map((e) => e.trim()).filter(Boolean)) {
+    const [ip, bits, ...rest] = entry.split("/");
+    const version = isIP(ip);
+    const family = version === 6 ? "ipv6" : "ipv4";
+    // No /0: it would believe every client's X-Forwarded-For and void every per-IP limit.
+    const prefixOk = bits === undefined || (/^\d+$/.test(bits) && Number(bits) >= 1 && Number(bits) <= (family === "ipv6" ? 128 : 32));
+    if (!version || rest.length > 0 || !prefixOk) {
+      throw new ConfigError(`TRUSTED_FORWARDERS entry "${entry}" must be an IP address or CIDR (prefix 1-32 for IPv4, 1-128 for IPv6)`);
+    }
+    if (bits === undefined) list.addAddress(ip, family);
+    else list.addSubnet(ip, Number(bits), family);
+  }
+  return list;
 }

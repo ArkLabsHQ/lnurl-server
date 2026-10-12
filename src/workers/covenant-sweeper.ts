@@ -1,0 +1,228 @@
+// Moves a per-payment covenant destination on to the user's static address.
+//
+// Nothing here is trusted with where the money goes: the emulator co-signs only a
+// spend satisfying `enforcePayTo`, so the sweep can pay one place. That is also
+// why the preimage is stored in the clear and why any party could run this — the
+// user's own wallet can, through the two leaves keyed to them.
+//
+// What to spend and which leaf to spend it through both come from the contract
+// manager. It reads every funded destination in one query and picks the path from
+// the registered handler, so neither the outpoint set nor the leaf index is
+// restated here.
+
+import { base64, hex } from "@scure/base";
+import { RawWitness } from "@scure/btc-signer";
+import {
+  ArkAddress,
+  CSVMultisigTapscript,
+  ConditionWitness,
+  EmulatorPacket,
+  Extension,
+  RestArkProvider,
+  RestEmulatorProvider,
+  RestIndexerProvider,
+  Transaction,
+  attachPrevArkTxs,
+  buildOffchainTx,
+  canSpendOffchain,
+  createAssetPacket,
+  setArkPsbtField,
+  type ArkProvider,
+  type Contract,
+  type IContractManager,
+  type IndexerProvider,
+  type PathSelection,
+  type VirtualCoin,
+} from "@arkade-os/sdk";
+import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler } from "../covenant/contract.js";
+import type { SettlementStore } from "../settlement-store.js";
+import { COVENANT_V3, SWEEP_LEAF, covenantVtxoScript } from "../covenant/destination.js";
+import { reconcileCovenantForwarding } from "../covenant/forwarding.js";
+import { startCatchUpLoop } from "./catch-up-loop.js";
+import { activeCovenantFilters, resolveCovenants, scopeShortfall, scopeSize } from "./covenant-retirement.js";
+
+interface EmulatorSubmit {
+  submitTx(arkTx: string, checkpointTxs: string[]): Promise<{ signedArkTx: string; signedCheckpointTxs: string[] }>;
+}
+
+export interface CovenantSweeper {
+  /** One pass over funded destinations. Returns how many moved. */
+  sweep(): Promise<number>;
+}
+
+/** Record the sweep from the spend, not the emulator's reply: only a settling output
+ *  observed spent says arkd took it. `payoutReference` is terminal — it drops the
+ *  script from every scope — so an unsettled record must never get one. */
+function recordPayout(
+  store: SettlementStore,
+  script: string,
+  vtxos: readonly { txid: string; isSpent?: boolean; arkTxId?: string; settledBy?: string; spentBy?: string }[],
+): void {
+  const record = store.findByCovenantScript(script);
+  if (!record?.settled || record.payoutReference) return;
+  const spent = vtxos.find((v) => v.txid === record.paymentReference && v.isSpent);
+  const reference = spent?.arkTxId;
+  if (reference) store.markPaidOut(record.paymentHash, reference);
+}
+
+export function createCovenantSweeper(opts: {
+  contracts: IContractManager;
+  arkServerUrl: string;
+  emulatorUrl: string;
+  arkProvider?: ArkProvider;
+  indexer?: IndexerProvider;
+  emulator?: EmulatorSubmit;
+  /** Optional: records which transaction credited the user. Sweeping works without it. */
+  settlements?: SettlementStore;
+  renewer?: { renew(contract: Contract, vtxo: VirtualCoin): Promise<string> };
+  now?: () => number;
+}): CovenantSweeper {
+  const arkProvider = opts.arkProvider ?? new RestArkProvider(opts.arkServerUrl);
+  const indexer = opts.indexer ?? new RestIndexerProvider(opts.arkServerUrl);
+  const emulator = opts.emulator ?? new RestEmulatorProvider(opts.emulatorUrl);
+
+  const sweepOne = async (
+    contract: Contract,
+    vtxo: VirtualCoin,
+    path: PathSelection,
+    tapTree: Uint8Array,
+  ): Promise<string> => {
+    const params = covenantDestinationHandler.deserializeParams(contract.params);
+    const { staticAddress } = params;
+    const payTo = ArkAddress.decode(staticAddress).pkScript;
+    // Stored versions must reproduce the covenant whose hash the funded leaf commits to.
+    const covenant = covenantVtxoScript(params).covenantScript;
+    const packet = EmulatorPacket.create([{ vin: 0, script: covenant, witness: RawWitness.encode([]) }]);
+    // arkd rejects a spend of asset-carrying inputs declaring no packet, so without
+    // this the destination could never be swept. Under v2 the covenant requires it too.
+    const assets = vtxo.assets ?? [];
+    const packets = assets.length > 0
+      ? [createAssetPacket(new Map([[0, assets]]), [{ address: staticAddress, amount: vtxo.value, assets }]), packet]
+      : [packet];
+    const info = await arkProvider.getInfo();
+    // The covenant reads the output at the spent input's index, so the payout stays 0.
+    const { arkTx, checkpoints } = buildOffchainTx(
+      [{ txid: vtxo.txid, vout: vtxo.vout, value: vtxo.value, tapLeafScript: path.leaf, tapTree }],
+      [{ script: payTo, amount: BigInt(vtxo.value) }, Extension.create(packets).txOut()],
+      CSVMultisigTapscript.decode(hex.decode(info.checkpointTapscript)),
+    );
+    await attachPrevArkTxs(arkTx, [vtxo.txid], indexer);
+    for (const witness of path.extraWitness ?? []) {
+      setArkPsbtField(arkTx, 0, ConditionWitness, [witness]);
+      setArkPsbtField(checkpoints[0]!, 0, ConditionWitness, [witness]);
+    }
+
+    const res = await emulator.submitTx(
+      base64.encode(arkTx.toPSBT()),
+      checkpoints.map((c) => base64.encode(c.toPSBT())),
+    );
+    // The emulator only adds signatures, which a txid does not commit to, so any other
+    // id is another transaction — not the sweep, and no proof this one was accepted.
+    const signed = Transaction.fromPSBT(base64.decode(res.signedArkTx));
+    if (signed.id !== arkTx.id) throw new Error(`emulator signed ${signed.id}, not the sweep ${arkTx.id}`);
+    return signed.id;
+  };
+
+  return {
+    async sweep() {
+      let moved = 0;
+      // Scoped to what is still owed a sweep: getContractsWithVtxos force-syncs all
+      // it enumerates. Read off the records, not the watch state the SDK demotes the
+      // moment one is funded — exactly when the sweep has not run yet.
+      const scopes = opts.settlements
+        ? activeCovenantFilters(opts.settlements)
+        : [{ type: COVENANT_CONTRACT_TYPE }];
+      let asked = 0;
+      let found = 0;
+      for (const scope of scopes) {
+        // One query per scope, and the manager already knows which outputs are still
+        // spendable — no per-record round trip, no vtxo bookkeeping.
+        const resolved = await resolveCovenants(opts.contracts, scope);
+        asked += scopeSize(scope);
+        found += resolved.length;
+        for (const { contract, vtxos } of resolved) {
+          const params = covenantDestinationHandler.deserializeParams(contract.params);
+          if (params.version === COVENANT_V3 && opts.settlements) {
+            try {
+              await reconcileCovenantForwarding(opts.settlements, contract.script, params.staticAddress, vtxos, indexer);
+              if (opts.settlements.findByCovenantScript(contract.script)?.payoutReference) continue;
+            } catch (err) {
+              console.warn(`covenant forwarding reconciliation failed for ${contract.script.slice(0, 16)}…:`, err);
+              continue;
+            }
+          }
+          const script = covenantDestinationHandler.createScript(contract.params);
+          const tapTree = script.encode();
+          const sweepLeaf = hex.encode(script.leaves[SWEEP_LEAF]![1]);
+          for (const vtxo of vtxos) {
+            if (vtxo.isSpent || vtxo.isUnrolled) continue;
+            const now = opts.now?.() ?? Date.now();
+            const renewable = params.version === COVENANT_V3 && opts.renewer;
+            try {
+              if (!canSpendOffchain(vtxo, { timestamp: new Date(now) })) {
+                if (!renewable) throw new Error("expired covenant requires a renewal path");
+                await opts.renewer!.renew(contract, vtxo);
+                continue;
+              }
+              const paths = await opts.contracts.getSpendablePaths({ contractScript: contract.script, vtxo });
+              // Chosen by leaf, not by position. The handler happens to return the sweep
+              // first, but nothing in the manager's contract promises an order, and the
+              // wrong leaf builds a transaction with no preimage that the emulator simply
+              // refuses — a silent skip every pass rather than an error worth reading.
+              const path = paths.find((p) => hex.encode(p.leaf[1]) === sweepLeaf);
+              // No sweepable path is not a failure: the emulator may be down, and the
+              // user's own two leaves are never ours to spend.
+              if (!path) continue;
+              const arkTxid = await sweepOne(contract, vtxo, path, tapTree);
+              moved++;
+              console.log(`covenant sweep: ${contract.script.slice(0, 16)}… -> ${arkTxid}`);
+            } catch (err) {
+              if (renewable && canSpendOffchain(vtxo, { timestamp: new Date(now) }) &&
+                (vtxo.expiresAtHeight !== undefined || (vtxo.expiresAt && vtxo.expiresAt.getTime() <= now + 300_000))) {
+                try {
+                  await opts.renewer!.renew(contract, vtxo);
+                  continue;
+                } catch (renewalError) {
+                  console.warn(`covenant renewal failed for ${contract.script.slice(0, 16)}…:`, renewalError);
+                }
+              }
+              // One stuck destination must not stop the rest, and the next pass retries.
+              console.warn(`covenant sweep failed for ${contract.script.slice(0, 16)}…:`, err);
+            }
+          }
+          // A sweep this pass submitted is recorded by the next, when its spend is
+          // visible. After the money, and contained: the rest must still get swept.
+          try {
+            if (opts.settlements && params.version !== COVENANT_V3) recordPayout(opts.settlements, contract.script, vtxos);
+          } catch (err) {
+            console.warn(`covenant sweep: recording the payout for ${contract.script.slice(0, 16)}… failed:`, err);
+          }
+        }
+      }
+      const shortfall = scopeShortfall(asked, found);
+      if (shortfall) console.warn(`covenant sweeper: ${shortfall}`);
+      return moved;
+    },
+  };
+}
+
+export interface CovenantSweeperHandle {
+  /** Sweep now — for a destination the watcher just saw funded. */
+  trigger(): void;
+  stop(): void;
+}
+
+/**
+ * Run {@link CovenantSweeper.sweep} on demand, with a catch-up behind it.
+ *
+ * The sweep is what the recipient can spend, so a tick spent the whole interval with
+ * their money at an address only this server can move it from. covenant-watcher.ts
+ * already learns the moment one is funded.
+ */
+export function startCovenantSweeper(sweeper: CovenantSweeper, catchUpIntervalMs: number): CovenantSweeperHandle {
+  return startCatchUpLoop({
+    pass: () => sweeper.sweep(),
+    intervalMs: catchUpIntervalMs,
+    onError: (err) => console.warn("covenant sweeper: sweep failed; retrying:", err),
+  });
+}

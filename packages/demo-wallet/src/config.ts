@@ -18,6 +18,8 @@ export const EXPLORER = "https://explorer.mutinynet.arkade.sh";
 export const MNEMONIC_KEY = "arkade-demo-wallet.mnemonic";
 export const USERNAME_KEY = "arkade-demo-wallet.username";
 export const ENDPOINTS_KEY = "arkade-demo-wallet.endpoints";
+/** Which identity last wrote the SDK's IndexedDB. @see openWallet */
+export const STORE_OWNER_KEY = "arkade-demo-wallet.store-owner";
 
 export interface KeyValueStore {
   getItem(key: string): string | null;

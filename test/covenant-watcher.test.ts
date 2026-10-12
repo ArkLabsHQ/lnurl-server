@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import type { IContractManager } from "@arkade-os/sdk";
 import { MemorySettlementStore } from "../src/settlement-store.js";
-import { startCovenantWatcher, catchUp } from "../src/covenant-watcher.js";
-import { COVENANT_CONTRACT_TYPE } from "../src/covenant-contract.js";
+import { startCovenantWatcher, catchUp } from "../src/workers/covenant-watcher.js";
+import { COVENANT_CONTRACT_TYPE } from "../src/covenant/contract.js";
 
 // Ported from the polled watcher: the properties are the rail's, not the mechanism's,
 // so they must hold the same way now that settlement arrives as an event.
@@ -25,8 +25,12 @@ const storeWith = (recs: { hash: string; script: string; amountMsat: number }[])
 
 const contract = (script: string) => ({ type: COVENANT_CONTRACT_TYPE, script, params: {}, address: `tark1${script}` });
 
-/** Captures the subscriber so a test can push events the way the manager would. */
-function fakeManager(funded: { script: string; vtxos: { txid: string; value: number; isSpent?: boolean }[] }[] = []) {
+/** Captures the subscriber so a test can push events the way the manager would, and
+ *  resolves every script asked about as the real manager does. `drops` loses one. */
+function fakeManager(
+  funded: { script: string; vtxos: { txid: string; value: number; isSpent?: boolean }[] }[] = [],
+  drops: string[] = [],
+) {
   let emit: ((e: unknown) => void) | undefined;
   const manager = {
     onContractEvent: vi.fn((cb: (e: unknown) => void) => {
@@ -35,7 +39,13 @@ function fakeManager(funded: { script: string; vtxos: { txid: string; value: num
         emit = undefined;
       };
     }),
-    getContractsWithVtxos: vi.fn(async () => funded.map((f) => ({ contract: contract(f.script), vtxos: f.vtxos }))),
+    getContractsWithVtxos: vi.fn(async (filter?: { script?: string[] }) => {
+      const vtxosByScript = new Map(funded.map((f) => [f.script, f.vtxos]));
+      const requested = filter?.script ?? funded.map((f) => f.script);
+      return requested
+        .filter((s) => !drops.includes(s))
+        .map((s) => ({ contract: contract(s), vtxos: vtxosByScript.get(s) ?? [] }));
+    }),
   } as unknown as IContractManager;
   const received = (script: string, vtxos: { txid: string; value: number }[]) =>
     emit?.({ type: "vtxo_received", contractScript: script, vtxos, contract: contract(script), timestamp: Date.now() });
@@ -60,6 +70,26 @@ describe("startCovenantWatcher", () => {
     expect(store.get("v2")).toMatchObject({ settled: true, paymentReference: "tx-for-v2" });
   });
 
+  // Production lost every covenant sweep to this: `markObserved` hit a missing
+  // column, the throw escaped before the trigger, and the sweep fell back to its
+  // catch-up. Bookkeeping must never cost the recipient the money itself.
+  it("still sweeps when recording the settlement throws", () => {
+    const store = storeWith([{ hash: "v1", script: "512011", amountMsat: 50_000 }]);
+    vi.spyOn(store, "markObserved").mockImplementation(() => {
+      throw new Error("no such column: payout_reference");
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const onFunded = vi.fn();
+    const { manager, received } = fakeManager();
+    startCovenantWatcher(store, manager, 15_000, onFunded);
+
+    expect(() => received("512011", [{ txid: "tx-for-v1", value: 50 }])).not.toThrow();
+
+    expect(onFunded).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it("never lets a smaller record consume a larger record's payment", () => {
     const store = storeWith([
       { hash: "small", script: "512033", amountMsat: 1_000 },
@@ -82,6 +112,43 @@ describe("startCovenantWatcher", () => {
     received("512011", [{ txid: "tx-short", value: 49 }]);
 
     expect(store.get("v1")!.settled).toBe(false);
+  });
+
+  // A catch-up pass force-syncs whatever it enumerates, so every destination ever
+  // derived used to cost an indexer round trip every interval.
+  it("catches up only on the destinations still in play", async () => {
+    const store = storeWith([{ hash: "v1", script: "512011", amountMsat: 50_000 }]);
+    store.create({
+      paymentHash: "done",
+      pr: "",
+      sessionId: "sess",
+      paymentOption: "arkade",
+      paymentDestination: "tark1done",
+      amountMsat: 50_000,
+      covenantScript: "5120done",
+    });
+    store.markPaidOut("done", "sweep-tx");
+    const { manager } = fakeManager();
+
+    await catchUp(store, manager);
+
+    expect(manager.getContractsWithVtxos).toHaveBeenCalledWith({ script: ["512011"] });
+  });
+
+  it("warns once a pass when the manager resolves fewer contracts than it asked about", async () => {
+    const store = storeWith([
+      { hash: "v1", script: "512011", amountMsat: 50_000 },
+      { hash: "v2", script: "512022", amountMsat: 50_000 },
+    ]);
+    const { manager } = fakeManager([], ["512022"]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await catchUp(store, manager);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]!.join(" ")).toContain("1 of 2");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("ignores an event for a script it has no record for", () => {

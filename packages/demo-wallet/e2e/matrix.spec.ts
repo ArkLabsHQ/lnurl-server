@@ -79,7 +79,8 @@ async function pay(from: Page, to: string, amount: number, railId: string, label
 
   const row = from.locator("div").filter({ hasText: new RegExp(`^${railId}`) }).first();
   await expect(row, `${label}: ${railId} was not offered`).toBeVisible({ timeout: 60_000 });
-  await row.getByRole("button", { name: /Pay/ }).click();
+  await row.getByRole("button", { name: "Quote" }).click();
+  await row.getByRole("button", { name: /^Pay \d+ sats$/ }).click({ timeout: 120_000 });
 
   await expect(from.getByText(new RegExp(`sent \\d+ sats via ${railId}|${railId} · `)))
     .toBeVisible({ timeout: 180_000 });
@@ -147,7 +148,9 @@ test("pays both directions over both rails between two lightning addresses @fund
     for (const [page, who] of [[a.page, "A"], [b.page, "B"]] as const) {
       await page.getByRole("button", { name: "Activity" }).click();
       await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible();
-      await expect(page.locator("div").filter({ hasText: /^wallet/ }).first())
+      // An explorer link is the tell that the row came from the wallet's own
+      // history: a quote the server minted has no transaction to link to.
+      await expect(page.getByRole("link", { name: "explorer" }).first())
         .toBeVisible({ timeout: 120_000 });
       await expect(page.getByText(/wallet history unavailable/)).toHaveCount(0);
       console.log(`MATRIX ${who} activity shows wallet-sourced rows`);
@@ -204,14 +207,8 @@ test("pays a lightning address's onchain option by offboarding to its boarding a
     const bBefore = await balanceOf(b.page);
 
     // The generic onchain rail, which offboards VTXOs to a Bitcoin address.
-    // Watched concurrently rather than awaited: the settling indicator only
-    // exists while the batch holds the lock.
-    const paying = pay(a.page, boarding, ONCHAIN, "onchain", "A->B onchain");
-    await expect(a.page.getByText(/sats settling/)).toBeVisible({ timeout: 300_000 });
-    console.log(`ONCHAIN settling indicator shown: ${await a.page.getByText(/sats settling/).innerText()}`);
-    await paying;
-    // Gone once the batch is terminal; a permanent one would be its own bug.
-    await expect(a.page.getByText(/sats settling/)).toHaveCount(0, { timeout: 300_000 });
+    // Nothing asserts the settling indicator: `intentLocked` is always 0 here.
+    await pay(a.page, boarding, ONCHAIN, "onchain", "A->B onchain");
 
     // Arrival is the whole point and the slowest part: the offboard has to
     // confirm, then B's wallet boards it back into a VTXO on its own.

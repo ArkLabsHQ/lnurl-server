@@ -6,8 +6,9 @@ export interface BalanceView {
   settling?: number;
 }
 
-/** `available` is `settled + preconfirmed - gated - intentLocked` and an offboard
- *  locks every VTXO it selects, so it reads 0 mid-batch without anything being wrong. */
+/** Inert as wired: the SDK reads intent locks from `config.storage.intentRepository`,
+ *  which gets no IndexedDB default and this wallet does not pass one, so `intentLocked`
+ *  is always 0 and `settling` never renders. Confirmed against a funded offboard. */
 export function balanceView(balance: WalletBalance | null): BalanceView {
   if (!balance) return { sats: null };
   const settling = balance.intentLocked;

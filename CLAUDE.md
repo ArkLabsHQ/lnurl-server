@@ -28,6 +28,10 @@ feature-matrix gate — a green `pnpm test` says nothing about a browser, and th
 shipped fully broken past one. `@funded`/`@provision` specs in the mutinynet suite need a
 hand-funded wallet and are skipped in CI.
 
+The local stack's intent-solver allows 5 quotes per 15 minutes per requester IP (hard-coded in
+solver-core). The budget lives in the solver's memory and global setup restarts the solver, so it
+resets every run; a run needing more has the rest refused (send-rails fails loudly when it is).
+
 ## Releasing
 
 Releases are driven by the `version` field in `package.json`:
@@ -55,19 +59,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/):
 
 ## Architecture
 
-- `src/server.ts` — Express app with SSE session endpoints and LNURL-pay protocol
-- `src/session-manager.ts` — Session lifecycle, SSE streaming, invoice request/response flow
-- `src/types.ts` — Shared TypeScript types
+- Layout: `src/http/` (Express apps, routes, HTTP errors), `src/services/` (domain logic routes call), `src/workers/` (background loops), `src/covenant/` (covenant scripts, claim packets, self-claim); cross-cutting modules stay in `src/`
+- `src/http/server.ts` — Composes the public Express app: middleware, `ServerContext` (`src/http/server-context.ts`), routers, error handlers
+- `src/http/routes/` — Routers only, one file per URL group: `lnurl-session` (wallet SSE), `lnurl-pay` (LUD-06/21 for a session), `well-known` (LUD-16), `lnurl-address` (owner REST), `verify-batch` (LUD-XX verifyBatch), `health`, `docs`, and `admin/` (mounted by `src/http/admin-server.ts`). Shared logic lives outside: `src/services/pay-flow.ts`, `src/services/reconcile.ts`, `src/http/params.ts`
+- `src/errors.ts` — Domain errors, each with a `kind`; none knows HTTP
+- `src/http/errors.ts` — HTTP errors (`LnurlError` → LUD-06 body; `BadRequest`/`NotFound`/… → `{ error }`), the exhaustive domain `kind` → status map, and the handlers that answer both
+- `src/services/sessions.ts` — Session lifecycle, SSE streaming, invoice request/response flow
+- `src/types/` — Shared TypeScript types by topic (config, session, lnurl, db) behind `index.ts`
 - `src/cli.ts` — CLI entrypoint reading config from env vars
-- `src/intent-swap.ts` — Offline receive: card-discovered `lightning:BTC -> arkade:BTC` corridor swaps via the published `@arkade-os/swap` package (`SOLVER_REGISTRY_URLS` / `SOLVER_CARDS_FILE`, plus `COVCLAIMD_URL` + `ARK_SERVER_URL`)
-- `src/self-claim.ts` — Optional server-side lockup claim (`OFFLINE_SELF_CLAIM` + `OFFLINE_EMULATOR_URL`): pushes the covenant's `nonInteractiveClaim` leaf — operator + emulator signatures, gated on the preimage we hold — so covclaimd isn't a single point of failure. Needs no key; the covenant pins the payout to the user. Never the collaborative `claim` leaf, which has no output constraint
-- `src/covenant-destination.ts` + `src/covenant-sweeper.ts` — Per-payment arkade-rail addresses (`OFFLINE_COVENANT_DESTINATIONS`): three leaves (covenant sweep pinned to the user's static address, user+operator, user-alone CSV), so the script identifies the payment instead of amount/arrival guesswork. Every leaf must be a valid vtxo script — arkd rejects a taptree containing anything else, which is why the per-payment nonce rides in the condition
-- `src/arkade-watcher.ts` — Static-address destination-rail watcher: those payments land at an address the server does not control, so amount/window correlation is all there is. Covenant destinations do not come through here
-- `src/covenant-contract.ts` + `src/contract-store.ts` — The covenant as an SDK contract type. Registering a `ContractHandler` is what lets `ContractManager` track, watch and spend it, so the subscription, the one-shot `awaiting-funds` lifecycle and leaf selection are the SDK's rather than ours
-- `src/covenant-watcher.ts` — Settlement for covenant destinations, from contract events. Nothing polls; a catch-up pass at subscribe time covers payments made while the process was down
+- `src/services/offline-swaps.ts` — Offline receive: card-discovered `lightning:BTC -> arkade:BTC` corridor swaps via the published `@arkade-os/swap` package (`SOLVER_REGISTRY_URLS` / `SOLVER_CARDS_FILE`, plus `COVCLAIMD_URL` + `ARK_SERVER_URL`)
+- `src/covenant/self-claim.ts` — Optional server-side lockup claim (`OFFLINE_SELF_CLAIM` + `OFFLINE_EMULATOR_URL`): pushes the covenant's `nonInteractiveClaim` leaf — operator + emulator signatures, gated on the preimage we hold — so covclaimd isn't a single point of failure. Needs no key; the covenant pins the payout to the user. Never the collaborative `claim` leaf, which has no output constraint
+- `src/covenant/destination.ts` + `src/workers/covenant-sweeper.ts` — Per-payment arkade-rail addresses (`OFFLINE_COVENANT_DESTINATIONS`): three leaves (covenant sweep pinned to the user's static address, user+operator, user-alone CSV), so the script identifies the payment instead of amount/arrival guesswork. Every leaf must be a valid vtxo script — arkd rejects a taptree containing anything else, which is why the per-payment nonce rides in the condition
+- `src/workers/arkade-watcher.ts` — Static-address destination-rail watcher: those payments land at an address the server does not control, so amount/window correlation is all there is. Covenant destinations do not come through here
+- `src/covenant/contract.ts` + `src/contract-store.ts` — The covenant as an SDK contract type. Registering a `ContractHandler` is what lets `ContractManager` track, watch and spend it, so the subscription, the one-shot `awaiting-funds` lifecycle and leaf selection are the SDK's rather than ours
+- `src/workers/covenant-watcher.ts` — Settlement for covenant destinations, from contract events. Nothing polls; a catch-up pass at subscribe time covers payments made while the process was down
+- `src/workers/covenant-retirement.ts` — Bounds the watch set: a destination this service is finished with moves to the SDK's `retained` watch state, which nothing subscribes or polls, and the row survives for reads and for the preimage its sweep leaf needs. `activeCovenantFilters` is the one definition of "still in play" — unswept, and either already settled or still inside `DESTINATION_WATCH_MS`. Settled outlives the window because money that arrived must always be swept; unpaid does not, because sweeping past the window would move funds `verify` goes on reporting as unpaid. The sweeper and the watcher's catch-up scope their passes to it. Deliberately read off our settlement records rather than off the contract's watch state — the SDK demotes a destination the instant it is funded, which is exactly when the money is there and the sweep has not run. The same pass retires offline-receive lockups (`SWAP_LOCKUP_CONTRACT_TYPE`), which leak worse: `registerLockupContract` sets no watch state at all, so the SDK treats every one as permanently watched. `OfflineSwapStore.listActiveLockupScripts` is their predicate, on the same horizon the settlement poller works. One per-pass budget covers both rails, because each retirement re-posts the whole subscription. Started from `cli.ts` wherever a contract manager exists, not inside the covenant block — either rail can be on without the other
 - `src/payment-options.ts` — LUD-XX paymentOptions rail registry (advertise + resolve)
 - `src/quote-provider.ts` — LUD-XX paymentQuote framework (injected rate oracle seam)
-- `src/settlement-store.ts` + `src/offline-poller.ts` — LUD-21 settlement records (memory/SQLite) and the offline-swap status poller
+- `src/settlement-store.ts` + `src/workers/offline-poller.ts` — LUD-21 settlement records (memory/SQLite) and the offline-swap status poller
+- `src/rails/fixedfloat/` + `src/ff-order-store.ts` + `src/workers/ff-order-poller.ts` — Token deposits (`FIXEDFLOAT_*`, mainnet only; `FIXEDFLOAT_SIMULATE` off it): a payer's stablecoin deposit with FixedFloat pays the corridor's hold invoice. `settled` comes from the corridor alone; FixedFloat's status supplies only the deposit txid that becomes `paymentReference`
 - `scripts/probe-solver.ts` — live solver quote probe (operator diagnostic; funds nothing)
 - `scripts/probe-covenant.ts` — the same for the covenant rail: derives a destination from a network's real operator + emulator keys, so a config that would silently fall back to the static address fails here instead of on a payer's money
 - `scripts/inspect-funding.ts` — why a funded lockup never claimed: reports the claim packet and output taptree covclaimd needs, both of which it declines at debug level
+- `scripts/probe-watchset.ts` — how many scripts this server actually asks arkd's indexer to watch, before and after retirement, against a local stub indexer (funds nothing, touches no real arkd). Read `scriptsOnTheWire`: it should track the live destinations, not the stored ones

@@ -1,5 +1,5 @@
 import type { Db } from "../connection.js";
-import type { AllocationMode, CreateDomainParams, DomainRow } from "../types.js";
+import type { AllocationMode, CreateDomainParams, DomainRow } from "../../types/index.js";
 
 interface DomainRecord {
   id: number;

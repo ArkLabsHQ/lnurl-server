@@ -40,6 +40,10 @@ describe("paymentHashFromBolt11", () => {
 
 describe("invoiceFactsFromBolt11", () => {
   const hash = "9a".repeat(32);
+  const p = (data: number[]) => [1, data.length >> 5, data.length & 31, ...data];
+  const hashWords = (h: string) => bech32.toWords(Uint8Array.from(Buffer.from(h, "hex")));
+  const encode = (...fields: number[][]) =>
+    bech32.encode("lnbc", [...new Array<number>(7).fill(0), ...fields.flat(), ...new Array<number>(104).fill(0)], 2000);
 
   it("decodes payment hash, u-denominated amount, and timestamp+expiry", () => {
     const now = 1_700_000_000;
@@ -65,5 +69,23 @@ describe("invoiceFactsFromBolt11", () => {
     for (let i = 0; i < 7; i++) words.push(0);
     for (let i = 0; i < 104; i++) words.push(0);
     expect(() => invoiceFactsFromBolt11(bech32.encode("lnbc", words, 2000))).toThrow(/payment hash/);
+  });
+
+  it("takes the first of two p fields, as paymentHashFromBolt11 does", () => {
+    const invoice = encode(p(hashWords("11".repeat(32))), p(hashWords(hash)));
+    expect(paymentHashFromBolt11(invoice)).toBe("11".repeat(32));
+    expect(invoiceFactsFromBolt11(invoice).paymentHash).toBe("11".repeat(32));
+  });
+
+  it("skips a p field whose length is not 52 and takes the next valid one", () => {
+    const invoice = encode(p([...hashWords("11".repeat(32)), 0]), p(hashWords(hash)));
+    expect(paymentHashFromBolt11(invoice)).toBe(hash);
+    expect(invoiceFactsFromBolt11(invoice).paymentHash).toBe(hash);
+  });
+
+  it("reports no payment hash when the only p field is the wrong length", () => {
+    const invoice = encode(p([...hashWords(hash), 0]));
+    expect(paymentHashFromBolt11(invoice)).toBeNull();
+    expect(() => invoiceFactsFromBolt11(invoice)).toThrow(/payment hash/);
   });
 });

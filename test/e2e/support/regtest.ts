@@ -310,7 +310,7 @@ export const faucet = (address: string, amountBtc: string) =>
 // `lnd` fails as a self-payment. It was `boltz-lnd` until arkade-regtest dropped Boltz
 // and kept the node behind it -- same role, and its image still falls back to
 // BOLTZ_LND_IMAGE.
-const PAYER_CONTAINER = process.env.E2E_LN_PAYER_CONTAINER ?? "lnd-peer";
+export const PAYER_CONTAINER = process.env.E2E_LN_PAYER_CONTAINER ?? "lnd-peer";
 
 export const lncli = async <T>(container: string, args: readonly string[]): Promise<T> => {
   const { stdout } = await run("docker", ["exec", container, "lncli", "--network=regtest", ...args], { timeout: 30_000 });
@@ -427,7 +427,7 @@ export async function applySolverOverlay(): Promise<void> {
  * other down when concurrent, so they never overlap. Topping up is harmless.
  */
 export async function fundSolverFloat(log: (s: string) => void = console.log): Promise<void> {
-  const { MnemonicIdentity, Wallet } = await import("@arkade-os/sdk");
+  const { EsploraProvider, MnemonicIdentity, RestArkProvider, Wallet } = await import("@arkade-os/sdk");
   log("funding the solver's Arkade float (solver paused while its wallet is borrowed)...");
   await compose(["stop", "intent-solver"]);
   try {
@@ -436,8 +436,8 @@ export async function fundSolverFloat(log: (s: string) => void = console.log): P
     log("  creating the borrowed wallet...");
     const wallet = await Wallet.create({
       identity,
-      arkServerUrl: ARKD_URL,
-      esploraUrl: ESPLORA_URL,
+      arkProvider: new RestArkProvider(ARKD_URL),
+      onchainProvider: new EsploraProvider(ESPLORA_URL),
       storage: await nodeSqliteStorage(":memory:"),
       settlementConfig: false,
     });

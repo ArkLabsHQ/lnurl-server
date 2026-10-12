@@ -4,11 +4,11 @@ import {
   httpTransport,
   solverLightningRail,
   type SolverLightningSend,
-} from "@arkade-os/swap";
+} from "@arkade-os/swap/protocol";
 import { defaultRegistryUrls } from "@arkade-os/solver-discovery";
 import { hex } from "@scure/base";
 import { invoiceFactsFromBolt11 } from "../../../src/bolt11.js";
-import { ARK_SERVER, EMULATOR_PUBKEY, NETWORK, SOLVER_REGISTRY_URL, SOLVER_RFQ_HTTP_URL } from "./config.js";
+import { EMULATOR_PUBKEY, NETWORK, SOLVER_REGISTRY_URL, SOLVER_RFQ_HTTP_URL } from "./config.js";
 
 const SWAP_KEY = "arkade-demo-wallet.lightning-swaps";
 
@@ -32,7 +32,6 @@ const REGISTRY_URL = SOLVER_REGISTRY_URL ?? defaultRegistryUrls(NETWORK)[0];
  */
 export function createLightningRail(): PaymentRail {
   return solverLightningRail({
-    arkServerUrl: ARK_SERVER,
     // Both, and the fallback must be x-only. No mutinynet market advertises an
     // emulator key of its own, so without the fallback the rendezvous selects no
     // market and the rail is silently unavailable -- and passing the 33-byte

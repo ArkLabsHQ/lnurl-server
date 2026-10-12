@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { openDb } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
-import { DbSettlementStore } from "../src/settlement-store.js";
+import { DbSettlementStore, MemorySettlementStore, type SettlementStore } from "../src/settlement-store.js";
 
 /** A v10 database holding rows written by all three rail conventions. */
 function seedLegacy() {
@@ -238,4 +238,60 @@ describe("settlements.address_id", () => {
     expect(store.get("dst")?.paymentDestination).toBe("ark1qsomewhere");
     db.close();
   });
+});
+
+function addressSevenDb() {
+  const db = openDb(":memory:");
+  runMigrations(db);
+  db.exec(`INSERT INTO domains (id, domain, allocation_modes, username_min_len, username_max_len,
+           username_pattern, enabled, created_at, updated_at)
+           VALUES (1, 'x.test', 'open', 1, 32, 'a-z0-9._-', 1, 0, 0)`);
+  db.exec(`INSERT INTO addresses (id, domain_id, username, session_id, status, created_at, updated_at)
+           VALUES (7, 1, 'alice', 'sess-alice', 'active', 0, 0)`);
+  return db;
+}
+
+describe.each([
+  ["db", (now: () => number): SettlementStore => new DbSettlementStore(addressSevenDb(), 86_400_000, now)],
+  ["memory", (now: () => number): SettlementStore => new MemorySettlementStore(86_400_000, now)],
+])("%s store: listByAddress from a cursor", (_, makeStore) => {
+  it.each([
+    ["settles", (s: SettlementStore) => s.markSettled("old", "ab".repeat(32))],
+    ["is observed", (s: SettlementStore) => s.markObserved("old", "funding-tx")],
+    ["is paid out", (s: SettlementStore) => s.markPaidOut("old", "sweep-tx")],
+  ])("lists a row again once it %s behind a newer one", (_, change) => {
+    let now = 1000;
+    const store = makeStore(() => now);
+    store.create({ paymentHash: "old", pr: "lnbc1", sessionId: "s", amountMsat: 1000, addressId: 7 });
+    now = 2000;
+    store.create({ paymentHash: "new", pr: "lnbc2", sessionId: "s", amountMsat: 1000, addressId: 7 });
+    now = 3000;
+    expect(change(store)).toBe(true);
+    const rows = store.listByAddress(7, 50, { since: 2000 });
+    expect(rows.map((r) => r.paymentHash)).toEqual(["new", "old"]);
+    expect(rows[1]!.updatedAt).toBe(3000);
+  });
+});
+
+it("lists an offline swap from its creation and again once it settles", async () => {
+  const db = addressSevenDb();
+  let now = 1000;
+  const { OfflineSwapStore } = await import("../src/offline-swap-store.js");
+  const swaps = new OfflineSwapStore(db, 86_400_000, () => now);
+  const store = new DbSettlementStore(db, 86_400_000, () => now);
+  swaps.createAccepted({
+    paymentHash: "swap1", pr: "lnbc1", sessionId: "offline:7", preimage: "ab".repeat(32),
+    amountMsat: 1000, addressId: 7,
+    recovery: {
+      version: 1, rfqId: "rfq-1", solverName: "s", solverPubkey: "p", relays: [],
+      lockupAddress: "ark1", expectedAmount: 1000,
+    } as never,
+  });
+  expect(store.listByAddress(7, 50, { since: 1000 }).map((r) => r.paymentHash)).toEqual(["swap1"]);
+  now = 2000;
+  store.create({ paymentHash: "new", pr: "lnbc2", sessionId: "s", amountMsat: 1000, addressId: 7 });
+  now = 3000;
+  expect(swaps.markSettled("swap1", "ab".repeat(32))).toBe(true);
+  expect(store.listByAddress(7, 50, { since: 2000 }).map((r) => r.paymentHash)).toEqual(["new", "swap1"]);
+  db.close();
 });

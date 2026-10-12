@@ -5,11 +5,11 @@ import { randomBytes } from "node:crypto";
 import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
-import { AddressService } from "../src/address-service.js";
-import { SessionManager } from "../src/session-manager.js";
-import { createAdminApi } from "../src/admin-api.js";
+import { AddressService } from "../src/services/addresses.js";
+import { SessionManager } from "../src/services/sessions.js";
+import { createAdminApi } from "../src/http/routes/admin/index.js";
 import { loadConfig } from "../src/config.js";
-import { SettingsService } from "../src/settings.js";
+import { SettingsService } from "../src/services/settings.js";
 import { DbSettlementStore } from "../src/settlement-store.js";
 
 const ARK = "ark1qexampledestination";
@@ -49,7 +49,7 @@ describe("admin rails", () => {
     const res = await request(app).get("/admin/api/rails");
     expect(res.status).toBe(200);
     const byId = new Map(res.body.rails.map((r: { id: string }) => [r.id, r]));
-    expect([...byId.keys()]).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain"]);
+    expect([...byId.keys()]).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat"]);
     expect(byId.get("interactive-lightning")).toMatchObject({ configured: true, ready: true });
     expect(byId.get("offline-swap")).toMatchObject({ configured: true, ready: true });
     expect(byId.get("arkade")).toMatchObject({ configured: true, ready: true });
@@ -63,8 +63,8 @@ describe("admin rails", () => {
     repos.addresses.setOfflineReceive(a.id, ARK, CLAIMPK);
     const res = await request(app).get("/admin/api/addresses");
     expect(res.status).toBe(200);
-    expect(res.body[0]).toMatchObject({ username: "alice", disabledRails: [] });
-    const rails = new Map(res.body[0].rails.map((r: { id: string }) => [r.id, r]));
+    expect(res.body.addresses[0]).toMatchObject({ username: "alice", disabledRails: [] });
+    const rails = new Map(res.body.addresses[0].rails.map((r: { id: string }) => [r.id, r]));
     expect(rails.get("interactive-lightning")).toMatchObject({ enabled: true, available: true });
     expect(rails.get("arkade")).toMatchObject({ enabled: true, available: true });
   });
@@ -77,7 +77,7 @@ describe("admin rails", () => {
     repos.addresses.setOfflineReceive(a.id, ARK, CLAIMPK);
     repos.addresses.setBoardingAddress(a.id, "bcrt1qboardingexample");
     const listed = await request(app).get("/admin/api/addresses");
-    const listedRails = new Map(listed.body[0].rails.map((r: { id: string }) => [r.id, r]));
+    const listedRails = new Map(listed.body.addresses[0].rails.map((r: { id: string }) => [r.id, r]));
     expect(listedRails.get("onchain")).toMatchObject({ enabled: true, available: true });
 
     const patched = await request(app).patch(`/admin/api/addresses/${a.id}/rails`).send({ disabledRails: [] });

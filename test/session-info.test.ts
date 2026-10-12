@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { PassThrough } from "node:stream";
 import type { Response } from "express";
-import { SessionManager } from "../src/session-manager.js";
+import { SessionManager } from "../src/services/sessions.js";
 
 const res = () => new PassThrough() as unknown as Response;
 

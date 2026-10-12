@@ -5,7 +5,7 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { MultisigTapscript, VtxoScript } from "@arkade-os/sdk";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { ripemd160 } from "@noble/hashes/legacy.js";
-import { deriveCovenantDestination, createCovenantDestinationProvider, SWEEP_LEAF } from "../src/covenant-destination.js";
+import { deriveCovenantDestination, createCovenantDestinationProvider, SWEEP_LEAF } from "../src/covenant/destination.js";
 import { loadConfig } from "../src/config.js";
 
 const xonly = (fill: number) => secp256k1.getPublicKey(new Uint8Array(32).fill(fill), true).subarray(1);
@@ -179,6 +179,18 @@ describe("createCovenantDestinationProvider", () => {
     expect(() => provider(0)).toThrow(/positive multiple of 512/);
     expect(() => provider(-512)).toThrow(/positive multiple of 512/);
     expect(() => provider(86_528)).not.toThrow();
+  });
+
+  it("refuses a recovery delay shorter than arkd's unilateral exit delay", () => {
+    const against = (recoveryDelaySeconds: number) =>
+      createCovenantDestinationProvider({
+        arkServerUrl: "https://ark.example",
+        covclaimdUrl: "https://cc.example",
+        recoveryDelaySeconds,
+        unilateralExitDelay: 2048,
+      });
+    expect(() => against(1536)).toThrow(/at least arkd's unilateral exit delay \(2048\)/);
+    expect(() => against(2048)).not.toThrow();
   });
 
   it("accepts an emulator URL in place of covclaimd", () => {

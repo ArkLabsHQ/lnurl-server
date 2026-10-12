@@ -2,8 +2,11 @@ import type { Db } from "./connection.js";
 
 interface Migration {
   version: number;
-  up: string;
+  up: string | ((db: Db) => void);
 }
+
+const hasColumn = (db: Db, table: string, column: string): boolean =>
+  (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === column);
 
 const MIGRATIONS: Migration[] = [
   {
@@ -221,7 +224,137 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE addresses ADD COLUMN boarding_address TEXT;
     `,
   },
+  {
+    version: 13,
+    // The txid that credited the user's OWN address — not always the one observed,
+    // since a covenant payment is credited by its later sweep and a swap by its
+    // claim. Backfilled only for the static rail, where the two are the same.
+    up: `
+      ALTER TABLE settlements ADD COLUMN payout_reference TEXT;
+
+      UPDATE settlements SET payout_reference = payment_reference
+        WHERE payment_reference IS NOT NULL AND covenant_script IS NULL;
+    `,
+  },
+  {
+    version: 14,
+    // Version 13 is burned: another migration shipped under it, was deployed, then
+    // reverted in source, so databases that ran it skip 13 — and fresh ones have it.
+    up: (db) => {
+      if (hasColumn(db, "settlements", "payout_reference")) return;
+      db.exec("ALTER TABLE settlements ADD COLUMN payout_reference TEXT;");
+      db.exec(
+        "UPDATE settlements SET payout_reference = payment_reference" +
+        " WHERE payment_reference IS NOT NULL AND covenant_script IS NULL;",
+      );
+    },
+  },
+  {
+    version: 15,
+    // Active rows only: a revoked nameless row must not block its owner from starting over.
+    up: `
+      ALTER TABLE addresses ADD COLUMN session_lnurl INTEGER NOT NULL DEFAULT 0;
+      CREATE UNIQUE INDEX uq_addresses_session_lnurl ON addresses(domain_id, session_id)
+        WHERE session_lnurl = 1 AND status = 'active';
+    `,
+  },
+  {
+    version: 16,
+    // The payments sync cursor. A payout recorded no time of its own, so the backfill
+    // can only go as far as the settlement. The new index leads with address_id, so it
+    // serves everything idx_settlements_address did.
+    up: `
+      ALTER TABLE settlements ADD COLUMN updated_at INTEGER;
+      UPDATE settlements SET updated_at = COALESCE(settled_at, created_at);
+      CREATE INDEX idx_settlements_address_updated ON settlements(address_id, updated_at, payment_hash)
+        WHERE address_id IS NOT NULL;
+      DROP INDEX IF EXISTS idx_settlements_address;
+    `,
+  },
+  {
+    version: 17,
+    // Each predicate is implied by its hot query's, so an index holds only the open rows.
+    // `settled` leads the covenant one so both halves of the active scope are a SEARCH.
+    up: `
+      CREATE INDEX idx_settlements_active_covenants ON settlements(settled, created_at)
+        WHERE covenant_script IS NOT NULL AND payout_reference IS NULL;
+      CREATE INDEX idx_settlements_reference ON settlements(payment_reference)
+        WHERE payment_reference IS NOT NULL;
+      CREATE INDEX idx_settlements_pending_destinations ON settlements(created_at)
+        WHERE settled = 0 AND payment_destination IS NOT NULL;
+    `,
+  },
+  {
+    version: 18,
+    // FixedFloat orders behind token-deposit settlements. order_token is the order's
+    // bearer credential: it stays in this table. deposit_amount is base units, as TEXT.
+    up: `
+      CREATE TABLE IF NOT EXISTS ff_orders (
+        payment_hash       TEXT PRIMARY KEY REFERENCES settlements(payment_hash) ON DELETE CASCADE,
+        order_id           TEXT NOT NULL,
+        order_token        TEXT NOT NULL,
+        ff_code            TEXT NOT NULL,
+        asset              TEXT NOT NULL,
+        unit               TEXT NOT NULL,
+        deposit_address    TEXT NOT NULL,
+        deposit_amount     TEXT NOT NULL,
+        deposit_txid       TEXT,
+        invoice_amount_sat INTEGER NOT NULL,
+        status             TEXT NOT NULL,
+        emergency_json     TEXT,
+        expires_at         INTEGER NOT NULL,
+        created_at         INTEGER NOT NULL,
+        updated_at         INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_ff_orders_order_id ON ff_orders(order_id);
+      CREATE INDEX IF NOT EXISTS idx_ff_orders_created ON ff_orders(created_at);
+      CREATE INDEX IF NOT EXISTS idx_ff_orders_awaiting ON ff_orders(expires_at) WHERE status = 'NEW';
+    `,
+  },
+  {
+    version: 19,
+    // Migration 4's index keys the same rows by swap_id, so it holds every never-paid
+    // swap forever and a created_at range over it depends on the planner's stats. The
+    // offline poller reads this every pass, and lockup retirement reads it too.
+    up: `
+      CREATE INDEX idx_settlements_pending_swaps_created ON settlements(created_at)
+        WHERE swap_id IS NOT NULL AND settled = 0;
+    `,
+  },
+  {
+    version: 20,
+    // The static-address watcher's read, every second. Migration 17's index also holds
+    // every unpaid covenant destination, which that watcher only discards.
+    up: `
+      CREATE INDEX IF NOT EXISTS idx_settlements_pending_static_destinations ON settlements(created_at)
+        WHERE settled = 0 AND payment_option = 'arkade' AND covenant_script IS NULL;
+    `,
+  },
+  {
+    version: 21,
+    // No query has read 17's destination index since 20 took the watcher's read; it only cost writes.
+    up: `
+      DROP INDEX IF EXISTS idx_settlements_pending_destinations;
+    `,
+  },
+  {
+    version: 22,
+    // The admin list's pages. status and username let its filters reject a row from the
+    // index alone; without them a search seeks the table per row, slower than a scan.
+    up: `
+      CREATE INDEX IF NOT EXISTS idx_addresses_created ON addresses(created_at, id, status, username);
+    `,
+  },
+  {
+    version: 23,
+    up: (db) => {
+      if (!hasColumn(db, "settlements", "covenant_outpoint")) db.exec("ALTER TABLE settlements ADD COLUMN covenant_outpoint TEXT;");
+    },
+  },
 ];
+
+export const LATEST_MIGRATION = Math.max(...MIGRATIONS.map((m) => m.version));
+export const MIGRATION_COUNT = MIGRATIONS.length;
 
 /** Apply all pending forward-only migrations inside a transaction each. */
 export function runMigrations(
@@ -233,8 +366,13 @@ export function runMigrations(
   db.exec(
     "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);",
   );
-  const row = db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number | null };
-  const current = row.v ?? 0;
+  // Every applied version, not just the highest: a version numbered on another branch
+  // that merged first must not carry this one past unapplied.
+  const applied = new Set(
+    (db.prepare("SELECT version FROM schema_migrations").all() as { version: number }[]).map((r) => r.version),
+  );
+  // The drain gate still asks how far the schema got, which is the maximum.
+  const current = applied.size === 0 ? 0 : Math.max(...applied);
 
   if (current >= 4 && current < 9) {
     const table = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'offline_swaps'").get();
@@ -248,12 +386,13 @@ export function runMigrations(
     }
   }
 
-  for (const m of MIGRATIONS) {
-    if (m.version <= current) continue;
+  for (const m of [...MIGRATIONS].sort((a, b) => a.version - b.version)) {
+    if (applied.has(m.version)) continue;
     if (options.upToVersion !== undefined && m.version > options.upToVersion) continue;
     db.exec("BEGIN");
     try {
-      db.exec(m.up);
+      if (typeof m.up === "string") db.exec(m.up);
+      else m.up(db);
       db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)").run(m.version, now());
       db.exec("COMMIT");
     } catch (err) {

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { DbSettlementStore, MemorySettlementStore } from "../src/settlement-store.js";
-import { settleOfflineSwaps, startOfflineSettlementPoller } from "../src/offline-poller.js";
-import type { OfflineSwapCreator } from "../src/intent-swap.js";
+import { settleOfflineSwaps, startOfflineSettlementPoller } from "../src/workers/offline-poller.js";
+import type { OfflineSwapCreator } from "../src/services/offline-swaps.js";
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
 import { openDb } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
@@ -54,6 +54,31 @@ describe("settleOfflineSwaps", () => {
     expect(n).toBe(1);
     expect(log).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_self_claimed"'));
     expect(log).toHaveBeenCalledWith(expect.stringContaining("ark-tx-1"));
+  });
+
+  it("settles from its own claim without asking the solver to confirm it", async () => {
+    const store = new MemorySettlementStore(60_000);
+    store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    const creator = { ...creatorReporting([]), selfClaim: async () => ({ state: "claimed" as const, arkTxid: "ark-tx-1" }) };
+    const isSettled = vi.spyOn(creator, "isSettled");
+
+    const n = await settleOfflineSwaps(store, creator);
+
+    expect(isSettled).not.toHaveBeenCalled();
+    expect(n).toBe(1);
+    expect(store.get("aa")).toMatchObject({ settled: true, preimage: "beef", payoutReference: "ark-tx-1" });
+  });
+
+  it("still asks the solver when the claim could not resolve the swap", async () => {
+    const store = new MemorySettlementStore(60_000);
+    store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const creator = { ...creatorReporting(["swap-1"]), selfClaim: async () => ({ state: "skipped" as const, reason: "unfunded" as const }) };
+    const isSettled = vi.spyOn(creator, "isSettled");
+
+    expect(await settleOfflineSwaps(store, creator)).toBe(1);
+    expect(isSettled).toHaveBeenCalledOnce();
   });
 
   it("still checks status when the claim throws, so a broken claim path cannot wedge a swap", async () => {
@@ -182,6 +207,49 @@ describe("startOfflineSettlementPoller", () => {
     await vi.waitFor(() => expect(store.get("aa")!.settled).toBe(true));
 
     poller.stop();
+  });
+
+  it("claims the funded swap while a different catch-up row is waiting on the solver", async () => {
+    const store = pendingStore();
+    store.create({ paymentHash: "bb", pr: "lnbc2", sessionId: "offline:2", preimage: "feed", swapId: "swap-2" });
+    let releaseFirst!: () => void;
+    const first = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const entered = vi.fn();
+    const creator: OfflineSwapCreator = {
+      create: async () => { throw new Error("not used"); },
+      isSettled: async (swapId) => {
+        if (swapId === "swap-1") { entered(); await first; return false; }
+        return true;
+      },
+    };
+
+    const poller = startOfflineSettlementPoller(store, creator, 15_000);
+    try {
+      await vi.waitFor(() => expect(entered).toHaveBeenCalledOnce());
+      poller.trigger("swap-2");
+      await vi.waitFor(() => expect(store.get("bb")!.settled).toBe(true));
+      expect(store.get("aa")!.settled).toBe(false);
+    } finally {
+      releaseFirst();
+      poller.stop();
+    }
+  });
+
+  it("retries a funding event after the same swap's in-flight check finishes", async () => {
+    const store = pendingStore();
+    const { creator, gates, release } = gatedCreator();
+    const isSettled = vi.spyOn(creator, "isSettled");
+    const poller = startOfflineSettlementPoller(store, creator, 15_000);
+    try {
+      await vi.waitFor(() => expect(gates).toHaveLength(1));
+      poller.trigger("swap-1");
+      expect(isSettled).toHaveBeenCalledTimes(1);
+      gates.shift()!();
+      await vi.waitFor(() => expect(isSettled).toHaveBeenCalledTimes(2));
+    } finally {
+      release();
+      poller.stop();
+    }
   });
 
   // Two concurrent passes would each see an unspent lockup and push the same claim.

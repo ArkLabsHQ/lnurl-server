@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { hex } from "@scure/base";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
-import { MnemonicIdentity, Wallet } from "@arkade-os/sdk";
+import { EsploraProvider, MnemonicIdentity, RestArkProvider, Wallet } from "@arkade-os/sdk";
 import { createLnurlClient } from "@arkade-os/lnurl-client";
 import { ESPLORA_URL, nodeSqliteStorage } from "../../../test/e2e/support/regtest.js";
 import {
@@ -49,7 +49,7 @@ async function register(username: string, opts?: { boarding?: boolean; apiKey?: 
   await owner.registerAddress({ token, username, ...(opts?.apiKey ? { apiKey: opts.apiKey } : {}) });
   await owner.registerArkadeIdentity({
     token,
-    username,
+    handle: username,
     arkadeAddress: identity.arkadeAddress,
     claimPublicKey: identity.claimPublicKey,
     ...(opts?.boarding ? { boardingAddress: identity.boardingAddress } : {}),
@@ -77,8 +77,8 @@ test.beforeAll(async () => {
   const signer = MnemonicIdentity.fromMnemonic(generateMnemonic(wordlist), { isMainnet: false });
   wallet = await Wallet.create({
     identity: signer,
-    arkServerUrl: stack.arkServer,
-    esploraUrl: ESPLORA_URL,
+    arkProvider: new RestArkProvider(stack.arkServer),
+    onchainProvider: new EsploraProvider(ESPLORA_URL),
     storage: await nodeSqliteStorage(":memory:"),
     settlementConfig: false,
   });
@@ -195,7 +195,7 @@ test("domains: disabling one in the editor takes its addresses off the air", asy
   await tab(page, "Domains").click();
   const row = rowWith(page, "127.0.0.1");
   await row.getByRole("button", { name: "Edit" }).click();
-  const enabled = page.locator("tr", { hasText: "Allocation modes" }).getByRole("checkbox").nth(4);
+  const enabled = page.locator("tr", { hasText: "Allocation modes" }).getByRole("checkbox").nth(5);
   await enabled.uncheck();
   await page.getByRole("button", { name: "Save", exact: true }).click();
 
@@ -204,7 +204,7 @@ test("domains: disabling one in the editor takes its addresses off the air", asy
     .toBe("Unknown or disabled domain");
 
   await row.getByRole("button", { name: "Edit" }).click();
-  await page.locator("tr", { hasText: "Allocation modes" }).getByRole("checkbox").nth(4).check();
+  await page.locator("tr", { hasText: "Allocation modes" }).getByRole("checkbox").nth(5).check();
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect.poll(async () => (await payRequestOf(username)).tag).toBe("payRequest");
 });
@@ -241,7 +241,7 @@ test("api keys: requiring one gates registration, and revoking it closes the doo
   await tab(page, "Domains").click();
   const domain = rowWith(page, "127.0.0.1");
   await domain.getByRole("button", { name: "Edit" }).click();
-  await page.locator("tr", { hasText: "Allocation modes" }).getByRole("checkbox").nth(3).check();
+  await page.locator("tr", { hasText: "Allocation modes" }).getByRole("checkbox").nth(4).check();
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(domain).toContainText("yes");
 
@@ -260,7 +260,7 @@ test("api keys: requiring one gates registration, and revoking it closes the doo
 
   await tab(page, "Domains").click();
   await domain.getByRole("button", { name: "Edit" }).click();
-  await page.locator("tr", { hasText: "Allocation modes" }).getByRole("checkbox").nth(3).uncheck();
+  await page.locator("tr", { hasText: "Allocation modes" }).getByRole("checkbox").nth(4).uncheck();
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(domain).toContainText("no");
 });

@@ -17,10 +17,30 @@ import { isLnurl } from "@arkade-os/sdk";
 import type { PaymentRail, PaymentRequest, RouteQuote, RouterContext } from "@arkade-os/sdk";
 import { LnurlError } from "./errors.js";
 import type { LnurlClient } from "./index.js";
-import type { PayRequest } from "./types.js";
+import type { PayRequest, VerifyExpectation } from "./types.js";
 
 export const LNURL_ARKADE_RAIL = "lnurl-arkade";
 export const LNURL_LIGHTNING_RAIL = "lnurl-lightning";
+/** How long a payRequest is reused, here and by `Receiver.payRequest()`. */
+export const PAY_REQUEST_TTL_MS = 30_000;
+
+/** What an lnurl rail records on its quote, under `meta.lnurl`. */
+export interface LnurlQuoteMeta {
+  /** The LNURL or Lightning address the quote pays, as the payer entered it. */
+  target: string;
+  /** The inner rail that pays it. */
+  via: string;
+  verify?: string;
+  verifyBatch?: string;
+  /** What `verify` answers must be about: pass it as `pollVerify`'s `expect`. */
+  expect?: VerifyExpectation;
+}
+
+/** The lnurl meta of a quote, or undefined for a quote no lnurl rail made. */
+export function lnurlQuoteMeta(quote: RouteQuote): LnurlQuoteMeta | undefined {
+  const meta = quote.meta?.lnurl as Partial<LnurlQuoteMeta> | undefined;
+  return typeof meta?.target === "string" && typeof meta.via === "string" ? (meta as LnurlQuoteMeta) : undefined;
+}
 
 export interface LnurlRailDeps {
   /** Payer surface only; needs no `baseUrl`. */
@@ -43,7 +63,7 @@ export interface LnurlRailDeps {
  * fetch the same payRequest.
  */
 export function lnurlRails(deps: LnurlRailDeps): PaymentRail[] {
-  const ttlMs = deps.ttlMs ?? 30_000;
+  const ttlMs = deps.ttlMs ?? PAY_REQUEST_TTL_MS;
   const cache = new Map<string, { at: number; pr: Promise<PayRequest> }>();
 
   const resolveOnce = (raw: string): Promise<PayRequest> => {
@@ -84,11 +104,17 @@ function makeRail(
       } catch {
         return false;
       }
-      // A session LNURL takes an amount and a comment and nothing else, so it
-      // serves lightning alone and rejects a `paymentOption` outright.
-      if (pr.source.surface === "session") return type === "lightning";
+      // No `paymentOptions` at all (not an empty array) is LUD-06 silence: a
+      // plain payRequest from a non-Arkade server, which is lightning-only on
+      // its top-level minSendable/maxSendable.
+      if (pr.paymentOptions === undefined) {
+        if (type !== "lightning") return false;
+        if (req.amount === undefined) return true;
+        const msat = req.amount * 1000;
+        return msat >= pr.minSendable && msat <= pr.maxSendable;
+      }
 
-      const option = pr.paymentOptions?.find((o) => o.type === type && o.available !== false);
+      const option = pr.paymentOptions.find((o) => o.type === type && o.available !== false);
       if (!option) return false;
       if (req.amount === undefined) return true;
 
@@ -100,9 +126,7 @@ function makeRail(
       const pr = await resolveOnce(req.raw);
       if (req.amount === undefined) throw new LnurlError(`${id} needs an explicit amount`);
 
-      const option = pr.source.surface === "session"
-        ? undefined
-        : pr.paymentOptions?.find((o) => o.type === type && o.available !== false)?.id;
+      const option = pr.paymentOptions?.find((o) => o.type === type && o.available !== false)?.id;
       const result = await deps.client.requestInvoice(pr, {
         amountSat: req.amount,
         ...(option !== undefined ? { paymentOption: option } : {}),
@@ -116,12 +140,17 @@ function makeRail(
         ? { raw: result.pr }
         : { raw: destinationOf(result.paymentDestination, id), amount: req.amount };
 
+      // arkRail.quote() does not re-check its target, so an unparseable one would fail only at
+      // send; refusing here lets the caller fall back to the next rail instead.
+      if (!inner.match(delegated, ctx)) {
+        throw new LnurlError(`${id}: ${inner.id} cannot pay the destination the callback returned`);
+      }
       const quote = await inner.quote(delegated, ctx);
-      return {
-        ...quote,
-        railId: id,
-        meta: { ...quote.meta, lnurl: { target: req.raw, via: inner.id, verify: result.verify } },
-      };
+      const expect: VerifyExpectation = result.kind === "bolt11"
+        ? { pr: result.pr }
+        : { paymentOption: result.paymentOption, paymentDestination: result.paymentDestination };
+      const lnurl: LnurlQuoteMeta = { target: req.raw, via: inner.id, verify: result.verify, verifyBatch: result.verifyBatch, expect };
+      return { ...quote, railId: id, meta: { ...quote.meta, lnurl } };
     },
   };
 }

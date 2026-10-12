@@ -44,7 +44,7 @@ test("pays an offline-receive invoice over Lightning and times the claim @funded
   // Guarded rather than assumed: the send corridor needs the network's x-only
   // emulator key to select a market, and without it the helper reports no solver
   // at all rather than a key problem.
-  const { discoverMarkets, solverLightningRendezvous } = await import("@arkade-os/swap");
+  const { discoverMarkets, solverLightningRendezvous } = await import("@arkade-os/swap/protocol");
   const { defaultRegistryUrls } = await import("@arkade-os/solver-discovery");
   const { getNetwork, resolveEmulatorPubkey, toXOnly } = await import("@arkade-os/sdk");
   const { hex } = await import("@scure/base");
@@ -81,10 +81,13 @@ test("pays an offline-receive invoice over Lightning and times the claim @funded
   // failure here is the record of it rather than a passing test that hides it.
   await expect(payerPage.getByText("solver-lightning")).toBeVisible({ timeout: 60_000 });
 
-  const paidAt = Date.now();
   payerPage.on("console", (m) => console.log(`[c.${m.type()}] ${m.text().slice(0, 240)}`));
   payerPage.on("pageerror", (e) => console.log(`[pageerror] ${e.message.slice(0, 240)}`));
-  await payerPage.getByRole("button", { name: /^Pay / }).first().click();
+  await payerPage.getByRole("button", { name: "Quote" }).first().click();
+  const confirm = payerPage.getByRole("button", { name: /^Pay \d+ sats$/ });
+  await confirm.waitFor({ timeout: 120_000 });
+  const paidAt = Date.now();
+  await confirm.click();
 
   // Whatever the send box ends up saying is the first thing worth knowing.
   await payerPage.waitForTimeout(45_000);

@@ -1,4 +1,13 @@
 import type { Db } from "./db/connection.js";
+import type { Outpoint } from "@arkade-os/sdk";
+
+const encodeOutpoint = (outpoint: Outpoint | null): string | null => {
+  if (!outpoint) return null;
+  if (!/^[0-9a-f]{64}$/.test(outpoint.txid) || !Number.isInteger(outpoint.vout) || outpoint.vout < 0 || outpoint.vout > 0xffffffff) {
+    throw new Error("invalid covenant outpoint");
+  }
+  return JSON.stringify({ txid: outpoint.txid, vout: outpoint.vout });
+};
 
 /** A record of one invoice handed to a payer, tracking LUD-21 settlement state. */
 export interface SettlementRecord {
@@ -20,15 +29,21 @@ export interface SettlementRecord {
   paymentDestination: string | null;
   /** Method-specific settlement reference (e.g. a txid) once the service observes it; null until then. */
   paymentReference: string | null;
+  /** The Arkade txid that credited the user's OWN address — not always the one
+   *  observed. @see markPaidOut */
+  payoutReference: string | null;
+  covenantOutpoint?: Outpoint | null;
   /** The agreed amount. Recorded so a future Arkade watcher can correlate the observed
    *  payment against it — without it an under-payment would flip settled just the same. */
   amountMsat: number | null;
   /** Set on destination records with a per-payment covenant address; null for the
-   *  static-address shape and for lightning. @see covenant-destination.ts */
+   *  static-address shape and for lightning. @see covenant/destination.ts */
   covenantScript: string | null;
   addressId: number | null;
   createdAt: number;
   settledAt: number | null;
+  /** The last write to the record: the owner's payments sync pages on it. */
+  updatedAt: number;
 }
 
 /** A pending offline-receive swap awaiting solver settlement, for the poller. */
@@ -69,6 +84,7 @@ export interface NewSettlement {
 }
 
 export interface SettlementStore {
+  setCovenantOutpoint(paymentHash: string, outpoint: Outpoint, expected: Outpoint | null): boolean;
   /** Record a new invoice. Idempotent: a repeated paymentHash is ignored (never resets settled).
    *  Offline swaps pass `preimage` + `swapId` up front (held privately until settled). */
   create(rec: NewSettlement): void;
@@ -77,11 +93,23 @@ export interface SettlementStore {
   /** Mark a destination record settled from an observed payment — reference is the
    *  method-specific proof (the Arkade txid), never a preimage. */
   markObserved(paymentHash: string, reference: string): boolean;
+  /** Record the covenant sweep, or the claim on an offline swap. First writer
+   *  wins, so a repeated sweep pass cannot rewrite it. */
+  markPaidOut(paymentHash: string, reference: string): boolean;
+  /** Any record with this script, settled or not — the sweep runs after settlement,
+   *  so the watcher's pending-only lookup cannot serve it. */
+  findByCovenantScript(script: string): SettlementRecord | undefined;
+  /** Covenant destinations still owed work, read by the sweeper, the catch-up and
+   *  retirement: unswept, and either settled or still inside the attribution window.
+   *  Settled outlives the window because money that arrived must always be swept; unpaid
+   *  does not, since sweeping past it moves funds `verify` still reports as unpaid. */
+  listActiveCovenantScripts(): string[];
   /** Fetch a record, or undefined if unknown or expired. */
   get(paymentHash: string): SettlementRecord | undefined;
   /** Unsettled offline swaps (have a swapId) for the settlement poller. */
   listPendingSwaps(): PendingSwap[];
-  /** Unsettled destination-rail records (non-lightning) with an amount, for the watcher. */
+  /** Unsettled static-address arkade records with an amount: the arkade watcher's whole
+   *  set. A covenant destination is found by its script instead. */
   listPendingDestinations(): PendingDestination[];
   /** One pending record by its covenant script — the covenant rail's attribution
    *  key, uniquely indexed. The covenant watcher has a script in hand for every
@@ -96,6 +124,9 @@ export interface SettlementStore {
   listRecent(limit: number, opts?: { settled?: boolean; option?: string }): SettlementRecord[];
   listByAddress(addressId: number, limit: number, opts?: { since?: number }): SettlementRecord[];
 }
+
+/** Money arrived at its covenant and no sweep is recorded: expiry must never reclaim it. */
+const owesSweep = (r: SettlementRecord): boolean => Boolean(r.covenantScript && r.settled && !r.payoutReference);
 
 /** In-memory store used in library / no-DB mode. Lazy expiry on read plus an
  *  opportunistic sweep so the map can't grow unbounded under create-only traffic. */
@@ -112,6 +143,7 @@ export class MemorySettlementStore implements SettlementStore {
   create(rec: NewSettlement): void {
     if (++this.calls % 1000 === 0) this.sweep();
     if (this.map.has(rec.paymentHash)) return;
+    const at = this.now();
     this.map.set(rec.paymentHash, {
       paymentHash: rec.paymentHash,
       pr: rec.pr,
@@ -122,11 +154,13 @@ export class MemorySettlementStore implements SettlementStore {
       paymentOption: rec.paymentOption ?? "lightning",
       paymentDestination: rec.paymentDestination ?? null,
       paymentReference: null,
+      payoutReference: null,
       amountMsat: rec.amountMsat ?? null,
       covenantScript: rec.covenantScript ?? null,
       addressId: rec.addressId ?? null,
-      createdAt: this.now(),
+      createdAt: at,
       settledAt: null,
+      updatedAt: at,
     });
   }
 
@@ -136,6 +170,7 @@ export class MemorySettlementStore implements SettlementStore {
     r.settled = true;
     r.preimage = preimage;
     r.settledAt = this.now();
+    r.updatedAt = r.settledAt;
     return true;
   }
 
@@ -146,7 +181,7 @@ export class MemorySettlementStore implements SettlementStore {
     if (this.now() - r.createdAt >= lifetime) {
       // Same rules as the DB store: a destination outlives the verify TTL, and
       // an address's history outlives both.
-      if (r.addressId === null || r.addressId === undefined) this.map.delete(paymentHash);
+      if ((r.addressId === null || r.addressId === undefined) && !owesSweep(r)) this.map.delete(paymentHash);
       return undefined;
     }
     return r;
@@ -175,6 +210,7 @@ export class MemorySettlementStore implements SettlementStore {
       // does arrive is never observed, never swept, and never reaches its
       // owner's history.
       if (t - r.createdAt >= this.destinationWatchMs) continue;
+      if (r.paymentOption !== "arkade" || r.covenantScript !== null) continue;
       const pending = this.asPendingDestination(r);
       if (pending) out.push(pending);
     }
@@ -214,8 +250,45 @@ export class MemorySettlementStore implements SettlementStore {
     if (!r || r.settled) return false; // idempotent: never overwrite a settlement's reference
     r.settled = true;
     r.paymentReference = reference;
+    // Derived from the record, so no caller can pass the wrong answer in.
+    if (!r.covenantScript) r.payoutReference = reference;
     r.settledAt = this.now();
+    r.updatedAt = r.settledAt;
     return true;
+  }
+
+  markPaidOut(paymentHash: string, reference: string): boolean {
+    // Straight from the map, matching the DB store's unwindowed UPDATE: through `get` a
+    // sweep landing after the window was dropped, leaving the record active for good.
+    const r = this.map.get(paymentHash);
+    if (!r || r.payoutReference) return false;
+    r.payoutReference = reference;
+    r.updatedAt = this.now();
+    return true;
+  }
+
+  setCovenantOutpoint(paymentHash: string, outpoint: Outpoint, expected: Outpoint | null): boolean {
+    const row = this.map.get(paymentHash);
+    if (!row?.settled || !row.covenantScript || row.payoutReference || encodeOutpoint(row.covenantOutpoint ?? null) !== encodeOutpoint(expected)) return false;
+    row.covenantOutpoint = { ...outpoint };
+    row.updatedAt = this.now();
+    return true;
+  }
+
+  findByCovenantScript(script: string): SettlementRecord | undefined {
+    for (const r of this.map.values()) if (r.covenantScript === script) return r;
+    return undefined;
+  }
+
+  listActiveCovenantScripts(): string[] {
+    // Walks the map, not `get`, which expires a settled record whose money is still there.
+    const horizon = this.now() - this.destinationWatchMs;
+    const out: string[] = [];
+    for (const r of this.map.values()) {
+      if (!r.covenantScript || r.payoutReference) continue;
+      if (r.settled || r.createdAt > horizon) out.push(r.covenantScript);
+    }
+    return out;
   }
 
   isReferenceUsed(reference: string): boolean {
@@ -225,8 +298,8 @@ export class MemorySettlementStore implements SettlementStore {
 
   listByAddress(addressId: number, limit: number, opts?: { since?: number }): SettlementRecord[] {
     return [...this.map.values()]
-      .filter((r) => r.addressId === addressId && (opts?.since === undefined || r.createdAt >= opts.since))
-      .sort((a, b) => a.createdAt - b.createdAt || (a.paymentHash < b.paymentHash ? -1 : 1))
+      .filter((r) => r.addressId === addressId && (opts?.since === undefined || r.updatedAt >= opts.since))
+      .sort((a, b) => a.updatedAt - b.updatedAt || (a.paymentHash < b.paymentHash ? -1 : 1))
       .slice(0, limit);
   }
 
@@ -240,7 +313,7 @@ export class MemorySettlementStore implements SettlementStore {
   private sweep(): void {
     const t = this.now();
     for (const [k, r] of this.map) {
-      if (t - r.createdAt >= this.ttlMs && (r.addressId === null || r.addressId === undefined)) this.map.delete(k);
+      if (t - r.createdAt >= this.ttlMs && (r.addressId === null || r.addressId === undefined) && !owesSweep(r)) this.map.delete(k);
     }
   }
 }
@@ -255,11 +328,14 @@ interface SettlementRow {
   payment_option: string | null;
   payment_destination: string | null;
   payment_reference: string | null;
+  payout_reference: string | null;
+  covenant_outpoint: string | null;
   amount_msat: number | null;
   covenant_script: string | null;
   address_id: number | null;
   created_at: number;
   settled_at: number | null;
+  updated_at: number | null;
 }
 
 /** SQLite-backed store (migration 003). Survives restart and outlives the SSE
@@ -274,9 +350,10 @@ export class DbSettlementStore implements SettlementStore {
   ) {}
 
   create(rec: NewSettlement): void {
+    const at = this.now();
     const info = this.db
       .prepare(
-        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, covenant_script, address_id, created_at, settled_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, covenant_script, address_id, created_at, settled_at, updated_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
       )
       .run(
         rec.paymentHash,
@@ -289,7 +366,8 @@ export class DbSettlementStore implements SettlementStore {
         rec.amountMsat ?? null,
         rec.covenantScript ?? null,
         rec.addressId ?? null,
-        this.now(),
+        at,
+        at,
       );
     // A paymentHash collision on the offline path would leave `verify` polling the
     // OLD record while the payer got the NEW invoice — cryptographically negligible,
@@ -307,11 +385,12 @@ export class DbSettlementStore implements SettlementStore {
   markSettled(paymentHash: string, preimage: string): boolean {
     // `created_at >` keeps this in step with `get`, which treats an expired
     // record as absent — settling one nothing can read afterwards is a lie.
+    const at = this.now();
     const info = this.db
       .prepare(
-        "UPDATE settlements SET settled = 1, preimage = ?, settled_at = ? WHERE payment_hash = ? AND settled = 0 AND created_at > ?",
+        "UPDATE settlements SET settled = 1, preimage = ?, settled_at = ?, updated_at = ? WHERE payment_hash = ? AND settled = 0 AND created_at > ?",
       )
-      .run(preimage, this.now(), paymentHash, this.now() - this.ttlMs);
+      .run(preimage, at, at, paymentHash, at - this.ttlMs);
     return info.changes > 0;
   }
 
@@ -332,11 +411,16 @@ export class DbSettlementStore implements SettlementStore {
       // only copy of it — and a wallet offline past the TTL is precisely the
       // case the sync source exists for, so deleting here let any payer's
       // verify poll erase a receive its owner had not seen yet.
-      if (row.address_id === null || row.address_id === undefined) {
+      const rowOwesSweep = Boolean(row.covenant_script && row.settled && !row.payout_reference);
+      if ((row.address_id === null || row.address_id === undefined) && !rowOwesSweep) {
         this.db.prepare("DELETE FROM settlements WHERE payment_hash = ?").run(paymentHash);
       }
       return undefined;
     }
+    return this.toRecord(row);
+  }
+
+  private toRecord(row: SettlementRow): SettlementRecord {
     return {
       paymentHash: row.payment_hash,
       pr: row.pr,
@@ -347,11 +431,15 @@ export class DbSettlementStore implements SettlementStore {
       paymentOption: row.payment_option ?? "lightning",
       paymentDestination: row.payment_destination ?? null,
       paymentReference: row.payment_reference ?? null,
+      payoutReference: row.payout_reference ?? null,
+      covenantOutpoint: row.covenant_outpoint ? JSON.parse(row.covenant_outpoint) as Outpoint : null,
       amountMsat: row.amount_msat ?? null,
       covenantScript: row.covenant_script ?? null,
       addressId: row.address_id ?? null,
       createdAt: row.created_at,
       settledAt: row.settled_at ?? null,
+      // NULL on a row an older build wrote after migration 16 ran.
+      updatedAt: row.updated_at ?? row.created_at,
     };
   }
 
@@ -368,7 +456,7 @@ export class DbSettlementStore implements SettlementStore {
   listPendingDestinations(): PendingDestination[] {
     const rows = this.db
       .prepare(
-        "SELECT payment_hash, payment_destination, amount_msat, created_at, payment_option, covenant_script FROM settlements WHERE settled = 0 AND payment_option IS NOT NULL AND payment_option != 'lightning' AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
+        "SELECT payment_hash, payment_destination, amount_msat, created_at, payment_option, covenant_script FROM settlements WHERE settled = 0 AND payment_option = 'arkade' AND covenant_script IS NULL AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
       )
       // See the memory store: a destination outlives the verify TTL because it
       // stays payable and nothing tells the payer otherwise.
@@ -413,16 +501,53 @@ export class DbSettlementStore implements SettlementStore {
 
   markObserved(paymentHash: string, reference: string): boolean {
     // Idempotent: a second observation must not overwrite the first's reference.
+    const at = this.now();
     const info = this.db
       .prepare(
-        "UPDATE settlements SET settled = 1, payment_reference = ?, settled_at = ? WHERE payment_hash = ? AND settled = 0 AND created_at > ?",
+        // payout_reference only where the observed payment IS the credit.
+        "UPDATE settlements SET settled = 1, payment_reference = ?, settled_at = ?, updated_at = ?," +
+          " payout_reference = CASE WHEN covenant_script IS NULL THEN ? ELSE payout_reference END" +
+          " WHERE payment_hash = ? AND settled = 0 AND created_at > ?",
       )
       // Both callers are destination watchers, so this tracks the watch window
       // rather than the verify TTL. Gating it on the shorter one meant the
       // watcher could find a late payment and then fail to record it, which
       // reads as "no payment" from every angle a caller can see.
-      .run(reference, this.now(), paymentHash, this.now() - this.destinationWatchMs);
+      .run(reference, at, at, reference, paymentHash, at - this.destinationWatchMs);
     return info.changes > 0;
+  }
+
+  markPaidOut(paymentHash: string, reference: string): boolean {
+    const info = this.db
+      .prepare("UPDATE settlements SET payout_reference = ?, updated_at = ? WHERE payment_hash = ? AND payout_reference IS NULL")
+      .run(reference, this.now(), paymentHash);
+    return info.changes > 0;
+  }
+
+  findByCovenantScript(script: string): SettlementRecord | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM settlements WHERE covenant_script = ? LIMIT 1")
+      .get(script) as unknown as SettlementRow | undefined;
+    return row ? this.toRecord(row) : undefined;
+  }
+
+  setCovenantOutpoint(paymentHash: string, outpoint: Outpoint, expected: Outpoint | null): boolean {
+    return this.db.prepare(
+      "UPDATE settlements SET covenant_outpoint = ?, updated_at = ? WHERE payment_hash = ?" +
+      " AND settled = 1 AND covenant_script IS NOT NULL AND payout_reference IS NULL AND covenant_outpoint IS ?",
+    ).run(encodeOutpoint(outpoint), this.now(), paymentHash, encodeOutpoint(expected)).changes > 0;
+  }
+
+  listActiveCovenantScripts(): string[] {
+    // Two reads, not one `settled = 1 OR created_at > ?`: without the settled equality
+    // SQLite cannot drive the range off (settled, created_at), and the OR form scanned
+    // every never-paid destination. Disjoint on `settled`, so no row appears twice.
+    const scoped = "SELECT covenant_script FROM settlements WHERE covenant_script IS NOT NULL AND payout_reference IS NULL";
+    const settled = this.db.prepare(`${scoped} AND settled = 1`).all() as unknown as { covenant_script: string }[];
+    const open = this.db
+      .prepare(`${scoped} AND settled = 0 AND created_at > ?`)
+      .all(this.now() - this.destinationWatchMs) as unknown as { covenant_script: string }[];
+    return [...settled, ...open].map((r) => r.covenant_script);
   }
 
   isReferenceUsed(reference: string): boolean {
@@ -443,49 +568,19 @@ export class DbSettlementStore implements SettlementStore {
     const rows = this.db
       .prepare(`SELECT * FROM settlements${where.length ? " WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC LIMIT ?`)
       .all(...params, limit) as unknown as SettlementRow[];
-    return rows.map((row) => ({
-      paymentHash: row.payment_hash,
-      pr: row.pr,
-      sessionId: row.session_id,
-      settled: !!row.settled,
-      preimage: row.preimage ?? null,
-      swapId: row.swap_id ?? null,
-      paymentOption: row.payment_option ?? "lightning",
-      paymentDestination: row.payment_destination ?? null,
-      paymentReference: row.payment_reference ?? null,
-      amountMsat: row.amount_msat ?? null,
-      covenantScript: row.covenant_script ?? null,
-      addressId: row.address_id ?? null,
-      createdAt: row.created_at,
-      settledAt: row.settled_at ?? null,
-    }));
+    return rows.map((row) => this.toRecord(row));
   }
 
   listByAddress(addressId: number, limit: number, opts?: { since?: number }): SettlementRecord[] {
     const where: string[] = ["address_id = ?"];
     const params: (string | number)[] = [addressId];
     if (opts?.since !== undefined) {
-      where.push("created_at >= ?");
+      where.push("updated_at >= ?");
       params.push(opts.since);
     }
     const rows = this.db
-      .prepare(`SELECT * FROM settlements WHERE ${where.join(" AND ")} ORDER BY created_at ASC, payment_hash ASC LIMIT ?`)
+      .prepare(`SELECT * FROM settlements WHERE ${where.join(" AND ")} ORDER BY updated_at ASC, payment_hash ASC LIMIT ?`)
       .all(...params, limit) as unknown as SettlementRow[];
-    return rows.map((row) => ({
-      paymentHash: row.payment_hash,
-      pr: row.pr,
-      sessionId: row.session_id,
-      settled: !!row.settled,
-      preimage: row.preimage ?? null,
-      swapId: row.swap_id ?? null,
-      paymentOption: row.payment_option ?? "lightning",
-      paymentDestination: row.payment_destination ?? null,
-      paymentReference: row.payment_reference ?? null,
-      amountMsat: row.amount_msat ?? null,
-      covenantScript: row.covenant_script ?? null,
-      addressId: row.address_id ?? null,
-      createdAt: row.created_at,
-      settledAt: row.settled_at ?? null,
-    }));
+    return rows.map((row) => this.toRecord(row));
   }
 }

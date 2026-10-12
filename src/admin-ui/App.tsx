@@ -3,7 +3,7 @@ import { api } from "./api.js";
 
 type Tab = "Dashboard" | "Rails" | "Solvers" | "Sessions" | "Settlements" | "Domains" | "Addresses" | "API Keys" | "Blacklist" | "Settings";
 const TABS: Tab[] = ["Dashboard", "Rails", "Solvers", "Sessions", "Settlements", "Domains", "Addresses", "API Keys", "Blacklist", "Settings"];
-const ALLOCATION_MODES = ["self", "random", "admin"] as const;
+const ALLOCATION_MODES = ["self", "random", "admin", "session"] as const;
 
 interface Domain {
   id: number;
@@ -19,6 +19,7 @@ interface Domain {
   maxSendable: number | null;
 }
 interface Address { id: number; username: string; domain: string | null; status: string; online: boolean; disabledRails: string[]; rails: AddressRail[] }
+interface AddressPage { addresses: Address[]; nextCursor?: string }
 interface AddressRail { id: string; label: string; enabled: boolean; available: boolean; reason?: string }
 interface ServerRail { id: string; label: string; description: string; configured: boolean; ready: boolean; reason?: string }
 interface ApiKey { id: number; label: string | null; status: string; domainId: number | null }
@@ -96,13 +97,14 @@ const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 function Dashboard() {
   const domains = useList<Domain>("/domains");
-  const addresses = useList<Address>("/addresses");
   const sessions = useList<SessionRow>("/sessions");
-  const online = addresses.items.filter((a) => a.online).length;
+  const [addressCount, setAddressCount] = useState(0);
+  useEffect(() => { api.get<{ count: number }>("/addresses/count").then((r) => setAddressCount(r.count)).catch(() => undefined); }, []);
+  const online = sessions.items.reduce((n, s) => n + s.addresses.length, 0);
   return (
     <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
       <Card label="Domains" value={domains.items.length} />
-      <Card label="Addresses" value={addresses.items.length} />
+      <Card label="Addresses" value={addressCount} />
       <Card label="Online addresses" value={online} />
       <Card label="Live sessions" value={sessions.items.length} />
     </div>
@@ -283,6 +285,43 @@ interface SettlementRow {
   hasPreimage: boolean;
   createdAt: number;
   settledAt: number | null;
+  ffOrder?: { id: string; status: string; ffCode: string; emergency: string[] | null };
+}
+
+// The wallet's explorers (its src/lib/explorers.ts): the Arkade explorer for ark addresses, mempool for on-chain ones.
+const EXPLORERS: Record<string, { arkade: string; onchain: string }> = {
+  bitcoin: { arkade: "https://arkade.space", onchain: "https://mempool.space" },
+  mutinynet: { arkade: "https://explorer.mutinynet.arkade.sh", onchain: "https://mutinynet.com" },
+};
+
+const explorerLink = (network: string | undefined, destination: string): string | undefined => {
+  const explorer = network ? EXPLORERS[network] : undefined;
+  return explorer && `${/^t?ark1/i.test(destination) ? explorer.arkade : explorer.onchain}/address/${destination}`;
+};
+
+/** A long value shown short; a click copies all of it. */
+function Copyable({ value, length }: { value: string; length: number }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () =>
+    navigator.clipboard.writeText(value).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  return (
+    <code title={`${value} (click to copy)`} onClick={copy} style={{ cursor: "copy" }}>
+      {copied ? "copied ✓" : `${value.slice(0, length)}…`}
+    </code>
+  );
+}
+
+function Destination({ value, network }: { value: string; network?: string }) {
+  const link = explorerLink(network, value);
+  return (
+    <span style={{ whiteSpace: "nowrap" }}>
+      <Copyable value={value} length={18} />
+      {link && <>{" "}<a href={link} target="_blank" rel="noreferrer" title="Open in explorer">↗</a></>}
+    </span>
+  );
 }
 
 function Settlements({ addressId, onAddressFilter }: { addressId?: number; onAddressFilter?: (id: number | undefined) => void } = {}) {
@@ -290,6 +329,11 @@ function Settlements({ addressId, onAddressFilter }: { addressId?: number; onAdd
   const [err, setErr] = useState<string>();
   const [state, setState] = useState("");
   const [option, setOption] = useState("");
+  const [network, setNetwork] = useState<string>();
+  useEffect(() => {
+    // Only solver discovery knows the network; without it a destination stays copyable but unlinked.
+    api.get<DiscoveryView>("/discovery").then((d) => setNetwork(d.network)).catch(() => undefined);
+  }, []);
   const reload = () => api.get<SettlementRow[]>(`/settlements${qs({ settled: state, option, addressId: addressId ? String(addressId) : "" })}`).then((r) => { setItems(r); setErr(undefined); }).catch((e: Error) => setErr(e.message));
   useEffect(() => {
     reload();
@@ -325,7 +369,7 @@ function Settlements({ addressId, onAddressFilter }: { addressId?: number; onAdd
         </p>
       )}
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
-        <thead><tr><Th>Created</Th><Th>Address</Th><Th>Option</Th><Th>Amount</Th><Th>State</Th><Th>Destination</Th><Th>Reference</Th></tr></thead>
+        <thead><tr><Th>Created</Th><Th>Address</Th><Th>Option</Th><Th>Amount</Th><Th>State</Th><Th>Destination</Th><Th>Reference</Th><Th>Token order</Th></tr></thead>
         <tbody>{items.map((s) => (
           <tr key={s.paymentHash}>
             <Td><span title={new Date(s.createdAt).toLocaleString()}>{ago(s.createdAt)}</span></Td>
@@ -335,8 +379,14 @@ function Settlements({ addressId, onAddressFilter }: { addressId?: number; onAdd
             <Td>{s.paymentOption}{s.swapId ? " (offline swap)" : ""}</Td>
             <Td>{s.amountMsat != null ? `${s.amountMsat.toLocaleString()} msat` : "—"}</Td>
             <Td>{s.settled ? `settled${s.settledAt ? ` (${ago(s.settledAt)})` : ""}` : "pending"}{s.hasPreimage ? " · preimage held" : ""}</Td>
-            <Td>{s.paymentDestination ? <code title={s.paymentDestination}>{s.paymentDestination.slice(0, 18)}…</code> : <span title={s.paymentHash}><code>{s.paymentHash.slice(0, 12)}…</code></span>}</Td>
+            {/* A token deposit address is on another chain, so no Bitcoin explorer link. */}
+            <Td>{s.paymentDestination ? <Destination value={s.paymentDestination} network={s.ffOrder ? undefined : network} /> : <Copyable value={s.paymentHash} length={12} />}</Td>
             <Td>{s.paymentReference ? <code title={s.paymentReference}>{s.paymentReference.slice(0, 12)}…</code> : "—"}</Td>
+            <Td>{s.ffOrder
+              ? <span title={s.ffOrder.ffCode} style={{ color: s.ffOrder.status === "EMERGENCY" ? "crimson" : undefined }}>
+                  <code>{s.ffOrder.id}</code> · {s.ffOrder.status}{s.ffOrder.emergency ? ` (${s.ffOrder.emergency.join(", ")})` : ""}
+                </span>
+              : "—"}</Td>
           </tr>
         ))}</tbody>
       </table>
@@ -460,7 +510,14 @@ function DomainEditor({ domain, onClose, onSaved }: { domain: Domain; onClose: (
 function Addresses({ onShowSettlements }: { onShowSettlements?: (id: number) => void } = {}) {
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("");
-  const { items, reload, err } = useList<Address>(`/addresses${qs({ q, status })}`, [q, status]);
+  // One cursor per page above this one, so Newer is a pop and a reload stays on this page.
+  const [cursors, setCursors] = useState<string[]>([]);
+  const cursor = cursors.at(-1) ?? "";
+  const [page, setPage] = useState<AddressPage>({ addresses: [] });
+  const [err, setErr] = useState<string>();
+  const reload = () => api.get<AddressPage>(`/addresses${qs({ q, status, cursor })}`).then((p) => { setPage(p); setErr(undefined); }).catch((e: Error) => setErr(String(e.message)));
+  useEffect(() => { reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [q, status, cursor]);
+  const items = page.addresses;
   const [domain, setDomain] = useState("");
   const [username, setUsername] = useState("");
   const [reveal, setReveal] = useState<string>();
@@ -493,8 +550,8 @@ function Addresses({ onShowSettlements }: { onShowSettlements?: (id: number) => 
         <button onClick={() => create("mint")} disabled={!domain || !username}>Mint</button>
       </div>
       <div style={{ marginBottom: 12, display: "flex", gap: 8 }}>
-        <input placeholder="search username…" value={q} onChange={(e) => setQ(e.target.value)} />
-        <select value={status} onChange={(e) => setStatus(e.target.value)}>
+        <input placeholder="search username…" value={q} onChange={(e) => { setQ(e.target.value); setCursors([]); }} />
+        <select value={status} onChange={(e) => { setStatus(e.target.value); setCursors([]); }}>
           <option value="">all statuses</option>
           <option value="reserved">reserved</option>
           <option value="active">active</option>
@@ -524,6 +581,10 @@ function Addresses({ onShowSettlements }: { onShowSettlements?: (id: number) => 
           </Fragment>
         ))}</tbody>
       </table>
+      <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+        <button onClick={() => setCursors(cursors.slice(0, -1))} disabled={cursors.length === 0}>← Newer</button>
+        <button onClick={() => page.nextCursor && setCursors([...cursors, page.nextCursor])} disabled={!page.nextCursor}>Older →</button>
+      </div>
     </div>
   );
 }

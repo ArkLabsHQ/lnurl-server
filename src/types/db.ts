@@ -1,0 +1,93 @@
+import type { EncryptedToken } from "../crypto.js";
+import type { RailId } from "../rails.js";
+
+export type AllocationMode = "self" | "random" | "admin" | "session";
+export type AddressStatus = "reserved" | "active" | "revoked";
+
+export interface DomainRow {
+  id: number;
+  domain: string;
+  allocationModes: AllocationMode[];
+  requireApiKey: boolean;
+  maxPerSession: number | null;
+  usernameMinLen: number;
+  usernameMaxLen: number;
+  usernamePattern: string;
+  minSendable: number | null;
+  maxSendable: number | null;
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface CreateDomainParams {
+  domain: string;
+  allocationModes: AllocationMode[];
+  requireApiKey?: boolean;
+  maxPerSession?: number | null;
+  usernameMinLen?: number;
+  usernameMaxLen?: number;
+  usernamePattern?: string;
+  minSendable?: number | null;
+  maxSendable?: number | null;
+  enabled?: boolean;
+}
+
+export interface AddressRow {
+  id: number;
+  domainId: number;
+  username: string;
+  sessionId: string | null;
+  encryptedToken: EncryptedToken | null;
+  claimCodeHash: Buffer | null;
+  status: AddressStatus;
+  metadata: string | null;
+  /** Arkade address to receive offline swaps to; null if offline receive isn't configured. */
+  arkadeAddress: string | null;
+  /** Compressed claim public key (hex) for offline reverse swaps; null if unset. */
+  claimPublicKey: string | null;
+  /** Arkade boarding address, when the owner registered one for the onchain rail. */
+  boardingAddress: string | null;
+  /** Rail ids the operator disabled for this address (per-LNURL policy). */
+  disabledRails: RailId[];
+  /** Also served at /lnurl/<sessionId>; survives a rename. */
+  sessionLnurl: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface CreateAddressParams {
+  domainId: number;
+  username: string;
+  status: AddressStatus;
+  sessionId?: string | null;
+  encryptedToken?: EncryptedToken | null;
+  claimCodeHash?: Buffer | null;
+  metadata?: string | null;
+  sessionLnurl?: boolean;
+}
+
+export interface BlacklistRow {
+  id: number;
+  domainId: number | null;
+  username: string;
+  reason: string | null;
+  createdAt: number;
+}
+
+export interface SolverCardRow {
+  id: number;
+  label: string;
+  network: string;
+  cardJson: string;
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SolverRegistryCacheRow {
+  url: string;
+  network: string;
+  body: string;
+  fetchedAt: number;
+}

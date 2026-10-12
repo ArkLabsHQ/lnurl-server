@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { SettingsRepo } from "../src/db/repositories/settings.js";
-import { SettingsService, SettingsError, staticSettings } from "../src/settings.js";
+import { SettingsService, staticSettings } from "../src/services/settings.js";
+import { SettingsError } from "../src/errors.js";
 
 const DEFAULTS = { minSendable: 1000, maxSendable: 100_000_000, invoiceTimeoutMs: 30_000, baseUrl: "https://x.test", registrationRateLimitPerMin: 10 };
 let db: Db;

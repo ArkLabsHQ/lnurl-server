@@ -24,6 +24,10 @@ RUN pnpm install --frozen-lockfile --prod
 COPY --from=build --chown=node:node /app/dist ./dist
 RUN mkdir -p /data && chown node:node /data
 
+# On the env, not only the CMD: a host that starts this image with its own command
+# (`pnpm start`, a panel's start field) never sees the CMD, and without an
+# EventSource every watcher silently drops to a 20s poll.
+ENV NODE_OPTIONS="--experimental-sqlite --experimental-eventsource"
 ENV PORT=3000
 ENV ADMIN_PORT=3001
 ENV ADMIN_BIND=0.0.0.0
@@ -39,4 +43,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 
 USER node
 
-CMD ["node", "--experimental-sqlite", "dist/cli.js"]
+# --experimental-eventsource is load-bearing: without it the SDK opens no contract
+# subscription and every watcher silently drops to a 20s poll. Pinned by a test.
+CMD ["node", "--experimental-sqlite", "--experimental-eventsource", "dist/cli.js"]
