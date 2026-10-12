@@ -46,6 +46,20 @@ const contract = (): Contract => ({
 });
 
 describe("covenantDestinationHandler", () => {
+  it("refuses unsupported stored versions instead of rebuilding a different funded script", () => {
+    expect(() => handler.createScript(handler.serializeParams({ ...params, version: 4 }))).toThrow(/unsupported covenant version/);
+  });
+  it("adds a permissionless renewal path to v3 while keeping v2 at three leaves", () => {
+    const serialized = handler.serializeParams({ ...params, version: 3 });
+    const script = handler.createScript(serialized);
+    const row = { ...contract(), params: serialized };
+    expect(script.leaves).toHaveLength(4);
+    const derived = handler.deriveTapscripts(script, row);
+    expect(derived.intentTapLeafScript).toEqual(script.leaves[3]);
+    expect(derived.forfeitTapLeafScript).toEqual(script.leaves[3]);
+    expect(handler.getAllSpendingPaths(script, row, { collaborative: true, currentTime: Date.now() })).toHaveLength(4);
+    expect(handler.createScript(handler.serializeParams({ ...params, version: COVENANT_V2 })).leaves).toHaveLength(3);
+  });
   // The whole point of routing through the SDK is that the bytes do not move: this is
   // the same value the golden test pins, reached through createScript instead.
   it("rebuilds the construction proven on-chain, byte for byte", () => {

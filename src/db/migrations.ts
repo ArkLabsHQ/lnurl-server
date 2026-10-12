@@ -345,6 +345,12 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_addresses_created ON addresses(created_at, id, status, username);
     `,
   },
+  {
+    version: 23,
+    up: (db) => {
+      if (!hasColumn(db, "settlements", "covenant_outpoint")) db.exec("ALTER TABLE settlements ADD COLUMN covenant_outpoint TEXT;");
+    },
+  },
 ];
 
 export const LATEST_MIGRATION = Math.max(...MIGRATIONS.map((m) => m.version));

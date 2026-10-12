@@ -24,6 +24,7 @@ import {
   Transaction,
   attachPrevArkTxs,
   buildOffchainTx,
+  canSpendOffchain,
   createAssetPacket,
   setArkPsbtField,
   type ArkProvider,
@@ -35,7 +36,8 @@ import {
 } from "@arkade-os/sdk";
 import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler } from "../covenant/contract.js";
 import type { SettlementStore } from "../settlement-store.js";
-import { COVENANT_V1, COVENANT_V2, SWEEP_LEAF, enforcePayTo, enforcePayToWithAssets } from "../covenant/destination.js";
+import { COVENANT_V3, SWEEP_LEAF, covenantVtxoScript } from "../covenant/destination.js";
+import { reconcileCovenantForwarding } from "../covenant/forwarding.js";
 import { startCatchUpLoop } from "./catch-up-loop.js";
 import { activeCovenantFilters, resolveCovenants, scopeShortfall, scopeSize } from "./covenant-retirement.js";
 
@@ -59,7 +61,7 @@ function recordPayout(
   const record = store.findByCovenantScript(script);
   if (!record?.settled || record.payoutReference) return;
   const spent = vtxos.find((v) => v.txid === record.paymentReference && v.isSpent);
-  const reference = spent && (spent.arkTxId || spent.settledBy || spent.spentBy);
+  const reference = spent?.arkTxId;
   if (reference) store.markPaidOut(record.paymentHash, reference);
 }
 
@@ -72,6 +74,8 @@ export function createCovenantSweeper(opts: {
   emulator?: EmulatorSubmit;
   /** Optional: records which transaction credited the user. Sweeping works without it. */
   settlements?: SettlementStore;
+  renewer?: { renew(contract: Contract, vtxo: VirtualCoin): Promise<string> };
+  now?: () => number;
 }): CovenantSweeper {
   const arkProvider = opts.arkProvider ?? new RestArkProvider(opts.arkServerUrl);
   const indexer = opts.indexer ?? new RestIndexerProvider(opts.arkServerUrl);
@@ -86,11 +90,8 @@ export function createCovenantSweeper(opts: {
     const params = covenantDestinationHandler.deserializeParams(contract.params);
     const { staticAddress } = params;
     const payTo = ArkAddress.decode(staticAddress).pkScript;
-    // Recomputed, not read off the leaf, and versioned from the contract's own
-    // params: v2 bytes do not reproduce a v1 cosigner, so the emulator would refuse.
-    const covenant = (params.version ?? COVENANT_V1) >= COVENANT_V2
-      ? enforcePayToWithAssets(payTo)
-      : enforcePayTo(payTo);
+    // Stored versions must reproduce the covenant whose hash the funded leaf commits to.
+    const covenant = covenantVtxoScript(params).covenantScript;
     const packet = EmulatorPacket.create([{ vin: 0, script: covenant, witness: RawWitness.encode([]) }]);
     // arkd rejects a spend of asset-carrying inputs declaring no packet, so without
     // this the destination could never be swept. Under v2 the covenant requires it too.
@@ -140,12 +141,29 @@ export function createCovenantSweeper(opts: {
         asked += scopeSize(scope);
         found += resolved.length;
         for (const { contract, vtxos } of resolved) {
+          const params = covenantDestinationHandler.deserializeParams(contract.params);
+          if (params.version === COVENANT_V3 && opts.settlements) {
+            try {
+              await reconcileCovenantForwarding(opts.settlements, contract.script, params.staticAddress, vtxos, indexer);
+              if (opts.settlements.findByCovenantScript(contract.script)?.payoutReference) continue;
+            } catch (err) {
+              console.warn(`covenant forwarding reconciliation failed for ${contract.script.slice(0, 16)}…:`, err);
+              continue;
+            }
+          }
           const script = covenantDestinationHandler.createScript(contract.params);
           const tapTree = script.encode();
           const sweepLeaf = hex.encode(script.leaves[SWEEP_LEAF]![1]);
           for (const vtxo of vtxos) {
-            if (vtxo.isSpent) continue;
+            if (vtxo.isSpent || vtxo.isUnrolled) continue;
+            const now = opts.now?.() ?? Date.now();
+            const renewable = params.version === COVENANT_V3 && opts.renewer;
             try {
+              if (!canSpendOffchain(vtxo, { timestamp: new Date(now) })) {
+                if (!renewable) throw new Error("expired covenant requires a renewal path");
+                await opts.renewer!.renew(contract, vtxo);
+                continue;
+              }
               const paths = await opts.contracts.getSpendablePaths({ contractScript: contract.script, vtxo });
               // Chosen by leaf, not by position. The handler happens to return the sweep
               // first, but nothing in the manager's contract promises an order, and the
@@ -159,6 +177,15 @@ export function createCovenantSweeper(opts: {
               moved++;
               console.log(`covenant sweep: ${contract.script.slice(0, 16)}… -> ${arkTxid}`);
             } catch (err) {
+              if (renewable && canSpendOffchain(vtxo, { timestamp: new Date(now) }) &&
+                (vtxo.expiresAtHeight !== undefined || (vtxo.expiresAt && vtxo.expiresAt.getTime() <= now + 300_000))) {
+                try {
+                  await opts.renewer!.renew(contract, vtxo);
+                  continue;
+                } catch (renewalError) {
+                  console.warn(`covenant renewal failed for ${contract.script.slice(0, 16)}…:`, renewalError);
+                }
+              }
               // One stuck destination must not stop the rest, and the next pass retries.
               console.warn(`covenant sweep failed for ${contract.script.slice(0, 16)}…:`, err);
             }
@@ -166,7 +193,7 @@ export function createCovenantSweeper(opts: {
           // A sweep this pass submitted is recorded by the next, when its spend is
           // visible. After the money, and contained: the rest must still get swept.
           try {
-            if (opts.settlements) recordPayout(opts.settlements, contract.script, vtxos);
+            if (opts.settlements && params.version !== COVENANT_V3) recordPayout(opts.settlements, contract.script, vtxos);
           } catch (err) {
             console.warn(`covenant sweep: recording the payout for ${contract.script.slice(0, 16)}… failed:`, err);
           }

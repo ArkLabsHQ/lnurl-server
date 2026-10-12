@@ -124,6 +124,29 @@ const sweeperWith = (manager: IContractManager, settlements?: SettlementStore) =
   });
 
 describe("createCovenantSweeper", () => {
+  it.each([false, true])("renews an expired v3 output with swept=%s instead of forwarding it", async (isSwept) => {
+    const params = handler.serializeParams({ ...handler.deserializeParams(realParams), version: 3 });
+    const script = hex.encode(handler.createScript(params).pkScript);
+    const coin = { ...vtxo("11".repeat(32)), script, isSwept, isUnrolled: false, expiresAt: new Date(1000) };
+    const renewal = vi.fn(async () => "22".repeat(32));
+    const paths = vi.fn(async () => []);
+    const manager = { getContractsWithVtxos: async () => [{ contract: { ...contract(script), params }, vtxos: [coin] }],
+      getSpendablePaths: paths } as unknown as IContractManager;
+    const sweeper = createCovenantSweeper({ contracts: manager, arkServerUrl: "http://unused", emulatorUrl: "http://unused",
+      renewer: { renew: renewal }, now: () => 2000 });
+    expect(await sweeper.sweep()).toBe(0);
+    expect(renewal).toHaveBeenCalledWith(expect.objectContaining({ script }), coin);
+    expect(paths).not.toHaveBeenCalled();
+  });
+  it("does not record a batch renewal commitment as payout", async () => {
+    const funding = fundingTx(2000);
+    const settlements = new MemorySettlementStore(3_600_000);
+    recorded(settlements);
+    settlements.markObserved("h", funding.txid);
+    const coin = { ...vtxo(funding.txid, { spent: true }), settledBy: "33".repeat(32), spentBy: "44".repeat(32) };
+    await realSweeper({ funding, vtxos: [coin], settlements }).sweep();
+    expect(settlements.get("h")!.payoutReference).toBeNull();
+  });
   it("asks the manager only for covenant destinations", async () => {
     const { manager, getContractsWithVtxos } = managerWith([]);
 

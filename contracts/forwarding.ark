@@ -1,0 +1,37 @@
+pragma arkade ^0.1.0;
+
+contract Forwarding(
+  pubkey destinationKey,
+  pubkey userKey,
+  bytes20 preimageHash,
+  int recoverySequence
+) {
+  function sweep() {
+    int inputIndex = this.activeInputIndex;
+    require(this.tunnel(inputIndex, { scriptPubKey: false, value: false, assets: true }));
+    require(tx.outputs[inputIndex].witnessVersion == 1);
+    require(tx.outputs[inputIndex].scriptPubKey == destinationKey);
+    require(tx.outputs[inputIndex].value >= tx.inputs[inputIndex].value);
+  }
+
+  function sweep(bytes preimage, signature serverSig, signature emulatorSig) tapscript {
+    require(hash160(preimage) == preimageHash);
+    require(checkMultisig([server, emulator], [serverSig, emulatorSig]));
+  }
+
+  function collaborative(signature userSig, signature serverSig) tapscript {
+    require(checkMultisig([userKey, server], [userSig, serverSig]));
+  }
+
+  function recovery(signature userSig) tapscript {
+    require(older(recoverySequence));
+    require(checkSig(userSig, userKey));
+  }
+
+  function renew() {
+    require(tx.intent.field("type") == "register");
+    require(tx.intent.field("onchain_output_indexes") == "[]");
+    require(!tx.intent.has("cosigners_public_keys.1"));
+    require(this.tunnel(this.activeInputIndex - 1));
+  }
+}

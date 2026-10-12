@@ -210,10 +210,31 @@ async function main(): Promise<void> {
       // backstop OFFLINE_POLL_INTERVAL_MS is already documented to size.
       const { startCovenantWatcher } = await import("./workers/covenant-watcher.js");
       const { createCovenantSweeper, startCovenantSweeper } = await import("./workers/covenant-sweeper.js");
+      const { createCovenantRenewer } = await import("./covenant/renewal.js");
+      const { RestArkProvider, RestIndexerProvider, RestEmulatorProvider, networkFromArkadeInfo, Wallet, MnemonicIdentity,
+        InMemoryWalletRepository, InMemoryContractRepository } = await import("@arkade-os/sdk");
+      const renewalArk = new RestArkProvider(off.arkServerUrl!);
+      const renewalNetwork = networkFromArkadeInfo(await renewalArk.getInfo());
+      const renewalAbort = new AbortController();
+      runtime.addStop(() => renewalAbort.abort(new Error("server shutdown")));
+      const feePayer = off.covenantRenewalMnemonic ? await Wallet.create({
+        identity: MnemonicIdentity.fromMnemonic(off.covenantRenewalMnemonic, { isMainnet: renewalNetwork.name === "bitcoin" }),
+        arkProvider: renewalArk,
+        storage: { walletRepository: new InMemoryWalletRepository(), contractRepository: new InMemoryContractRepository() },
+        settlementConfig: false,
+      }) : undefined;
+      if (feePayer) {
+        runtime.addTransport({ close: () => feePayer.dispose() });
+        console.log(`covenant renewal fee payer: ${await feePayer.getAddress()}`);
+      }
+      const renewer = createCovenantRenewer({
+        arkProvider: renewalArk, indexer: new RestIndexerProvider(off.arkServerUrl!),
+        emulator: new RestEmulatorProvider(off.emulatorUrl!), network: renewalNetwork, feePayer, signal: renewalAbort.signal,
+      });
       // Built before the watcher so its trigger can be handed over: the event that
       // settles a covenant payment is the same event that makes it sweepable.
       const sweeper = startCovenantSweeper(
-        createCovenantSweeper({ contracts, arkServerUrl: off.arkServerUrl!, emulatorUrl: off.emulatorUrl!, settlements }),
+        createCovenantSweeper({ contracts, arkServerUrl: off.arkServerUrl!, emulatorUrl: off.emulatorUrl!, settlements, renewer }),
         15_000,
       );
       runtime.addStop(sweeper.stop);

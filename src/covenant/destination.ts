@@ -4,6 +4,7 @@
 //   leaf 0  condition(H(P)) + operator + covenant cosigner  sweep, pinned
 //   leaf 1  user + operator                                 collaborative
 //   leaf 2  user alone after CSV                            unilateral recovery
+//   leaf 3  operator + renewal cosigner                      batch renewal (v3)
 //
 // Only leaf 0 carries H(P): a fresh preimage moves the address, the covenant bytes
 // stay fixed, and the user's two recovery paths need neither P nor this server.
@@ -11,6 +12,7 @@
 import type { IContractManager } from "@arkade-os/sdk";
 import { COVENANT_CONTRACT_TYPE, covenantDestinationHandler } from "./contract.js";
 import { checkedPreimage, randomEntropy, type EntropyProvider } from "./entropy.js";
+import { compileCovenantV3 } from "./program.js";
 import { hex } from "@scure/base";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { ripemd160 } from "@noble/hashes/legacy.js";
@@ -47,9 +49,10 @@ const TUNNEL_ASSETS = 4;
  *  address only those bytes reproduce. */
 export const COVENANT_V1 = 1;
 export const COVENANT_V2 = 2;
+export const COVENANT_V3 = 3;
 /** REQUIRES an emulator implementing OP_TUNNEL (>= v0.0.8-rc.0). v0.0.7 maps 0xf7
  *  to opcodeInvalid and refuses the sweep, stranding EVERY covenant destination. */
-export const COVENANT_CURRENT = COVENANT_V2;
+export const COVENANT_CURRENT = COVENANT_V3;
 
 export const enforcePayTo = (destinationPkScript: Uint8Array): Uint8Array => {
   if (destinationPkScript.length !== 34 || destinationPkScript[0] !== 0x51 || destinationPkScript[1] !== 0x20) {
@@ -263,10 +266,17 @@ const toCompressed = (key: Uint8Array): Uint8Array => {
 export const SWEEP_LEAF = 0;
 export const COLLABORATIVE_LEAF = 1;
 export const RECOVERY_LEAF = 2;
+export const RENEW_LEAF = 3;
 
 /** The construction itself, shared by {@link deriveCovenantDestination} and the
  *  contract handler's `createScript` so neither can drift from the other. */
 export function covenantVtxoScript(input: CovenantDestinationInput): { vtxo: VtxoScript; covenantScript: Uint8Array } {
+  const version = input.version ?? COVENANT_V1;
+  if (version === COVENANT_V3) {
+    const compiled = compileCovenantV3(input);
+    return { vtxo: compiled, covenantScript: compiled.functionByName("sweep")!.arkadeScript! };
+  }
+  if (version !== COVENANT_V1 && version !== COVENANT_V2) throw new Error(`unsupported covenant version: ${version}`);
   if (input.preimage.length !== 32) throw new Error(`preimage must be 32 bytes, got ${input.preimage.length}`);
   const userPubkey = toXOnly(input.userPubkey);
   const serverPubkey = toXOnly(input.serverPubkey);

@@ -1,4 +1,13 @@
 import type { Db } from "./db/connection.js";
+import type { Outpoint } from "@arkade-os/sdk";
+
+const encodeOutpoint = (outpoint: Outpoint | null): string | null => {
+  if (!outpoint) return null;
+  if (!/^[0-9a-f]{64}$/.test(outpoint.txid) || !Number.isInteger(outpoint.vout) || outpoint.vout < 0 || outpoint.vout > 0xffffffff) {
+    throw new Error("invalid covenant outpoint");
+  }
+  return JSON.stringify({ txid: outpoint.txid, vout: outpoint.vout });
+};
 
 /** A record of one invoice handed to a payer, tracking LUD-21 settlement state. */
 export interface SettlementRecord {
@@ -23,6 +32,7 @@ export interface SettlementRecord {
   /** The Arkade txid that credited the user's OWN address — not always the one
    *  observed. @see markPaidOut */
   payoutReference: string | null;
+  covenantOutpoint?: Outpoint | null;
   /** The agreed amount. Recorded so a future Arkade watcher can correlate the observed
    *  payment against it — without it an under-payment would flip settled just the same. */
   amountMsat: number | null;
@@ -74,6 +84,7 @@ export interface NewSettlement {
 }
 
 export interface SettlementStore {
+  setCovenantOutpoint(paymentHash: string, outpoint: Outpoint, expected: Outpoint | null): boolean;
   /** Record a new invoice. Idempotent: a repeated paymentHash is ignored (never resets settled).
    *  Offline swaps pass `preimage` + `swapId` up front (held privately until settled). */
   create(rec: NewSettlement): void;
@@ -256,6 +267,14 @@ export class MemorySettlementStore implements SettlementStore {
     return true;
   }
 
+  setCovenantOutpoint(paymentHash: string, outpoint: Outpoint, expected: Outpoint | null): boolean {
+    const row = this.map.get(paymentHash);
+    if (!row?.settled || !row.covenantScript || row.payoutReference || encodeOutpoint(row.covenantOutpoint ?? null) !== encodeOutpoint(expected)) return false;
+    row.covenantOutpoint = { ...outpoint };
+    row.updatedAt = this.now();
+    return true;
+  }
+
   findByCovenantScript(script: string): SettlementRecord | undefined {
     for (const r of this.map.values()) if (r.covenantScript === script) return r;
     return undefined;
@@ -310,6 +329,7 @@ interface SettlementRow {
   payment_destination: string | null;
   payment_reference: string | null;
   payout_reference: string | null;
+  covenant_outpoint: string | null;
   amount_msat: number | null;
   covenant_script: string | null;
   address_id: number | null;
@@ -412,6 +432,7 @@ export class DbSettlementStore implements SettlementStore {
       paymentDestination: row.payment_destination ?? null,
       paymentReference: row.payment_reference ?? null,
       payoutReference: row.payout_reference ?? null,
+      covenantOutpoint: row.covenant_outpoint ? JSON.parse(row.covenant_outpoint) as Outpoint : null,
       amountMsat: row.amount_msat ?? null,
       covenantScript: row.covenant_script ?? null,
       addressId: row.address_id ?? null,
@@ -508,6 +529,13 @@ export class DbSettlementStore implements SettlementStore {
       .prepare("SELECT * FROM settlements WHERE covenant_script = ? LIMIT 1")
       .get(script) as unknown as SettlementRow | undefined;
     return row ? this.toRecord(row) : undefined;
+  }
+
+  setCovenantOutpoint(paymentHash: string, outpoint: Outpoint, expected: Outpoint | null): boolean {
+    return this.db.prepare(
+      "UPDATE settlements SET covenant_outpoint = ?, updated_at = ? WHERE payment_hash = ?" +
+      " AND settled = 1 AND covenant_script IS NOT NULL AND payout_reference IS NULL AND covenant_outpoint IS ?",
+    ).run(encodeOutpoint(outpoint), this.now(), paymentHash, encodeOutpoint(expected)).changes > 0;
   }
 
   listActiveCovenantScripts(): string[] {

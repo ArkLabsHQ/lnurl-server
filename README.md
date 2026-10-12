@@ -208,19 +208,26 @@ The `arkade` rail hands the payer an address, and the server is not in the payme
 
 With `OFFLINE_COVENANT_DESTINATIONS=true` each callback derives its own address instead, and the script becomes the identifier. A VTXO there belongs to exactly one record, so attribution is exact rather than inferred.
 
-The address is a three-leaf Taproot script:
+New addresses use a four-leaf Taproot script compiled from [`contracts/forwarding.ark`](contracts/forwarding.ark):
 
 | leaf | who can spend | what it is for |
 | --- | --- | --- |
 | `condition(H(P))` + operator + covenant cosigner | anyone holding `P` | the sweep, pinned by the covenant |
 | user + operator | the user, collaboratively | recovery without waiting |
 | user alone, after a CSV delay | the user | recovery if the operator is gone |
+| operator + renewal covenant cosigner | any batch participant | renew into the same script with all sats and assets preserved |
 
 Only the first leaf carries `H(P)`, so a fresh preimage moves the address while the covenant bytes stay fixed. **The preimage is not a secret** — the covenant means whoever holds it can only pay the user's registered address — which is why the two recovery leaves are keyed to the user and need neither `P` nor this server.
 
 A sweeper moves each funded destination on to the static address, so the user's wallet sees an ordinary arrival there and needs to know nothing about any of this. It costs one extra Arkade transaction per payment, and the rail gains a dependency on the emulator co-signing that sweep. If derivation fails at request time the callback falls back to the static address: that payment is ambiguous again, which beats refusing to be paid.
 
 `OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS` (default 86528) sets the CSV delay on the third leaf. It must be a multiple of 512: BIP68 encodes seconds in 512s units and rejects anything else, so 86400 — 24h exactly — is not a legal value and is refused at startup.
+
+Expired or operator-swept v3 outputs are recovered through a batch before forwarding. The service keeps the original payment reference and persists the current covenant outpoint across renewals; a renewal commitment is never payout evidence. Already-unrolled outputs remain on the user's unilateral recovery path. Stored v1/v2 contracts retain their original scripts and addresses.
+
+Renewal preserves the entire payment, so its batch fees require separate funding. On networks with nonzero intent fees, set `OFFLINE_COVENANT_RENEWAL_MNEMONIC` to a dedicated fee-payer wallet and fund the address printed at startup. Without it, positive-fee renewal fails visibly and retries; it never deducts fees from the user's payment. Zero-fee renewal needs no wallet key.
+
+Run `pnpm artifact` to regenerate the digest-pinned compiler artifact. CI checks that regeneration leaves the committed JSON and TypeScript artifact unchanged.
 
 ## Payment options (LUD-XX)
 
@@ -360,6 +367,7 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `OFFLINE_EMULATOR_URL` | — | Emulator base URL backing `OFFLINE_SELF_CLAIM` and `OFFLINE_COVENANT_DESTINATIONS` — it co-signs the covenant leaf after checking the spend pays the user. With `COVCLAIMD_URL` set, must be the emulator whose `emulator_pub_key` it reports; without it, must be the solver's emulator. Missing with either flag on, the server refuses to start. |
 | `OFFLINE_COVENANT_DESTINATIONS` | `false` | `true` gives each arkade-rail payment its own covenant address, so concurrent payments are told apart by script instead of by amount and arrival window. Requires `OFFLINE_EMULATOR_URL` and `ARK_SERVER_URL` (`COVCLAIMD_URL` optional — only needed alongside the lightning offline swap). See [Per-payment destinations](#per-payment-destinations-offline_covenant_destinations-default-off). |
 | `OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS` | `86528` | CSV delay before the user may sweep a covenant destination alone. |
+| `OFFLINE_COVENANT_RENEWAL_MNEMONIC` | — | Optional dedicated wallet paying v3 renewal batch fees. Requires covenant destinations; fund its startup address with BTC. The payment's sats and assets are preserved in full. |
 | `OFFLINE_POLL_INTERVAL_MS` | `15000` | Offline settlement pass interval, and the covenant watcher's catch-up cadence. Neither is what normally settles a payment — a funding event does — so what is left on both is the backstop for a dropped subscription, plus the solver status check the RFQ transport cannot push. The covenant half matters because that subscription does drop in normal operation: an event lost to a reconnect window is only recovered by the next catch-up pass. Lower it to see settlement sooner, at the cost of solver requests. |
 | `DB_PATH` | — | Path to SQLite database file. Omit for in-memory-only mode. |
 | `TOKEN_ENCRYPTION_KEY` | — | 32-byte AES key (hex or base64). Required with `DB_PATH` unless the insecure fallback is explicitly allowed. |
