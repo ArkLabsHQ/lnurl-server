@@ -62,6 +62,7 @@ export interface OfflineReceiveConfig {
   covenantDestinations: boolean;
   /** CSV delay, seconds, before the user may sweep a covenant destination alone. */
   covenantRecoveryDelaySeconds: number;
+  covenantRenewalMnemonic?: string;
   /** Settlement-pass interval, ms. Not what claims a lockup — src/workers/lockup-watcher.ts
    *  does that on the funding event — so what is left on it is the backstop for a
    *  dropped subscription and the solver status check the RFQ transport cannot push. */
@@ -295,6 +296,10 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   const selfClaim = env.OFFLINE_SELF_CLAIM === undefined ? Boolean(emulatorUrl) : env.OFFLINE_SELF_CLAIM === "true";
   const stampClaimPacket = env.OFFLINE_STAMP_CLAIM_PACKET === "true";
   const covenantDestinations = env.OFFLINE_COVENANT_DESTINATIONS === "true";
+  const covenantRenewalMnemonic = env.OFFLINE_COVENANT_RENEWAL_MNEMONIC?.trim();
+  if (covenantRenewalMnemonic && !covenantDestinations) {
+    throw new ConfigError("OFFLINE_COVENANT_RENEWAL_MNEMONIC requires OFFLINE_COVENANT_DESTINATIONS=true");
+  }
   if (selfClaim && !emulatorUrl) {
     throw new ConfigError("OFFLINE_SELF_CLAIM=true requires OFFLINE_EMULATOR_URL (the emulator co-signs the covenant claim)");
   }
@@ -353,6 +358,7 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
     selfClaim,
     covenantDestinations,
     covenantRecoveryDelaySeconds,
+    ...(covenantRenewalMnemonic ? { covenantRenewalMnemonic } : {}),
     pollIntervalMs: integer(env, "OFFLINE_POLL_INTERVAL_MS", 15_000, { min: 1 }),
     ...(emulatorUrl ? { emulatorUrl } : {}),
     ...(cardsFile ? { cardsFile } : {}),

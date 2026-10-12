@@ -16,8 +16,7 @@
 // interface shape. The settlement poller reads solver status, so "settled" means the
 // solver settled the payer's hold invoice, not merely that a lockup exists.
 
-import { base64, hex } from "@scure/base";
-import { encodeClientClaimPacket } from "../covenant/claim-packet.js";
+import { hex } from "@scure/base";
 import { ArkAddress, RestArkProvider, VHTLCV2ContractHandler, getNetwork, toXOnly, type NetworkName } from "@arkade-os/sdk";
 import {
   deriveLightningReceive,
@@ -281,7 +280,7 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
           if (ctx.covclaimdPubkey) {
             const sealed = await sealClaimPacket({ preimage, covclaimdPubkey: ctx.covclaimdPubkey });
             claimPacket = settings.stampClaimPacket
-              ? base64.encode(encodeClientClaimPacket({ ciphertext: base64.decode(sealed.ciphertext), covclaimdPubkey: ctx.covclaimdPubkey }))
+              ? sealed.packet
               : sealed.ciphertext;
           } else if (settings.stampClaimPacket) {
             throw new Error("OFFLINE_STAMP_CLAIM_PACKET=true requires COVCLAIMD_URL (there is no packet to stamp without one)");

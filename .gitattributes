@@ -1,2 +1,2 @@
-
-test/e2e/intent-solver-covclaimd.patch text eol=lf
+contracts/*.ark text eol=lf
+contracts/*.json text eol=lf

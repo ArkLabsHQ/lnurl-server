@@ -13,6 +13,7 @@
     }
   },
   "scripts": {
+    "artifact": "node scripts/gen-covenant-artifact.mjs",
     "build": "pnpm build:server && pnpm build:client",
     "build:server": "tsup && vite build && node scripts/smoke-dist.mjs",
     "build:client": "tsup --config packages/client/tsup.config.ts",

@@ -5,7 +5,7 @@
 
 import { hex } from "@scure/base";
 import { getSequence, VtxoScript, type Contract, type ContractHandler, type PathSelection } from "@arkade-os/sdk";
-import { COLLABORATIVE_LEAF, COVENANT_V1, RECOVERY_LEAF, SWEEP_LEAF, covenantVtxoScript } from "./destination.js";
+import { COLLABORATIVE_LEAF, COVENANT_V1, RECOVERY_LEAF, RENEW_LEAF, SWEEP_LEAF, covenantVtxoScript } from "./destination.js";
 
 export const COVENANT_CONTRACT_TYPE = "lnurl-covenant-destination";
 
@@ -54,6 +54,7 @@ const pathsFor = (script: VtxoScript, contract: Contract): PathSelection[] => {
     { leaf: leaves[SWEEP_LEAF]!, extraWitness: [preimage] },
     { leaf: leaves[COLLABORATIVE_LEAF]! },
     { leaf: recovery, ...(sequence === undefined ? {} : { sequence }) },
+    ...(leaves[RENEW_LEAF] ? [{ leaf: leaves[RENEW_LEAF] }] : []),
   ];
 };
 
@@ -73,14 +74,10 @@ interface DerivesTapscripts {
 export const covenantDestinationHandler: ContractHandler<CovenantContractParams, VtxoScript> & DerivesTapscripts = {
   type: COVENANT_CONTRACT_TYPE,
 
-  /** A bare VtxoScript has no legacy `forfeit()`, so annotation cannot guess a leaf —
-   *  the SDK's own escape hatch for program-compiled covenants like this one. Both
-   *  point at the collaborative leaf: a forfeit and an intent proof are signed by the
-   *  user and the operator together, which is the only leaf shaped that way. The sweep
-   *  leaf needs a preimage and the emulator, and the recovery leaf is the user alone. */
+  /** v3 batch proofs use renewal; older contracts require the user's collaborative leaf. */
   deriveTapscripts: (script) => ({
-    forfeitTapLeafScript: script.leaves[COLLABORATIVE_LEAF]!,
-    intentTapLeafScript: script.leaves[COLLABORATIVE_LEAF]!,
+    forfeitTapLeafScript: script.leaves[RENEW_LEAF] ?? script.leaves[COLLABORATIVE_LEAF]!,
+    intentTapLeafScript: script.leaves[RENEW_LEAF] ?? script.leaves[COLLABORATIVE_LEAF]!,
     tapTree: script.encode(),
   }),
 
@@ -90,14 +87,17 @@ export const covenantDestinationHandler: ContractHandler<CovenantContractParams,
 
   getAllSpendingPaths: (script, contract) => pathsFor(script, contract),
 
-  /** The recovery leaf is the user's alone and only after its CSV; the other two need
+  /** The recovery leaf is the user's alone and only after its CSV; the other paths need
    *  a counterparty that is online now, which `collaborative` is exactly asking about. */
   getSpendablePaths(script, contract, context): PathSelection[] {
-    const [sweep, collaborative, recovery] = pathsFor(script, contract);
+    const [sweep, collaborative, recovery, renew] = pathsFor(script, contract);
     const fundedAt = context.vtxo?.status.block_time;
     const nowSeconds = Math.floor(context.chainTime ?? context.currentTime / 1000);
     const out: PathSelection[] = [];
-    if (context.collaborative) out.push(sweep!, collaborative!);
+    if (context.collaborative) {
+      out.push(sweep!, collaborative!);
+      if (renew) out.push(renew);
+    }
     // CSV is relative to this VTXO's confirmation, never contract creation. If
     // that anchor is unavailable, withholding recovery is the only safe answer.
     if (fundedAt !== undefined && nowSeconds - fundedAt >= deserialize(contract.params).recoveryDelaySeconds) out.push(recovery!);
