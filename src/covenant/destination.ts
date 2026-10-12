@@ -149,7 +149,7 @@ export function createCovenantDestinationProvider(opts: {
   arkServerUrl: string;
   covclaimdUrl?: string;
   emulatorUrl?: string;
-  recoveryDelaySeconds: number;
+  recoveryDelaySeconds?: number;
   /** arkd's advertised value: it refuses every spend, the sweep included, of a script whose shortest exit is below it. */
   unilateralExitDelay?: number;
   /** Absent keeps the provider standalone (unit tests, the probe script); present
@@ -162,16 +162,20 @@ export function createCovenantDestinationProvider(opts: {
   requestTimeoutMs?: number;
   now?: () => number;
 }): CovenantDestinationProvider {
+  const recoveryDelaySeconds = opts.recoveryDelaySeconds ?? opts.unilateralExitDelay;
+  if (recoveryDelaySeconds === undefined) {
+    throw new Error("covenant destinations require recoveryDelaySeconds or arkd's unilateral exit delay from /v1/info");
+  }
   // Here rather than only at derivation: BIP68's throw arrives per payment, where
   // the caller falls back to the static address, so the flag looks on and does
   // nothing. Construction is the last point that can still fail loudly.
-  if (!Number.isInteger(opts.recoveryDelaySeconds) || opts.recoveryDelaySeconds <= 0 || opts.recoveryDelaySeconds % 512 !== 0) {
-    throw new Error(`recoveryDelaySeconds must be a positive multiple of 512 (got ${opts.recoveryDelaySeconds})`);
+  if (!Number.isInteger(recoveryDelaySeconds) || recoveryDelaySeconds <= 0 || recoveryDelaySeconds % 512 !== 0) {
+    throw new Error(`recoveryDelaySeconds must be a positive multiple of 512 (got ${recoveryDelaySeconds})`);
   }
   // Raw values, as arkd compares them: its SECONDS_PER_BLOCK is 1, so even a block-typed delay is read as seconds.
-  if (opts.unilateralExitDelay !== undefined && opts.recoveryDelaySeconds < opts.unilateralExitDelay) {
+  if (opts.unilateralExitDelay !== undefined && recoveryDelaySeconds < opts.unilateralExitDelay) {
     throw new Error(
-      `recoveryDelaySeconds must be at least arkd's unilateral exit delay (${opts.unilateralExitDelay}); got ${opts.recoveryDelaySeconds}`,
+      `recoveryDelaySeconds must be at least arkd's unilateral exit delay (${opts.unilateralExitDelay}); got ${recoveryDelaySeconds}`,
     );
   }
   const now = opts.now ?? (() => Date.now());
@@ -220,7 +224,7 @@ export function createCovenantDestinationProvider(opts: {
         serverPubkey,
         emulatorPubkey,
         preimage,
-        recoveryDelaySeconds: opts.recoveryDelaySeconds,
+        recoveryDelaySeconds,
         // Stamped, so a row can always be rebuilt as whatever it was derived as.
         version: COVENANT_CURRENT,
       };

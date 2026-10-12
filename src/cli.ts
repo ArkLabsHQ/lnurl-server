@@ -240,7 +240,7 @@ async function main(): Promise<void> {
       );
       runtime.addStop(sweeper.stop);
       runtime.addStop(startCovenantWatcher(settlements, contracts, off.pollIntervalMs, sweeper.trigger));
-      console.log(`covenant destinations: enabled (emulator=${off.emulatorUrl}, recovery=${off.covenantRecoveryDelaySeconds}s)`);
+      console.log(`covenant destinations: enabled (emulator=${off.emulatorUrl}, recovery=${off.covenantRecoveryDelaySeconds ?? arkUnilateralExitDelay}s)`);
     }
     // Both rails leak a watched script per payment request, and either can be on
     // without the other, so this follows the contract manager rather than a rail.

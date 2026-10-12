@@ -38,7 +38,7 @@ const recoveryDelaySeconds = loadConfig({
   ARK_SERVER_URL: arkServerUrl,
   OFFLINE_COVENANT_DESTINATIONS: "true",
   OFFLINE_EMULATOR_URL: process.env.OFFLINE_EMULATOR_URL ?? "https://emulator.invalid",
-}).offlineReceive.covenantRecoveryDelaySeconds;
+}).offlineReceive.covenantRecoveryDelaySeconds ?? Number(info.unilateralExitDelay);
 
 const userPubkey = secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true).subarray(1);
 const staticAddress = new VtxoScript([

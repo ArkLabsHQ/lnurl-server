@@ -93,7 +93,7 @@ describe("loadConfig", () => {
       stampClaimPacket: false,
       selfClaim: false,
       covenantDestinations: false,
-      covenantRecoveryDelaySeconds: 86_528,
+      covenantRecoveryDelaySeconds: undefined,
       pollIntervalMs: 15_000,
       registryUrls: ["https://one.example/mutinynet.json", "https://two.example/mutinynet.json"],
       cardsFile: "/run/config/solvers.json",
@@ -246,7 +246,7 @@ describe("loadConfig", () => {
       OFFLINE_EMULATOR_URL: "https://emulator.example",
     });
     expect(on.offlineReceive.covenantDestinations).toBe(true);
-    expect(on.offlineReceive.covenantRecoveryDelaySeconds).toBe(86_528);
+    expect(on.offlineReceive.covenantRecoveryDelaySeconds).toBeUndefined();
 
     expect(loadConfig({ ...base }).offlineReceive.covenantDestinations).toBe(false);
     expect(
@@ -309,7 +309,7 @@ describe("loadConfig", () => {
     expect(loadConfig(withFlag("86528")).offlineReceive.covenantRecoveryDelaySeconds).toBe(86_528);
   });
 
-  it("ships a default recovery delay BIP68 can actually encode", () => {
+  it.each([undefined, ""])("defers an unset recovery delay (%s) to arkd info", (recoveryDelay) => {
     const cfg = loadConfig({
       ...base,
       COVCLAIMD_URL: "https://cc.example",
@@ -318,8 +318,9 @@ describe("loadConfig", () => {
       ALLOW_INSECURE_TOKEN_STORAGE: "1",
       OFFLINE_COVENANT_DESTINATIONS: "true",
       OFFLINE_EMULATOR_URL: "https://emulator.example",
+      OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS: recoveryDelay,
     });
-    expect(cfg.offlineReceive.covenantRecoveryDelaySeconds % 512).toBe(0);
+    expect(cfg.offlineReceive.covenantRecoveryDelaySeconds).toBeUndefined();
   });
 
 });

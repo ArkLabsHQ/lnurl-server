@@ -27,31 +27,6 @@ const derive = (preimage: Uint8Array) =>
   });
 
 describe("deriveCovenantDestination", () => {
-  // Every other case here picks 4096, which is a multiple of 512 by luck of the
-  // draw. The shipped default was 86400, which is not, and BIP68 threw on it —
-  // so the flag derived nothing and every payment fell back to the static
-  // address. Derive at whatever config actually ships, not at a chosen value.
-  it("derives at the shipped default recovery delay", () => {
-    const { offlineReceive } = loadConfig({
-      NODE_ENV: "test",
-      DB_PATH: "unused-test.sqlite",
-      ALLOW_INSECURE_TOKEN_STORAGE: "1",
-      COVCLAIMD_URL: "https://cc.example",
-      ARK_SERVER_URL: "https://ark.example",
-      OFFLINE_COVENANT_DESTINATIONS: "true",
-      OFFLINE_EMULATOR_URL: "https://emulator.example",
-    });
-    const d = deriveCovenantDestination({
-      staticAddress,
-      userPubkey,
-      serverPubkey,
-      emulatorPubkey,
-      preimage: new Uint8Array(32).fill(7),
-      recoveryDelaySeconds: offlineReceive.covenantRecoveryDelaySeconds,
-    });
-    expect(d.address.startsWith("tark1")).toBe(true);
-  });
-
   // Golden values from the construction funded and swept on regtest, so a drift
   // here means the emulator would stop co-signing rather than a test going stale.
   it("reproduces the construction proven on-chain, byte for byte", () => {
@@ -193,6 +168,21 @@ describe("createCovenantDestinationProvider", () => {
     expect(() => against(2048)).not.toThrow();
   });
 
+  it("refuses an unset recovery delay when arkd provides none", () => {
+    expect(() => createCovenantDestinationProvider({
+      arkServerUrl: "https://ark.example",
+      emulatorUrl: "https://emulator.example",
+    })).toThrow(/recoveryDelaySeconds or arkd's unilateral exit delay/);
+  });
+
+  it.each([0, -512, 86400])("refuses an invalid arkd default (%s)", (unilateralExitDelay) => {
+    expect(() => createCovenantDestinationProvider({
+      arkServerUrl: "https://ark.example",
+      emulatorUrl: "https://emulator.example",
+      unilateralExitDelay,
+    })).toThrow(/positive multiple of 512/);
+  });
+
   it("accepts an emulator URL in place of covclaimd", () => {
     expect(() =>
       createCovenantDestinationProvider({
@@ -223,6 +213,42 @@ describe("covenant destination key fetches", () => {
     });
 
   const address = { arkadeAddress: staticAddress, claimPublicKey: hex.encode(secp256k1.getPublicKey(new Uint8Array(32).fill(7), true)) };
+
+  it.each([
+    [undefined, "5120ad77864fb4a89480890fecef216efd57d7bd6e0f817071712d6a99cb400ca760"],
+    ["", "5120ad77864fb4a89480890fecef216efd57d7bd6e0f817071712d6a99cb400ca760"],
+    ["606208", "51201761f0436973bd99a5f976a6d32e13b507f1c9c1e76f9576725ec42f60c2d8aa"],
+  ])("derives using arkd info unless a recovery delay is supplied (%s)", async (recoveryDelay, script) => {
+    const ark = await listen((_req, res) => {
+      res.end(JSON.stringify({ signerPubkey: hex.encode(serverPubkey), unilateralExitDelay: "605184" }));
+    });
+    const emulator = await listen((_req, res) => {
+      res.end(JSON.stringify({ signerPubkey: hex.encode(emulatorPubkey) }));
+    });
+    try {
+      const { offlineReceive } = loadConfig({
+        NODE_ENV: "test",
+        DB_PATH: "unused-test.sqlite",
+        ALLOW_INSECURE_TOKEN_STORAGE: "1",
+        ARK_SERVER_URL: ark.url,
+        OFFLINE_COVENANT_DESTINATIONS: "true",
+        OFFLINE_EMULATOR_URL: emulator.url,
+        OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS: recoveryDelay,
+      });
+      const info = await (await fetch(`${ark.url}/v1/info`)).json() as { unilateralExitDelay: string };
+      const provider = createCovenantDestinationProvider({
+        arkServerUrl: ark.url,
+        emulatorUrl: emulator.url,
+        recoveryDelaySeconds: offlineReceive.covenantRecoveryDelaySeconds,
+        unilateralExitDelay: Number(info.unilateralExitDelay),
+        entropy: { preimage: () => new Uint8Array(32).fill(7) },
+      });
+      expect((await provider.derive(address)).script).toBe(script);
+    } finally {
+      await ark.close();
+      await emulator.close();
+    }
+  });
 
   it("fetches the operator and emulator keys once for concurrent derivations", async () => {
     let infoHits = 0;
