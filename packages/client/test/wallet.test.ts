@@ -1,7 +1,7 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { hex } from "@scure/base";
-import { invoiceTarget, type PaymentRail, type RouteQuote, type Wallet } from "@arkade-os/sdk";
+import { createDefaultPaymentRouter, invoiceTarget, type PaymentRail, type RouteQuote, type Wallet } from "@arkade-os/sdk";
 import { arkadeLnurl, arkadePaymentRouter, DEFAULT_RAIL_PRIORITY, encodeLnurl, type ArkadeLnurl, type Receiver } from "../src/wallet.js";
 import { deriveSessionId } from "../src/token.js";
 import { createLnurlClient, type LnurlClient } from "../src/index.js";
@@ -14,14 +14,14 @@ const ARKADE_ADDRESS =
 const BOARDING = "tb1qexample";
 
 /** Only the members the facade touches; `router()` is the one path needing more. */
-const fakeWallet = (): Wallet => ({
+const fakeWallet = () => ({
   identity: {
     signMessage: async (message: Uint8Array) => secp256k1.sign(message, hex.decode(PRIVATE_KEY), { prehash: false }),
     compressedPublicKey: async () => secp256k1.getPublicKey(hex.decode(PRIVATE_KEY), true),
   },
   getAddress: async () => ARKADE_ADDRESS,
   getBoardingAddress: async () => BOARDING,
-} as unknown as Wallet);
+});
 
 const fakeClient = (over: Partial<LnurlClient> = {}): LnurlClient => ({
   resolve: vi.fn(async () => ({ tag: "payRequest" }) as never),
@@ -42,6 +42,39 @@ const fakeClient = (over: Partial<LnurlClient> = {}): LnurlClient => ({
 } as unknown as LnurlClient);
 
 describe("arkadeLnurl", () => {
+  it("uses a structural router supplied by the caller", async () => {
+    const sdkRouter = createDefaultPaymentRouter(fakeWallet() as unknown as Wallet);
+    sdkRouter.use({
+      id: "custom",
+      match: (req) => req.raw === "custom:payment",
+      quote: async () => ({
+        railId: "custom", amount: 500, fee: 7, total: 507,
+        send: async () => { throw new Error("This test quotes without spending"); },
+      }),
+    });
+    const router = {
+      use(rail: PaymentRail) { sdkRouter.use(rail); return this; },
+      remove(id: string) { sdkRouter.remove(id); return this; },
+      options: sdkRouter.options.bind(sdkRouter),
+      route: sdkRouter.route.bind(sdkRouter),
+    };
+    const lnurl = arkadeLnurl({ wallet: fakeWallet(), baseUrl: "https://lnurl.example.com", router });
+
+    expect((await lnurl.options("custom:payment", 500)).map((option) => option.railId)).toEqual(["custom"]);
+    expect(await lnurl.router().route({ raw: "custom:payment", amount: 500 })).toMatchObject({ amount: 500, total: 507 });
+
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      tag: "payRequest", callback: "https://lnurl.example.com/callback",
+      minSendable: 1000, maxSendable: 1_000_000, metadata: '[["text/plain","alice"]]',
+      paymentOptions: [{ id: "arkade", type: "arkade" }],
+    })));
+    try {
+      expect((await lnurl.options("alice@lnurl.example.com", 500)).map((option) => option.railId)).toEqual(["lnurl-arkade"]);
+    } finally {
+      fetch.mockRestore();
+    }
+  });
+
   it("claims a name and binds the identity in one call", async () => {
     const client = fakeClient();
     const lnurl = arkadeLnurl({ wallet: fakeWallet(), baseUrl: "https://lnurl.example.com", client });

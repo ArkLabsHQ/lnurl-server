@@ -8,6 +8,8 @@ Full-duplex client for the lnurl-server protocol: payer (`resolve`, `requestInvo
 pnpm add @arkade-os/lnurl-client
 ```
 
+The SDK is an optional peer: `>=0.5.0-rc.0` (0.5.0 release candidates and stable 0.5+ releases). The main entry point needs no SDK; `/arkade` uses the SDK installed by your app.
+
 Runtime dependencies are `@scure/base` and `@noble/hashes` - nothing else is pulled in, and the package never imports the server, so app bundles stay free of `express` and `sqlite`.
 
 ## With an Arkade wallet
@@ -55,6 +57,10 @@ const handle = await (await best.quote()).send()
 **Nameless, and upgrading later.** `claim({ nameless: true })` returns a `Receiver` with no lightning address at all - offline receive, rails and payment sync all work off its stable `lnurl` alone. `receiver.upgrade({ username: 'alice' })` (or `{ username, claimCode }` for a reserved name) names it in place: the wallet keeps its history and the same `lnurl` keeps paying it, but the upgrade **publicly links** that LNURL to the new name. To keep them unlinked instead, call `lnurl.claim({ username: 'alice' })` on the side - a second, separate named address (counted against the domain's per-wallet limit) with no connection to the nameless one.
 
 Paying needs no address of your own, so the router is available separately - `arkadePaymentRouter({ wallet, lightning })` returns the SDK router with the LNURL rails registered, which is what makes `route()` accept a Lightning address instead of throwing `no rail for`.
+
+Receiving accepts a `LnurlWallet`: only `identity.signMessage`, `identity.compressedPublicKey`, `getAddress`, and `getBoardingAddress` are required. It does not require the SDK's concrete `Wallet` class. For sending, the default adapter expects a full SDK spending wallet. Custom wallets can pass a `LnurlPaymentRouter` as `router` to either `arkadeLnurl` or `arkadePaymentRouter`; the adapter registers the LNURL rails on that router. `LnurlPaymentRouter` requires only `use`, `remove`, `options`, and `route`, without the SDK class's private members. SDK rails and router data types remain part of the `/arkade` contract.
+
+CI checks the client against SDK `0.5.0-rc.0` and `0.5.0-rc.19` in isolated installs, independent of the server's SDK pin. Run the same types, tests, build, and consumer checks with `node scripts/check-client-sdk-compat.mjs <sdk-version>` from the repository root.
 
 Everything below is the surface these are built on; reach for it when the facade does not fit.
 
