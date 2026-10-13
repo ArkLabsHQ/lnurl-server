@@ -1,25 +1,31 @@
 /** The wallet-shaped facade: what a receiver holding an `@arkade-os/sdk` wallet
  *  would otherwise wire by hand. The low-level surface stays exported beneath it. */
-import {
-  arkRail,
-  BIP21,
-  createDefaultPaymentRouter,
-  type PaymentOption,
-  type PaymentRail,
-  type PaymentRequest,
-  type PaymentRouter,
-  type RouterPreferences,
-  type Wallet,
-} from "@arkade-os/sdk";
+import type { PaymentOption, PaymentRail, PaymentRequest, RouteQuote, RouterPreferences } from "@arkade-os/sdk";
 import { bech32 } from "@scure/base";
 import { arkadeIdentityRequest, deriveSessionTokenForIdentity, type ArkadeSigner } from "./arkade.js";
 import { LnurlError } from "./errors.js";
 import { createLnurlClient, type LnurlClient } from "./index.js";
-import { lnurlRails, PAY_REQUEST_TTL_MS } from "./rail.js";
+import { PAY_REQUEST_TTL_MS } from "./rail.js";
 import { deriveSessionId } from "./token.js";
 import { syncPayments, type PaymentSyncStore, type StoredPayment } from "./sync.js";
 import type { DomainCapabilities } from "./addresses.js";
 import type { PayRequest, PaymentPage } from "./types.js";
+import { arkadePaymentRouter } from "./sdk-adapter.js";
+
+export { arkadePaymentRouter } from "./sdk-adapter.js";
+
+export interface LnurlWallet {
+  readonly identity: ArkadeSigner;
+  getAddress(): Promise<string>;
+  getBoardingAddress(): Promise<string>;
+}
+
+export interface LnurlPaymentRouter {
+  use(rail: PaymentRail): this;
+  remove(id: string): this;
+  options(req: PaymentRequest, prefs?: RouterPreferences): Promise<PaymentOption[]>;
+  route(req: PaymentRequest, prefs?: RouterPreferences): Promise<RouteQuote>;
+}
 
 /** The 1023 limit is LUD-01's, not bech32's default 90. */
 export function encodeLnurl(url: string): string {
@@ -29,8 +35,8 @@ export function encodeLnurl(url: string): string {
 /** A wallet supplies the signer and both addresses. Without one — a script, a
  *  test, a server holding only a key — name them; only sending needs a wallet. */
 export type ArkadeLnurlSource =
-  | { wallet: Wallet; identity?: never; arkadeAddress?: never }
-  | { wallet?: never; identity: ArkadeSigner; arkadeAddress: string; boardingAddress?: string };
+  | { wallet: LnurlWallet; router?: LnurlPaymentRouter; identity?: never; arkadeAddress?: never }
+  | { wallet?: never; router?: never; identity: ArkadeSigner; arkadeAddress: string; boardingAddress?: string };
 
 export type ArkadeLnurlOptions = ArkadeLnurlSource & ArkadeLnurlConfig;
 
@@ -82,7 +88,7 @@ export interface ArkadeLnurl {
    *  `paymentOptions` at all, so offline receive does not exist. */
   claim(opts?: ClaimOptions): Promise<Receiver>;
   owned(): Promise<Receiver | undefined>;
-  router(): PaymentRouter;
+  router(): LnurlPaymentRouter;
   options(target: string, amountSat: number, prefs?: RouterPreferences): Promise<PaymentOption[]>;
 }
 
@@ -91,44 +97,6 @@ export interface ArkadeLnurl {
 export const DEFAULT_RAIL_PRIORITY = [
   "lnurl-arkade", "ark", "ark-asset", "lnurl-lightning", "solver-lightning", "onchain",
 ];
-
-/** The SDK's router with the LNURL rails registered, so `route()` accepts a
- *  Lightning address. Separate from {@link arkadeLnurl}: paying needs no address
- *  of your own, and so no server. */
-export function arkadePaymentRouter(opts: {
-  wallet: Wallet;
-  lightning?: PaymentRail;
-  client?: LnurlClient;
-  comment?: string;
-}): PaymentRouter {
-  const router = createDefaultPaymentRouter(opts.wallet);
-  if (opts.lightning) router.use(invoicePricedLeg(opts.lightning));
-  for (const rail of lnurlRails({
-    client: opts.client ?? createLnurlClient(),
-    arkade: arkRail(),
-    ...(opts.lightning ? { lightning: opts.lightning } : {}),
-    ...(opts.comment !== undefined ? { comment: opts.comment } : {}),
-  })) {
-    router.use(rail);
-  }
-  return router;
-}
-
-/** A unified BIP21's invoice prices its own leg, often above `amount=` by the
- *  receiver's swap fee, so an amount only restating `amount=` must not drop it. */
-function invoicePricedLeg(rail: PaymentRail): PaymentRail {
-  const leg = (req: PaymentRequest): PaymentRequest => {
-    if (req.amount === undefined || req.amount !== BIP21.amountSats(req.raw)) return req;
-    const { amount: _restated, ...rest } = req;
-    return rest;
-  };
-  return {
-    id: rail.id,
-    match: (req, ctx) => rail.match(req, ctx),
-    available: (req, ctx) => rail.available?.(leg(req), ctx) ?? true,
-    quote: (req, ctx) => rail.quote(leg(req), ctx),
-  };
-}
 
 export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
   const { wallet, baseUrl } = opts;
@@ -145,13 +113,14 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
   let tokenOnce: Promise<string> | undefined;
   const token = (): Promise<string> => (tokenOnce ??= deriveSessionTokenForIdentity(identity, domain));
 
-  let routerOnce: PaymentRouter | undefined;
-  const router = (): PaymentRouter => {
+  let routerOnce: LnurlPaymentRouter | undefined;
+  const router = (): LnurlPaymentRouter => {
     // Receiving needs only a signer; spending the wallet's own coins needs the wallet.
     if (!wallet) throw new LnurlError("paying needs a wallet; arkadeLnurl was given an identity only");
     return (routerOnce ??= arkadePaymentRouter({
       wallet,
       client: payer,
+      ...(opts.router ? { router: opts.router } : {}),
       ...(opts.lightningRail ? { lightning: opts.lightningRail } : {}),
     }));
   };

@@ -15,7 +15,7 @@ import { deriveSessionTokenWithSigner } from "./token.js";
 export { LNURL_ARKADE_RAIL, LNURL_LIGHTNING_RAIL, lnurlQuoteMeta, lnurlRails } from "./rail.js";
 export type { LnurlQuoteMeta, LnurlRailDeps } from "./rail.js";
 export { arkadeLnurl, arkadePaymentRouter, encodeLnurl, DEFAULT_RAIL_PRIORITY } from "./wallet.js";
-export type { ArkadeLnurl, ArkadeLnurlConfig, ArkadeLnurlOptions, ArkadeLnurlSource, ClaimOptions, NameOptions, Receiver } from "./wallet.js";
+export type { ArkadeLnurl, ArkadeLnurlConfig, ArkadeLnurlOptions, ArkadeLnurlSource, ClaimOptions, LnurlPaymentRouter, LnurlWallet, NameOptions, Receiver } from "./wallet.js";
 export {
   absorbedPaymentKey,
   lnurlActivityResolver,
