@@ -407,7 +407,7 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `QUOTE_UNITS` | — | Comma-separated unit codes to quote ([Payment quote](#payment-quote-lud-xx)). Each needs the three settings below. |
 | `QUOTE_<CODE>_FEED_URL` | — | JSON price feed answering the unit's price per one whole bitcoin. |
 | `QUOTE_<CODE>_DECIMALS` | — | Decimals of the unit's smallest denomination (`2` for USD cents, `6` for USDT). Required: a wrong guess misprices by a power of ten. |
-| `QUOTE_<CODE>_PRICE_PATH` | derived for Binance / CoinGecko URLs | RFC 6901 pointer to the price in the feed's response, e.g. `/data/0/price`. |
+| `QUOTE_<CODE>_PRICE_PATH` | derived for Binance / single-currency CoinGecko URLs | RFC 6901 pointer to the price in the feed's response, e.g. `/data/0/price`. |
 | `QUOTE_REFRESH_MS` | `60000` | Feed refresh interval; a price older than three intervals stops being quoted. |
 | `SHUTDOWN_TIMEOUT_MS` | `15000` | Grace period before lingering HTTP connections are forced closed |
 

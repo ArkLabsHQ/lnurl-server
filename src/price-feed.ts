@@ -77,8 +77,9 @@ export function defaultPricePath(feedUrl: string): string | null {
   }
   const ids = query.get("ids");
   const currencies = query.get("vs_currencies");
-  if (!ids || !currencies) return null;
-  return `/${ids.split(",")[0]}/${currencies.split(",")[0]}`;
+  // A list is ambiguous: picking its first entry would price USD off `vs_currencies=eur,usd`.
+  if (!ids || !currencies || ids.includes(",") || currencies.includes(",")) return null;
+  return `/${ids}/${currencies}`;
 }
 
 /** `amount` of the unit (smallest denomination) in millisats, at `price` units per BTC.
@@ -91,9 +92,36 @@ export function unitToMsat(amount: bigint, price: Price, decimals: number): bigi
   return numerator % denominator === 0n ? quotient : quotient + 1n;
 }
 
+/** A price is a few hundred bytes; a misconfigured URL can be an order book. */
+const MAX_BODY_BYTES = 1_048_576;
+
+async function cappedText(res: Response, feedUrl: string): Promise<string> {
+  const tooLarge = () => new Error(`price feed ${feedUrl}: response exceeded ${MAX_BODY_BYTES} bytes`);
+  if (!res.body) {
+    const text = await res.text();
+    if (Buffer.byteLength(text) > MAX_BODY_BYTES) throw tooLarge();
+    return text;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let bytes = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    bytes += value.byteLength;
+    if (bytes > MAX_BODY_BYTES) {
+      void reader.cancel().catch(() => {});
+      throw tooLarge();
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
 export async function fetchPrice(unit: PriceFeedUnit, opts: { timeoutMs: number; fetch?: typeof globalThis.fetch }): Promise<Price> {
   const res = await (opts.fetch ?? fetch)(unit.feedUrl, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(opts.timeoutMs) });
-  const text = await res.text();
+  const text = await cappedText(res, unit.feedUrl);
   if (!res.ok) throw new Error(`price feed ${unit.feedUrl}: HTTP ${res.status} - ${text.slice(0, 200)}`);
   let body: unknown;
   try {

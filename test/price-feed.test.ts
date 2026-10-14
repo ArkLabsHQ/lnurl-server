@@ -20,7 +20,8 @@ describe("price math", () => {
 
   it("derives the pointer for Binance and CoinGecko only", () => {
     expect(defaultPricePath("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")).toBe("/price");
-    expect(defaultPricePath("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=eur,usd")).toBe("/bitcoin/eur");
+    expect(defaultPricePath("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=eur")).toBe("/bitcoin/eur");
+    expect(defaultPricePath("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=eur,usd")).toBeNull();
     expect(defaultPricePath("https://example.com/btc")).toBeNull();
   });
 
@@ -102,6 +103,13 @@ describe("priceFeedQuotes", () => {
     expect(applyQuote(q, { amount: 5000, receiveUnit: "msat" })).toMatchObject({ ok: true, amountMsat: 5000 });
   });
 
+  it("refuses a response over 1 MiB", async () => {
+    feed.body = `{"pad":"${"x".repeat(1_048_576)}","bitcoin":{"usd":50000}}`;
+    const q = make();
+    await q.refresh();
+    expect(q.status().detail).toMatch(/exceeded 1048576 bytes/);
+  });
+
   it("treats a non-JSON answer as a failed refresh", async () => {
     feed.body = "<html>bad gateway</html>";
     const q = make();
@@ -134,6 +142,7 @@ describe("QUOTE_* config", () => {
     [{ QUOTE_UNITS: "USD" }, /QUOTE_USD_FEED_URL is required/],
     [{ QUOTE_UNITS: "USD", QUOTE_USD_FEED_URL: coingecko }, /QUOTE_USD_DECIMALS is required/],
     [{ QUOTE_UNITS: "USD", QUOTE_USD_FEED_URL: "https://feed.example/usd", QUOTE_USD_DECIMALS: "2" }, /QUOTE_USD_PRICE_PATH is required/],
+    [{ QUOTE_UNITS: "USD", QUOTE_USD_FEED_URL: `${coingecko.replace("usd", "eur,usd")}`, QUOTE_USD_DECIMALS: "2" }, /QUOTE_USD_PRICE_PATH is required/],
     [{ QUOTE_UNITS: "USD", QUOTE_USD_FEED_URL: coingecko, QUOTE_USD_DECIMALS: "2", QUOTE_USD_PRICE_PATH: "bitcoin" }, /JSON pointer/],
     [{ QUOTE_UNITS: "USD,usd" }, /twice/],
     [{ QUOTE_UNITS: "US-D" }, /letters and digits/],
