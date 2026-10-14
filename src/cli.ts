@@ -46,6 +46,16 @@ async function main(): Promise<void> {
   }
   let deps: import("./http/server.js").ServerDeps | undefined;
   let solverDiscovery: import("./services/solver-discovery.js").DiscoveryService | undefined;
+  let quoteProvider: import("./quote-provider.js").QuoteProvider | undefined;
+  if (config.quotes) {
+    const { priceFeedQuotes } = await import("./price-feed.js");
+    const { startCatchUpLoop } = await import("./workers/catch-up-loop.js");
+    const quotes = priceFeedQuotes({ units: config.quotes.units, staleAfterMs: config.quotes.refreshMs * 3, logger });
+    runtime.addStop(startCatchUpLoop({ pass: () => quotes.refresh(), intervalMs: config.quotes.refreshMs, onError: (error) => logger.warn("price_feed_failed", { error }), immediate: true }).stop);
+    health.register("priceFeeds", () => quotes.status(), { required: false });
+    quoteProvider = quotes;
+    console.log(`payment quotes: enabled (${config.quotes.units.map((u) => u.code).join(", ")}, refresh=${config.quotes.refreshMs}ms)`);
+  }
 
   if (db) {
     const { createRepositories } = await import("./db/repositories/index.js");
@@ -328,6 +338,7 @@ async function main(): Promise<void> {
     });
   }
 
+  const shared = { health, logger, ...(quoteProvider ? { quoteProvider } : {}) };
   const app = createServer(
     {
       port: config.port,
@@ -347,7 +358,7 @@ async function main(): Promise<void> {
       maxConcurrentOfflineQuotes: config.maxConcurrentOfflineQuotes,
       callbackRateLimitPerMin: config.callbackRateLimitPerMin,
     },
-    deps ? { ...deps, health, logger } : { health, logger } as never,
+    deps ? { ...deps, ...shared } : shared as never,
   );
 
   const publicServer = app.listen(config.port, () => {

@@ -285,12 +285,22 @@ FixedFloat allows 250 request-weight units a minute per key and an order costs 5
 
 ## Payment quote (LUD-XX)
 
-Optional: denominate amounts in units other than millisatoshis (USD, USDT, …). This server has **no rate oracle**, so quoting is delegated to an injected `QuoteProvider` (`src/quote-provider.ts`). Without one, `units` is not advertised and any `unit=` request is rejected.
+Optional: denominate amounts in units other than millisatoshis (USD, EUR, USDT, …). Set `QUOTE_UNITS` and each unit is priced from its own JSON price feed (`src/price-feed.ts`, the same feed contract intent-solver's asset markets use): one URL answering the unit's price per **one whole bitcoin**, and an RFC 6901 pointer to that price.
 
-When a provider is configured, the LN-address `payRequest` advertises `units`:
+```bash
+QUOTE_UNITS=USD,EUR
+QUOTE_USD_FEED_URL=https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd   # pointer derived: /bitcoin/usd
+QUOTE_USD_DECIMALS=2
+QUOTE_EUR_FEED_URL=https://api.binance.com/api/v3/ticker/price?symbol=BTCEUR                      # pointer derived: /price
+QUOTE_EUR_DECIMALS=2
+```
+
+Feeds refresh in the background every `QUOTE_REFRESH_MS`; a quote never waits on one. A unit whose last good price is older than three refresh intervals is neither advertised nor quoted, and `/health` reports `priceFeeds` (optional, so it never fails readiness). Without `QUOTE_UNITS`, `units` is not advertised and any `unit=` request is rejected. Embedders of `createServer` can pass `priceFeedQuotes(...)` or any other `QuoteProvider` as `quoteProvider`.
+
+When a provider is configured, both the LN-address and the session-LNURL `payRequest` advertise `units`:
 
 ```json
-"units": [{ "code": "USD", "name": "US Dollar", "symbol": "$", "decimals": 2 }]
+"units": [{ "code": "USD", "decimals": 2 }]
 ```
 
 A payer denominates the callback with `?unit=<code>` (optionally `&receiveUnit=<code>`). `amount` is then the smallest integer of that unit (e.g. `amount=100&unit=USD` = $1.00). The provider quotes it to millisats — which drives the bolt11 / offline swap — and the response echoes the quote:
@@ -299,9 +309,9 @@ A payer denominates the callback with `?unit=<code>` (optionally `&receiveUnit=<
 { "pr": "lnbc...", "routes": [], "paymentQuote": { "requested": { "amount": "100", "unit": "USD" }, "payment": { "amount": "162345000", "unit": "msat" } }, "verify": "..." }
 ```
 
-An unknown or unsupported unit returns `{ "status": "ERROR", "reason": "Unsupported unit" }`.
+An unknown or unsupported unit returns `{ "status": "ERROR", "reason": "Unsupported unit" }`. The receiver always gets sats, so `receiveUnit` may only be `msat`. The millisat amount is rounded up, never down.
 
-> Framework only — plug real rates, assets, and swap-backed quotes in behind `QuoteProvider`. Quoting applies to the amount-denominated Lightning path (relay + offline swap); the `arkade` destination rail rejects `unit` for now.
+> Quoting applies to the amount-denominated Lightning path (relay + offline swap); the `arkade` destination and token-deposit rails reject `unit`. No spread is added: the payer pays the feed's mid price.
 
 ## Admin backend — port 3001
 
@@ -394,6 +404,11 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `FIXEDFLOAT_REFRESH_MS` | `300000` | Rates and currency-list refresh interval. |
 | `FIXEDFLOAT_BASE_URL` / `FIXEDFLOAT_RATES_URL` | `https://ff.io/api/v2` / `https://ff.io/rates/fixed.xml` | FixedFloat's API and public rates export. |
 | `FIXEDFLOAT_SIMULATE` | `false` | `true` runs the simulated provider instead; never on `bitcoin`, never with keys. |
+| `QUOTE_UNITS` | — | Comma-separated unit codes to quote ([Payment quote](#payment-quote-lud-xx)). Each needs the three settings below. |
+| `QUOTE_<CODE>_FEED_URL` | — | JSON price feed answering the unit's price per one whole bitcoin. |
+| `QUOTE_<CODE>_DECIMALS` | — | Decimals of the unit's smallest denomination (`2` for USD cents, `6` for USDT). Required: a wrong guess misprices by a power of ten. |
+| `QUOTE_<CODE>_PRICE_PATH` | derived for Binance / CoinGecko URLs | RFC 6901 pointer to the price in the feed's response, e.g. `/data/0/price`. |
+| `QUOTE_REFRESH_MS` | `60000` | Feed refresh interval; a price older than three intervals stops being quoted. |
 | `SHUTDOWN_TIMEOUT_MS` | `15000` | Grace period before lingering HTTP connections are forced closed |
 
 ## Development

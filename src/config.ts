@@ -2,6 +2,13 @@ import { BlockList, isIP } from "node:net";
 import { ConfigError } from "./errors.js";
 import { ffAuth, type FfAuth } from "./rails/fixedfloat/client.js";
 import { FF_ASSETS } from "./rails/fixedfloat/catalogue.js";
+import { defaultPricePath, validatePricePath, type PriceFeedUnit } from "./price-feed.js";
+
+/** LUD-XX paymentQuote units priced from external feeds. */
+export interface QuoteConfig {
+  units: PriceFeedUnit[];
+  refreshMs: number;
+}
 
 /** Token deposits through FixedFloat, or through the simulator off mainnet. */
 export interface FixedFloatConfig {
@@ -98,6 +105,7 @@ export interface AppConfig {
   shutdownTimeoutMs: number;
   offlineReceive: OfflineReceiveConfig;
   fixedFloat?: FixedFloatConfig;
+  quotes?: QuoteConfig;
 }
 
 type Env = Record<string, string | undefined>;
@@ -179,6 +187,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
   const adminPort = integer(env, "ADMIN_PORT", 3001, { min: 1, max: 65_535 });
   if (dbPath && adminPort === port) throw new ConfigError("ADMIN_PORT must differ from PORT when DB_PATH is set");
   const fixedFloat = buildFixedFloat(env, dbPath, offlineReceive);
+  const quotes = buildQuotes(env);
 
   return {
     port,
@@ -206,7 +215,36 @@ export function loadConfig(env: Env = process.env): AppConfig {
     shutdownTimeoutMs: integer(env, "SHUTDOWN_TIMEOUT_MS", 15_000, { min: 1 }),
     offlineReceive,
     ...(fixedFloat ? { fixedFloat } : {}),
+    ...(quotes ? { quotes } : {}),
   };
+}
+
+function buildQuotes(env: Env): QuoteConfig | undefined {
+  const codes = (env.QUOTE_UNITS ?? "").split(",").map((c) => c.trim().toUpperCase()).filter(Boolean);
+  if (codes.length === 0) return undefined;
+  if (new Set(codes).size !== codes.length) throw new ConfigError("QUOTE_UNITS names a unit twice");
+  const units = codes.map((code): PriceFeedUnit => {
+    // The code becomes part of env var names below.
+    if (!/^[A-Z][A-Z0-9]{0,15}$/.test(code)) throw new ConfigError(`QUOTE_UNITS entry "${code}" must be letters and digits, starting with a letter`);
+    const urlName = `QUOTE_${code}_FEED_URL`;
+    const raw = env[urlName];
+    if (!raw) throw new ConfigError(`${urlName} is required for unit ${code}`);
+    const feedUrl = httpUrl(raw, urlName);
+    const decimalsName = `QUOTE_${code}_DECIMALS`;
+    // No default: a wrong guess misprices every quote by a power of ten.
+    if (!env[decimalsName]) throw new ConfigError(`${decimalsName} is required (e.g. 2 for USD cents)`);
+    const decimals = integer(env, decimalsName, 0, { min: 0, max: 18 });
+    const pathName = `QUOTE_${code}_PRICE_PATH`;
+    const pricePath = env[pathName] ?? defaultPricePath(feedUrl);
+    if (pricePath === null) throw new ConfigError(`${pathName} is required: it cannot be derived from ${feedUrl}`);
+    try {
+      validatePricePath(pricePath);
+    } catch (error) {
+      throw new ConfigError(`${pathName}: ${(error as Error).message}`);
+    }
+    return { code, decimals, feedUrl, pricePath };
+  });
+  return { units, refreshMs: integer(env, "QUOTE_REFRESH_MS", 60_000, { min: 5_000 }) };
 }
 
 function ffCodes(raw: string | undefined, name: string): string[] | undefined {

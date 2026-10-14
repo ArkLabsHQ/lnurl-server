@@ -202,6 +202,7 @@ export const openApiSpec = {
                         maxSendable: { type: "number" },
                         metadata: { type: "string" },
                         commentAllowed: { type: "number" },
+                        units: { type: "array", description: "LUD-XX: quotable units, present when a quote provider is configured (same shape as the LN-address `units`)", items: { type: "object" } },
                       },
                     },
                     {
@@ -243,7 +244,7 @@ export const openApiSpec = {
             in: "query",
             required: true,
             schema: { type: "number" },
-            description: "Amount in millisatoshis",
+            description: "Amount — millisatoshis, or the smallest unit of `unit` when set",
           },
           {
             name: "comment",
@@ -252,6 +253,8 @@ export const openApiSpec = {
             schema: { type: "string" },
             description: "Optional payer comment",
           },
+          { name: "unit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: denomination unit (e.g. `USD`); requires a configured quote provider" },
+          { name: "receiveUnit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: desired receiver unit; the built-in price-feed provider accepts only `msat`" },
         ],
         responses: {
           "200": {
@@ -266,6 +269,7 @@ export const openApiSpec = {
                         pr: { type: "string", description: "BOLT11 invoice" },
                         routes: { type: "array", items: {} },
                         verify: { type: "string", description: "LUD-21 verify URL (present when the bolt11 could be decoded)" },
+                        paymentQuote: { $ref: "#/components/schemas/PaymentQuote" },
                       },
                     },
                     {
@@ -816,7 +820,7 @@ export const openApiSpec = {
           { name: "comment", in: "query", required: false, schema: { type: "string" }, description: "Optional payer comment" },
           { name: "paymentOption", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: selected rail id (`arkade`, `onchain`, or a token option such as `ff-usdtarbitrum`); defaults to lightning" },
           { name: "unit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: denomination unit (e.g. `USD`); `amount` becomes that unit's smallest integer. Refused on destination and token options, whose amount is always millisats" },
-          { name: "receiveUnit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: desired receiver unit" },
+          { name: "receiveUnit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: desired receiver unit; the built-in price-feed provider accepts only `msat`" },
         ],
         responses: {
           "200": {
