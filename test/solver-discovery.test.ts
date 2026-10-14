@@ -1,6 +1,8 @@
+import { createServer, type AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
+import type { TransportCardFetcher } from "@arkade-os/solver-discovery";
 import { DiscoveryService } from "../src/services/solver-discovery.js";
-import { legacyAssetSolverCard, legacyBtcSolverCard, registryIndex, solverCard } from "./fixtures/solver-cards.js";
+import { legacyAssetSolverCard, legacyBtcSolverCard, nostrCard, nostrPointer, nostrSolver, registryIndex, solverCard } from "./fixtures/solver-cards.js";
 
 const registryUrl = "https://registry.test/bitcoin.json";
 // x-only; the covenant commits to an emulator key, so selection requires one.
@@ -24,6 +26,15 @@ const response = (body: unknown, status = 200) => Promise.resolve({
   text: async () => JSON.stringify(body),
 });
 
+const pointerIndex = (generatedAt: number) => ({ ...registryIndex(legacyBtcSolverCard("registry", 30), generatedAt), solvers: [nostrSolver()] });
+
+const publishing = (createdAt: number, asked: unknown[][] = []): TransportCardFetcher => ({
+  async fetch(...args) {
+    asked.push(args);
+    return [{ pubkey: nostrSolver().discovery_pubkey, createdAt, card: nostrCard() }];
+  },
+});
+
 describe("DiscoveryService", () => {
   it("atomically merges registry, database, and startup-file cards in fee order", async () => {
     const cards = new CardStore();
@@ -44,6 +55,7 @@ describe("DiscoveryService", () => {
       cacheStore: new CacheStore(),
       readFile: async () => JSON.stringify([solverCard("backup", 20)]),
       fetchImpl: async () => response(registryIndex(solverCard("registry", 30), 1_000)),
+      transportCards: null,
       now: () => 1_000_000,
       refreshIntervalMs: 0,
     });
@@ -110,6 +122,7 @@ describe("DiscoveryService", () => {
       cardStore: cards,
       cacheStore: new CacheStore(),
       fetchImpl: async () => response(registryIndex(legacyBtcSolverCard("registry", 30), 1_000)),
+      transportCards: null,
       now: () => 1_000_000,
       refreshIntervalMs: 0,
     });
@@ -307,7 +320,7 @@ describe("DiscoveryService", () => {
       network: "bitcoin", registryUrls: [registryUrl], cardsFile: "cards.json", cardStore: cards, cacheStore: cache,
       readFile: async () => JSON.stringify([card]),
       fetchImpl: async () => response(registryIndex(card, 1_000)),
-      now: twentyDaysLater, refreshIntervalMs: 0,
+      transportCards: null, now: twentyDaysLater, refreshIntervalMs: 0,
     });
 
     await service.start();
@@ -333,6 +346,23 @@ describe("DiscoveryService", () => {
     service.stop();
   });
 
+  it("takes a stale registry's pointer-listed solver from its fresh card, and none of the registry's snapshot", async () => {
+    const cache = new CacheStore();
+    const service = new DiscoveryService({
+      network: "bitcoin", registryUrls: [registryUrl], cardStore: new CardStore(), cacheStore: cache,
+      fetchImpl: async () => response(pointerIndex(1_000)),
+      transportCards: publishing(twentyDaysLater() / 1000),
+      now: twentyDaysLater, refreshIntervalMs: 0,
+    });
+
+    await service.start();
+    expect(service.selectLightningReceive(10_000, EMULATOR).map(({ name, source }) => ({ name, source })))
+      .toEqual([{ name: "nostr-solver", source: registryUrl }]);
+    expect(service.status().warnings).toEqual([expect.stringMatching(/index is stale/), expect.stringMatching(/1 market\(s\) held out/)]);
+    expect(cache.row?.url).toBe(registryUrl);
+    service.stop();
+  });
+
   it("serves a fresh registry's copy of a market a local card also pins", async () => {
     const cache = new CacheStore();
     const card = legacyBtcSolverCard("registry", 30);
@@ -340,7 +370,7 @@ describe("DiscoveryService", () => {
       network: "bitcoin", registryUrls: [registryUrl], cardsFile: "cards.json", cardStore: new CardStore(), cacheStore: cache,
       readFile: async () => JSON.stringify([card]),
       fetchImpl: async () => response(registryIndex(card, 1_000)),
-      now: () => 1_000_000, refreshIntervalMs: 0,
+      transportCards: null, now: () => 1_000_000, refreshIntervalMs: 0,
     });
 
     await service.start();
@@ -404,6 +434,7 @@ describe("DiscoveryService", () => {
       registryUrls: [],
       cardStore: cards,
       cacheStore: new CacheStore(),
+      transportCards: null,
       refreshIntervalMs: 0,
     });
 
@@ -437,6 +468,7 @@ describe("DiscoveryService", () => {
         if (calls === 2) { markStarted(); await fetchBlocked; }
         return response(calls >= 3 ? empty : registryIndex(solverCard("registry", 30), 1_000));
       },
+      transportCards: null,
       now: () => 1_000_000,
       refreshIntervalMs: 0,
     });
@@ -451,6 +483,81 @@ describe("DiscoveryService", () => {
     expect(calls).toBe(3);
     expect(service.status()).toMatchObject({ ready: false, candidateCount: 0 });
     service.stop();
+  });
+
+  it("trades with a solver the registry lists by pointer, on the card it publishes over Nostr", async () => {
+    const asked: unknown[][] = [];
+    const service = new DiscoveryService({
+      network: "bitcoin", registryUrls: [registryUrl], cardStore: new CardStore(), cacheStore: new CacheStore(),
+      fetchImpl: async () => response(pointerIndex(1_000)),
+      transportCards: publishing(1_000, asked),
+      now: () => 1_000_000, refreshIntervalMs: 0,
+    });
+
+    await service.start();
+    expect(service.selectLightningReceive(10_000, EMULATOR).find((candidate) => candidate.name === "nostr-solver"))
+      .toMatchObject({ source: registryUrl, sourceType: "registry", relays: ["wss://nostr.relay.test"] });
+    expect(asked).toEqual([[[nostrSolver()], "bitcoin"]]);
+    service.stop();
+  });
+
+  it("resolves a pasted pointer card from the card its solver publishes", async () => {
+    const cards = new CardStore();
+    cards.rows.push({
+      id: 1, label: "pointer", network: "bitcoin", cardJson: JSON.stringify(nostrPointer()),
+      enabled: true, createdAt: 1, updatedAt: 1,
+    });
+    const service = new DiscoveryService({
+      network: "bitcoin", registryUrls: [], cardStore: cards, cacheStore: new CacheStore(),
+      transportCards: publishing(1_000), now: () => 1_000_000, refreshIntervalMs: 0,
+    });
+
+    await service.start();
+    expect(service.selectLightningReceive(10_000, EMULATOR).map(({ name, source }) => ({ name, source })))
+      .toEqual([{ name: "nostr-solver", source: "db:1:pointer" }]);
+    // The admin API reports a pasted card active off this count.
+    expect(service.status().sources).toEqual([expect.objectContaining({ source: "db:1:pointer", ok: true, marketCount: 1 })]);
+    service.stop();
+  });
+
+  it("keeps the cards it has when Nostr cannot be read, and only warns", async () => {
+    const cards = new CardStore();
+    cards.rows.push({
+      id: 1, label: "db", network: "bitcoin", cardJson: JSON.stringify(solverCard("cheap", 10)),
+      enabled: true, createdAt: 1, updatedAt: 1,
+    });
+    const service = new DiscoveryService({
+      network: "bitcoin", registryUrls: [], cardStore: cards, cacheStore: new CacheStore(),
+      transportCards: { fetch: async () => { throw new Error("every relay refused"); } },
+      now: () => 1_000_000, refreshIntervalMs: 0,
+    });
+
+    await service.start();
+    expect(service.selectLightningReceive(10_000, EMULATOR).map((candidate) => candidate.name)).toEqual(["cheap"]);
+    expect(service.status().warnings).toEqual(["transport cards: every relay refused"]);
+    service.stop();
+  });
+
+  it("asks a pointer's relays by default, and nothing when transport cards are off", async () => {
+    let connections = 0;
+    const relay = createServer((socket) => { connections++; socket.destroy(); });
+    await new Promise<void>((resolve) => relay.listen(0, "127.0.0.1", resolve));
+    const cards = new CardStore();
+    cards.rows.push({
+      id: 1, label: "pointer", network: "bitcoin",
+      cardJson: JSON.stringify(nostrPointer(`ws://127.0.0.1:${(relay.address() as AddressInfo).port}`)),
+      enabled: true, createdAt: 1, updatedAt: 1,
+    });
+    const options = { network: "bitcoin" as const, registryUrls: [], cardStore: cards, cacheStore: new CacheStore(), refreshIntervalMs: 0 };
+
+    try {
+      await new DiscoveryService({ ...options, transportCards: null }).start();
+      expect(connections).toBe(0);
+      await new DiscoveryService(options).start();
+      expect(connections).toBeGreaterThan(0);
+    } finally {
+      relay.close();
+    }
   });
 
   it("fails startup when a configured card file contains an invalid card", async () => {

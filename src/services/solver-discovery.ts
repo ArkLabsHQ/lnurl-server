@@ -9,7 +9,9 @@ import {
   type FetchLike,
   type Network,
   type SourceReport,
+  type TransportCardFetcher,
 } from "@arkade-os/solver-discovery";
+import { nostrCardFetcher } from "@arkade-os/swap/nostr";
 import { solverLightningRendezvous } from "@arkade-os/swap/protocol";
 import type { SolverCardsRepo } from "../db/repositories/solver-cards.js";
 import type { SolverRegistryCacheRepo } from "../db/repositories/solver-registry-cache.js";
@@ -91,6 +93,8 @@ export interface DiscoveryServiceOptions {
   cardStore: CardStore;
   cacheStore: CacheStore;
   fetchImpl?: FetchLike;
+  /** Signed cards for listed solvers, over their relays when omitted; `null` turns it off. */
+  transportCards?: TransportCardFetcher | null;
   readFile?: (path: string) => Promise<string>;
   now?: () => number;
   refreshIntervalMs?: number;
@@ -108,6 +112,7 @@ export class DiscoveryService {
   private readonly readFile: (path: string) => Promise<string>;
   private readonly refreshIntervalMs: number;
   private readonly upstreamFetch: FetchLike;
+  private readonly transportCards: TransportCardFetcher | undefined;
   private fileCards: unknown[] = [];
   private snapshot: Snapshot | null = null;
   private latestSources: DiscoverySourceStatus[] = [];
@@ -125,6 +130,7 @@ export class DiscoveryService {
     this.readFile = options.readFile ?? ((path) => readFile(path, "utf8"));
     this.refreshIntervalMs = options.refreshIntervalMs ?? DEFAULT_REFRESH_MS;
     this.upstreamFetch = options.fetchImpl ?? (fetch as FetchLike);
+    this.transportCards = options.transportCards === null ? undefined : options.transportCards ?? nostrCardFetcher();
   }
 
   async start(): Promise<void> {
@@ -266,6 +272,7 @@ export class DiscoveryService {
       registries: this.options.registryUrls,
       localCards: [...dbCards, ...fileCards],
       fetchImpl: this.cacheAwareFetch,
+      transportCards: this.transportCards,
       now: Math.floor(this.now() / 1000),
     });
     for (const source of result.sources) {

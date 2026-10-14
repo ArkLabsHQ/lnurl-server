@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- **Solvers listed by pointer, with their markets read over Nostr** — a registry index's `solvers`, and any pasted or file card carrying a `discovery_pubkey` and relays, are resolved on every refresh from the signed card each solver publishes over Nostr (kind 38859, `d` = the network); a card that passes every check replaces that solver's listed markets. To allow a solver the registry does not list, paste its signed pointer — a card with no markets, from `cli card --pointer` on intent-solver — in the Solvers tab. Unreadable relays leave discovery as it was, with a warning.
 - **`@arkade-os/lnurl-client` 0.6.0** — small receive-wallet and payment-router interfaces replace concrete SDK classes, with optional router injection and isolated SDK RC compatibility checks. The optional SDK peer now requires `>=0.5.0-rc.0`; callers explicitly typing returned routers as the SDK's `PaymentRouter` should use `LnurlPaymentRouter` instead. The main entry point remains SDK-free.
 - Optional CAIP-19 identifiers for BTC payment options and network-checked callback aliases, preserving bare rail selectors and token deposit options.
 - Compiler-generated v3 covenant destinations with permissionless batch renewal, separate fee funding, and durable successor tracking. Existing v1/v2 funded addresses retain their original construction.

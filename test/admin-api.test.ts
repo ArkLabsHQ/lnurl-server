@@ -13,7 +13,7 @@ import { createAdminApi } from "../src/http/routes/admin/index.js";
 import { loadConfig } from "../src/config.js";
 import { SettingsService } from "../src/services/settings.js";
 import { DbSettlementStore } from "../src/settlement-store.js";
-import { solverCard } from "./fixtures/solver-cards.js";
+import { nostrPointer, solverCard } from "./fixtures/solver-cards.js";
 
 let db: Db; let repos: Repositories; let app: express.Express; let sessions: SessionManager; let settlements: DbSettlementStore;
 let refreshCalls: number; let failRefresh: boolean;
@@ -83,6 +83,12 @@ describe("admin API", () => {
     expect(refreshCalls).toBe(1);
     const listed = await request(app).get("/admin/api/solver-cards");
     expect(listed.body[0].card.name).toBe("registry");
+  });
+
+  it("accepts a pasted pointer card, which carries no markets", async () => {
+    const res = await request(app).post("/admin/api/solver-cards").send({ label: "pointer", card: nostrPointer() });
+    expect(res.status).toBe(202);
+    expect(res.body).toMatchObject({ persisted: true, card: { label: "pointer", card: { name: "nostr-solver" } } });
   });
 
   it("exposes discovery status and supports an immediate refresh", async () => {

@@ -1,4 +1,7 @@
 import type { Card, Network, NetworkIndex } from "@arkade-os/solver-discovery";
+import { schnorr } from "@noble/curves/secp256k1.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 
 const pubkeys = {
   cheap: "11".repeat(32),
@@ -98,3 +101,26 @@ export function legacyAssetSolverCard(name: keyof typeof pubkeys, feeBps: number
     }],
   };
 }
+
+const sortKeys = (value: unknown): unknown => Array.isArray(value)
+  ? value.map(sortKeys)
+  : value !== null && typeof value === "object"
+    ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortKeys((value as Record<string, unknown>)[key])]))
+    : value;
+
+// The discovery client rejects a delivered card unless `sig` verifies, so these are really signed.
+function signCard(card: Omit<Card, "sig">, secretKey: Uint8Array): Card {
+  return { ...card, sig: bytesToHex(schnorr.sign(sha256(utf8ToBytes(JSON.stringify(sortKeys(card)))), secretKey)) };
+}
+
+const NOSTR_KEY = new Uint8Array(32).fill(9);
+
+export const nostrSolver = (relay = "wss://nostr.relay.test") => ({
+  name: "nostr-solver",
+  discovery_pubkey: bytesToHex(schnorr.getPublicKey(NOSTR_KEY)),
+  transports: { nostr: { relays: [relay] } },
+});
+
+export const nostrPointer = (relay?: string) => signCard({ version: 0, ...nostrSolver(relay) }, NOSTR_KEY);
+
+export const nostrCard = () => signCard({ version: 0, ...nostrSolver(), markets: solverCard("cheap", 10).markets }, NOSTR_KEY);
