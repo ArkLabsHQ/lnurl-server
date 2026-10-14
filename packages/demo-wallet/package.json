@@ -15,9 +15,9 @@
   },
   "dependencies": {
     "@arkade-os/lnurl-client": "workspace:*",
-    "@arkade-os/sdk": "0.5.0-rc.19",
-    "@arkade-os/solver-discovery": "0.2.7",
-    "@arkade-os/swap": "0.1.0-rc.22",
+    "@arkade-os/sdk": "0.5.0-rc.20",
+    "@arkade-os/solver-discovery": "0.3.0",
+    "@arkade-os/swap": "0.1.0-rc.24",
     "@scure/base": "^2.4.0",
     "@scure/bip39": "^2.4.0",
     "qrcode": "^1.5.4",

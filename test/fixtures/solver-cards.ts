@@ -6,12 +6,14 @@ const pubkeys = {
   registry: "33".repeat(32),
 };
 
+type FullCard = Card & { markets: NonNullable<Card["markets"]> };
+
 export function solverCard(
   name: keyof typeof pubkeys,
   feeBps: number,
   network: Network = "bitcoin",
   quote: { min: string; max: string } = { min: "1000", max: "100000" },
-): Card {
+): FullCard {
   const slip = network === "bitcoin" ? "0" : "1";
   return {
     version: 0,
@@ -31,7 +33,7 @@ export function solverCard(
   };
 }
 
-export function registryIndex(card: Card, generatedAt: number, network: Network = "bitcoin"): NetworkIndex {
+export function registryIndex(card: FullCard, generatedAt: number, network: Network = "bitcoin"): NetworkIndex {
   return {
     version: 0,
     network,
@@ -53,7 +55,7 @@ export function registryIndex(card: Card, generatedAt: number, network: Network 
  * legs. Pin the live shape here so a query that only speaks CAIP-19 fails a
  * test instead of a deployment.
  */
-export function legacyBtcSolverCard(name: keyof typeof pubkeys, feeBps: number): Card {
+export function legacyBtcSolverCard(name: keyof typeof pubkeys, feeBps: number): FullCard {
   return {
     version: 0,
     name,
@@ -77,7 +79,7 @@ export function legacyBtcSolverCard(name: keyof typeof pubkeys, feeBps: number):
 /** Same corridors, asset legs: a receive that would deliver an Arkade asset
  *  rather than BTC, which the rail must refuse. Same underlying asset on both
  *  sides, so no `price_feed` is required. */
-export function legacyAssetSolverCard(name: keyof typeof pubkeys, feeBps: number): Card {
+export function legacyAssetSolverCard(name: keyof typeof pubkeys, feeBps: number): FullCard {
   const assetId = "ab".repeat(34);
   return {
     version: 0,

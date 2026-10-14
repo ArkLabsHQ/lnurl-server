@@ -261,36 +261,21 @@ export class DiscoveryService {
       network: this.options.network,
       label: `file:${this.options.cardsFile}:${index}`,
     }));
-    const fetched = new Map<string, ReturnType<FetchLike>>();
-    const fetchOnce: FetchLike = (url, init) => {
-      if (!fetched.has(url)) fetched.set(url, this.cacheAwareFetch(url, init));
-      return fetched.get(url)!;
-    };
-    const request = {
+    const result = await discover({
       network: this.options.network,
+      registries: this.options.registryUrls,
       localCards: [...dbCards, ...fileCards],
-      fetchImpl: fetchOnce,
+      fetchImpl: this.cacheAwareFetch,
       now: Math.floor(this.now() / 1000),
-    };
-    const result = await discover({ ...request, registries: this.options.registryUrls });
-    const staleSources = new Set(result.sources.filter((source) => source.warnings.some((warning) => /index is stale/.test(warning))).map((source) => source.source));
+    });
     for (const source of result.sources) {
       const body = this.fetchedBodies.get(source.source);
-      if (source.sourceType === "registry" && source.ok && body && !staleSources.has(source.source)) {
+      // Stale bodies too: discover() decides what a stale index still contributes.
+      if (source.sourceType === "registry" && source.ok && body) {
         this.options.cacheStore.put({ url: source.source, network: this.options.network, body, fetchedAt: this.now() });
       }
     }
-    // discover() keeps one copy of a market several sources list, a registry's first, so
-    // filtering stale registries out of its result would drop a local card's copy with theirs.
-    const { markets } = staleSources.size
-      ? await discover({
-        ...request,
-        registries: result.sources
-          .filter((source) => source.sourceType === "registry" && source.ok && !staleSources.has(source.source))
-          .map((source) => source.source),
-      })
-      : result;
-    const candidates = markets.flatMap((market): SolverCandidate[] => {
+    const candidates = result.markets.flatMap((market): SolverCandidate[] => {
       if (marketCorridor(market, "base") !== "arkade" || marketCorridor(market, "quote") !== "bolt11") return [];
       const discoveryPubkey = market.discovery_pubkey;
       const relays = market.transports?.nostr?.relays;

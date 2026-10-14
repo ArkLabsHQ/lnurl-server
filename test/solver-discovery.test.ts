@@ -295,11 +295,16 @@ describe("DiscoveryService", () => {
     service.stop();
   });
 
-  it("keeps a pinned card's market when a stale registry lists the same one", async () => {
+  it("keeps pasted and file-pinned cards while a stale registry's copy is held out", async () => {
     const cache = new CacheStore();
     const card = legacyBtcSolverCard("registry", 30);
+    const cards = new CardStore();
+    cards.rows.push({
+      id: 1, label: "pasted", network: "bitcoin", cardJson: JSON.stringify(legacyBtcSolverCard("cheap", 10)),
+      enabled: true, createdAt: 1, updatedAt: 1,
+    });
     const service = new DiscoveryService({
-      network: "bitcoin", registryUrls: [registryUrl], cardsFile: "cards.json", cardStore: new CardStore(), cacheStore: cache,
+      network: "bitcoin", registryUrls: [registryUrl], cardsFile: "cards.json", cardStore: cards, cacheStore: cache,
       readFile: async () => JSON.stringify([card]),
       fetchImpl: async () => response(registryIndex(card, 1_000)),
       now: twentyDaysLater, refreshIntervalMs: 0,
@@ -307,9 +312,9 @@ describe("DiscoveryService", () => {
 
     await service.start();
     expect(service.selectLightningReceive(10_000, EMULATOR).map(({ source, sourceType }) => ({ source, sourceType })))
-      .toEqual([{ source: "file:cards.json:0", sourceType: "local" }]);
-    expect(service.status()).toMatchObject({ ready: true, candidateCount: 1 });
-    expect(cache.row).toBeUndefined();
+      .toEqual([{ source: "db:1:pasted", sourceType: "local" }, { source: "file:cards.json:0", sourceType: "local" }]);
+    expect(service.status()).toMatchObject({ ready: true, candidateCount: 2 });
+    expect(cache.row?.url).toBe(registryUrl);
     service.stop();
   });
 
@@ -323,8 +328,8 @@ describe("DiscoveryService", () => {
 
     await service.start();
     expect(service.status()).toMatchObject({ ready: false, candidateCount: 0 });
-    expect(service.status().warnings).toEqual([expect.stringMatching(/index is stale/)]);
-    expect(cache.row).toBeUndefined();
+    expect(service.status().warnings).toEqual([expect.stringMatching(/index is stale/), expect.stringMatching(/1 market\(s\) held out/)]);
+    expect(cache.row?.url).toBe(registryUrl);
     service.stop();
   });
 
