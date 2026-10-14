@@ -534,7 +534,7 @@ describe("DiscoveryService", () => {
 
     await service.start();
     expect(service.selectLightningReceive(10_000, EMULATOR).map((candidate) => candidate.name)).toEqual(["cheap"]);
-    expect(service.status().warnings).toEqual(["transport cards: every relay refused"]);
+    expect(service.status().warnings).toEqual([expect.stringMatching(/^db:.*: transport cards: every relay refused$/)]);
     service.stop();
   });
 
