@@ -506,6 +506,7 @@ describe("createOfflineSwapCoordinator", () => {
 
     expect(swap.invoice).toMatch(/^lnbc/);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_lockup_register_failed"'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`"swapRef":"${swap.swapId.slice(0, 12)}"`));
     warn.mockRestore();
   });
 });

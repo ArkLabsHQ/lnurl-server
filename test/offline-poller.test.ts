@@ -116,11 +116,26 @@ describe("settleOfflineSwaps", () => {
 
     await settleOfflineSwaps(store, {
       ...creatorReporting([]),
-      selfClaim: async () => ({ state: "skipped", reason: "expired" }),
+      selfClaim: async () => ({ state: "skipped", reason: "expired", funded: true }),
     });
 
     expect(error).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_refund_deadline_passed"'));
     expect(error).toHaveBeenCalledWith(expect.stringContaining("swap-1"));
+  });
+
+  it("logs an invoice nobody paid, past its deadline, at info rather than as an error", async () => {
+    const store = new MemorySettlementStore(60_000);
+    store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+
+    await settleOfflineSwaps(store, {
+      ...creatorReporting([]),
+      selfClaim: async () => ({ state: "skipped", reason: "expired", funded: false }),
+    });
+
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_expired_unpaid"'));
+    expect(error).not.toHaveBeenCalled();
   });
 
   it("leaves a swap pending when the status check throws, and names it in a warning", async () => {
@@ -138,6 +153,17 @@ describe("settleOfflineSwaps", () => {
     expect(store.get("aa")!.settled).toBe(false);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_status_failed"'));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("swap-1"));
+  });
+
+  it("names a real swap id by a prefix the logger does not redact", async () => {
+    const swapId = "ab".repeat(32);
+    const store = new MemorySettlementStore(60_000);
+    store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await settleOfflineSwaps(store, { ...creatorReporting([]), isSettled: async () => { throw new Error("solver down"); } });
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`"swapRef":"${swapId.slice(0, 12)}"`));
   });
 
   it("drives status and self-claim from a persisted recovery row", async () => {
@@ -280,6 +306,28 @@ describe("startOfflineSettlementPoller", () => {
     await vi.waitFor(() => expect(isSettled).toHaveBeenCalledTimes(2));
     release();
     poller.stop();
+  });
+
+  it("reports a passed refund deadline once and stops claiming, but still asks the solver", async () => {
+    const store = pendingStore();
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const selfClaim = vi.fn(async () => ({ state: "skipped" as const, reason: "expired" as const, funded: true }));
+    const creator: OfflineSwapCreator = { ...creatorReporting([]), selfClaim };
+    const isSettled = vi.spyOn(creator, "isSettled");
+
+    const poller = startOfflineSettlementPoller(store, creator, 15_000);
+    try {
+      await vi.waitFor(() => expect(isSettled).toHaveBeenCalledTimes(1));
+      poller.trigger();
+      await vi.waitFor(() => expect(isSettled).toHaveBeenCalledTimes(2));
+      poller.trigger("swap-1");
+      await vi.waitFor(() => expect(isSettled).toHaveBeenCalledTimes(3));
+      expect(selfClaim).toHaveBeenCalledOnce();
+      expect(error).toHaveBeenCalledOnce();
+    } finally {
+      poller.stop();
+      error.mockRestore();
+    }
   });
 
   it("stops passing once stopped", async () => {
