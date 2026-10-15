@@ -282,6 +282,28 @@ describe("startOfflineSettlementPoller", () => {
     poller.stop();
   });
 
+  it("reports a passed refund deadline once and stops claiming, but still asks the solver", async () => {
+    const store = pendingStore();
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const selfClaim = vi.fn(async () => ({ state: "skipped" as const, reason: "expired" as const }));
+    const creator: OfflineSwapCreator = { ...creatorReporting([]), selfClaim };
+    const isSettled = vi.spyOn(creator, "isSettled");
+
+    const poller = startOfflineSettlementPoller(store, creator, 15_000);
+    try {
+      await vi.waitFor(() => expect(isSettled).toHaveBeenCalledTimes(1));
+      poller.trigger();
+      await vi.waitFor(() => expect(isSettled).toHaveBeenCalledTimes(2));
+      poller.trigger("swap-1");
+      await vi.waitFor(() => expect(isSettled).toHaveBeenCalledTimes(3));
+      expect(selfClaim).toHaveBeenCalledOnce();
+      expect(error).toHaveBeenCalledOnce();
+    } finally {
+      poller.stop();
+      error.mockRestore();
+    }
+  });
+
   it("stops passing once stopped", async () => {
     const store = pendingStore();
     const creator = creatorReporting([]);
