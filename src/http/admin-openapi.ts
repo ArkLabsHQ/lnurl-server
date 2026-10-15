@@ -76,6 +76,24 @@ const SolverCard = {
   },
 } as const;
 
+const QuoteUnit = {
+  type: "object",
+  properties: {
+    code: { type: "string" },
+    decimals: { type: "integer" },
+    feedUrl: { type: "string" },
+    pricePath: { type: "string", description: "RFC 6901 pointer to the price in the feed's response" },
+    source: { type: "string", enum: ["env", "admin"] },
+    overridesEnv: { type: "boolean", description: "An admin unit replacing the QUOTE_UNITS one of the same code" },
+    price: { type: "string", description: "Last price read, in the unit per whole BTC" },
+    updatedAt: { type: "integer" },
+    fresh: { type: "boolean", description: "Advertised and quoted only while true" },
+    error: { type: "string", description: "Why the last refresh failed" },
+  },
+} as const;
+const quoteUnitList = { "application/json": { schema: { type: "array", items: QuoteUnit } } } as const;
+const feedBody = { feedUrl: { type: "string" }, pricePath: { type: "string", description: "Optional for Binance and single-currency CoinGecko URLs" } } as const;
+
 const solverCardMutation = {
   type: "object",
   properties: { persisted: { type: "boolean" }, active: { type: "boolean" }, card: SolverCard },
@@ -105,6 +123,7 @@ export const adminOpenApiSpec = {
     { name: "Sessions" },
     { name: "Solver discovery" },
     { name: "Settings" },
+    { name: "Quote units" },
   ],
   paths: {
     "/rails": {
@@ -679,6 +698,62 @@ export const adminOpenApiSpec = {
         responses: {
           "200": { description: "Updated editable view", content: { "application/json": { schema: { type: "object" } } } },
           ...errorResponse("400", "Unknown setting"),
+        },
+      },
+    },
+
+    // ── Quote units ──────────────────────────────────────────
+    "/quote-units": {
+      get: {
+        summary: "List quote units and their live prices",
+        description: "QUOTE_UNITS env units plus admin units; an admin unit of the same code replaces the env one.",
+        tags: ["Quote units"],
+        responses: { "200": { description: "Units", content: quoteUnitList }, ...errorResponse("503", "Quotes not configured") },
+      },
+    },
+    "/quote-units/refresh": {
+      post: {
+        summary: "Read every feed now",
+        tags: ["Quote units"],
+        responses: { "200": { description: "Units after the refresh", content: quoteUnitList }, ...errorResponse("503", "Quotes not configured") },
+      },
+    },
+    "/quote-units/preview": {
+      post: {
+        summary: "Read a feed once without saving it",
+        description: "Private, loopback and link-local hosts are refused.",
+        tags: ["Quote units"],
+        requestBody: jsonBody({ type: "object", required: ["feedUrl"], properties: feedBody }),
+        responses: {
+          "200": { description: "The price read", content: { "application/json": { schema: { type: "object", properties: { price: { type: "string" } } } } } },
+          ...errorResponse("400", "Invalid input (invalid_quote_unit) or a feed that did not answer (feed_unreadable)"),
+          ...errorResponse("503", "Quotes not configured"),
+        },
+      },
+    },
+    "/quote-units/{code}": {
+      put: {
+        summary: "Add or replace an admin quote unit",
+        description: "Reads the feed first and refuses one that does not answer. Applies live.",
+        tags: ["Quote units"],
+        parameters: [{ name: "code", in: "path", required: true, schema: { type: "string" }, description: "Unit code, e.g. USD" }],
+        requestBody: jsonBody({ type: "object", required: ["decimals", "feedUrl"], properties: { decimals: { type: "integer" }, ...feedBody } }),
+        responses: {
+          "200": { description: "The saved unit", content: { "application/json": { schema: QuoteUnit } } },
+          ...errorResponse("400", "Invalid input (invalid_quote_unit) or a feed that did not answer (feed_unreadable)"),
+          ...errorResponse("503", "Quotes not configured"),
+        },
+      },
+      delete: {
+        summary: "Remove an admin quote unit",
+        description: "Removing an admin unit that overrides a QUOTE_UNITS one restores the env unit.",
+        tags: ["Quote units"],
+        parameters: [{ name: "code", in: "path", required: true, schema: { type: "string" }, description: "Unit code" }],
+        responses: {
+          "200": { description: "Units after the removal", content: quoteUnitList },
+          ...errorResponse("404", "No such unit"),
+          ...errorResponse("409", "The unit is set by QUOTE_UNITS"),
+          ...errorResponse("503", "Quotes not configured"),
         },
       },
     },

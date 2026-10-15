@@ -6,6 +6,7 @@ import { ApiKeysRepo } from "./api-keys.js";
 import { SettingsRepo } from "./settings.js";
 import { SolverCardsRepo } from "./solver-cards.js";
 import { SolverRegistryCacheRepo } from "./solver-registry-cache.js";
+import { QuoteUnitsRepo } from "./quote-units.js";
 
 export interface Repositories {
   domains: DomainsRepo;
@@ -15,6 +16,7 @@ export interface Repositories {
   settings: SettingsRepo;
   solverCards: SolverCardsRepo;
   solverRegistryCache: SolverRegistryCacheRepo;
+  quoteUnits: QuoteUnitsRepo;
   transaction<T>(fn: () => T): T;
 }
 
@@ -27,6 +29,7 @@ export function createRepositories(db: Db): Repositories {
     settings: new SettingsRepo(db),
     solverCards: new SolverCardsRepo(db),
     solverRegistryCache: new SolverRegistryCacheRepo(db),
+    quoteUnits: new QuoteUnitsRepo(db),
     transaction<T>(fn: () => T): T {
       db.exec("BEGIN IMMEDIATE");
       try {

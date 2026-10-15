@@ -1,8 +1,8 @@
 import { Fragment, useEffect, useState } from "react";
 import { api } from "./api.js";
 
-type Tab = "Dashboard" | "Rails" | "Solvers" | "Sessions" | "Settlements" | "Domains" | "Addresses" | "API Keys" | "Blacklist" | "Settings";
-const TABS: Tab[] = ["Dashboard", "Rails", "Solvers", "Sessions", "Settlements", "Domains", "Addresses", "API Keys", "Blacklist", "Settings"];
+type Tab = "Dashboard" | "Rails" | "Solvers" | "Quotes" | "Sessions" | "Settlements" | "Domains" | "Addresses" | "API Keys" | "Blacklist" | "Settings";
+const TABS: Tab[] = ["Dashboard", "Rails", "Solvers", "Quotes", "Sessions", "Settlements", "Domains", "Addresses", "API Keys", "Blacklist", "Settings"];
 const ALLOCATION_MODES = ["self", "random", "admin", "session"] as const;
 
 interface Domain {
@@ -70,6 +70,7 @@ export function App() {
       {tab === "Dashboard" && <Dashboard />}
       {tab === "Rails" && <Rails />}
       {tab === "Solvers" && <Solvers />}
+      {tab === "Quotes" && <Quotes />}
       {tab === "Sessions" && <Sessions />}
       {tab === "Settlements" && <Settlements addressId={settlementsAddressId} onAddressFilter={setSettlementsAddressId} />}
       {tab === "Domains" && <Domains />}
@@ -112,6 +113,75 @@ function Dashboard() {
 }
 function Card({ label, value }: { label: string; value: number }) {
   return <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 16, minWidth: 120 }}><div style={{ fontSize: 28 }}>{value}</div><div style={{ color: "#666" }}>{label}</div></div>;
+}
+
+interface QuoteUnitRow {
+  code: string; decimals: number; feedUrl: string; pricePath: string; source: "env" | "admin";
+  overridesEnv: boolean; price?: string; updatedAt?: number; fresh: boolean; error?: string;
+}
+
+function Quotes() {
+  const [units, setUnits] = useState<QuoteUnitRow[]>([]);
+  const [form, setForm] = useState({ code: "", decimals: "2", feedUrl: "", pricePath: "" });
+  const [preview, setPreview] = useState<string>();
+  const [err, setErr] = useState<string>();
+  const run = async (work: () => Promise<unknown>) => { try { setErr(undefined); await work(); } catch (e) { setErr(errMsg(e)); } };
+  const load = () => run(async () => setUnits(await api.get<QuoteUnitRow[]>("/quote-units")));
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  const feed = { feedUrl: form.feedUrl.trim(), ...(form.pricePath.trim() ? { pricePath: form.pricePath.trim() } : {}) };
+  const save = () => run(async () => {
+    await api.put(`/quote-units/${encodeURIComponent(form.code.trim())}`, { ...feed, decimals: Number(form.decimals) });
+    setForm({ code: "", decimals: "2", feedUrl: "", pricePath: "" }); setPreview(undefined); await load();
+  });
+  const edit = (u: QuoteUnitRow) => { setForm({ code: u.code, decimals: String(u.decimals), feedUrl: u.feedUrl, pricePath: u.pricePath }); setPreview(undefined); };
+  const remove = (u: QuoteUnitRow) => {
+    if (!confirm(u.overridesEnv ? `Remove ${u.code}? The QUOTE_UNITS feed comes back.` : `Remove ${u.code}?`)) return;
+    void run(async () => setUnits(await api.del<QuoteUnitRow[]>(`/quote-units/${u.code}`)));
+  };
+  const field = (key: keyof typeof form, label: string, width: number) => (
+    <input aria-label={label} placeholder={label} value={form[key]} style={{ width }} onChange={(e) => setForm({ ...form, [key]: e.target.value })} />
+  );
+  return (
+    <div>
+      {err && <p style={{ color: "crimson" }}>{err}</p>}
+      <p style={{ color: "#555", marginTop: 0 }}>
+        Units payers may denominate amounts in. Each feed answers the unit's price per one whole bitcoin; a unit is
+        advertised only while its price is fresh. <code>QUOTE_UNITS</code> units come from the environment; one saved here with the same code replaces it.
+      </p>
+      <h3 style={{ fontSize: 15, marginBottom: 4 }}>Add or replace a unit</h3>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 6 }}>
+        {field("code", "Code (USD)", 90)}
+        {field("decimals", "Decimals", 70)}
+        {field("feedUrl", "Feed URL", 360)}
+        {field("pricePath", "Price path (optional)", 170)}
+      </div>
+      <div style={{ marginBottom: 22 }}>
+        <button disabled={!form.feedUrl.trim()} onClick={() => run(async () => setPreview((await api.post<{ price: string }>("/quote-units/preview", feed)).price))}>Test feed</button>{" "}
+        <button disabled={!form.code.trim() || !form.feedUrl.trim()} onClick={save}>Save unit</button>
+        {preview && <span style={{ marginLeft: 12 }}>Feed answers <strong>{preview}</strong> per BTC</span>}
+      </div>
+      <div style={{ marginBottom: 8 }}><button onClick={() => run(async () => setUnits(await api.post<QuoteUnitRow[]>("/quote-units/refresh", {})))}>Refresh prices now</button></div>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead><tr><Th>Code</Th><Th>Price / BTC</Th><Th>State</Th><Th>Source</Th><Th>Feed</Th><Th /></tr></thead>
+        <tbody>
+          {units.map((u) => (
+            <tr key={u.code}>
+              <Td><strong>{u.code}</strong> <span style={{ color: "#666" }}>({u.decimals} dp)</span></Td>
+              <Td>{u.price ?? "—"}{u.updatedAt ? <div style={{ color: "#666", fontSize: 12 }}>{ago(u.updatedAt)}</div> : null}</Td>
+              <Td><span style={{ color: u.fresh ? "#16834b" : "#b42318" }}>{u.fresh ? "Live" : "Stale"}</span>{u.error && <div style={{ color: "#8a2c22", fontSize: 12 }}>{u.error}</div>}</Td>
+              <Td>{u.source === "env" ? "env" : u.overridesEnv ? "admin (overrides env)" : "admin"}</Td>
+              <Td><div style={{ wordBreak: "break-all", fontSize: 12 }}>{u.feedUrl}<div style={{ color: "#666" }}>{u.pricePath}</div></div></Td>
+              <Td>
+                <button onClick={() => edit(u)}>Edit</button>{" "}
+                {u.source === "admin" && <button onClick={() => remove(u)}>Remove</button>}
+              </Td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {units.length === 0 && <p style={{ color: "#666" }}>No units yet.</p>}
+    </div>
+  );
 }
 
 interface SolverCardRow { id: number; label: string; network: string; enabled: boolean; updatedAt: number; card: { name?: string; discovery_pubkey?: string } }
