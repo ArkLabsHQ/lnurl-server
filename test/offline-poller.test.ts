@@ -365,6 +365,27 @@ describe("startOfflineSettlementPoller", () => {
     }
   });
 
+  it("settles a closed swap that its own later claim pays out", async () => {
+    const store = pendingStore();
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const selfClaim = vi.fn<NonNullable<OfflineSwapCreator["selfClaim"]>>()
+      .mockResolvedValueOnce({ state: "skipped", reason: "unfunded" })
+      .mockResolvedValue({ state: "claimed", arkTxid: "ark-tx-1" });
+    const status = vi.fn(async () => "expired");
+    const creator: OfflineSwapCreator = { ...creatorReporting([]), selfClaim, status };
+
+    const poller = startOfflineSettlementPoller(store, creator, 15_000);
+    try {
+      await vi.waitFor(() => expect(status).toHaveBeenCalledOnce());
+      poller.trigger();
+      await vi.waitFor(() => expect(store.get("aa")!.settled).toBe(true));
+      expect(status).toHaveBeenCalledOnce();
+    } finally {
+      poller.stop();
+      info.mockRestore();
+    }
+  });
+
   it("keeps asking about a swap the solver reports stuck", async () => {
     const store = pendingStore();
     const status = vi.fn(async () => "stuck");

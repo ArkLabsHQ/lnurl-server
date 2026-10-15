@@ -44,7 +44,7 @@ async function settleOne(store: SettlementStore, creator: OfflineSwapCreator, p:
       logger.warn("offline_swap_self_claim_failed", { swapRef, error: err });
     }
   }
-  if (closed.has(p.swapId)) return false;
+  if (closed.has(p.swapId) && !claimed) return false;
   try {
     const state = claimed ? "settled" : await solverState(creator, p);
     if (state === "settled") {
