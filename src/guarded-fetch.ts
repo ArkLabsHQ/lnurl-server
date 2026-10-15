@@ -30,7 +30,7 @@ export function isPrivateHost(hostname: string): boolean {
   const v4 = V4.exec(host);
   if (!v4) return false;
   const [a, b] = [Number(v4[1]), Number(v4[2])];
-  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 0 || a === 10 || a === 127 || a >= 224) return true; // >= 224: multicast, reserved, broadcast
   if (a === 169 && b === 254) return true;
   if (a === 172 && b >= 16 && b <= 31) return true;
   if (a === 100 && b >= 64 && b <= 127) return true; // RFC 6598 CGNAT

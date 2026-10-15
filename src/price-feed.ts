@@ -248,8 +248,8 @@ export function priceFeedQuotes(cfg: {
       }));
     },
     setUnits(next) {
-      for (const unit of next) {
-        if (sameFeed(current(unit.code), unit)) continue;
+      for (const unit of units) {
+        if (sameFeed(next.find((u) => u.code === unit.code), unit)) continue;
         latest.delete(unit.code);
         failures.delete(unit.code);
       }
