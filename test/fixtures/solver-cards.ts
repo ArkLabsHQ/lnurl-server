@@ -1,4 +1,7 @@
 import type { Card, Network, NetworkIndex } from "@arkade-os/solver-discovery";
+import { schnorr } from "@noble/curves/secp256k1.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 
 const pubkeys = {
   cheap: "11".repeat(32),
@@ -6,12 +9,14 @@ const pubkeys = {
   registry: "33".repeat(32),
 };
 
+type FullCard = Card & { markets: NonNullable<Card["markets"]> };
+
 export function solverCard(
   name: keyof typeof pubkeys,
   feeBps: number,
   network: Network = "bitcoin",
   quote: { min: string; max: string } = { min: "1000", max: "100000" },
-): Card {
+): FullCard {
   const slip = network === "bitcoin" ? "0" : "1";
   return {
     version: 0,
@@ -31,7 +36,7 @@ export function solverCard(
   };
 }
 
-export function registryIndex(card: Card, generatedAt: number, network: Network = "bitcoin"): NetworkIndex {
+export function registryIndex(card: FullCard, generatedAt: number, network: Network = "bitcoin"): NetworkIndex {
   return {
     version: 0,
     network,
@@ -53,7 +58,7 @@ export function registryIndex(card: Card, generatedAt: number, network: Network 
  * legs. Pin the live shape here so a query that only speaks CAIP-19 fails a
  * test instead of a deployment.
  */
-export function legacyBtcSolverCard(name: keyof typeof pubkeys, feeBps: number): Card {
+export function legacyBtcSolverCard(name: keyof typeof pubkeys, feeBps: number): FullCard {
   return {
     version: 0,
     name,
@@ -77,7 +82,7 @@ export function legacyBtcSolverCard(name: keyof typeof pubkeys, feeBps: number):
 /** Same corridors, asset legs: a receive that would deliver an Arkade asset
  *  rather than BTC, which the rail must refuse. Same underlying asset on both
  *  sides, so no `price_feed` is required. */
-export function legacyAssetSolverCard(name: keyof typeof pubkeys, feeBps: number): Card {
+export function legacyAssetSolverCard(name: keyof typeof pubkeys, feeBps: number): FullCard {
   const assetId = "ab".repeat(34);
   return {
     version: 0,
@@ -96,3 +101,26 @@ export function legacyAssetSolverCard(name: keyof typeof pubkeys, feeBps: number
     }],
   };
 }
+
+const sortKeys = (value: unknown): unknown => Array.isArray(value)
+  ? value.map(sortKeys)
+  : value !== null && typeof value === "object"
+    ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortKeys((value as Record<string, unknown>)[key])]))
+    : value;
+
+// The discovery client rejects a delivered card unless `sig` verifies, so these are really signed.
+function signCard(card: Omit<Card, "sig">, secretKey: Uint8Array): Card {
+  return { ...card, sig: bytesToHex(schnorr.sign(sha256(utf8ToBytes(JSON.stringify(sortKeys(card)))), secretKey)) };
+}
+
+const NOSTR_KEY = new Uint8Array(32).fill(9);
+
+export const nostrSolver = (relay = "wss://nostr.relay.test") => ({
+  name: "nostr-solver",
+  discovery_pubkey: bytesToHex(schnorr.getPublicKey(NOSTR_KEY)),
+  transports: { nostr: { relays: [relay] } },
+});
+
+export const nostrPointer = (relay?: string) => signCard({ version: 0, ...nostrSolver(relay) }, NOSTR_KEY);
+
+export const nostrCard = () => signCard({ version: 0, ...nostrSolver(), markets: solverCard("cheap", 10).markets }, NOSTR_KEY);

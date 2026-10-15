@@ -9,7 +9,9 @@ import {
   type FetchLike,
   type Network,
   type SourceReport,
+  type TransportCardFetcher,
 } from "@arkade-os/solver-discovery";
+import { nostrCardFetcher } from "@arkade-os/swap/nostr";
 import { solverLightningRendezvous } from "@arkade-os/swap/protocol";
 import type { SolverCardsRepo } from "../db/repositories/solver-cards.js";
 import type { SolverRegistryCacheRepo } from "../db/repositories/solver-registry-cache.js";
@@ -91,6 +93,8 @@ export interface DiscoveryServiceOptions {
   cardStore: CardStore;
   cacheStore: CacheStore;
   fetchImpl?: FetchLike;
+  /** Signed cards for listed solvers, over their relays when omitted; `null` turns it off. */
+  transportCards?: TransportCardFetcher | null;
   readFile?: (path: string) => Promise<string>;
   now?: () => number;
   refreshIntervalMs?: number;
@@ -108,6 +112,7 @@ export class DiscoveryService {
   private readonly readFile: (path: string) => Promise<string>;
   private readonly refreshIntervalMs: number;
   private readonly upstreamFetch: FetchLike;
+  private readonly transportCards: TransportCardFetcher | undefined;
   private fileCards: unknown[] = [];
   private snapshot: Snapshot | null = null;
   private latestSources: DiscoverySourceStatus[] = [];
@@ -125,6 +130,7 @@ export class DiscoveryService {
     this.readFile = options.readFile ?? ((path) => readFile(path, "utf8"));
     this.refreshIntervalMs = options.refreshIntervalMs ?? DEFAULT_REFRESH_MS;
     this.upstreamFetch = options.fetchImpl ?? (fetch as FetchLike);
+    this.transportCards = options.transportCards === null ? undefined : options.transportCards ?? nostrCardFetcher();
   }
 
   async start(): Promise<void> {
@@ -261,36 +267,22 @@ export class DiscoveryService {
       network: this.options.network,
       label: `file:${this.options.cardsFile}:${index}`,
     }));
-    const fetched = new Map<string, ReturnType<FetchLike>>();
-    const fetchOnce: FetchLike = (url, init) => {
-      if (!fetched.has(url)) fetched.set(url, this.cacheAwareFetch(url, init));
-      return fetched.get(url)!;
-    };
-    const request = {
+    const result = await discover({
       network: this.options.network,
+      registries: this.options.registryUrls,
       localCards: [...dbCards, ...fileCards],
-      fetchImpl: fetchOnce,
+      fetchImpl: this.cacheAwareFetch,
+      transportCards: this.transportCards,
       now: Math.floor(this.now() / 1000),
-    };
-    const result = await discover({ ...request, registries: this.options.registryUrls });
-    const staleSources = new Set(result.sources.filter((source) => source.warnings.some((warning) => /index is stale/.test(warning))).map((source) => source.source));
+    });
     for (const source of result.sources) {
       const body = this.fetchedBodies.get(source.source);
-      if (source.sourceType === "registry" && source.ok && body && !staleSources.has(source.source)) {
+      // Stale bodies too: discover() decides what a stale index still contributes.
+      if (source.sourceType === "registry" && source.ok && body) {
         this.options.cacheStore.put({ url: source.source, network: this.options.network, body, fetchedAt: this.now() });
       }
     }
-    // discover() keeps one copy of a market several sources list, a registry's first, so
-    // filtering stale registries out of its result would drop a local card's copy with theirs.
-    const { markets } = staleSources.size
-      ? await discover({
-        ...request,
-        registries: result.sources
-          .filter((source) => source.sourceType === "registry" && source.ok && !staleSources.has(source.source))
-          .map((source) => source.source),
-      })
-      : result;
-    const candidates = markets.flatMap((market): SolverCandidate[] => {
+    const candidates = result.markets.flatMap((market): SolverCandidate[] => {
       if (marketCorridor(market, "base") !== "arkade" || marketCorridor(market, "quote") !== "bolt11") return [];
       const discoveryPubkey = market.discovery_pubkey;
       const relays = market.transports?.nostr?.relays;
