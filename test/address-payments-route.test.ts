@@ -70,6 +70,15 @@ interface Page {
 const page = (body: Record<string, unknown>): Page => body as unknown as Page;
 
 describe("address payments route", () => {
+  it("carries a quoted payment's unit amount, and null for an unquoted one", async () => {
+    const aliceId = await register("alice", ALICE);
+    settlements.create({ paymentHash: "quoted", pr: "lnbc1", sessionId: "sess", amountMsat: 1_221_718, addressId: aliceId, quote: { amount: "100", unit: "USD", decimals: 2 } });
+    seed("plain", aliceId);
+    const res = await req("GET", `${ctx.baseUrl}/lnurl/address/alice/payments`, { host: "domain.com", bearer: ALICE });
+    const quotes = Object.fromEntries((res.body.payments as { paymentHash: string; quote: unknown }[]).map((p) => [p.paymentHash, p.quote]));
+    expect(quotes).toEqual({ quoted: { amount: "100", unit: "USD", decimals: 2 }, plain: null });
+  });
+
   it("owner sees only their own rows, oldest first, with source attribution", async () => {
     const aliceId = await register("alice", ALICE);
     const bobId = await register("bob", BOB);

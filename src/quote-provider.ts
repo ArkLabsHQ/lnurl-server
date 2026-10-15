@@ -52,8 +52,16 @@ export interface QuoteProvider {
   quote(req: QuoteRequest): PaymentQuote;
 }
 
+/** What a payer asked to pay in a unit, kept on the settlement so history can show it. */
+export interface QuotedAmount {
+  /** In the unit's smallest denomination, as the callback's `amount` was. */
+  amount: string;
+  unit: string;
+  decimals: number;
+}
+
 export type ApplyQuoteResult =
-  | { ok: true; amountMsat: number; paymentQuote: PaymentQuote }
+  | { ok: true; amountMsat: number; paymentQuote: PaymentQuote; quoted?: QuotedAmount }
   | { ok: false; reason: string };
 
 /** Apply a quote for a unit-denominated callback: returns the effective msat amount to
@@ -61,14 +69,12 @@ export type ApplyQuoteResult =
  *  requires the quoted `payment` to be denominated in `msat`. */
 export function applyQuote(provider: QuoteProvider | undefined, req: QuoteRequest): ApplyQuoteResult {
   if (!provider) return { ok: false, reason: "Unsupported unit" };
+  const u = req.unit !== undefined && Number.isInteger(req.amount) ? provider.units(req.paymentOption).find((x) => x.code === req.unit) : undefined;
   // The advertised unit's own bounds, when it carries them — checked before quoting.
-  if (req.unit !== undefined && Number.isInteger(req.amount)) {
-    const u = provider.units(req.paymentOption).find((x) => x.code === req.unit);
-    if (u) {
-      const amount = BigInt(req.amount);
-      if (u.minAmount !== undefined && amount < BigInt(u.minAmount)) return { ok: false, reason: `Amount below ${req.unit} minimum (${u.minAmount})` };
-      if (u.maxAmount !== undefined && amount > BigInt(u.maxAmount)) return { ok: false, reason: `Amount above ${req.unit} maximum (${u.maxAmount})` };
-    }
+  if (u) {
+    const amount = BigInt(req.amount);
+    if (u.minAmount !== undefined && amount < BigInt(u.minAmount)) return { ok: false, reason: `Amount below ${req.unit} minimum (${u.minAmount})` };
+    if (u.maxAmount !== undefined && amount > BigInt(u.maxAmount)) return { ok: false, reason: `Amount above ${req.unit} maximum (${u.maxAmount})` };
   }
   let q: PaymentQuote;
   try {
@@ -94,5 +100,5 @@ export function applyQuote(provider: QuoteProvider | undefined, req: QuoteReques
     return { ok: false, reason: "Invalid quoted amount" };
   }
   const amountMsat = Number(amountBig);
-  return { ok: true, amountMsat, paymentQuote: q };
+  return { ok: true, amountMsat, paymentQuote: q, ...(u ? { quoted: { amount: String(req.amount), unit: u.code, decimals: u.decimals } } : {}) };
 }

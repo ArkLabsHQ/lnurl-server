@@ -3,6 +3,7 @@ import { hex } from "@scure/base";
 import type { Db } from "./db/connection.js";
 import type { OfflineSwapRecoveryV1 } from "./services/offline-swaps.js";
 import { MalformedRecordError } from "./errors.js";
+import type { QuotedAmount } from "./quote-provider.js";
 
 export interface AcceptedOfflineSwap {
   paymentHash: string;
@@ -10,6 +11,7 @@ export interface AcceptedOfflineSwap {
   sessionId: string;
   preimage: string;
   amountMsat: number;
+  quote?: QuotedAmount;
   /** Address earning this receive. Offline swaps always have one — the payer
    *  reached a LUD-16 address — so omitting it here is what would leave the
    *  one rail the receiver cannot witness unattributable. */
@@ -91,8 +93,8 @@ export class OfflineSwapStore {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.prepare(
-        "INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, amount_msat, address_id, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?, 'lightning', ?, ?, ?, ?)",
-      ).run(record.paymentHash, record.pr, record.sessionId, record.preimage, record.recovery.rfqId, record.amountMsat, record.addressId ?? null, createdAt, createdAt);
+        "INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, amount_msat, quote_json, address_id, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?, 'lightning', ?, ?, ?, ?, ?)",
+      ).run(record.paymentHash, record.pr, record.sessionId, record.preimage, record.recovery.rfqId, record.amountMsat, record.quote ? JSON.stringify(record.quote) : null, record.addressId ?? null, createdAt, createdAt);
       insertOfflineSwap(this.db, record.paymentHash, record.recovery, createdAt);
       this.db.exec("COMMIT");
     } catch (error) {

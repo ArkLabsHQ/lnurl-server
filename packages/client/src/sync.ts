@@ -1,6 +1,6 @@
 import { LnurlError } from "./errors.js";
 import type { LnurlClient } from "./index.js";
-import type { PaymentActivity } from "./types.js";
+import type { PaymentActivity, QuotedAmount } from "./types.js";
 
 /**
  * One synced payment row, keyed by server plus server-local identifier.
@@ -46,6 +46,8 @@ export interface StoredPayment {
    * attribution key for concurrent covenant payments, and what a consumer
    * verifying the payment on-chain has to match against. */
   covenantScript: string | null;
+  /** What the payer asked to pay in a LUD-XX unit; absent when they paid in sats. */
+  quote?: QuotedAmount;
 }
 
 /**
@@ -120,6 +122,7 @@ const toStored = (
     preimage: entry.kind === "bolt11" ? entry.preimage : null,
     paymentOption: entry.kind === "destination" ? entry.paymentOption : null,
     covenantScript: entry.kind === "destination" ? entry.covenantScript : null,
+    ...(entry.quote ? { quote: entry.quote } : {}),
   };
 };
 

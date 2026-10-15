@@ -7,7 +7,7 @@ import { buildMetadata, requestSessionInvoice } from "../../services/pay-flow.js
 import type { ServerContext } from "../server-context.js";
 import { BATCH_PATH, createVerifyBatch } from "../../services/verify-batch.js";
 import { verifyBatchRoutes } from "./verify-batch.js";
-import { applyQuote, type PaymentQuote } from "../../quote-provider.js";
+import { applyQuote, type PaymentQuote, type QuotedAmount } from "../../quote-provider.js";
 
 /** LUD-06 pay flow for an interactive session's LNURL, plus LUD-21 verify and LUD-XX verifyBatch. */
 export function lnurlPayRoutes({ config, sessions, store, settings, logger, quoteProvider }: ServerContext): Router {
@@ -70,14 +70,16 @@ export function lnurlPayRoutes({ config, sessions, store, settings, logger, quot
     const unit = strParam(req.query.unit);
     const receiveUnit = strParam(req.query.receiveUnit);
     let paymentQuote: PaymentQuote | undefined;
+    let quoted: QuotedAmount | undefined;
     if (unit !== undefined || receiveUnit !== undefined) {
       const q = applyQuote(quoteProvider, { amount: amountMsat, unit, receiveUnit });
       if (!q.ok) throw new LnurlError(q.reason);
       amountMsat = q.amountMsat;
       paymentQuote = q.paymentQuote;
+      quoted = q.quoted;
     }
     res.json(await requestSessionInvoice({
-      sessions, sessionId: id, amountMsat, comment, paymentQuote,
+      sessions, sessionId: id, amountMsat, comment, paymentQuote, quoted,
       min: settings.minSendable(), max: settings.maxSendable(), timeoutMs: settings.invoiceTimeoutMs(),
       offlineReason: "This LNURL is no longer active", store, baseUrl: settings.baseUrl(),
       logger, requestId: res.locals.requestId as string,

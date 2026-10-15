@@ -1,15 +1,15 @@
 /** The wallet-shaped facade: what a receiver holding an `@arkade-os/sdk` wallet
  *  would otherwise wire by hand. The low-level surface stays exported beneath it. */
-import type { PaymentOption, PaymentRail, PaymentRequest, RouteQuote, RouterPreferences } from "@arkade-os/sdk";
+import type { PaymentOption, PaymentRail, RouteQuote, RouterPreferences } from "@arkade-os/sdk";
 import { bech32 } from "@scure/base";
 import { arkadeIdentityRequest, deriveSessionTokenForIdentity, type ArkadeSigner } from "./arkade.js";
 import { LnurlError } from "./errors.js";
 import { createLnurlClient, type LnurlClient } from "./index.js";
-import { PAY_REQUEST_TTL_MS } from "./rail.js";
+import { PAY_REQUEST_TTL_MS, type LnurlPaymentRequest } from "./rail.js";
 import { deriveSessionId } from "./token.js";
 import { syncPayments, type PaymentSyncStore, type StoredPayment } from "./sync.js";
 import type { DomainCapabilities } from "./addresses.js";
-import type { PayRequest, PaymentPage } from "./types.js";
+import type { PayRequest, PaymentPage, UnitAmount } from "./types.js";
 import { arkadePaymentRouter } from "./sdk-adapter.js";
 
 export { arkadePaymentRouter } from "./sdk-adapter.js";
@@ -23,8 +23,8 @@ export interface LnurlWallet {
 export interface LnurlPaymentRouter {
   use(rail: PaymentRail): this;
   remove(id: string): this;
-  options(req: PaymentRequest, prefs?: RouterPreferences): Promise<PaymentOption[]>;
-  route(req: PaymentRequest, prefs?: RouterPreferences): Promise<RouteQuote>;
+  options(req: LnurlPaymentRequest, prefs?: RouterPreferences): Promise<PaymentOption[]>;
+  route(req: LnurlPaymentRequest, prefs?: RouterPreferences): Promise<RouteQuote>;
 }
 
 /** The 1023 limit is LUD-01's, not bech32's default 90. */
@@ -89,7 +89,8 @@ export interface ArkadeLnurl {
   claim(opts?: ClaimOptions): Promise<Receiver>;
   owned(): Promise<Receiver | undefined>;
   router(): LnurlPaymentRouter;
-  options(target: string, amountSat: number, prefs?: RouterPreferences): Promise<PaymentOption[]>;
+  /** `amount` is sats, or an amount in one of the target's `units`, e.g. `{ unit: "USD", amount: 500 }`. */
+  options(target: string, amount: number | UnitAmount, prefs?: RouterPreferences): Promise<PaymentOption[]>;
 }
 
 /** Ordered so the Arkade leg outranks the Lightning one for the same address:
@@ -207,8 +208,11 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
       return receiverFrom(held, registered.handle, registered.lightningAddress, flagged);
     },
     router,
-    options: (target, amountSat, prefs) =>
-      router().options({ raw: target.trim(), amount: amountSat }, { priority: DEFAULT_RAIL_PRIORITY, ...prefs }),
+    options: (target, amount, prefs) =>
+      router().options(
+        typeof amount === "number" ? { raw: target.trim(), amount } : { raw: target.trim(), unitAmount: amount },
+        { priority: DEFAULT_RAIL_PRIORITY, ...prefs },
+      ),
   };
 }
 

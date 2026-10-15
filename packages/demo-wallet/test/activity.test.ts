@@ -92,6 +92,13 @@ describe("mergeFeed", () => {
     expect(rows[0]!.status).toBeUndefined();
   });
 
+  it("shows a unit-priced payment's amount on both sides", () => {
+    const received = mergeFeed([], [payment({ identifier: "id3", settled: false, payoutReference: null, quote: { amount: "500", unit: "USD", decimals: 2 } })]);
+    expect(received[0]!.details).toContainEqual(["requested", "5.00 USD"]);
+    const sent = mergeFeed([activity("sent:sendtx2", { amount: -7693, intent: { label: "→ x", kind: "lnurl-send", metadata: { requested: "5.00 USD" } } })], []);
+    expect(sent[0]!.details).toContainEqual(["requested", "5.00 USD"]);
+  });
+
   it("keeps a quote nobody paid, which has no transaction to enhance", () => {
     const unpaid = payment({ identifier: "id2", settled: false, payoutReference: null, amountMsat: 9_000_000 });
     const rows = mergeFeed([], [unpaid]);

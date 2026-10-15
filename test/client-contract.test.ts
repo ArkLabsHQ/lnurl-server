@@ -21,6 +21,7 @@ import {
 import type { LnurlSession, PaymentSyncStore, StoredPayment } from "../packages/client/src/index.js";
 import { tokenOptions } from "../packages/client/src/index.js";
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
+import { priceFeedQuotes } from "../src/price-feed.js";
 import { FfOrderStore } from "../src/ff-order-store.js";
 import type { OfflineSwapCreator } from "../src/services/offline-swaps.js";
 import { FfBudget, ffAuth, ffClient, ffHttpTransport } from "../src/rails/fixedfloat/client.js";
@@ -455,6 +456,85 @@ describe("per-rail bounds contract", () => {
     // The same amount without an option resolves to lightning and is refused
     // locally, before the wire, by the top-level pair.
     await expect(payer.requestInvoice(reachable, { amountSat: 1_000 })).rejects.toBeInstanceOf(LnurlError);
+  });
+});
+
+// The payer's half of LUD-XX units against the server's quote, at a price that is not
+// a whole number of sats per cent, so the whole-sat rounding is exercised too.
+describe("unit quote contract", () => {
+  const KEY = randomBytes(32);
+  const TOKEN = "ef".repeat(32);
+  const ARK = "ark1qexampledestination";
+  let db: Db;
+  let ctx: { baseUrl: string; close: () => Promise<void> };
+  let feed: http.Server;
+
+  beforeEach(async () => {
+    feed = http.createServer((_req, res) => res.writeHead(200, { "content-type": "application/json" }).end('{"usd":"65000"}'));
+    await new Promise<void>((r) => feed.listen(0, "127.0.0.1", () => r()));
+    const quoteProvider = priceFeedQuotes({
+      units: [{ code: "USD", decimals: 2, feedUrl: `http://127.0.0.1:${(feed.address() as { port: number }).port}/`, pricePath: "/usd" }],
+      staleAfterMs: 60_000,
+    });
+    await quoteProvider.refresh();
+    db = openDb(":memory:");
+    runMigrations(db);
+    const repos = createRepositories(db);
+    const domain = repos.domains.create({ domain: "127.0.0.1", allocationModes: ["self"] });
+    const reg = repos.addresses.create({ domainId: domain.id, username: "alice", status: "active", sessionId: deriveSessionId(TOKEN) });
+    repos.addresses.setOfflineReceive(reg.id, ARK, "02" + "ab".repeat(32));
+    const server = http.createServer();
+    ctx = await new Promise<typeof ctx>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        const baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+        server.on("request", createServer({ ...CONFIG, baseUrl }, {
+          repos, addressService: new AddressService(repos, KEY), settlements: new DbSettlementStore(db, 86_400_000), quoteProvider,
+        }));
+        resolve({ baseUrl, close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }) });
+      });
+    });
+  });
+
+  afterEach(async () => {
+    await ctx.close();
+    await new Promise((r) => feed.close(r));
+    db.close();
+  });
+
+  it("pays $5.00 to an arkade destination at the quoted whole sats, and the owner's history shows the $5.00", async () => {
+    const payer = createLnurlClient();
+    const lnurl = bech32.encode("lnurl", bech32.toWords(new TextEncoder().encode(`${ctx.baseUrl}/.well-known/lnurlp/alice`)), 1023);
+    const payRequest = await payer.resolve(lnurl);
+    expect(payRequest.units).toEqual([{ code: "USD", decimals: 2 }]);
+    const reachable = { ...payRequest, callback: payRequest.callback.replace("127.0.0.1", new URL(ctx.baseUrl).host) };
+
+    const result = await payer.requestInvoice(reachable, { unit: "USD", amount: 500, paymentOption: "arkade" });
+    // 500 cents at $65,000 is 7692.3 sats: the payer is asked for 7693.
+    expect(result).toMatchObject({
+      kind: "destination", paymentDestination: ARK,
+      paymentQuote: { requested: { amount: "500", unit: "USD" }, payment: { amount: "7693000", unit: "msat" } },
+    });
+
+    const owner = createLnurlClient({ baseUrl: ctx.baseUrl });
+    const page = await owner.listPayments(TOKEN, "alice", { domain: "127.0.0.1" });
+    expect(page.payments.map((p) => [p.amountMsat, p.quote])).toEqual([[7_693_000, { amount: "500", unit: "USD", decimals: 2 }]]);
+  });
+
+  it("pays a session LNURL in USD with the invoice its wallet issued for the quote", async () => {
+    const wallet = createLnurlClient({ baseUrl: ctx.baseUrl });
+    const asked: number[] = [];
+    const session = await wallet.openSession({}, {
+      onInvoiceRequest: (req, respond) => { asked.push(req.amountMsat); void respond.answerInvoice(buildInvoice(HASH, req.amountMsat / 1000)); },
+    });
+    try {
+      const payer = createLnurlClient();
+      const payRequest = await payer.resolve(session.lnurl);
+      const result = await payer.requestInvoice(payRequest, { unit: "USD", amount: 100 });
+      expect(asked).toEqual([1_539_000]);
+      expect(result).toMatchObject({ kind: "bolt11", paymentQuote: { payment: { amount: "1539000", unit: "msat" } } });
+    } finally {
+      session.close();
+    }
   });
 });
 

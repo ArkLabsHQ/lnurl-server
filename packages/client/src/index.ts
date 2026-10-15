@@ -51,8 +51,10 @@ import type {
   PaymentPage,
   PaymentQuote,
   PollVerifyOptions,
+  QuotedAmount,
   RequestInvoiceOptions,
   Unit,
+  UnitAmount,
   VerifyExpectation,
   VerifyStatus,
 } from "./types.js";
@@ -264,6 +266,7 @@ export {
   verifyStatusIsFor,
 };
 export { browserPaymentStore, forgetStoredPayments, storedPayments } from "./stores.js";
+export { formatUnitAmount, parseUnitAmount } from "./units.js";
 export type {
   AddressListEntry,
   AmountObject,
@@ -298,7 +301,9 @@ export type {
   TokenAsset,
   TokenOption,
   TokenUnit,
+  QuotedAmount,
   Unit,
+  UnitAmount,
   VerifyStatus,
 };
 export type {
