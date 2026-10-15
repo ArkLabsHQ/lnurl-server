@@ -97,7 +97,8 @@ beforeAll(async () => {
     }
     if (url.pathname === "/v1/indexer/vtxos") {
       const scripts = url.searchParams.getAll("scripts");
-      res.end(JSON.stringify({ vtxos: vtxos.filter((v) => scripts.includes(v.script)), page: { current: 1, next: 1, total: 1 } }));
+      const live = url.searchParams.get("spendableOnly") === "true";
+      res.end(JSON.stringify({ vtxos: vtxos.filter((v) => scripts.includes(v.script) && !(live && v.isSpent)), page: { current: 1, next: 1, total: 1 } }));
       return;
     }
     const virtual = /^\/v1\/indexer\/virtualTx\/(.+)$/.exec(url.pathname);
@@ -278,8 +279,23 @@ describe("createSelfClaimer", () => {
       refundLocktime: Math.floor(Date.now() / 1000) - 60,
     });
 
-    expect(await claimer.claim("swap-9", hex.encode(PREIMAGE))).toEqual({ state: "skipped", reason: "expired" });
+    expect(await claimer.claim("swap-9", hex.encode(PREIMAGE))).toEqual({ state: "skipped", reason: "expired", funded: true });
     expect(submitted).toHaveLength(0);
+  });
+
+  it("reports an expired lockup nobody funded as unpaid, then forgets the swap", async () => {
+    const { claimer } = registered({ swapId: "swap-11", expectedAmount: 4_900, refundLocktime: Math.floor(Date.now() / 1000) - 60 });
+
+    expect(await claimer.claim("swap-11", hex.encode(PREIMAGE))).toEqual({ state: "skipped", reason: "expired", funded: false });
+    expect(await claimer.claim("swap-11", hex.encode(PREIMAGE))).toEqual({ state: "skipped", reason: "unregistered" });
+  });
+
+  it("counts an expired lockup the solver already reclaimed as funded", async () => {
+    const r = registered({ swapId: "swap-12", expectedAmount: 4_900, refundLocktime: Math.floor(Date.now() / 1000) - 60 });
+    const { txid } = fundingTx(r.script.pkScript, 4_900);
+    vtxos.push({ ...wireVtxo({ txid, valueSat: 4_900, script: r.lockupScript }), isSpent: true, spentBy: "ab".repeat(32) });
+
+    expect(await r.claimer.claim("swap-12", hex.encode(PREIMAGE))).toEqual({ state: "skipped", reason: "expired", funded: true });
   });
 
   it("still claims under a block-height refund locktime, which is no wall-clock deadline", async () => {
