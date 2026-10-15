@@ -330,6 +330,56 @@ describe("startOfflineSettlementPoller", () => {
     }
   });
 
+  it("settles from the solver's state when the creator reports one", async () => {
+    const store = pendingStore();
+    const creator: OfflineSwapCreator = { ...creatorReporting([]), status: async () => "settled" };
+
+    const poller = startOfflineSettlementPoller(store, creator, 15_000);
+    await vi.waitFor(() => expect(store.get("aa")!.settled).toBe(true));
+    poller.stop();
+  });
+
+  it("stops asking the solver about a closed swap, but keeps claiming it until its deadline", async () => {
+    const store = pendingStore();
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const selfClaim = vi.fn(async () => ({ state: "skipped" as const, reason: "unfunded" as const }));
+    const status = vi.fn(async () => "expired");
+    const release = vi.fn(async () => {});
+    const creator: OfflineSwapCreator = { ...creatorReporting([]), selfClaim, status, release };
+
+    const poller = startOfflineSettlementPoller(store, creator, 15_000);
+    try {
+      await vi.waitFor(() => expect(status).toHaveBeenCalledOnce());
+      poller.trigger();
+      await vi.waitFor(() => expect(selfClaim).toHaveBeenCalledTimes(2));
+      poller.trigger("swap-1");
+      await vi.waitFor(() => expect(selfClaim).toHaveBeenCalledTimes(3));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(status).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledOnce();
+      expect(info).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_closed"'));
+      expect(info).toHaveBeenCalledWith(expect.stringContaining('"state":"expired"'));
+    } finally {
+      poller.stop();
+      info.mockRestore();
+    }
+  });
+
+  it("keeps asking about a swap the solver reports stuck", async () => {
+    const store = pendingStore();
+    const status = vi.fn(async () => "stuck");
+    const creator: OfflineSwapCreator = { ...creatorReporting([]), status };
+
+    const poller = startOfflineSettlementPoller(store, creator, 15_000);
+    try {
+      await vi.waitFor(() => expect(status).toHaveBeenCalledOnce());
+      poller.trigger();
+      await vi.waitFor(() => expect(status).toHaveBeenCalledTimes(2));
+    } finally {
+      poller.stop();
+    }
+  });
+
   it("stops passing once stopped", async () => {
     const store = pendingStore();
     const creator = creatorReporting([]);

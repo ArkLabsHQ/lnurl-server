@@ -1,5 +1,5 @@
 import type { SettlementStore } from "../settlement-store.js";
-import type { OfflineSwapCreator } from "../services/offline-swaps.js";
+import { CLOSED_RFQ_STATES, type OfflineSwapCreator } from "../services/offline-swaps.js";
 import type { OfflineSwapStore } from "../offline-swap-store.js";
 import { createLogger, type Logger } from "../logger.js";
 import { startCatchUpLoop } from "./catch-up-loop.js";
@@ -17,7 +17,12 @@ function pendingSwaps(store: SettlementStore, recovered?: OfflineSwapStore): Pen
     : store.listPendingSwaps();
 }
 
-async function settleOne(store: SettlementStore, creator: OfflineSwapCreator, p: Pending, recovered: OfflineSwapStore | undefined, logger: Logger, hooks: SettlementHooks, expired: Set<string>): Promise<boolean> {
+async function solverState(creator: OfflineSwapCreator, p: Pending): Promise<string | undefined> {
+  if (creator.status) return creator.status(p.swapId, p.recovery);
+  return (await creator.isSettled(p.swapId, p.recovery)) ? "settled" : undefined;
+}
+
+async function settleOne(store: SettlementStore, creator: OfflineSwapCreator, p: Pending, recovered: OfflineSwapStore | undefined, logger: Logger, hooks: SettlementHooks, expired: Set<string>, closed: Set<string>): Promise<boolean> {
   // The logger redacts 64-char hex, which is exactly what a swap id is.
   const swapRef = p.swapId.slice(0, 12);
   let claimed = false;
@@ -39,12 +44,19 @@ async function settleOne(store: SettlementStore, creator: OfflineSwapCreator, p:
       logger.warn("offline_swap_self_claim_failed", { swapRef, error: err });
     }
   }
+  if (closed.has(p.swapId)) return false;
   try {
-    if (claimed || await creator.isSettled(p.swapId, p.recovery)) {
+    const state = claimed ? "settled" : await solverState(creator, p);
+    if (state === "settled") {
       const settled = (recovered ?? store).markSettled(p.paymentHash, p.preimage);
       await creator.release?.(p.swapId);
       if (settled) await hooks.onSettled?.(p.paymentHash).catch((error) => logger.warn("offline_swap_settled_hook_failed", { swapRef, error }));
       return settled;
+    }
+    if (state !== undefined && CLOSED_RFQ_STATES.has(state)) {
+      closed.add(p.swapId);
+      logger.info("offline_swap_closed", { swapRef, state });
+      await creator.release?.(p.swapId);
     }
   } catch (err) {
     logger.warn("offline_swap_status_failed", { swapRef, error: err });
@@ -68,7 +80,7 @@ export async function settleOfflineSwaps(
   const pending = pendingSwaps(store, recovered);
   await creator.prune?.(pending.map((row) => row.swapId));
   for (const p of pending) {
-    if (await settleOne(store, creator, p, recovered, logger, hooks, new Set())) settled++;
+    if (await settleOne(store, creator, p, recovered, logger, hooks, new Set(), new Set())) settled++;
   }
   return settled;
 }
@@ -99,13 +111,15 @@ export function startOfflineSettlementPoller(
   // Past their refund deadline: wall clock only moves on, so the claim's answer cannot change.
   // The solver is still asked — a claim made before the deadline can settle after it.
   const expired = new Set<string>();
+  // The solver will never settle these. Claims go on until the deadline, in case it is wrong.
+  const closed = new Set<string>();
   let active = 0;
   let stopped = false;
   const runOne = (p: Pending): Promise<boolean> => {
     const existing = running.get(p.swapId);
     if (existing) return existing;
     const task = Promise.resolve()
-      .then(() => store.get(p.paymentHash)?.settled === false ? settleOne(store, creator, p, recovered, logger, hooks, expired) : false)
+      .then(() => store.get(p.paymentHash)?.settled === false ? settleOne(store, creator, p, recovered, logger, hooks, expired, closed) : false)
       .finally(() => {
         running.delete(p.swapId);
         if (retry.delete(p.swapId)) queued.add(p.swapId);
@@ -134,7 +148,7 @@ export function startOfflineSettlementPoller(
       const pending = pendingSwaps(store, recovered);
       await creator.prune?.(pending.map((row) => row.swapId));
       const live = new Set(pending.map((row) => row.swapId));
-      for (const swapId of expired) if (!live.has(swapId)) expired.delete(swapId);
+      for (const set of [expired, closed]) for (const swapId of set) if (!live.has(swapId)) set.delete(swapId);
       for (const p of pending) await runOne(p);
     },
     intervalMs: catchUpIntervalMs,
