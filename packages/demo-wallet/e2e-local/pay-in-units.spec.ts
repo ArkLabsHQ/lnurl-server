@@ -116,6 +116,9 @@ test.afterAll(async () => {
 test("lnurl-arkade in USD: the receiver quotes the sats, and both feeds keep the dollars", async () => {
   const url = `${server.base}/.well-known/lnurlp/${recipient.username}`;
   const lnurl = bech32.encode("lnurl", bech32.toWords(new TextEncoder().encode(url)), 1023);
+  // Polled, not read once: a refresh renders 0 mid-fetch, which as the baseline
+  // makes the drop below unsatisfiable (send-paths.spec.ts hit the same).
+  await expect.poll(() => balance(payer), { timeout: 120_000, intervals: [1_000] }).toBeGreaterThan(QUOTED_SATS);
   const payerBefore = await balance(payer);
 
   await payer.getByRole("button", { name: "Send" }).click();
