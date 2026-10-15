@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed the unused `@noble/ciphers` dependency.
 
 ### Fixed
+- **`offline_swap_refund_deadline_passed` is logged once per swap, not every settlement pass** — a self-claim swap past its refund deadline stayed pending until `VERIFY_TTL_MS`, and each `OFFLINE_POLL_INTERVAL_MS` pass re-ran the claim and logged the error again: about 240 lines an hour per swap. The poller now stops claiming such a swap after the first report; it still asks the solver, so a claim made before the deadline can still settle. A restart reports each one once more.
 - **One unreachable Nostr relay no longer crashes the server on Node 22** — nostr-tools 2.25.x closes a socket inside its `error` handler, and Node 22's built-in WebSocket re-fires `error` synchronously when a still-connecting socket is closed, so a refused or unresolvable relay on the offline-receive RFQ path overflowed the stack and exited the process. It is fixed at the source by the `@arkade-os/swap` release carrying arkade-os/ts-sdk#1073, whose relay pools close a socket only once, so the interim `nostr-tools` 2.24.1 pin is lifted.
 - Covenant destinations use arkd's `/v1/info` unilateral exit delay when `OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS` is unset, preventing the fixed one-day default from blocking mainnet startup. Explicit overrides retain their validation.
 - Activity details derive and display the covenant's Arkade address from its script and the wallet's server key and prefix.
