@@ -134,7 +134,7 @@ function quoteOf(raw: string | null): QuotedAmount | null {
   if (!raw) return null;
   try {
     const q = JSON.parse(raw) as Partial<QuotedAmount>;
-    const ok = typeof q.amount === "string" && /^\d+$/.test(q.amount) && typeof q.unit === "string" && Number.isInteger(q.decimals);
+    const ok = typeof q.amount === "string" && /^\d+$/.test(q.amount) && typeof q.unit === "string" && Number.isInteger(q.decimals) && q.decimals! >= 0;
     return ok ? { amount: q.amount!, unit: q.unit!, decimals: q.decimals! } : null;
   } catch {
     return null;
