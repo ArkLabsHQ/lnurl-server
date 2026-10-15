@@ -6,6 +6,7 @@ import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
 import type { QuoteProvider, PaymentQuote } from "../src/quote-provider.js";
 import { QuoteError } from "../src/errors.js";
+import { priceFeedQuotes } from "../src/price-feed.js";
 import type { OfflineSwapCreator, OfflineSwapParams } from "../src/services/offline-swaps.js";
 import { SessionManager } from "../src/services/sessions.js";
 import { deriveSessionId } from "../src/session-token.js";
@@ -243,6 +244,48 @@ describe("LUD-XX paymentQuote", () => {
       const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/bob/callback?amount=100&unit=USD`, "domain.com");
       expect(cb.status).toBe("ERROR");
     } finally { await ctx.close(); }
+  });
+
+  it("quotes from a live price feed end to end", async () => {
+    const feed = http.createServer((_req, res) => res.writeHead(200, { "content-type": "application/json" }).end('{"price":"50000.00"}'));
+    await new Promise<void>((r) => feed.listen(0, "127.0.0.1", () => r()));
+    const quotes = priceFeedQuotes({
+      units: [{ code: "USD", decimals: 2, feedUrl: `http://127.0.0.1:${(feed.address() as { port: number }).port}/binance`, pricePath: "/price" }],
+      staleAfterMs: 60_000,
+    });
+    await quotes.refresh();
+    addr("alice");
+    const ctx = await start({ repos, quoteProvider: quotes, offlineSwapCreator: fakeCreator });
+    try {
+      const meta = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com");
+      expect(meta.units).toEqual([{ code: "USD", decimals: 2 }]);
+      const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=100&unit=USD`, "domain.com");
+      expect(lastCreate?.amountSat).toBe(2000); // $1 at $50k
+      expect(cb.paymentQuote).toMatchObject({ payment: { amount: "2000000", unit: "msat" } });
+    } finally {
+      await ctx.close();
+      await new Promise((r) => feed.close(r));
+    }
+  });
+
+  it("advertises and quotes units on a session LNURL", async () => {
+    const sessions = new SessionManager();
+    const ctx = await start({ repos, quoteProvider: usd, sessions });
+    const session = await openSession(ctx.baseUrl);
+    try {
+      const meta = await getJson(`${ctx.baseUrl}/lnurl/${session.sessionId}`, "domain.com");
+      expect(meta.units).toEqual([{ code: "USD", decimals: 2, symbol: "$" }]);
+      const evt = nextSseEvent(session.response);
+      const payer = getJson(`${ctx.baseUrl}/lnurl/${session.sessionId}/callback?amount=100&unit=USD`, "domain.com");
+      expect((await evt).data.amountMsat).toBe(100000);
+      await postJson(`${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`, { pr: buildInvoice("ef".repeat(32)) }, session.token);
+      expect((await payer).paymentQuote).toMatchObject({ requested: { amount: "100", unit: "USD" }, payment: { amount: "100000", unit: "msat" } });
+      const bad = await getJson(`${ctx.baseUrl}/lnurl/${session.sessionId}/callback?amount=100&unit=EUR`, "domain.com");
+      expect(bad).toMatchObject({ status: "ERROR", reason: "Unsupported unit" });
+    } finally {
+      session.abort();
+      await ctx.close();
+    }
   });
 
   it("leaves a plain msat request unchanged (no paymentQuote)", async () => {

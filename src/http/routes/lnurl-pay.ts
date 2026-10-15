@@ -7,9 +7,10 @@ import { buildMetadata, requestSessionInvoice } from "../../services/pay-flow.js
 import type { ServerContext } from "../server-context.js";
 import { BATCH_PATH, createVerifyBatch } from "../../services/verify-batch.js";
 import { verifyBatchRoutes } from "./verify-batch.js";
+import { applyQuote, type PaymentQuote } from "../../quote-provider.js";
 
 /** LUD-06 pay flow for an interactive session's LNURL, plus LUD-21 verify and LUD-XX verifyBatch. */
-export function lnurlPayRoutes({ config, sessions, store, settings, logger }: ServerContext): Router {
+export function lnurlPayRoutes({ config, sessions, store, settings, logger, quoteProvider }: ServerContext): Router {
   const r = Router();
   // Light per-IP guard for the public verify-polling endpoint.
   const verifyLimiter = new RateLimiter(120, 60_000);
@@ -45,6 +46,7 @@ export function lnurlPayRoutes({ config, sessions, store, settings, logger }: Se
   r.get("/lnurl/:id", (req, res) => {
     const { id } = req.params;
     if (!sessions.isActive(id)) throw new LnurlError("This LNURL is no longer active");
+    const units = quoteProvider?.units() ?? [];
     res.json({
       tag: "payRequest",
       callback: `${settings.baseUrl()}/lnurl/${id}/callback`,
@@ -52,20 +54,30 @@ export function lnurlPayRoutes({ config, sessions, store, settings, logger }: Se
       maxSendable: settings.maxSendable(),
       metadata: buildMetadata(),
       commentAllowed: 140,
+      ...(units.length ? { units } : {}),
     } satisfies LnurlPayMetadata);
   });
 
   // Requests the bolt11 from the wallet over SSE.
   r.get("/lnurl/:id/callback", async (req, res) => {
     const { id } = req.params;
-    const amountMsat = msatParam(req.query.amount);
+    let amountMsat = msatParam(req.query.amount);
     const comment = strParam(req.query.comment);
     if (amountMsat === undefined) throw new LnurlError("Missing or invalid amount parameter");
     if (amountMsat <= 0) {
       throw new LnurlError(`Amount must be between ${settings.minSendable()} and ${settings.maxSendable()} millisats`);
     }
+    const unit = strParam(req.query.unit);
+    const receiveUnit = strParam(req.query.receiveUnit);
+    let paymentQuote: PaymentQuote | undefined;
+    if (unit !== undefined || receiveUnit !== undefined) {
+      const q = applyQuote(quoteProvider, { amount: amountMsat, unit, receiveUnit });
+      if (!q.ok) throw new LnurlError(q.reason);
+      amountMsat = q.amountMsat;
+      paymentQuote = q.paymentQuote;
+    }
     res.json(await requestSessionInvoice({
-      sessions, sessionId: id, amountMsat, comment,
+      sessions, sessionId: id, amountMsat, comment, paymentQuote,
       min: settings.minSendable(), max: settings.maxSendable(), timeoutMs: settings.invoiceTimeoutMs(),
       offlineReason: "This LNURL is no longer active", store, baseUrl: settings.baseUrl(),
       logger, requestId: res.locals.requestId as string,
