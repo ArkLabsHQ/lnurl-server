@@ -295,6 +295,8 @@ QUOTE_EUR_FEED_URL=https://api.binance.com/api/v3/ticker/price?symbol=BTCEUR    
 QUOTE_EUR_DECIMALS=2
 ```
 
+With `DB_PATH` set, units can also be added, replaced and removed at runtime from the admin UI's **Quotes** tab or `/admin/api/quote-units`, with no restart. They are stored in SQLite. A unit saved there replaces the `QUOTE_UNITS` unit of the same code, and removing it brings the env one back; env units themselves can only be removed from the environment. Feed URLs entered there must answer before they are saved, and may not point at private, loopback or link-local hosts (env feeds may, for local stacks).
+
 Feeds refresh in the background every `QUOTE_REFRESH_MS`; a quote never waits on one. A unit whose last good price is older than three refresh intervals is neither advertised nor quoted, and `/health` reports `priceFeeds` (optional, so it never fails readiness). Without `QUOTE_UNITS`, `units` is not advertised and any `unit=` request is rejected. Embedders of `createServer` can pass `priceFeedQuotes(...)` or any other `QuoteProvider` as `quoteProvider`.
 
 When a provider is configured, both the LN-address and the session-LNURL `payRequest` advertise `units`:
@@ -346,6 +348,10 @@ The Docker image binds to `0.0.0.0` so isolation happens at the container/proxy 
 | PUT/PATCH/DELETE | `/admin/api/solver-cards/:id` | Replace, enable/disable, or delete a card |
 | GET | `/admin/api/discovery` | Inspect active candidates, sources, cache use, and warnings |
 | POST | `/admin/api/discovery/refresh` | Refresh discovery immediately |
+| GET | `/admin/api/quote-units` | List [quote units](#payment-quote-lud-xx) with their live price, freshness and last error |
+| PUT/DELETE | `/admin/api/quote-units/:code` | Add or replace a unit (`{ decimals, feedUrl, pricePath? }`; the feed is read first and a dead one refused), or remove one |
+| POST | `/admin/api/quote-units/preview` | Read a feed once without saving it |
+| POST | `/admin/api/quote-units/refresh` | Re-read every feed now |
 
 The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 
@@ -404,7 +410,7 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `FIXEDFLOAT_REFRESH_MS` | `300000` | Rates and currency-list refresh interval. |
 | `FIXEDFLOAT_BASE_URL` / `FIXEDFLOAT_RATES_URL` | `https://ff.io/api/v2` / `https://ff.io/rates/fixed.xml` | FixedFloat's API and public rates export. |
 | `FIXEDFLOAT_SIMULATE` | `false` | `true` runs the simulated provider instead; never on `bitcoin`, never with keys. |
-| `QUOTE_UNITS` | — | Comma-separated unit codes to quote ([Payment quote](#payment-quote-lud-xx)). Each needs the three settings below. |
+| `QUOTE_UNITS` | — | Comma-separated unit codes to quote ([Payment quote](#payment-quote-lud-xx)). Each needs the three settings below. With `DB_PATH`, more can be added at runtime in the admin UI. |
 | `QUOTE_<CODE>_FEED_URL` | — | JSON price feed answering the unit's price per one whole bitcoin. |
 | `QUOTE_<CODE>_DECIMALS` | — | Decimals of the unit's smallest denomination (`2` for USD cents, `6` for USDT). Required: a wrong guess misprices by a power of ten. |
 | `QUOTE_<CODE>_PRICE_PATH` | derived for Binance / single-currency CoinGecko URLs | RFC 6901 pointer to the price in the feed's response, e.g. `/data/0/price`. |

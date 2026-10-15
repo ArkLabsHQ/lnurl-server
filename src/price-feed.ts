@@ -19,6 +19,8 @@ export interface PriceFeedUnit {
   decimals: number;
   feedUrl: string;
   pricePath: string;
+  /** "admin" units were typed into the admin UI and fetch through the SSRF guard. */
+  source?: "env" | "admin";
 }
 
 const DECIMAL = /^(\d+)(?:\.(\d+))?$/;
@@ -133,41 +135,90 @@ export async function fetchPrice(unit: PriceFeedUnit, opts: { timeoutMs: number;
   return resolvePrice(body, unit.pricePath);
 }
 
+export function formatPrice(price: Price): string {
+  const digits = price.mantissa.toString().padStart(price.scale + 1, "0");
+  return price.scale === 0 ? digits : `${digits.slice(0, -price.scale)}.${digits.slice(-price.scale)}`;
+}
+
+export class QuoteUnitError extends Error {
+  constructor(readonly field: "code" | "decimals" | "feedUrl" | "pricePath", message: string) {
+    super(message);
+  }
+}
+
+/** The one validation for a unit, whichever of env or the admin API it came from. */
+export function quoteUnitFrom(input: { code: string; decimals: number; feedUrl: string; pricePath?: string | undefined }): PriceFeedUnit {
+  const code = input.code.trim().toUpperCase();
+  // The code becomes part of env var names.
+  if (!/^[A-Z][A-Z0-9]{0,15}$/.test(code)) throw new QuoteUnitError("code", `unit code "${input.code}" must be letters and digits, starting with a letter`);
+  if (!Number.isInteger(input.decimals) || input.decimals < 0 || input.decimals > 18) throw new QuoteUnitError("decimals", "decimals must be an integer in 0..18");
+  let url: URL;
+  try {
+    url = new URL(input.feedUrl);
+  } catch {
+    throw new QuoteUnitError("feedUrl", "feed URL must be an absolute http(s) URL");
+  }
+  if (!/^https?:$/.test(url.protocol) || url.username || url.password) throw new QuoteUnitError("feedUrl", "feed URL must be an absolute http(s) URL without credentials");
+  const pricePath = input.pricePath ?? defaultPricePath(input.feedUrl);
+  if (pricePath === null) throw new QuoteUnitError("pricePath", `price path is required: it cannot be derived from ${input.feedUrl}`);
+  try {
+    validatePricePath(pricePath);
+  } catch (error) {
+    throw new QuoteUnitError("pricePath", (error as Error).message);
+  }
+  return { code, decimals: input.decimals, feedUrl: input.feedUrl, pricePath };
+}
+
+export interface QuoteUnitStatus extends PriceFeedUnit {
+  price?: string;
+  updatedAt?: number;
+  fresh: boolean;
+  error?: string;
+}
+
 export interface PriceFeedQuotes extends QuoteProvider {
   refresh(): Promise<void>;
+  /** Replace the unit list. A unit whose feed changed loses its cached price. */
+  setUnits(units: PriceFeedUnit[]): void;
+  snapshot(): QuoteUnitStatus[];
   status(): { ok: boolean; detail: string };
 }
 
+const sameFeed = (a: PriceFeedUnit | undefined, b: PriceFeedUnit) => a?.feedUrl === b.feedUrl && a.pricePath === b.pricePath;
+
 /** A QuoteProvider over periodically refreshed feeds. Quoting stays synchronous and
  *  never waits on a feed; a unit whose price is older than `staleAfterMs` is neither
- *  advertised nor quoted. */
+ *  advertised nor quoted. Admin-entered units fetch through `guardedFetch`. */
 export function priceFeedQuotes(cfg: {
   units: PriceFeedUnit[];
   staleAfterMs: number;
   timeoutMs?: number;
   fetch?: typeof globalThis.fetch;
+  guardedFetch?: typeof globalThis.fetch;
   now?: () => number;
   logger?: Logger;
 }): PriceFeedQuotes {
   const now = cfg.now ?? Date.now;
+  let units = cfg.units;
   const latest = new Map<string, { price: Price; at: number }>();
   const failures = new Map<string, string>();
   const fresh = (code: string): Price | undefined => {
     const hit = latest.get(code);
     return hit && now() - hit.at < cfg.staleAfterMs ? hit.price : undefined;
   };
+  const current = (code: string) => units.find((u) => u.code === code);
 
   return {
     units(paymentOption) {
       if (paymentOption !== undefined && paymentOption !== "lightning") return [];
-      return cfg.units.filter((u) => fresh(u.code)).map((u): Unit => ({ code: u.code, decimals: u.decimals }));
+      return units.filter((u) => fresh(u.code)).map((u): Unit => ({ code: u.code, decimals: u.decimals }));
     },
     quote(req): PaymentQuote {
       if (req.receiveUnit !== undefined && req.receiveUnit !== "msat") throw new QuoteError("Unsupported receiveUnit");
       let msat: bigint;
       if (req.unit === undefined) msat = BigInt(req.amount);
       else {
-        const unit = cfg.units.find((u) => u.code === req.unit);
+        const unit = current(req.unit);
         if (!unit) throw new QuoteError("Unsupported unit");
         const price = fresh(unit.code);
         if (!price) throw new QuoteError(`${unit.code} rate is unavailable right now`);
@@ -180,20 +231,40 @@ export function priceFeedQuotes(cfg: {
       };
     },
     async refresh() {
-      await Promise.all(cfg.units.map(async (unit) => {
+      await Promise.all(units.map(async (unit) => {
+        const fetcher = unit.source === "admin" ? cfg.guardedFetch : cfg.fetch;
         try {
-          latest.set(unit.code, { price: await fetchPrice(unit, { timeoutMs: cfg.timeoutMs ?? 10_000, ...(cfg.fetch ? { fetch: cfg.fetch } : {}) }), at: now() });
+          const price = await fetchPrice(unit, { timeoutMs: cfg.timeoutMs ?? 10_000, ...(fetcher ? { fetch: fetcher } : {}) });
+          // setUnits may have repointed this code while the fetch was in flight.
+          if (!sameFeed(current(unit.code), unit)) return;
+          latest.set(unit.code, { price, at: now() });
           failures.delete(unit.code);
         } catch (error) {
+          if (!sameFeed(current(unit.code), unit)) return;
           const reason = error instanceof Error ? error.message : String(error);
           failures.set(unit.code, reason);
           cfg.logger?.warn("price_feed_failed", { unit: unit.code, reason });
         }
       }));
     },
+    setUnits(next) {
+      for (const unit of next) {
+        if (sameFeed(current(unit.code), unit)) continue;
+        latest.delete(unit.code);
+        failures.delete(unit.code);
+      }
+      units = next;
+    },
+    snapshot() {
+      return units.map((u): QuoteUnitStatus => {
+        const hit = latest.get(u.code);
+        const error = failures.get(u.code);
+        return { ...u, fresh: Boolean(fresh(u.code)), ...(hit ? { price: formatPrice(hit.price), updatedAt: hit.at } : {}), ...(error ? { error } : {}) };
+      });
+    },
     status() {
-      const stale = cfg.units.filter((u) => !fresh(u.code));
-      if (stale.length === 0) return { ok: true, detail: cfg.units.map((u) => u.code).join(", ") };
+      const stale = units.filter((u) => !fresh(u.code));
+      if (stale.length === 0) return { ok: true, detail: units.map((u) => u.code).join(", ") || "no units configured" };
       return { ok: false, detail: stale.map((u) => `${u.code}: ${failures.get(u.code) ?? "no fresh price"}`).join("; ") };
     },
   };

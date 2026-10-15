@@ -2,7 +2,7 @@ import { BlockList, isIP } from "node:net";
 import { ConfigError } from "./errors.js";
 import { ffAuth, type FfAuth } from "./rails/fixedfloat/client.js";
 import { FF_ASSETS } from "./rails/fixedfloat/catalogue.js";
-import { defaultPricePath, validatePricePath, type PriceFeedUnit } from "./price-feed.js";
+import { QuoteUnitError, quoteUnitFrom, type PriceFeedUnit } from "./price-feed.js";
 
 /** LUD-XX paymentQuote units priced from external feeds. */
 export interface QuoteConfig {
@@ -105,7 +105,8 @@ export interface AppConfig {
   shutdownTimeoutMs: number;
   offlineReceive: OfflineReceiveConfig;
   fixedFloat?: FixedFloatConfig;
-  quotes?: QuoteConfig;
+  /** Units from QUOTE_UNITS; with a DB, more can be added at runtime through the admin API. */
+  quotes: QuoteConfig;
 }
 
 type Env = Record<string, string | undefined>;
@@ -215,34 +216,26 @@ export function loadConfig(env: Env = process.env): AppConfig {
     shutdownTimeoutMs: integer(env, "SHUTDOWN_TIMEOUT_MS", 15_000, { min: 1 }),
     offlineReceive,
     ...(fixedFloat ? { fixedFloat } : {}),
-    ...(quotes ? { quotes } : {}),
+    quotes,
   };
 }
 
-function buildQuotes(env: Env): QuoteConfig | undefined {
+function buildQuotes(env: Env): QuoteConfig {
   const codes = (env.QUOTE_UNITS ?? "").split(",").map((c) => c.trim().toUpperCase()).filter(Boolean);
-  if (codes.length === 0) return undefined;
   if (new Set(codes).size !== codes.length) throw new ConfigError("QUOTE_UNITS names a unit twice");
   const units = codes.map((code): PriceFeedUnit => {
-    // The code becomes part of env var names below.
+    const name = (field: QuoteUnitError["field"]) =>
+      field === "code" ? "QUOTE_UNITS" : `QUOTE_${code}_${{ decimals: "DECIMALS", feedUrl: "FEED_URL", pricePath: "PRICE_PATH" }[field]}`;
     if (!/^[A-Z][A-Z0-9]{0,15}$/.test(code)) throw new ConfigError(`QUOTE_UNITS entry "${code}" must be letters and digits, starting with a letter`);
-    const urlName = `QUOTE_${code}_FEED_URL`;
-    const raw = env[urlName];
-    if (!raw) throw new ConfigError(`${urlName} is required for unit ${code}`);
-    const feedUrl = httpUrl(raw, urlName);
-    const decimalsName = `QUOTE_${code}_DECIMALS`;
+    if (!env[name("feedUrl")]) throw new ConfigError(`${name("feedUrl")} is required for unit ${code}`);
     // No default: a wrong guess misprices every quote by a power of ten.
-    if (!env[decimalsName]) throw new ConfigError(`${decimalsName} is required (e.g. 2 for USD cents)`);
-    const decimals = integer(env, decimalsName, 0, { min: 0, max: 18 });
-    const pathName = `QUOTE_${code}_PRICE_PATH`;
-    const pricePath = env[pathName] ?? defaultPricePath(feedUrl);
-    if (pricePath === null) throw new ConfigError(`${pathName} is required: it cannot be derived from ${feedUrl}`);
+    if (!env[name("decimals")]) throw new ConfigError(`${name("decimals")} is required (e.g. 2 for USD cents)`);
     try {
-      validatePricePath(pricePath);
+      return { ...quoteUnitFrom({ code, decimals: Number(env[name("decimals")]), feedUrl: env[name("feedUrl")]!, pricePath: env[name("pricePath")] }), source: "env" };
     } catch (error) {
-      throw new ConfigError(`${pathName}: ${(error as Error).message}`);
+      if (error instanceof QuoteUnitError) throw new ConfigError(`${name(error.field)}: ${error.message}`);
+      throw error;
     }
-    return { code, decimals, feedUrl, pricePath };
   });
   return { units, refreshMs: integer(env, "QUOTE_REFRESH_MS", 60_000, { min: 5_000 }) };
 }

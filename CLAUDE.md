@@ -77,6 +77,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/):
 - `src/payment-options.ts` — LUD-XX paymentOptions rail registry (advertise + resolve)
 - `src/quote-provider.ts` — LUD-XX paymentQuote framework (injected rate oracle seam)
 - `src/price-feed.ts` — the `QuoteProvider` behind `QUOTE_UNITS`: per-unit JSON price feeds (intent-solver's feed contract, ported because solver-core is unpublished), refreshed in the background so quoting stays synchronous
+- `src/services/quote-units.ts` + `src/db/repositories/quote-units.ts` + `src/http/routes/admin/quote-units.ts` — runtime-editable units (DB mode): env units plus admin units, an admin unit overriding the env one of the same code; admin-entered feeds fetch through `src/guarded-fetch.ts` (SSRF guard, ported from intent-solver)
 - `src/settlement-store.ts` + `src/workers/offline-poller.ts` — LUD-21 settlement records (memory/SQLite) and the offline-swap status poller
 - `src/rails/fixedfloat/` + `src/ff-order-store.ts` + `src/workers/ff-order-poller.ts` — Token deposits (`FIXEDFLOAT_*`, mainnet only; `FIXEDFLOAT_SIMULATE` off it): a payer's stablecoin deposit with FixedFloat pays the corridor's hold invoice. `settled` comes from the corridor alone; FixedFloat's status supplies only the deposit txid that becomes `paymentReference`
 - `scripts/probe-solver.ts` — live solver quote probe (operator diagnostic; funds nothing)

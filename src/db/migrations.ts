@@ -351,6 +351,19 @@ const MIGRATIONS: Migration[] = [
       if (!hasColumn(db, "settlements", "covenant_outpoint")) db.exec("ALTER TABLE settlements ADD COLUMN covenant_outpoint TEXT;");
     },
   },
+  {
+    version: 24,
+    up: `
+      CREATE TABLE IF NOT EXISTS quote_units (
+        code       TEXT PRIMARY KEY,
+        decimals   INTEGER NOT NULL,
+        feed_url   TEXT NOT NULL,
+        price_path TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 export const LATEST_MIGRATION = Math.max(...MIGRATIONS.map((m) => m.version));

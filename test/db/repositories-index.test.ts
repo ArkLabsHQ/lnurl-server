@@ -13,6 +13,7 @@ describe("createRepositories", () => {
     expect(repos.blacklist).toBeDefined();
     expect(repos.solverCards).toBeDefined();
     expect(repos.solverRegistryCache).toBeDefined();
+    expect(repos.quoteUnits).toBeDefined();
     const d = repos.domains.create({ domain: "domain.com", allocationModes: ["self"] });
     expect(repos.domains.getByDomain("domain.com")?.id).toBe(d.id);
     db.close();

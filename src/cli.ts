@@ -46,15 +46,19 @@ async function main(): Promise<void> {
   }
   let deps: import("./http/server.js").ServerDeps | undefined;
   let solverDiscovery: import("./services/solver-discovery.js").DiscoveryService | undefined;
-  let quoteProvider: import("./quote-provider.js").QuoteProvider | undefined;
-  if (config.quotes) {
-    const { priceFeedQuotes } = await import("./price-feed.js");
+  let quoteProvider: import("./price-feed.js").PriceFeedQuotes | undefined;
+  // With a DB the admin API can add units, so quotes run even when QUOTE_UNITS is empty.
+  const startQuotes = async (quotes: import("./price-feed.js").PriceFeedQuotes): Promise<void> => {
     const { startCatchUpLoop } = await import("./workers/catch-up-loop.js");
-    const quotes = priceFeedQuotes({ units: config.quotes.units, staleAfterMs: config.quotes.refreshMs * 3, logger });
-    runtime.addStop(startCatchUpLoop({ pass: () => quotes.refresh(), intervalMs: config.quotes.refreshMs, onError: (error) => logger.warn("price_feed_failed", { error }), immediate: true }).stop);
+    const { refreshMs } = config.quotes;
+    runtime.addStop(startCatchUpLoop({ pass: () => quotes.refresh(), intervalMs: refreshMs, onError: (error) => logger.warn("price_feed_failed", { error }), immediate: true }).stop);
     health.register("priceFeeds", () => quotes.status(), { required: false });
     quoteProvider = quotes;
-    console.log(`payment quotes: enabled (${config.quotes.units.map((u) => u.code).join(", ")}, refresh=${config.quotes.refreshMs}ms)`);
+    console.log(`payment quotes: enabled (${quotes.snapshot().map((u) => u.code).join(", ") || "no units yet"}, refresh=${refreshMs}ms)`);
+  };
+  if (!db && config.quotes.units.length) {
+    const { priceFeedQuotes } = await import("./price-feed.js");
+    await startQuotes(priceFeedQuotes({ units: config.quotes.units, staleAfterMs: config.quotes.refreshMs * 3, logger }));
   }
 
   if (db) {
@@ -65,6 +69,9 @@ async function main(): Promise<void> {
     const { hashSecret } = await import("./crypto.js");
     const { DbSettlementStore } = await import("./settlement-store.js");
     const repos = createRepositories(db);
+    const { createQuoteUnits } = await import("./services/quote-units.js");
+    const quoteUnits = createQuoteUnits({ envUnits: config.quotes.units, repo: repos.quoteUnits, staleAfterMs: config.quotes.refreshMs * 3, logger });
+    await startQuotes(quoteUnits.provider);
     if (!config.tokenEncryptionKey) {
       console.warn("WARNING: ALLOW_INSECURE_TOKEN_STORAGE — using a static, source-readable encryption key. Do NOT use in production.");
     }
@@ -314,7 +321,7 @@ async function main(): Promise<void> {
     const adminIndexer = off.arkServerUrl
       ? new (await import("@arkade-os/sdk")).RestIndexerProvider(off.arkServerUrl)
       : undefined;
-    const adminServer = createAdminServer({ repos, addressService, sessions, settings, config, settlements, discovery: solverDiscovery, ...(adminIndexer ? { indexer: adminIndexer } : {}), ...(fixedFloat ? { fixedFloat } : {}), logger }).listen(config.adminPort, config.adminBind, () => {
+    const adminServer = createAdminServer({ repos, addressService, sessions, settings, config, settlements, discovery: solverDiscovery, ...(adminIndexer ? { indexer: adminIndexer } : {}), ...(fixedFloat ? { fixedFloat } : {}), quotes: quoteUnits, logger }).listen(config.adminPort, config.adminBind, () => {
       console.log(`admin server on http://${config.adminBind}:${config.adminPort} (front with a proxy)`);
     });
     runtime.addServer(adminServer);

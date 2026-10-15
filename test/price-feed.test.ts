@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import http from "node:http";
-import { defaultPricePath, priceFeedQuotes, priceFrom, resolvePrice, unitToMsat, type PriceFeedUnit } from "../src/price-feed.js";
+import { defaultPricePath, formatPrice, priceFeedQuotes, priceFrom, resolvePrice, unitToMsat, type PriceFeedUnit } from "../src/price-feed.js";
 import { applyQuote } from "../src/quote-provider.js";
 import { loadConfig } from "../src/config.js";
 import { ConfigError } from "../src/errors.js";
@@ -10,6 +10,7 @@ describe("price math", () => {
     expect(priceFrom("62500.50")).toEqual({ mantissa: 6250050n, scale: 2 });
     expect(priceFrom(65000)).toEqual({ mantissa: 65000n, scale: 0 });
     for (const bad of ["1e5", "-1", "0", "0.00", "abc", null, {}]) expect(() => priceFrom(bad)).toThrow();
+    for (const text of ["62500.50", "0.05", "7"]) expect(formatPrice(priceFrom(text))).toBe(text);
   });
 
   it("walks an RFC 6901 pointer, escapes and arrays included", () => {
@@ -110,6 +111,28 @@ describe("priceFeedQuotes", () => {
     expect(q.status().detail).toMatch(/exceeded 1048576 bytes/);
   });
 
+  it("drops a repointed unit's price on setUnits and keeps an unchanged one", async () => {
+    const eur = { ...usd, code: "EUR" };
+    const q = priceFeedQuotes({ units: [usd, eur], staleAfterMs: 10_000, now: () => clock });
+    await q.refresh();
+    q.setUnits([{ ...usd, pricePath: "/bitcoin/eur" }, eur]);
+    expect(q.units().map((u) => u.code)).toEqual(["EUR"]);
+    expect(q.snapshot().find((u) => u.code === "EUR")).toMatchObject({ price: "50000", fresh: true });
+  });
+
+  it("fetches admin units through guardedFetch only", async () => {
+    let guarded = 0;
+    const q = priceFeedQuotes({
+      units: [usd, { ...usd, code: "EUR", source: "admin" }],
+      staleAfterMs: 10_000,
+      now: () => clock,
+      guardedFetch: (input, init) => { guarded++; return fetch(input, init); },
+    });
+    await q.refresh();
+    expect(guarded).toBe(1);
+    expect(feed.hits).toBe(2);
+  });
+
   it("treats a non-JSON answer as a failed refresh", async () => {
     feed.body = "<html>bad gateway</html>";
     const q = make();
@@ -122,8 +145,8 @@ describe("QUOTE_* config", () => {
   const base = { PORT: "3000", BASE_URL: "http://localhost:3000" };
   const coingecko = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd";
 
-  it("is off without QUOTE_UNITS", () => {
-    expect(loadConfig(base).quotes).toBeUndefined();
+  it("has no env units without QUOTE_UNITS", () => {
+    expect(loadConfig(base).quotes).toEqual({ units: [], refreshMs: 60_000 });
   });
 
   it("builds a unit per code, deriving the pointer where it can", () => {
@@ -132,8 +155,8 @@ describe("QUOTE_* config", () => {
     expect(cfg.quotes).toEqual({
       refreshMs: 30_000,
       units: [
-        { code: "USD", decimals: 2, feedUrl: coingecko, pricePath: "/bitcoin/usd" },
-        { code: "EUR", decimals: 2, feedUrl: "https://feed.example/eur", pricePath: "/data/0/price" },
+        { code: "USD", decimals: 2, feedUrl: coingecko, pricePath: "/bitcoin/usd", source: "env" },
+        { code: "EUR", decimals: 2, feedUrl: "https://feed.example/eur", pricePath: "/data/0/price", source: "env" },
       ],
     });
   });
@@ -141,8 +164,9 @@ describe("QUOTE_* config", () => {
   it.each([
     [{ QUOTE_UNITS: "USD" }, /QUOTE_USD_FEED_URL is required/],
     [{ QUOTE_UNITS: "USD", QUOTE_USD_FEED_URL: coingecko }, /QUOTE_USD_DECIMALS is required/],
-    [{ QUOTE_UNITS: "USD", QUOTE_USD_FEED_URL: "https://feed.example/usd", QUOTE_USD_DECIMALS: "2" }, /QUOTE_USD_PRICE_PATH is required/],
-    [{ QUOTE_UNITS: "USD", QUOTE_USD_FEED_URL: `${coingecko.replace("usd", "eur,usd")}`, QUOTE_USD_DECIMALS: "2" }, /QUOTE_USD_PRICE_PATH is required/],
+    [{ QUOTE_UNITS: "USD", QUOTE_USD_FEED_URL: "https://feed.example/usd", QUOTE_USD_DECIMALS: "2" }, /QUOTE_USD_PRICE_PATH: price path is required/],
+    [{ QUOTE_UNITS: "USD", QUOTE_USD_FEED_URL: `${coingecko.replace("usd", "eur,usd")}`, QUOTE_USD_DECIMALS: "2" }, /QUOTE_USD_PRICE_PATH: price path is required/],
+    [{ QUOTE_UNITS: "USD", QUOTE_USD_FEED_URL: coingecko, QUOTE_USD_DECIMALS: "19" }, /QUOTE_USD_DECIMALS: decimals must be an integer/],
     [{ QUOTE_UNITS: "USD", QUOTE_USD_FEED_URL: coingecko, QUOTE_USD_DECIMALS: "2", QUOTE_USD_PRICE_PATH: "bitcoin" }, /JSON pointer/],
     [{ QUOTE_UNITS: "USD,usd" }, /twice/],
     [{ QUOTE_UNITS: "US-D" }, /letters and digits/],

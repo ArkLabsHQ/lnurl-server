@@ -12,6 +12,7 @@ import { adminSessionRoutes } from "./sessions.js";
 import { adminSettingsRoutes } from "./settings.js";
 import { adminSettlementRoutes } from "./settlements.js";
 import { adminDocsRoutes } from "./docs.js";
+import { adminQuoteUnitRoutes } from "./quote-units.js";
 
 export type { AdminDeps } from "../../admin-context.js";
 
@@ -28,6 +29,7 @@ export function createAdminApi(deps: AdminDeps): Router {
   r.use(adminSessionRoutes(deps));
   r.use(adminSettingsRoutes(deps));
   r.use(adminSettlementRoutes(deps));
+  r.use(adminQuoteUnitRoutes(deps));
   r.use(adminDocsRoutes());
   r.use(httpErrorHandler(deps.logger ?? createLogger()));
   return r;

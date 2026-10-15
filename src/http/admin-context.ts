@@ -8,6 +8,7 @@ import type { SettlementStore } from "../settlement-store.js";
 import type { DiscoveryService } from "../services/solver-discovery.js";
 import type { Logger } from "../logger.js";
 import type { ServerRailCaps } from "../rails.js";
+import type { QuoteUnits } from "../services/quote-units.js";
 import { ffRailCaps, type FixedFloatDeps } from "../rails/fixedfloat/provider.js";
 
 export interface AdminDeps {
@@ -24,6 +25,7 @@ export interface AdminDeps {
   indexer?: Pick<IndexerProvider, "getVtxos">;
   /** Token deposits, when configured: their rail state and their orders. */
   fixedFloat?: Pick<FixedFloatDeps, "provider" | "rates" | "orders" | "client">;
+  quotes?: QuoteUnits;
   logger?: Logger;
 }
 
