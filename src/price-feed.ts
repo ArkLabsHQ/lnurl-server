@@ -209,8 +209,7 @@ export function priceFeedQuotes(cfg: {
   const current = (code: string) => units.find((u) => u.code === code);
 
   return {
-    units(paymentOption) {
-      if (paymentOption !== undefined && paymentOption !== "lightning") return [];
+    units() {
       return units.filter((u) => fresh(u.code)).map((u): Unit => ({ code: u.code, decimals: u.decimals }));
     },
     quote(req): PaymentQuote {
@@ -222,7 +221,8 @@ export function priceFeedQuotes(cfg: {
         if (!unit) throw new QuoteError("Unsupported unit");
         const price = fresh(unit.code);
         if (!price) throw new QuoteError(`${unit.code} rate is unavailable right now`);
-        msat = unitToMsat(BigInt(req.amount), price, unit.decimals);
+        // Up to a whole sat: the offline-swap corridor and SDK wallets deal only in whole sats.
+        msat = (unitToMsat(BigInt(req.amount), price, unit.decimals) + 999n) / 1000n * 1000n;
       }
       return {
         requested: { amount: String(req.amount), unit: req.unit ?? "msat" },

@@ -1,5 +1,10 @@
 import type { ActivityResolver, ArkTransaction } from "@arkade-os/sdk";
 import type { StoredPayment } from "./sync.js";
+import type { QuotedAmount } from "./types.js";
+import { formatUnitAmount } from "./units.js";
+
+/** "5.00 USD": how a quoted amount reads in an activity row. */
+export const quotedLabel = (q: QuotedAmount): string => `${formatUnitAmount(q.amount, q.decimals)} ${q.unit}`;
 
 /** Namespaced so it cannot clobber the SDK's own resolvers. */
 export const LNURL_RESOLVER_ID = "lnurl:payments";
@@ -34,6 +39,8 @@ export interface SentPayment {
   verifyBatch?: string;
   /** Set once the receiver's LUD-21 verify answers, where a rail hands one out. */
   receiverConfirmed?: boolean;
+  /** What the payer asked to pay in a LUD-XX unit; absent when they paid in sats. */
+  quote?: QuotedAmount;
 }
 
 /** What to keep on file after a completed send: `incoming` replaces the record
@@ -68,6 +75,7 @@ export function sentActivityResolver(sends: () => SentPayment[]): ActivityResolv
           target: sent.target,
           rail: sent.railId,
           delivered: `${sent.amountSat} sats`,
+          ...(sent.quote ? { requested: quotedLabel(sent.quote) } : {}),
           ...(sent.feeSat > 0 ? { fee: `${sent.feeSat} sats` } : {}),
           ...(sent.swapId ? { swap: sent.swapId } : {}),
           ...(sent.preimage ? { preimage: sent.preimage } : {}),
@@ -106,6 +114,7 @@ export function lnurlActivityResolver(payments: () => StoredPayment[]): Activity
           lightningAddress: payment.lightningAddress,
           identifier: payment.identifier,
           verified: payment.settled,
+          ...(payment.quote ? { requested: quotedLabel(payment.quote) } : {}),
         },
       }];
     },

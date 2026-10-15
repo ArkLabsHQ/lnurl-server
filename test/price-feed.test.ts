@@ -70,7 +70,6 @@ describe("priceFeedQuotes", () => {
     const q = make();
     await q.refresh();
     expect(q.units()).toEqual([{ code: "USD", decimals: 2 }]);
-    expect(q.units("arkade")).toEqual([]);
     expect(applyQuote(q, { amount: 100, unit: "USD" })).toEqual({
       ok: true,
       amountMsat: 2_000_000,
@@ -79,6 +78,7 @@ describe("priceFeedQuotes", () => {
         payment: { amount: "2000000", unit: "msat" },
         receive: { amount: "2000000", unit: "msat" },
       },
+      quoted: { amount: "100", unit: "USD", decimals: 2 },
     });
     expect(q.status()).toEqual({ ok: true, detail: "USD" });
   });
@@ -94,6 +94,14 @@ describe("priceFeedQuotes", () => {
     expect(q.units()).toEqual([]);
     expect(applyQuote(q, { amount: 100, unit: "USD" })).toMatchObject({ ok: false });
     expect(q.status()).toEqual({ ok: false, detail: expect.stringMatching(/^USD: price feed .* HTTP 503/) });
+  });
+
+  it("rounds a quote up to a whole sat", async () => {
+    feed.body = '{"bitcoin":{"usd":65000}}';
+    const q = make();
+    await q.refresh();
+    // 1538461.53… msat exactly; the corridor and wallets take whole sats only.
+    expect(applyQuote(q, { amount: 100, unit: "USD" })).toMatchObject({ ok: true, amountMsat: 1_539_000 });
   });
 
   it("refuses an unknown unit and any receiveUnit but msat", async () => {

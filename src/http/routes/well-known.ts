@@ -13,7 +13,7 @@ import {
   type Bounds,
   type ServerRailCaps,
 } from "../../rails.js";
-import { applyQuote, type PaymentQuote } from "../../quote-provider.js";
+import { applyQuote, type PaymentQuote, type QuotedAmount } from "../../quote-provider.js";
 import { ffOptionBounds, withTokenUnits } from "../../rails/fixedfloat/options.js";
 import { Strikes } from "../../rails/fixedfloat/client.js";
 import type { DerivedDestination } from "../../covenant/destination.js";
@@ -117,17 +117,19 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     }
 
     // LUD-XX paymentQuote: a unit-denominated request is quoted to a msat amount by the
-    // injected provider (lightning path only). Absent unit ⇒ amount stays msat.
+    // injected provider. Absent unit ⇒ amount stays msat.
     const unit = strParam(req.query.unit);
     const receiveUnit = strParam(req.query.receiveUnit);
     let paymentQuote: PaymentQuote | undefined;
+    let quoted: QuotedAmount | undefined;
     if (unit !== undefined || receiveUnit !== undefined) {
       // A token rail quotes its own payment, but only for an amount in millisats.
-      if (resolved.kind === "destination" || resolved.kind === "fixedfloat") throw new LnurlError("unit is not supported for this paymentOption");
+      if (resolved.kind === "fixedfloat") throw new LnurlError("unit is not supported for this paymentOption");
       const q = applyQuote(quoteProvider, { amount: amountMsat, unit, receiveUnit, paymentOption: paymentOptionId?.includes(":") ? "lightning" : paymentOptionId });
       if (!q.ok) throw new LnurlError(q.reason);
       amountMsat = q.amountMsat;
       paymentQuote = q.paymentQuote;
+      quoted = q.quoted;
     }
 
     if (resolved.kind === "fixedfloat") {
@@ -216,6 +218,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
         // The script alone: it is the attribution key, and the contract registered
         // at derivation owns the preimage, the taptree and the payout script.
         ...(derived ? { covenantScript: derived.script } : {}),
+        ...(quoted ? { quote: quoted } : {}),
       });
       // Only the static rail: a covenant destination is watched as a contract.
       if (resolved.paymentOption === "arkade" && !derived) {
@@ -227,6 +230,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
         paymentOption: resolved.paymentOption,
         paymentDestination: destination,
         ...(destination ? { paymentURI: destinationUri(resolved.paymentOption, destination, amountMsat) } : {}),
+        ...(paymentQuote ? { paymentQuote } : {}),
         // Only for rails this server watches. The onchain rail is a static
         // boarding address nothing here observes, so it has no window to end.
         ...(resolved.paymentOption === "onchain"
@@ -267,7 +271,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       try {
         res.json(await createOfflineSwapInvoice({
           creator, store, offlineSwaps, baseUrl: settings.baseUrl(), amountMsat,
-          receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, paymentQuote,
+          receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, paymentQuote, quoted,
           echoLightningOption: Boolean(paymentOptionId),
           logger, requestId: res.locals.requestId as string,
         }));
@@ -286,7 +290,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       sessions, sessionId: address.sessionId, addressId: address.id, amountMsat, comment,
       min: interactiveBounds.min, max: interactiveBounds.max, timeoutMs: settings.invoiceTimeoutMs(),
       offlineReason,
-      store, baseUrl: settings.baseUrl(), paymentQuote, echoLightningOption: Boolean(paymentOptionId),
+      store, baseUrl: settings.baseUrl(), paymentQuote, quoted, echoLightningOption: Boolean(paymentOptionId),
       logger, requestId: res.locals.requestId as string,
     }));
   };

@@ -4,7 +4,7 @@ import type { SettlementStore } from "../settlement-store.js";
 import type { OfflineSwapCreator, OfflineSwapResult } from "./offline-swaps.js";
 import type { OfflineSwapStore } from "../offline-swap-store.js";
 import type { Logger } from "../logger.js";
-import type { PaymentQuote } from "../quote-provider.js";
+import type { PaymentQuote, QuotedAmount } from "../quote-provider.js";
 import { InvoiceRequestError, RailRefusedError } from "../errors.js";
 import { paymentHashFromBolt11 } from "../bolt11.js";
 import type { LnurlPayCallbackResponse, LnurlPayDestinationResponse } from "../types/index.js";
@@ -49,12 +49,13 @@ export async function requestSessionInvoice(args: {
   store: SettlementStore;
   baseUrl: string;
   paymentQuote?: PaymentQuote;
+  quoted?: QuotedAmount;
   /** LUD-XX: echo the explicitly-selected lightning option on the pr response. */
   echoLightningOption?: boolean;
   logger: Logger;
   requestId: string;
 }): Promise<LnurlPayCallbackResponse> {
-  const { sessions, sessionId, addressId, amountMsat, comment, min, max, timeoutMs, offlineReason, store, baseUrl, paymentQuote, echoLightningOption, logger, requestId } = args;
+  const { sessions, sessionId, addressId, amountMsat, comment, min, max, timeoutMs, offlineReason, store, baseUrl, paymentQuote, quoted, echoLightningOption, logger, requestId } = args;
   if (amountMsat < min || amountMsat > max) {
     throw new LnurlError(`Amount must be between ${min} and ${max} millisats`);
   }
@@ -66,7 +67,7 @@ export async function requestSessionInvoice(args: {
     // LUD-21: record the invoice and hand the payer a verify URL. If the bolt11 can't be
     // decoded we can't key a record, so we omit verify but still return the pr.
     const paymentHash = paymentHashFromBolt11(pr);
-    if (paymentHash) store.create({ paymentHash, pr, sessionId, amountMsat, addressId });
+    if (paymentHash) store.create({ paymentHash, pr, sessionId, amountMsat, addressId, ...(quoted ? { quote: quoted } : {}) });
     return {
       pr,
       routes: [],
@@ -96,16 +97,17 @@ export async function createOfflineSwapInvoice(args: {
   claimPublicKey: string;
   addressId: number;
   paymentQuote?: PaymentQuote;
+  quoted?: QuotedAmount;
   /** LUD-XX: echo the explicitly-selected lightning option on the pr response. */
   echoLightningOption?: boolean;
   logger: Logger;
   requestId: string;
 }): Promise<LnurlPayCallbackResponse> {
-  const { creator, store, offlineSwaps, baseUrl, amountMsat, receiveAddress, claimPublicKey, addressId, paymentQuote, echoLightningOption, logger, requestId } = args;
+  const { creator, store, offlineSwaps, baseUrl, amountMsat, receiveAddress, claimPublicKey, addressId, paymentQuote, quoted, echoLightningOption, logger, requestId } = args;
   try {
     // Caller guarantees whole satoshis (rejected at the route otherwise).
     const swap = await creator.create({ amountSat: amountMsat / 1000, receiveAddress, claimPublicKey });
-    const accepted = { paymentHash: swap.preimageHash, pr: swap.invoice, sessionId: `offline:${addressId}`, preimage: swap.preimage, amountMsat, addressId };
+    const accepted = { paymentHash: swap.preimageHash, pr: swap.invoice, sessionId: `offline:${addressId}`, preimage: swap.preimage, amountMsat, addressId, ...(quoted ? { quote: quoted } : {}) };
     // With DB_PATH, OfflineSwapStore is the single atomic persistence boundary:
     // it writes both settlement and restart recovery rows in one transaction.
     if (offlineSwaps) offlineSwaps.createAccepted({ ...accepted, recovery: swap.recovery });

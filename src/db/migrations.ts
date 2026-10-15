@@ -364,6 +364,12 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 25,
+    up: (db) => {
+      if (!hasColumn(db, "settlements", "quote_json")) db.exec("ALTER TABLE settlements ADD COLUMN quote_json TEXT;");
+    },
+  },
 ];
 
 export const LATEST_MIGRATION = Math.max(...MIGRATIONS.map((m) => m.version));

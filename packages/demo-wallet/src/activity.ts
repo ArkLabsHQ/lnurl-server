@@ -1,7 +1,7 @@
 import { ArkAddress, type Activity, type Wallet } from "@arkade-os/sdk";
 import { hex } from "@scure/base";
 import type { StoredPayment } from "@arkade-os/lnurl-client";
-import { absorbedPaymentKey, railOf } from "@arkade-os/lnurl-client/arkade";
+import { absorbedPaymentKey, quotedLabel, railOf } from "@arkade-os/lnurl-client/arkade";
 
 /**
  * `untracked` is not a softer `pending`. A rail whose settlement nothing
@@ -42,6 +42,7 @@ function paymentDetails(p: StoredPayment, walletAddress?: ArkAddress): Detail[] 
     ["paid to", p.lightningAddress ?? p.handle],
     ["quoted", sats(p.amountMsat)],
   ];
+  if (p.quote) details.push(["requested", quotedLabel(p.quote)]);
   if (p.swapId) details.push(["swap", p.swapId]);
   if (p.preimage) details.push(["preimage", p.preimage]);
   if (p.covenantScript && walletAddress && /^5120[0-9a-f]{64}$/i.test(p.covenantScript)) {
@@ -57,6 +58,7 @@ const INTENT_LABELS: [key: string, label: string][] = [
   ["target", "paid to"],
   ["rail", "rail"],
   ["delivered", "delivered"],
+  ["requested", "requested"],
   ["fee", "rail fee"],
   ["swap", "swap"],
   ["preimage", "preimage"],

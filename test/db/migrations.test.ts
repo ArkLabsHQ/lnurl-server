@@ -262,7 +262,7 @@ describe("runMigrations", () => {
     db.prepare("INSERT INTO settlements (payment_hash, pr, session_id, settled, payment_option, created_at, updated_at) VALUES ('aa', 'lnbc1', 's', 1, 'lightning', 1000, 2000)").run();
     const before = db.prepare("SELECT * FROM settlements").all();
     runMigrations(db);
-    expect(db.prepare("SELECT * FROM settlements").all()).toEqual(before.map((row) => ({ ...row, covenant_outpoint: null })));
+    expect(db.prepare("SELECT * FROM settlements").all()).toEqual(before.map((row) => ({ ...row, covenant_outpoint: null, quote_json: null })));
     expect(db.prepare("SELECT COUNT(*) AS n FROM ff_orders").get()).toEqual({ n: 0 });
     db.close();
   });

@@ -17,7 +17,7 @@ import { isLnurl } from "@arkade-os/sdk";
 import type { PaymentRail, PaymentRequest, RouteQuote, RouterContext } from "@arkade-os/sdk";
 import { LnurlError } from "./errors.js";
 import type { LnurlClient } from "./index.js";
-import type { PayRequest, VerifyExpectation } from "./types.js";
+import type { PayRequest, QuotedAmount, UnitAmount, VerifyExpectation } from "./types.js";
 
 export const LNURL_ARKADE_RAIL = "lnurl-arkade";
 export const LNURL_LIGHTNING_RAIL = "lnurl-lightning";
@@ -34,7 +34,13 @@ export interface LnurlQuoteMeta {
   verifyBatch?: string;
   /** What `verify` answers must be about: pass it as `pollVerify`'s `expect`. */
   expect?: VerifyExpectation;
+  /** What was asked for in a unit, when the payment was priced in one. */
+  quote?: QuotedAmount;
 }
+
+/** The SDK's request, plus an amount in one of the target's `units` instead of sats.
+ *  The router hands every rail the same object, so only the lnurl rails read it. */
+export type LnurlPaymentRequest = PaymentRequest & { unitAmount?: UnitAmount };
 
 /** The lnurl meta of a quote, or undefined for a quote no lnurl rail made. */
 export function lnurlQuoteMeta(quote: RouteQuote): LnurlQuoteMeta | undefined {
@@ -97,12 +103,18 @@ function makeRail(
     // checksum. Using it is also what finally gives `isLnurl` a consumer.
     match: (req: PaymentRequest) => isLnurl(req.raw.trim()),
 
-    async available(req: PaymentRequest) {
+    async available(req: LnurlPaymentRequest) {
       let pr: PayRequest;
       try {
         pr = await resolveOnce(req.raw);
       } catch {
         return false;
+      }
+      // The receiver quotes a unit amount, so its millisats and their bounds are its own to check.
+      if (req.unitAmount) {
+        if (!unitOf(pr, req.unitAmount.unit)) return false;
+        if (pr.paymentOptions === undefined) return type === "lightning";
+        return pr.paymentOptions.some((o) => o.type === type && o.available !== false);
       }
       // No `paymentOptions` at all (not an empty array) is LUD-06 silence: a
       // plain payRequest from a non-Arkade server, which is lightning-only on
@@ -122,23 +134,30 @@ function makeRail(
       return msat >= (option.minSendable ?? pr.minSendable) && msat <= (option.maxSendable ?? pr.maxSendable);
     },
 
-    async quote(req: PaymentRequest, ctx: RouterContext): Promise<RouteQuote> {
+    async quote(req: LnurlPaymentRequest, ctx: RouterContext): Promise<RouteQuote> {
       const pr = await resolveOnce(req.raw);
-      if (req.amount === undefined) throw new LnurlError(`${id} needs an explicit amount`);
+      const inUnit = req.unitAmount;
+      if (req.amount === undefined && !inUnit) throw new LnurlError(`${id} needs an explicit amount`);
 
       const option = pr.paymentOptions?.find((o) => o.type === type && o.available !== false)?.id;
-      const result = await deps.client.requestInvoice(pr, {
-        amountSat: req.amount,
+      const extra = {
         ...(option !== undefined ? { paymentOption: option } : {}),
         ...(deps.comment !== undefined ? { comment: deps.comment } : {}),
-      });
+      };
+      const result = await deps.client.requestInvoice(
+        pr,
+        inUnit ? { ...extra, unit: inUnit.unit, amount: inUnit.amount } : { ...extra, amountSat: req.amount! },
+      );
+      // requestInvoice has already held the quote to the amount asked for.
+      const quotedSat = inUnit ? Number(result.paymentQuote?.payment.amount) / 1000 : req.amount!;
+      if (!Number.isSafeInteger(quotedSat)) throw new LnurlError(`${id}: the quote names no whole number of sats`);
 
       // The invoice carries its own amount and solverLightningRail refuses a
       // request that restates it differently, so only the destination branch
       // passes one on.
       const delegated = result.kind === "bolt11"
         ? { raw: result.pr }
-        : { raw: destinationOf(result.paymentDestination, id), amount: req.amount };
+        : { raw: destinationOf(result.paymentDestination, id), amount: quotedSat };
 
       // arkRail.quote() does not re-check its target, so an unparseable one would fail only at
       // send; refusing here lets the caller fall back to the next rail instead.
@@ -149,10 +168,18 @@ function makeRail(
       const expect: VerifyExpectation = result.kind === "bolt11"
         ? { pr: result.pr }
         : { paymentOption: result.paymentOption, paymentDestination: result.paymentDestination };
-      const lnurl: LnurlQuoteMeta = { target: req.raw, via: inner.id, verify: result.verify, verifyBatch: result.verifyBatch, expect };
+      const unit = inUnit ? unitOf(pr, inUnit.unit) : undefined;
+      const lnurl: LnurlQuoteMeta = {
+        target: req.raw, via: inner.id, verify: result.verify, verifyBatch: result.verifyBatch, expect,
+        ...(inUnit && unit ? { quote: { amount: String(inUnit.amount), unit: unit.code, decimals: unit.decimals } } : {}),
+      };
       return { ...quote, railId: id, meta: { ...quote.meta, lnurl } };
     },
   };
+}
+
+function unitOf(pr: PayRequest, code: string) {
+  return pr.units?.find((u) => u.code.toUpperCase() === code.toUpperCase());
 }
 
 function destinationOf(destination: string | undefined, id: string): string {

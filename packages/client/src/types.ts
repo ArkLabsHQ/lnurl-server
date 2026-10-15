@@ -37,14 +37,26 @@ export interface Unit {
   symbol?: string;
   /** Asset identifier backing the unit, for asset-denominated units. */
   assetId?: string;
-  /** Minimum amount expressible in this unit, as a decimal string. */
+  /** Smallest quotable amount, in the unit's smallest denomination (an integer string). */
   minAmount?: string;
-  /** Maximum amount expressible in this unit, as a decimal string. */
+  /** Largest quotable amount, in the unit's smallest denomination (an integer string). */
   maxAmount?: string;
+}
+/** An amount in one of a payRequest's `units`: `amount` is in that unit's smallest denomination. */
+export interface UnitAmount {
+  unit: string;
+  amount: number;
+}
+/** What a payment was asked for in a unit, as recorded with it: `amount` in the
+ *  unit's smallest denomination, `decimals` to read it ("500", 2 is 5.00). */
+export interface QuotedAmount {
+  amount: string;
+  unit: string;
+  decimals: number;
 }
 /** An amount paired with the unit it is denominated in. */
 export interface AmountObject {
-  /** Decimal amount string in `unit`. */
+  /** Integer string in the smallest denomination of `unit` (cents for USD, millisats for `msat`). */
   amount: string;
   /** Unit code from `Unit.code`. */
   unit: string;
@@ -88,18 +100,29 @@ export interface PayRequest {
 }
 
 /**
- * Options for asking the callback for an invoice or payment destination.
- * `amountSat` is sats and is converted to millisats on the wire.
+ * Options for asking the callback for an invoice or payment destination: an
+ * amount in sats, or (lightning rail only) an amount in one of the payRequest's
+ * `units`, which the receiver quotes to millisats.
  */
-export interface RequestInvoiceOptions {
-  /** Amount to pay in sats; converted to millisats on the wire. */
-  amountSat: number;
+export type RequestInvoiceOptions = {
   /** Optional payer comment, sent when the payRequest allows one. */
   comment?: string;
   paymentOption?: string;
-  /** Lightning rail only. */
-  unit?: string;
-}
+} & (
+  | {
+      /** Amount to pay in sats; converted to millisats on the wire. */
+      amountSat: number;
+      unit?: undefined;
+      amount?: undefined;
+    }
+  | {
+      /** A `units[]` code, e.g. `USD`. */
+      unit: string;
+      /** In the unit's smallest denomination: `500` is $5.00 in a 2-decimal USD. */
+      amount: number;
+      amountSat?: undefined;
+    }
+);
 /**
  * What the callback answered: either a BOLT11 invoice to pay, or a
  * destination to pay on a non-lightning rail (e.g. an Arkade address).
@@ -242,6 +265,8 @@ export interface Bolt11Activity {
   createdAt: number;
   /** Settlement timestamp in milliseconds, null while pending. */
   settledAt: number | null;
+  /** What the payer asked to pay in a LUD-XX unit; absent when they paid in sats. */
+  quote?: QuotedAmount;
 }
 /**
  * A destination-rail (e.g. arkade/covenant) payment to the address. The
@@ -272,4 +297,6 @@ export interface DestinationActivity {
   createdAt: number;
   /** Settlement timestamp in milliseconds, null while pending. */
   settledAt: number | null;
+  /** What the payer asked to pay in a LUD-XX unit; absent when they paid in sats. */
+  quote?: QuotedAmount;
 }

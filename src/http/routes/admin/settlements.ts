@@ -57,6 +57,7 @@ export function adminSettlementRoutes({ repos, settlements, fixedFloat }: AdminD
         paymentReference: x.paymentReference,
         payoutReference: x.payoutReference,
         amountMsat: x.amountMsat,
+        quote: x.quote,
         hasPreimage: x.preimage !== null,
         createdAt: x.createdAt,
         settledAt: x.settledAt,

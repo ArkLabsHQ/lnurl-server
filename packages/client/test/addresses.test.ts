@@ -229,6 +229,14 @@ describe("listPayments", () => {
     });
   });
 
+  it("carries a quoted payment's unit amount, and nothing for a server that sends null or no quote", async () => {
+    const quote = { amount: "500", unit: "USD", decimals: 2 };
+    const fetchImpl = async () => json({ ...pageBody, payments: [{ ...bolt11Row, quote }, { ...arkadeRow, quote: null }] });
+    const page = await listPayments("https://x", "tok", "alice", undefined, fetchImpl as never);
+    expect(page.payments.map((p) => p.quote)).toEqual([quote, undefined]);
+    expect("quote" in page.payments[1]!).toBe(false);
+  });
+
   it("maps an arkade record to kind destination with verifyId and no paymentHash", async () => {
     const fetchImpl = async () => json(pageBody);
     const page = await listPayments("https://x", "tok", "alice", undefined, fetchImpl as never);

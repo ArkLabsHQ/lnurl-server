@@ -91,22 +91,13 @@ describe("requestInvoice", () => {
       .rejects.toThrow(/session/i);
   });
 
-  it("takes paymentOption and unit on a session payRequest that advertises them, as a nameless receiver's does", async () => {
-    const nameless: PayRequest = {
-      ...sessionPr,
-      paymentOptions: [{ id: "lightning", type: "lightning" }, { id: "arkade", type: "arkade" }],
-      units: [{ code: "USD", decimals: 2 }],
-    };
-    const seen: string[] = [];
-    const fetchImpl = async (url: string) => {
-      seen.push(String(url));
-      return jsonResponse({ status: "OK", paymentOption: "arkade", paymentDestination: "ark1xyz" });
-    };
+  it("takes paymentOption on a session payRequest that advertises options, as a nameless receiver's does", async () => {
+    const nameless: PayRequest = { ...sessionPr, paymentOptions: [{ id: "lightning", type: "lightning" }, { id: "arkade", type: "arkade" }] };
+    let seen = "";
+    const fetchImpl = async (url: string) => { seen = String(url); return jsonResponse({ status: "OK", paymentOption: "arkade", paymentDestination: "ark1xyz" }); };
     await expect(requestInvoice(nameless, { amountSat: 1000, paymentOption: "arkade" }, fetchImpl as never))
       .resolves.toMatchObject({ kind: "destination", paymentDestination: "ark1xyz" });
-    await requestInvoice(nameless, { amountSat: 1000, unit: "USD" }, fetchImpl as never).catch(() => undefined);
-    expect(seen[0]).toContain("paymentOption=arkade");
-    expect(seen[1]).toContain("unit=USD");
+    expect(seen).toContain("paymentOption=arkade");
   });
 
   it("passes comment through when allowed", async () => {
@@ -153,6 +144,43 @@ describe("requestInvoice", () => {
   it("refuses an amountless bolt11 answering an amounted request", async () => {
     const fetchImpl = async () => jsonResponse({ pr: buildInvoice(HASH), routes: [] });
     await expect(requestInvoice(addressPr, { amountSat: 1000 }, fetchImpl as never)).rejects.toBeInstanceOf(LnurlError);
+  });
+});
+
+describe("requestInvoice in a unit", () => {
+  const usd: PayRequest = { ...sessionPr, units: [{ code: "USD", decimals: 2, minAmount: "50", maxAmount: "100000" }] };
+  // $1.00 at $50,000/BTC.
+  const quote = { requested: { amount: "100", unit: "USD" }, payment: { amount: "2000000", unit: "msat" } };
+  const callback = (body: Record<string, unknown>, seen: string[] = []) => async (url: string) => { seen.push(String(url)); return jsonResponse(body); };
+  const offline = async () => { throw new Error("must not be called"); };
+
+  it("sends the amount in the unit's smallest denomination and pays the quoted millisats", async () => {
+    const seen: string[] = [];
+    const pr = buildInvoice(HASH, 2000);
+    const r = await requestInvoice(usd, { unit: "usd", amount: 100 }, callback({ pr, routes: [], paymentQuote: quote }, seen) as never);
+    expect(seen[0]).toContain("amount=100&unit=USD");
+    expect(r).toMatchObject({ kind: "bolt11", pr, paymentQuote: quote });
+  });
+
+  it("refuses an invoice that is not for the quoted millisats", async () => {
+    await expect(requestInvoice(usd, { unit: "USD", amount: 100 }, callback({ pr: buildInvoice(HASH, 1999), routes: [], paymentQuote: quote }) as never))
+      .rejects.toThrow("not the quoted 2000000");
+  });
+
+  it("refuses a quote for another amount or unit, or one without millisats", async () => {
+    const pr = buildInvoice(HASH, 2000);
+    const ask = (paymentQuote: unknown) => requestInvoice(usd, { unit: "USD", amount: 100 }, callback({ pr, routes: [], paymentQuote }) as never);
+    await expect(ask({ ...quote, requested: { amount: "1000", unit: "USD" } })).rejects.toThrow("did not quote 100 USD");
+    await expect(ask({ ...quote, requested: { amount: "100", unit: "EUR" } })).rejects.toThrow("did not quote 100 USD");
+    await expect(ask({ ...quote, payment: { amount: "2000", unit: "sat" } })).rejects.toThrow("no millisat amount");
+    await expect(ask(undefined)).rejects.toThrow("did not quote 100 USD");
+  });
+
+  it("refuses a unit not offered, or an amount the unit cannot take, before hitting the network", async () => {
+    await expect(requestInvoice(sessionPr, { unit: "USD", amount: 100 }, offline as never)).rejects.toThrow("does not quote in USD");
+    await expect(requestInvoice(usd, { unit: "USD", amount: 1.5 }, offline as never)).rejects.toThrow(/positive whole number/);
+    await expect(requestInvoice(usd, { unit: "USD", amount: 10 }, offline as never)).rejects.toThrow("between 50 and 100000");
+    await expect(requestInvoice(usd, { unit: "USD", amount: 100_001 }, offline as never)).rejects.toThrow("between 50 and 100000");
   });
 });
 

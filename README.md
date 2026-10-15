@@ -311,9 +311,11 @@ A payer denominates the callback with `?unit=<code>` (optionally `&receiveUnit=<
 { "pr": "lnbc...", "routes": [], "paymentQuote": { "requested": { "amount": "100", "unit": "USD" }, "payment": { "amount": "162345000", "unit": "msat" } }, "verify": "..." }
 ```
 
-An unknown or unsupported unit returns `{ "status": "ERROR", "reason": "Unsupported unit" }`. The receiver always gets sats, so `receiveUnit` may only be `msat`. The millisat amount is rounded up, never down.
+An unknown or unsupported unit returns `{ "status": "ERROR", "reason": "Unsupported unit" }`. The receiver always gets sats, so `receiveUnit` may only be `msat`. The quote is rounded up to a whole sat, never down: the offline-swap corridor and wallets deal only in whole sats.
 
-> Quoting applies to the amount-denominated Lightning path (relay + offline swap); the `arkade` destination and token-deposit rails reject `unit`. No spread is added: the payer pays the feed's mid price.
+Each quoted payment records what was asked, so history can show it: the owner's `/lnurl/address/:handle/payments` rows and the admin Settlements view carry `quote: { amount, unit, decimals }` (amount in the unit's smallest denomination) beside `amountMsat`, and `null` for a payment made in sats.
+
+> Quoting applies to the Lightning path (relay + offline swap) and the `arkade`/`onchain` destination rails; token-deposit rails reject `unit`, since they quote their own payment. No spread is added: the payer pays the feed's mid price.
 
 ## Admin backend — port 3001
 

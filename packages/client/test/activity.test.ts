@@ -50,6 +50,12 @@ describe("lnurlActivityResolver", () => {
     }]);
   });
 
+  it("shows what a payer asked for in a unit", async () => {
+    const resolver = lnurlActivityResolver(() => [payment({ payoutReference: "abc123", quote: { amount: "500", unit: "USD", decimals: 2 } })]);
+    await resolver.prepare?.();
+    expect(resolver.resolve(tx("abc123"))?.[0]?.metadata).toMatchObject({ requested: "5.00 USD" });
+  });
+
   it("leaves a transaction the server never observed plain", async () => {
     const resolver = lnurlActivityResolver(() => [payment({ payoutReference: "abc123" })]);
     await resolver.prepare?.();
@@ -112,6 +118,12 @@ describe("sentActivityResolver", () => {
       kind: "lnurl-send",
       metadata: { target: TARGET, rail: "lnurl-arkade", delivered: "1000 sats", fee: "3 sats", swap: "sw1" },
     }]);
+  });
+
+  it("shows what this wallet asked to pay in a unit", async () => {
+    const resolver = sentActivityResolver(() => [sent({ quote: { amount: "1234567", unit: "USDT", decimals: 6 } })]);
+    await resolver.prepare?.();
+    expect(resolver.resolve(tx("sendtx1"))?.[0]?.metadata).toMatchObject({ delivered: "1000 sats", requested: "1.234567 USDT" });
   });
 
   it("leaves a transaction it has no record of plain", async () => {

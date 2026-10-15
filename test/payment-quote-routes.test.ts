@@ -7,6 +7,8 @@ import { createRepositories, type Repositories } from "../src/db/repositories/in
 import type { QuoteProvider, PaymentQuote } from "../src/quote-provider.js";
 import { QuoteError } from "../src/errors.js";
 import { priceFeedQuotes } from "../src/price-feed.js";
+import { DbSettlementStore } from "../src/settlement-store.js";
+import { OfflineSwapStore } from "../src/offline-swap-store.js";
 import type { OfflineSwapCreator, OfflineSwapParams } from "../src/services/offline-swaps.js";
 import { SessionManager } from "../src/services/sessions.js";
 import { deriveSessionId } from "../src/session-token.js";
@@ -140,14 +142,37 @@ describe("LUD-XX paymentQuote", () => {
     } finally { await ctx.close(); }
   });
 
-  it("rejects unit+arkade composition, and a non-positive amount before any provider call", async () => {
+  it("quotes a unit on the arkade destination rail and records it", async () => {
+    const settlements = new DbSettlementStore(db, 86_400_000);
+    const a = addr("alice");
+    const ctx = await start({ repos, quoteProvider: usd, offlineSwapCreator: fakeCreator, settlements });
+    try {
+      const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=100&unit=USD&paymentOption=arkade`, "domain.com");
+      // 100 cents -> 100,000 msat -> 100 sats, which is 0.000001 BTC in the BIP21 URI.
+      expect(cb).toMatchObject({ status: "OK", paymentOption: "arkade", paymentDestination: ARK, paymentQuote: { requested: { amount: "100", unit: "USD" } } });
+      expect(String(cb.paymentURI)).toContain("amount=0.000001");
+      expect(settlements.listByAddress(a.id, 10).map((r) => [r.amountMsat, r.quote])).toEqual([[100_000, { amount: "100", unit: "USD", decimals: 2 }]]);
+    } finally { await ctx.close(); }
+  });
+
+  it("records a unit quote on the onchain destination rail", async () => {
+    const settlements = new DbSettlementStore(db, 86_400_000);
+    const a = addr("alice");
+    repos.addresses.setBoardingAddress(a.id, "tb1qboarding");
+    const ctx = await start({ repos, quoteProvider: usd, offlineSwapCreator: fakeCreator, settlements });
+    try {
+      const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=100&unit=USD&paymentOption=onchain`, "domain.com");
+      expect(cb).toMatchObject({ status: "OK", paymentOption: "onchain", paymentDestination: "tb1qboarding" });
+      expect(settlements.listByAddress(a.id, 10).map((r) => r.quote)).toEqual([{ amount: "100", unit: "USD", decimals: 2 }]);
+    } finally { await ctx.close(); }
+  });
+
+  it("rejects a non-positive amount before any provider call", async () => {
     let calls = 0;
     const counting: QuoteProvider = { units: usd.units, quote: (r) => { calls++; return usd.quote(r); } };
     addr("alice");
     const ctx = await start({ repos, quoteProvider: counting, offlineSwapCreator: fakeCreator });
     try {
-      const guard = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000&unit=USD&paymentOption=arkade`, "domain.com");
-      expect(String(guard.reason)).toMatch(/not supported for this paymentOption/i);
       const zero = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=0&unit=USD`, "domain.com");
       expect(zero.status).toBe("ERROR");
       const neg = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=-5&unit=USD`, "domain.com");
@@ -247,7 +272,7 @@ describe("LUD-XX paymentQuote", () => {
   });
 
   it("quotes from a live price feed end to end", async () => {
-    const feed = http.createServer((_req, res) => res.writeHead(200, { "content-type": "application/json" }).end('{"price":"50000.00"}'));
+    const feed = http.createServer((_req, res) => res.writeHead(200, { "content-type": "application/json" }).end('{"price":"65000.00"}'));
     await new Promise<void>((r) => feed.listen(0, "127.0.0.1", () => r()));
     const quotes = priceFeedQuotes({
       units: [{ code: "USD", decimals: 2, feedUrl: `http://127.0.0.1:${(feed.address() as { port: number }).port}/binance`, pricePath: "/price" }],
@@ -260,8 +285,9 @@ describe("LUD-XX paymentQuote", () => {
       const meta = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com");
       expect(meta.units).toEqual([{ code: "USD", decimals: 2 }]);
       const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=100&unit=USD`, "domain.com");
-      expect(lastCreate?.amountSat).toBe(2000); // $1 at $50k
-      expect(cb.paymentQuote).toMatchObject({ payment: { amount: "2000000", unit: "msat" } });
+      // $1 at $65k is 1538.46 sats: rounded up to whole sats, or the corridor refuses it.
+      expect(lastCreate?.amountSat).toBe(1539);
+      expect(cb.paymentQuote).toMatchObject({ payment: { amount: "1539000", unit: "msat" } });
     } finally {
       await ctx.close();
       await new Promise((r) => feed.close(r));
@@ -282,6 +308,28 @@ describe("LUD-XX paymentQuote", () => {
       expect((await payer).paymentQuote).toMatchObject({ requested: { amount: "100", unit: "USD" }, payment: { amount: "100000", unit: "msat" } });
       const bad = await getJson(`${ctx.baseUrl}/lnurl/${session.sessionId}/callback?amount=100&unit=EUR`, "domain.com");
       expect(bad).toMatchObject({ status: "ERROR", reason: "Unsupported unit" });
+    } finally {
+      session.abort();
+      await ctx.close();
+    }
+  });
+
+  it("records the quoted unit amount on the settlement, offline swap and live session alike", async () => {
+    const settlements = new DbSettlementStore(db, 86_400_000);
+    const sessions = new SessionManager();
+    const a = addr("alice");
+    const ctx = await start({ repos, quoteProvider: usd, offlineSwapCreator: fakeCreator, offlineSwaps: new OfflineSwapStore(db, 86_400_000), settlements, sessions });
+    const session = await openSession(ctx.baseUrl);
+    try {
+      await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=100&unit=USD`, "domain.com");
+      expect(settlements.listByAddress(a.id, 10).map((r) => r.quote)).toEqual([{ amount: "100", unit: "USD", decimals: 2 }]);
+      const hash = "ef".repeat(32);
+      const evt = nextSseEvent(session.response);
+      const payer = getJson(`${ctx.baseUrl}/lnurl/${session.sessionId}/callback?amount=250&unit=USD`, "domain.com");
+      await evt;
+      await postJson(`${ctx.baseUrl}/lnurl/session/${session.sessionId}/invoice`, { pr: buildInvoice(hash) }, session.token);
+      await payer;
+      expect(settlements.get(hash)?.quote).toEqual({ amount: "250", unit: "USD", decimals: 2 });
     } finally {
       session.abort();
       await ctx.close();

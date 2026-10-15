@@ -1,8 +1,9 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArkAddress, type PaymentOption, type RouteQuote, type WalletBalance } from "@arkade-os/sdk";
-import type { DomainCapabilities, InvoiceResult, PayRequest } from "@arkade-os/lnurl-client";
+import type { DomainCapabilities, InvoiceResult, PayRequest, Unit } from "@arkade-os/lnurl-client";
+import { isLnAddress, isValidLnUrl, parseUnitAmount, tokenOptions } from "@arkade-os/lnurl-client";
 import type { ClaimOptions, Receiver, SentPayment } from "@arkade-os/lnurl-client/arkade";
-import { lnurlActivityResolver, lnurlQuoteMeta, sentActivityResolver } from "@arkade-os/lnurl-client/arkade";
+import { lnurlActivityResolver, lnurlQuoteMeta, quotedLabel, sentActivityResolver } from "@arkade-os/lnurl-client/arkade";
 import { EXPLORER, LNURL_DOMAIN, USERNAME_KEY } from "./config.js";
 import { mergeFeed, readWalletActivity, type FeedRow, type FeedStatus } from "./activity.js";
 import { balanceView } from "./balance.js";
@@ -578,6 +579,10 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
   const router = useMemo(() => createRouter(wallet), [wallet]);
   const [target, setTarget] = useState("");
   const [amount, setAmount] = useState(1000);
+  // The units the target prices in, beyond sats; a token option's unit is that rail's, not one to pay in.
+  const [units, setUnits] = useState<Unit[]>([]);
+  const [unit, setUnit] = useState("sats");
+  const [unitText, setUnitText] = useState("");
   const [options, setOptions] = useState<PaymentOption[] | null>(null);
   const [quoted, setQuoted] = useState<{ railId: string; quote: RouteQuote }>();
   const [status, setStatus] = useState("");
@@ -585,12 +590,31 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
   const [paying, setPaying] = useState<string>();
 
   // An option closes over the request it was listed for, so an edit must not leave it payable.
-  useEffect(() => { setOptions(null); setQuoted(undefined); }, [target, amount]);
+  useEffect(() => { setOptions(null); setQuoted(undefined); }, [target, amount, unit, unitText]);
+
+  useEffect(() => {
+    setUnits([]); setUnit("sats");
+    const raw = target.trim();
+    if (!isLnAddress(raw) && !isValidLnUrl(raw)) return;
+    let live = true;
+    const timer = setTimeout(() => {
+      payer.resolve(raw).then((pr) => {
+        const tokenUnits = new Set(tokenOptions(pr).map((o) => o.unit.code));
+        if (live) setUnits((pr.units ?? []).filter((u) => !tokenUnits.has(u.code.toUpperCase())));
+      }, () => undefined);
+    }, 300);
+    return () => { live = false; clearTimeout(timer); };
+  }, [target]);
+
+  const inUnit = units.find((u) => u.code === unit);
+  const unitAmount = inUnit ? parseUnitAmount(unitText, inUnit.decimals) : undefined;
 
   const findRoutes = async () => {
     setBusy(true); setStatus(""); setOptions(null); setQuoted(undefined);
     try {
-      const found = await router.options({ raw: target.trim(), amount }, { priority: RAIL_PRIORITY });
+      const raw = target.trim();
+      if (inUnit && unitAmount === undefined) throw new Error(`enter an amount in ${inUnit.code}, at most ${inUnit.decimals} decimals`);
+      const found = await router.options(inUnit ? { raw, unitAmount: { unit: inUnit.code, amount: unitAmount! } } : { raw, amount }, { priority: RAIL_PRIORITY });
       setOptions(found);
       if (!found.length) setStatus("no rail can pay that target at this amount");
     } catch (e) { setStatus(`routing failed: ${(e as Error).message}`); }
@@ -625,7 +649,8 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
         if (!sentTxid) return;
         recordSent({
           txid: sentTxid, target: paidTo, railId: quote.railId,
-          amountSat: quote.amount, feeSat: quote.fee, createdAt: startedAt, ...over,
+          amountSat: quote.amount, feeSat: quote.fee, createdAt: startedAt,
+          ...(lnurlMeta?.quote ? { quote: lnurlMeta.quote } : {}), ...over,
         });
       };
       // Not awaiting settled(): a fire-and-forget rail is allowed never to
@@ -679,9 +704,19 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
         placeholder="name@domain, LNURL1…, tark1…, tb1…, bitcoin:…"
         style={{ padding: 8, borderRadius: 6, border: "1px solid #bbb", width: "100%", marginBottom: 8 }} />
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
-        <input type="number" value={amount} min={1} onChange={(e) => setAmount(Number(e.target.value))}
-          style={{ padding: 8, borderRadius: 6, border: "1px solid #bbb", width: 140 }} />
-        <span style={{ color: "#666", fontSize: 13 }}>sats</span>
+        {inUnit
+          ? <input value={unitText} inputMode="decimal" aria-label={`amount in ${inUnit.code}`} placeholder="0.00"
+              onChange={(e) => setUnitText(e.target.value)}
+              style={{ padding: 8, borderRadius: 6, border: "1px solid #bbb", width: 140 }} />
+          : <input type="number" value={amount} min={1} onChange={(e) => setAmount(Number(e.target.value))}
+              style={{ padding: 8, borderRadius: 6, border: "1px solid #bbb", width: 140 }} />}
+        {units.length
+          ? <select aria-label="amount unit" value={unit} onChange={(e) => setUnit(e.target.value)}
+              style={{ padding: 7, borderRadius: 6, border: "1px solid #bbb" }}>
+              <option value="sats">sats</option>
+              {units.map((u) => <option key={u.code} value={u.code}>{u.code}</option>)}
+            </select>
+          : <span style={{ color: "#666", fontSize: 13 }}>sats</span>}
         <button style={btn} disabled={busy || !target.trim()} onClick={() => void findRoutes()}>
           {busy ? "Working…" : "Find routes"}
         </button>
@@ -693,7 +728,7 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
           <div key={option.railId} style={{ borderLeft: "4px solid #16834b", paddingLeft: 12, marginBottom: 8,
             display: "flex", alignItems: "center", gap: 12 }}>
             <span style={{ ...mono }}>{option.railId}</span>
-            {q && <span style={{ ...mono, color: "#555" }}>{q.amount} sats + {q.fee} fee</span>}
+            {q && <span style={{ ...mono, color: "#555" }}>{q.amount} sats + {q.fee} fee{lnurlQuoteMeta(q)?.quote ? ` · ${quotedLabel(lnurlQuoteMeta(q)!.quote!)}` : ""}</span>}
             <button style={{ ...btn, marginLeft: "auto" }} disabled={busy}
               onClick={() => void (q ? pay(q) : getQuote(option))}>
               {paying === option.railId ? "Quoting…" : q ? `Pay ${q.total} sats` : "Quote"}
@@ -704,7 +739,9 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
       {status && <p style={{ ...mono, color: status.includes("failed") ? "crimson" : "#16834b" }}>{status}</p>}
       <Call code={[
         "const router = arkadePaymentRouter({ wallet, lightning })",
-        `const options = await router.options({ raw: target, amount: ${amount} }, { priority: DEFAULT_RAIL_PRIORITY })`,
+        inUnit
+          ? `const options = await router.options({ raw: target, unitAmount: { unit: "${inUnit.code}", amount: ${unitAmount ?? "parseUnitAmount(text, decimals)"} } }, { priority: DEFAULT_RAIL_PRIORITY })  // the receiver quotes it to sats`
+          : `const options = await router.options({ raw: target, amount: ${amount} }, { priority: DEFAULT_RAIL_PRIORITY })`,
         "const quote = await option.quote()  // Quote: priced on click, not on listing",
         "const handle = await quote.send()  // Pay: sends quote.total = quote.amount + quote.fee",
         "pendingConfirmations.add({ verifyUrl, verifyBatch, expect, onSettled, onError })",

@@ -342,6 +342,12 @@ function Sessions() {
   );
 }
 
+/** "500" in a 2-decimal unit reads "5.00 USD". */
+const unitAmount = (q: { amount: string; unit: string; decimals: number }): string => {
+  const digits = q.amount.padStart(q.decimals + 1, "0");
+  return `${q.decimals ? `${digits.slice(0, -q.decimals)}.${digits.slice(-q.decimals)}` : digits} ${q.unit}`;
+};
+
 interface SettlementRow {
   paymentHash: string;
   sessionId: string;
@@ -352,6 +358,7 @@ interface SettlementRow {
   paymentReference: string | null;
   address: { id: number; lightningAddress: string } | null;
   amountMsat: number | null;
+  quote: { amount: string; unit: string; decimals: number } | null;
   hasPreimage: boolean;
   createdAt: number;
   settledAt: number | null;
@@ -447,7 +454,7 @@ function Settlements({ addressId, onAddressFilter }: { addressId?: number; onAdd
               ? <a href="#" onClick={(e) => { e.preventDefault(); onAddressFilter?.(s.address!.id); }}>{s.address.lightningAddress}</a>
               : <span style={{ color: "#999" }}>—</span>}</Td>
             <Td>{s.paymentOption}{s.swapId ? " (offline swap)" : ""}</Td>
-            <Td>{s.amountMsat != null ? `${s.amountMsat.toLocaleString()} msat` : "—"}</Td>
+            <Td>{s.amountMsat != null ? `${s.amountMsat.toLocaleString()} msat` : "—"}{s.quote && <div style={{ color: "#666", fontSize: 12 }}>quoted {unitAmount(s.quote)}</div>}</Td>
             <Td>{s.settled ? `settled${s.settledAt ? ` (${ago(s.settledAt)})` : ""}` : "pending"}{s.hasPreimage ? " · preimage held" : ""}</Td>
             {/* A token deposit address is on another chain, so no Bitcoin explorer link. */}
             <Td>{s.paymentDestination ? <Destination value={s.paymentDestination} network={s.ffOrder ? undefined : network} /> : <Copyable value={s.paymentHash} length={12} />}</Td>

@@ -1,7 +1,7 @@
 import { lnurlFetch, type FetchImpl } from "./http.js";
 import { LnurlError, LnurlTimeoutError, LnurlTransportError } from "./errors.js";
 import { toPayRequestUrl } from "./encoding.js";
-import type { Bolt11Result, DestinationResult, InvoiceResult, PayRequest, PaymentQuote, PollVerifyOptions, RequestInvoiceOptions, VerifyExpectation, VerifyStatus } from "./types.js";
+import type { Bolt11Result, DestinationResult, InvoiceResult, PayRequest, PaymentQuote, PollVerifyOptions, RequestInvoiceOptions, Unit, VerifyExpectation, VerifyStatus } from "./types.js";
 import { isTokenAddress, tokenOptions, type TokenOption } from "./token-options.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { hex } from "@scure/base";
@@ -27,6 +27,31 @@ function assertTokenAnswer(token: TokenOption, answer: DestinationResult): void 
   }
 }
 
+/** The advertised unit `code` names, after the amount checks the receiver would make. */
+function quotableUnit(payRequest: PayRequest, code: string, amount: number): Unit {
+  const unit = payRequest.units?.find((u) => u.code.toUpperCase() === code.toUpperCase());
+  if (!unit) throw new LnurlError(`This payRequest does not quote in ${code}`);
+  if (!Number.isSafeInteger(amount) || amount <= 0) throw new LnurlError(`Amount must be a positive whole number of ${unit.code}'s smallest unit`);
+  const bound = (b: string | undefined) => (b !== undefined && /^\d+$/.test(b) ? BigInt(b) : undefined);
+  const lo = bound(unit.minAmount);
+  const hi = bound(unit.maxAmount);
+  if ((lo !== undefined && BigInt(amount) < lo) || (hi !== undefined && BigInt(amount) > hi)) {
+    throw new LnurlError(`Amount must be between ${unit.minAmount ?? 1} and ${unit.maxAmount ?? "any"} in ${unit.code}'s smallest unit`);
+  }
+  return unit;
+}
+
+/** The millisats a quote says `amount` of `unit` costs, refusing a quote for anything else. */
+function quotedMsat(raw: unknown, unit: string, amount: number): number {
+  const q = raw as Partial<PaymentQuote> | undefined;
+  if (q?.requested?.unit !== unit || q.requested.amount !== String(amount)) {
+    throw new LnurlError(`The callback did not quote ${amount} ${unit}`);
+  }
+  const msat = q.payment?.unit === "msat" && /^\d+$/.test(q.payment.amount) ? Number(q.payment.amount) : NaN;
+  if (!Number.isSafeInteger(msat) || msat <= 0) throw new LnurlError("The callback quoted no millisat amount to pay");
+  return msat;
+}
+
 /**
  * Fetches the payRequest for a lightning address or bech32 LNURL.
  *
@@ -50,8 +75,10 @@ export async function resolve(input: string, fetchImpl: FetchImpl): Promise<PayR
  *
  * `amountSat` is sats and is converted to millisats on the wire; it is
  * range-checked locally against the payRequest bounds before any network
- * call. `paymentOption` and `unit` are rejected on a session payRequest that
- * does not advertise them: a live session's callback would silently ignore them.
+ * call. With `unit` and `amount` instead, the receiver quotes the amount to
+ * millisats and the invoice must match that quote. `paymentOption` is rejected
+ * on a session payRequest that does not advertise options: a live session's
+ * callback would silently ignore it.
  * `verify` on the result is optional: the server omits it when the BOLT11
  * payment hash will not decode.
  *
@@ -65,12 +92,10 @@ export async function requestInvoice(
   opts: RequestInvoiceOptions,
   fetchImpl: FetchImpl,
 ): Promise<InvoiceResult> {
-  const unadvertised =
-    (opts.paymentOption !== undefined && !payRequest.paymentOptions) || (opts.unit !== undefined && !payRequest.units);
-  if (payRequest.source.surface === "session" && unadvertised) {
-    throw new LnurlError("paymentOption and unit need a session payRequest that advertises them; this one does not");
+  if (payRequest.source.surface === "session" && opts.paymentOption !== undefined && !payRequest.paymentOptions) {
+    throw new LnurlError("paymentOption needs a session payRequest that advertises options; this one does not");
   }
-  const amountMsat = opts.amountSat * 1000;
+  const unit = opts.unit === undefined ? undefined : quotableUnit(payRequest, opts.unit, opts.amount);
   // The top-level pair describes the rail a payer gets by sending no option, so
   // a selected option that publishes its own bounds overrides it — checking
   // against the top-level pair would reject amounts that option accepts.
@@ -81,10 +106,12 @@ export async function requestInvoice(
   if (selected?.asset !== undefined && !token) throw new LnurlError(`paymentOption ${selected.id} is not a token this client can pay`);
   const min = selected?.minSendable ?? payRequest.minSendable;
   const max = selected?.maxSendable ?? payRequest.maxSendable;
-  if (!Number.isSafeInteger(amountMsat)) {
+  // A unit amount's millisats are the receiver's to quote, so only theirs can be checked.
+  const amountMsat = unit ? undefined : opts.amountSat! * 1000;
+  if (amountMsat !== undefined && !Number.isSafeInteger(amountMsat)) {
     throw new LnurlError("Amount must be a whole number of millisats");
   }
-  if (amountMsat < min || amountMsat > max) {
+  if (amountMsat !== undefined && (amountMsat < min || amountMsat > max)) {
     throw new LnurlError(`Amount must be between ${min} and ${max} millisats`);
   }
   // Checked locally for the same reason the amount is: the server would reject
@@ -98,23 +125,24 @@ export async function requestInvoice(
     }
   }
   const params = new URLSearchParams();
-  params.set("amount", String(amountMsat));
+  params.set("amount", String(unit ? opts.amount : amountMsat));
   // Non-empty only, matching the guard above: an empty comment is vacuous and
   // sending `comment=` to a payRequest that accepts none is a needless
   // protocol violation the guard would otherwise have caught.
   if (opts.comment) params.set("comment", opts.comment);
   if (opts.paymentOption !== undefined) params.set("paymentOption", opts.paymentOption);
-  if (opts.unit !== undefined) params.set("unit", opts.unit);
+  if (unit) params.set("unit", unit.code);
   const sep = payRequest.callback.includes("?") ? "&" : "?";
   const body = await lnurlFetch<Record<string, unknown>>(`${payRequest.callback}${sep}${params.toString()}`, undefined, fetchImpl);
   if (typeof body.pr === "string") {
     if (token) throw new LnurlError(`The callback answered token option ${token.id} with an invoice`);
     const invoiceMsat = amountMsatOf(body.pr);
     if (invoiceMsat === undefined) throw new LnurlError("The callback returned an invoice that does not decode");
+    const expectedMsat = unit ? quotedMsat(body.paymentQuote, unit.code, opts.amount!) : amountMsat;
     // An amountless invoice answering an amounted request is refused too: the
     // payer asked for a fixed amount, and paying it could settle for any amount.
-    if (invoiceMsat !== amountMsat) {
-      throw new LnurlError(`The callback returned an invoice for ${invoiceMsat ?? "no"} millisats, not the requested ${amountMsat}`);
+    if (invoiceMsat !== expectedMsat) {
+      throw new LnurlError(`The callback returned an invoice for ${invoiceMsat ?? "no"} millisats, not the ${unit ? "quoted" : "requested"} ${expectedMsat}`);
     }
     const result: Bolt11Result = { kind: "bolt11", pr: body.pr, verify: typeof body.verify === "string" ? body.verify : undefined };
     if (typeof body.verifyBatch === "string") result.verifyBatch = body.verifyBatch;
@@ -136,6 +164,8 @@ export async function requestInvoice(
       ...(typeof body.verifyBatch === "string" ? { verifyBatch: body.verifyBatch } : {}),
     };
     if (token) assertTokenAnswer(token, result);
+    // Only the check: a destination carries no amount of its own, so the caller pays the quote's.
+    if (unit) quotedMsat(body.paymentQuote, unit.code, opts.amount!);
     return result;
   }
   throw new LnurlError("Unexpected callback response");

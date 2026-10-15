@@ -659,7 +659,9 @@ export const openApiSpec = {
           "Sync source for the owner payment activity, least recently changed first. " +
           "Pass the returned nextSince back as since to page forward; the cursor is " +
           "inclusive, so the boundary row is re-fetched and deduped on paymentHash. " +
-          "A payment that settles or records its payout later is listed again after that change.",
+          "A payment that settles or records its payout later is listed again after that change. " +
+          "A payment the payer denominated in a LUD-XX unit carries `quote: { amount, unit, decimals }` " +
+          "(amount in the unit's smallest denomination) beside its `amountMsat`; otherwise `quote` is null.",
         tags: ["LN Address"],
         security: [{ bearerAuth: [] }],
         parameters: [
@@ -819,7 +821,7 @@ export const openApiSpec = {
           { name: "amount", in: "query", required: true, schema: { type: "number" }, description: "Amount — millisatoshis, or the smallest unit of `unit` when set" },
           { name: "comment", in: "query", required: false, schema: { type: "string" }, description: "Optional payer comment" },
           { name: "paymentOption", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: selected rail id (`arkade`, `onchain`, or a token option such as `ff-usdtarbitrum`); defaults to lightning" },
-          { name: "unit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: denomination unit (e.g. `USD`); `amount` becomes that unit's smallest integer. Refused on destination and token options, whose amount is always millisats" },
+          { name: "unit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: denomination unit (e.g. `USD`); `amount` becomes that unit's smallest integer. Refused on token options, which quote their own payment" },
           { name: "receiveUnit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: desired receiver unit; the built-in price-feed provider accepts only `msat`" },
         ],
         responses: {

@@ -103,6 +103,14 @@ describe("syncPayments", () => {
     expect(store.all()).toHaveLength(51);
   });
 
+  it("keeps a payment's quoted unit amount on the stored record", async () => {
+    const quote = { amount: "500", unit: "USD", decimals: 2 };
+    const listPayments = vi.fn<ListPayments["listPayments"]>().mockResolvedValue(makePage(targetA, [{ ...settle(makeBolt11("q", 1000), 1000), quote }, makeBolt11("plain", 1001)], 1001));
+    const store = createMemoryStore();
+    await syncPayments([targetA], { client: () => ({ listPayments }), store });
+    expect(Object.fromEntries(store.all().map((r) => [r.identifier, r.quote]))).toEqual({ q: quote, plain: undefined });
+  });
+
   it("re-fetches the boundary row on resume without duplicating it", async () => {
     const entry = makeBolt11("hash-1", 1042);
     const listPayments = vi.fn<ListPayments["listPayments"]>(async (_token, _username, opts) =>
