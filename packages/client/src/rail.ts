@@ -149,8 +149,8 @@ function makeRail(
         inUnit ? { ...extra, unit: inUnit.unit, amount: inUnit.amount } : { ...extra, amountSat: req.amount! },
       );
       // requestInvoice has already held the quote to the amount asked for.
-      const quotedSat = inUnit ? Number(result.paymentQuote!.payment.amount) / 1000 : req.amount!;
-      if (!Number.isSafeInteger(quotedSat)) throw new LnurlError(`${id}: the quote is not a whole number of sats`);
+      const quotedSat = inUnit ? Number(result.paymentQuote?.payment.amount) / 1000 : req.amount!;
+      if (!Number.isSafeInteger(quotedSat)) throw new LnurlError(`${id}: the quote names no whole number of sats`);
 
       // The invoice carries its own amount and solverLightningRail refuses a
       // request that restates it differently, so only the destination branch

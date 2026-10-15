@@ -155,6 +155,18 @@ describe("LUD-XX paymentQuote", () => {
     } finally { await ctx.close(); }
   });
 
+  it("records a unit quote on the onchain destination rail", async () => {
+    const settlements = new DbSettlementStore(db, 86_400_000);
+    const a = addr("alice");
+    repos.addresses.setBoardingAddress(a.id, "tb1qboarding");
+    const ctx = await start({ repos, quoteProvider: usd, offlineSwapCreator: fakeCreator, settlements });
+    try {
+      const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=100&unit=USD&paymentOption=onchain`, "domain.com");
+      expect(cb).toMatchObject({ status: "OK", paymentOption: "onchain", paymentDestination: "tb1qboarding" });
+      expect(settlements.listByAddress(a.id, 10).map((r) => r.quote)).toEqual([{ amount: "100", unit: "USD", decimals: 2 }]);
+    } finally { await ctx.close(); }
+  });
+
   it("rejects a non-positive amount before any provider call", async () => {
     let calls = 0;
     const counting: QuoteProvider = { units: usd.units, quote: (r) => { calls++; return usd.quote(r); } };

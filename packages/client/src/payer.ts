@@ -164,6 +164,7 @@ export async function requestInvoice(
       ...(typeof body.verifyBatch === "string" ? { verifyBatch: body.verifyBatch } : {}),
     };
     if (token) assertTokenAnswer(token, result);
+    // Only the check: a destination carries no amount of its own, so the caller pays the quote's.
     if (unit) quotedMsat(body.paymentQuote, unit.code, opts.amount!);
     return result;
   }

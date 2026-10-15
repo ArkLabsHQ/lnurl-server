@@ -46,7 +46,8 @@ export interface QuoteRequest {
 }
 
 export interface QuoteProvider {
-  /** Units advertised in the payRequest. `paymentOption` scopes per-option units when supported. */
+  /** Units advertised in the payRequest. `paymentOption` names the rail being quoted, for a
+   *  provider that prices per rail; the price-feed provider prices every rail alike. */
   units(paymentOption?: string): Unit[];
   /** Quote a unit-denominated request. Throws {@link QuoteError} on a bad unit. */
   quote(req: QuoteRequest): PaymentQuote;

@@ -129,6 +129,18 @@ export interface SettlementStore {
   listByAddress(addressId: number, limit: number, opts?: { since?: number }): SettlementRecord[];
 }
 
+/** A stored quote, or null for one that is absent or not the shape this server writes. */
+function quoteOf(raw: string | null): QuotedAmount | null {
+  if (!raw) return null;
+  try {
+    const q = JSON.parse(raw) as Partial<QuotedAmount>;
+    const ok = typeof q.amount === "string" && /^\d+$/.test(q.amount) && typeof q.unit === "string" && Number.isInteger(q.decimals);
+    return ok ? { amount: q.amount!, unit: q.unit!, decimals: q.decimals! } : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Money arrived at its covenant and no sweep is recorded: expiry must never reclaim it. */
 const owesSweep = (r: SettlementRecord): boolean => Boolean(r.covenantScript && r.settled && !r.payoutReference);
 
@@ -442,7 +454,7 @@ export class DbSettlementStore implements SettlementStore {
       covenantOutpoint: row.covenant_outpoint ? JSON.parse(row.covenant_outpoint) as Outpoint : null,
       amountMsat: row.amount_msat ?? null,
       covenantScript: row.covenant_script ?? null,
-      quote: row.quote_json ? JSON.parse(row.quote_json) as QuotedAmount : null,
+      quote: quoteOf(row.quote_json),
       addressId: row.address_id ?? null,
       createdAt: row.created_at,
       settledAt: row.settled_at ?? null,

@@ -79,6 +79,13 @@ describe("address payments route", () => {
     expect(quotes).toEqual({ quoted: { amount: "100", unit: "USD", decimals: 2 }, plain: null });
   });
 
+  it("reads a stored quote of any other shape as none", async () => {
+    const aliceId = await register("alice", ALICE);
+    seed("bad", aliceId);
+    db.prepare("UPDATE settlements SET quote_json = ? WHERE payment_hash = 'bad'").run('{"amount":5,"unit":"USD"}');
+    expect(settlements.get("bad")?.quote).toBeNull();
+  });
+
   it("owner sees only their own rows, oldest first, with source attribution", async () => {
     const aliceId = await register("alice", ALICE);
     const bobId = await register("bob", BOB);
