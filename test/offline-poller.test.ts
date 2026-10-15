@@ -140,6 +140,17 @@ describe("settleOfflineSwaps", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("swap-1"));
   });
 
+  it("names a real swap id by a prefix the logger does not redact", async () => {
+    const swapId = "ab".repeat(32);
+    const store = new MemorySettlementStore(60_000);
+    store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await settleOfflineSwaps(store, { ...creatorReporting([]), isSettled: async () => { throw new Error("solver down"); } });
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`"swapRef":"${swapId.slice(0, 12)}"`));
+  });
+
   it("drives status and self-claim from a persisted recovery row", async () => {
     const db = openDb(":memory:");
     runMigrations(db);

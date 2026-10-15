@@ -319,7 +319,7 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
             try {
               await registerLockupContract(settings.contracts, derived.script, derived.address);
             } catch (error) {
-              logger.warn("offline_lockup_register_failed", { swapId: rfqId, error });
+              logger.warn("offline_lockup_register_failed", { swapRef: rfqId.slice(0, 12), error });
             }
           }
           settings.selfClaimer?.register({ swapId: rfqId, script: derived.script, expectedAmount: toAmount });
