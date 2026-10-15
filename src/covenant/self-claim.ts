@@ -37,8 +37,10 @@ export interface SelfClaimRegistration {
 
 export type SelfClaimOutcome =
   | { state: "claimed"; arkTxid: string }
-  /** `unregistered` also covers an already-claimed swap: the entry is dropped on success. */
-  | { state: "skipped"; reason: "unregistered" | "unfunded" | "underfunded" | "expired" };
+  /** `unregistered` also covers an already-claimed or expired swap: the entry is dropped then. */
+  | { state: "skipped"; reason: "unregistered" | "unfunded" | "underfunded" }
+  /** `funded`: any VTXO ever reached the lockup. Spent ones count: a solver that reclaimed it was still paid. */
+  | { state: "skipped"; reason: "expired"; funded: boolean };
 
 interface EmulatorSubmit {
   submitTx(arkTx: string, checkpointTxs: string[]): Promise<{ signedArkTx: string; signedCheckpointTxs: string[] }>;
@@ -121,10 +123,12 @@ export function createSelfClaimer(opts: {
       // Publishing P inside the solver's live refund window risks losing the race and giving it
       // away for nothing. A height-typed locktime is not wall clock, so it gates nothing.
       const deadline = reg.script.options.refundLocktime;
-      if (deadline >= BigInt(LOCKTIME_THRESHOLD) && BigInt(Math.floor(Date.now() / 1000)) >= deadline) {
-        return { state: "skipped", reason: "expired" };
-      }
       const lockupScript = hex.encode(reg.script.pkScript);
+      if (deadline >= BigInt(LOCKTIME_THRESHOLD) && BigInt(Math.floor(Date.now() / 1000)) >= deadline) {
+        const { vtxos: ever } = await indexer.getVtxos({ scripts: [lockupScript] });
+        registry.delete(swapId);
+        return { state: "skipped", reason: "expired", funded: ever.length > 0 };
+      }
       const { vtxos } = await indexer.getVtxos({ scripts: [lockupScript], spendableOnly: true });
       const lookupMs = Math.round(performance.now() - started);
       // "Not funded yet" and "already spent" are the same no-op: retries are safe.

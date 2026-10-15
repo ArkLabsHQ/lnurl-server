@@ -32,7 +32,8 @@ async function settleOne(store: SettlementStore, creator: OfflineSwapCreator, p:
         logger.warn("offline_swap_underfunded", { swapRef });
       } else if (outcome.reason === "expired") {
         expired.add(p.swapId);
-        logger.error("offline_swap_refund_deadline_passed", { swapRef });
+        if (outcome.funded) logger.error("offline_swap_refund_deadline_passed", { swapRef });
+        else logger.info("offline_swap_expired_unpaid", { swapRef });
       }
     } catch (err) {
       logger.warn("offline_swap_self_claim_failed", { swapRef, error: err });
