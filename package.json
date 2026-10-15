@@ -37,7 +37,7 @@
     "@scure/btc-signer": "2.4.1",
     "cors": "^2.8.6",
     "express": "5.2.1",
-    "nostr-tools": "2.24.1"
+    "nostr-tools": "^2.25.2"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
