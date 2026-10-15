@@ -18,6 +18,8 @@ function pendingSwaps(store: SettlementStore, recovered?: OfflineSwapStore): Pen
 }
 
 async function settleOne(store: SettlementStore, creator: OfflineSwapCreator, p: Pending, recovered: OfflineSwapStore | undefined, logger: Logger, hooks: SettlementHooks, expired: Set<string>): Promise<boolean> {
+  // The logger redacts 64-char hex, which is exactly what a swap id is.
+  const swapRef = p.swapId.slice(0, 12);
   let claimed = false;
   if (creator.selfClaim && !expired.has(p.swapId)) {
     try {
@@ -25,26 +27,26 @@ async function settleOne(store: SettlementStore, creator: OfflineSwapCreator, p:
       if (outcome.state === "claimed") {
         store.markPaidOut(p.paymentHash, outcome.arkTxid);
         claimed = true;
-        logger.info("offline_swap_self_claimed", { swapId: p.swapId, arkTxid: outcome.arkTxid });
+        logger.info("offline_swap_self_claimed", { swapRef, arkTxid: outcome.arkTxid });
       } else if (outcome.reason === "underfunded") {
-        logger.warn("offline_swap_underfunded", { swapId: p.swapId });
+        logger.warn("offline_swap_underfunded", { swapRef });
       } else if (outcome.reason === "expired") {
         expired.add(p.swapId);
-        logger.error("offline_swap_refund_deadline_passed", { swapId: p.swapId });
+        logger.error("offline_swap_refund_deadline_passed", { swapRef });
       }
     } catch (err) {
-      logger.warn("offline_swap_self_claim_failed", { swapId: p.swapId, error: err });
+      logger.warn("offline_swap_self_claim_failed", { swapRef, error: err });
     }
   }
   try {
     if (claimed || await creator.isSettled(p.swapId, p.recovery)) {
       const settled = (recovered ?? store).markSettled(p.paymentHash, p.preimage);
       await creator.release?.(p.swapId);
-      if (settled) await hooks.onSettled?.(p.paymentHash).catch((error) => logger.warn("offline_swap_settled_hook_failed", { swapId: p.swapId, error }));
+      if (settled) await hooks.onSettled?.(p.paymentHash).catch((error) => logger.warn("offline_swap_settled_hook_failed", { swapRef, error }));
       return settled;
     }
   } catch (err) {
-    logger.warn("offline_swap_status_failed", { swapId: p.swapId, error: err });
+    logger.warn("offline_swap_status_failed", { swapRef, error: err });
   }
   return false;
 }
