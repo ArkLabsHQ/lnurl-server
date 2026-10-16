@@ -1,4 +1,4 @@
-import type { Card, Network, NetworkIndex } from "@arkade-os/solver-discovery";
+import { verifyCardSig, type Card, type Network, type NetworkIndex } from "@arkade-os/solver-discovery";
 import { schnorr } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
@@ -110,7 +110,9 @@ const sortKeys = (value: unknown): unknown => Array.isArray(value)
 
 // The discovery client rejects a delivered card unless `sig` verifies, so these are really signed.
 function signCard(card: Omit<Card, "sig">, secretKey: Uint8Array): Card {
-  return { ...card, sig: bytesToHex(schnorr.sign(sha256(utf8ToBytes(JSON.stringify(sortKeys(card)))), secretKey)) };
+  const signed = { ...card, sig: bytesToHex(schnorr.sign(sha256(utf8ToBytes(JSON.stringify(sortKeys(card)))), secretKey)) };
+  if (!verifyCardSig(signed)) throw new Error("signCard: sortKeys no longer matches solver-discovery's canonical form");
+  return signed;
 }
 
 const NOSTR_KEY = new Uint8Array(32).fill(9);

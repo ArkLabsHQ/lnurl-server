@@ -16,8 +16,20 @@ import { solverLightningRendezvous } from "@arkade-os/swap/protocol";
 import type { SolverCardsRepo } from "../db/repositories/solver-cards.js";
 import type { SolverRegistryCacheRepo } from "../db/repositories/solver-registry-cache.js";
 import { ConfigError, MalformedRecordError, UpstreamError } from "../errors.js";
+import { isPrivateHost } from "../guarded-fetch.js";
 
 const DEFAULT_REFRESH_MS = 10 * 60_000;
+
+// ponytail: refuses private literal hosts only; a name resolving to a private address passes,
+// since the Nostr pool's WebSocket exposes no DNS hook to check it at connect time.
+const relayAllowed = (relay: string, network: Network): boolean => {
+  if (network === "regtest") return true;
+  try {
+    return !isPrivateHost(new URL(relay).hostname);
+  } catch {
+    return false;
+  }
+};
 const MAX_CACHE_AGE_MS = DEFAULT_MAX_AGE_SECONDS * 1000;
 /** A registry index is kilobytes of cards; read whole, a larger body sizes our heap. */
 const MAX_REGISTRY_BODY_BYTES = 1024 * 1024;
@@ -124,13 +136,28 @@ export class DiscoveryService {
   private cacheUsed = new Set<string>();
   private cacheExpired = new Set<string>();
   private fetchedBodies = new Map<string, string>();
+  private refusedRelays = new Set<string>();
 
   constructor(private options: DiscoveryServiceOptions) {
     this.now = options.now ?? Date.now;
     this.readFile = options.readFile ?? ((path) => readFile(path, "utf8"));
     this.refreshIntervalMs = options.refreshIntervalMs ?? DEFAULT_REFRESH_MS;
     this.upstreamFetch = options.fetchImpl ?? (fetch as FetchLike);
-    this.transportCards = options.transportCards === null ? undefined : options.transportCards ?? nostrCardFetcher();
+    const fetcher = options.transportCards === null ? undefined : options.transportCards ?? nostrCardFetcher();
+    this.transportCards = fetcher && {
+      fetch: (solvers, network) => fetcher.fetch(solvers.flatMap((solver) => {
+        const relays = this.allowedRelays(solver.name, solver.transports?.nostr.relays ?? []);
+        return relays.length ? [{ ...solver, transports: { ...solver.transports, nostr: { ...solver.transports?.nostr, relays } } }] : [];
+      }), network),
+    };
+  }
+
+  private allowedRelays(solver: string, relays: readonly string[]): string[] {
+    return relays.filter((relay) => {
+      if (relayAllowed(relay, this.options.network)) return true;
+      this.refusedRelays.add(`${solver}: relay ${relay} refused: private host`);
+      return false;
+    });
   }
 
   async start(): Promise<void> {
@@ -258,6 +285,7 @@ export class DiscoveryService {
     this.cacheUsed.clear();
     this.cacheExpired.clear();
     this.fetchedBodies.clear();
+    this.refusedRelays.clear();
     const dbCards = this.options.cardStore.listEnabled(this.options.network).map((row) => {
       try { return { card: JSON.parse(row.cardJson), network: this.options.network, label: `db:${row.id}:${row.label}` }; }
       catch { return { card: {}, network: this.options.network, label: `db:${row.id}:${row.label}` }; }
@@ -285,16 +313,16 @@ export class DiscoveryService {
     const candidates = result.markets.flatMap((market): SolverCandidate[] => {
       if (marketCorridor(market, "base") !== "arkade" || marketCorridor(market, "quote") !== "bolt11") return [];
       const discoveryPubkey = market.discovery_pubkey;
-      const relays = market.transports?.nostr?.relays;
-      if (!discoveryPubkey || !relays?.length) return [];
-      return [{ name: market.solver, market, discoveryPubkey, relays: [...relays], source: market.source, sourceType: market.sourceType }];
+      const relays = this.allowedRelays(market.solver, market.transports?.nostr?.relays ?? []);
+      if (!discoveryPubkey || !relays.length) return [];
+      return [{ name: market.solver, market, discoveryPubkey, relays, source: market.source, sourceType: market.sourceType }];
     });
     this.latestSources = result.sources.map((source) => ({
       ...source,
       ...(this.cacheUsed.has(source.source) ? { cache: "fresh" as const } : {}),
       ...(this.cacheExpired.has(source.source) ? { cache: "expired" as const } : {}),
     }));
-    this.latestWarnings = result.warnings;
+    this.latestWarnings = [...result.warnings, ...this.refusedRelays];
     if (!candidates.length) {
       const failedRegistries = new Set(result.sources
         .filter((source) => source.sourceType === "registry" && !source.ok)
