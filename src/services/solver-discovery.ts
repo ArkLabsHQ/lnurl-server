@@ -146,7 +146,7 @@ export class DiscoveryService {
     const fetcher = options.transportCards === null ? undefined : options.transportCards ?? nostrCardFetcher();
     this.transportCards = fetcher && {
       fetch: (solvers, network) => fetcher.fetch(solvers.flatMap((solver) => {
-        const relays = this.allowedRelays(solver.name, solver.transports?.nostr.relays ?? []);
+        const relays = this.allowedRelays(solver.name, solver.transports?.nostr?.relays ?? []);
         return relays.length ? [{ ...solver, transports: { ...solver.transports, nostr: { ...solver.transports?.nostr, relays } } }] : [];
       }), network),
     };
