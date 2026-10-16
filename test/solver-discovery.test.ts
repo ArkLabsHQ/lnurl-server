@@ -538,26 +538,80 @@ describe("DiscoveryService", () => {
     service.stop();
   });
 
-  it("asks a pointer's relays by default, and nothing when transport cards are off", async () => {
+  it("dials a pointer's private relay only on regtest, and nothing when transport cards are off", async () => {
     let connections = 0;
     const relay = createServer((socket) => { connections++; socket.destroy(); });
     await new Promise<void>((resolve) => relay.listen(0, "127.0.0.1", resolve));
-    const cards = new CardStore();
-    cards.rows.push({
-      id: 1, label: "pointer", network: "bitcoin",
-      cardJson: JSON.stringify(nostrPointer(`ws://127.0.0.1:${(relay.address() as AddressInfo).port}`)),
-      enabled: true, createdAt: 1, updatedAt: 1,
-    });
-    const options = { network: "bitcoin" as const, registryUrls: [], cardStore: cards, cacheStore: new CacheStore(), refreshIntervalMs: 0 };
+    const relayUrl = `ws://127.0.0.1:${(relay.address() as AddressInfo).port}`;
+    const service = (network: "bitcoin" | "regtest", transportCards?: null) => {
+      const cards = new CardStore();
+      cards.rows.push({
+        id: 1, label: "pointer", network, cardJson: JSON.stringify(nostrPointer(relayUrl)),
+        enabled: true, createdAt: 1, updatedAt: 1,
+      });
+      return new DiscoveryService({
+        network, registryUrls: [], cardStore: cards, cacheStore: new CacheStore(), refreshIntervalMs: 0,
+        ...(transportCards === null ? { transportCards } : {}),
+      });
+    };
 
     try {
-      await new DiscoveryService({ ...options, transportCards: null }).start();
+      await service("regtest", null).start();
       expect(connections).toBe(0);
-      await new DiscoveryService(options).start();
+      const bitcoin = service("bitcoin");
+      await bitcoin.start();
+      expect(connections).toBe(0);
+      expect(bitcoin.status().warnings).toContain(`nostr-solver: relay ${relayUrl} refused: private host`);
+      await service("regtest").start();
       expect(connections).toBeGreaterThan(0);
     } finally {
       relay.close();
     }
+  });
+
+  it("leaves out a solver whose only relay is private, except on regtest", async () => {
+    const service = (network: "bitcoin" | "regtest") => {
+      const card = { ...solverCard("cheap", 10, network), transports: { nostr: { relays: ["wss://10.0.0.5"] } } };
+      return new DiscoveryService({
+        network, registryUrls: [registryUrl], cardStore: new CardStore(), cacheStore: new CacheStore(),
+        fetchImpl: async () => response(registryIndex(card, 1_000, network)),
+        transportCards: null, now: () => 1_000_000, refreshIntervalMs: 0,
+      });
+    };
+
+    const bitcoin = service("bitcoin");
+    await bitcoin.start();
+    expect(bitcoin.status().candidateCount).toBe(0);
+    expect(bitcoin.status().warnings).toContain("cheap: relay wss://10.0.0.5 refused: private host");
+    const regtest = service("regtest");
+    await regtest.start();
+    expect(regtest.status().candidateCount).toBe(1);
+  });
+
+  it("keeps a solver's public relays and drops only its private ones", async () => {
+    const card = { ...solverCard("cheap", 10), transports: { nostr: { relays: ["wss://10.0.0.5", "wss://cheap.relay.test"] } } };
+    const service = new DiscoveryService({
+      network: "bitcoin", registryUrls: [registryUrl], cardStore: new CardStore(), cacheStore: new CacheStore(),
+      fetchImpl: async () => response(registryIndex(card, 1_000)),
+      transportCards: null, now: () => 1_000_000, refreshIntervalMs: 0,
+    });
+
+    await service.start();
+    expect(service.selectLightningReceive(10_000, EMULATOR).map((candidate) => candidate.relays)).toEqual([["wss://cheap.relay.test"]]);
+    expect(service.status().warnings).toContain("cheap: relay wss://10.0.0.5 refused: private host");
+  });
+
+  it("resolves a pointer card pinned in the card file from the card its solver publishes", async () => {
+    const service = new DiscoveryService({
+      network: "bitcoin", registryUrls: [], cardsFile: "cards.json", cardStore: new CardStore(), cacheStore: new CacheStore(),
+      readFile: async () => JSON.stringify([nostrPointer()]),
+      transportCards: publishing(1_000), now: () => 1_000_000, refreshIntervalMs: 0,
+    });
+
+    await service.start();
+    expect(service.selectLightningReceive(10_000, EMULATOR).map(({ name, source }) => ({ name, source })))
+      .toEqual([{ name: "nostr-solver", source: "file:cards.json:0" }]);
+    service.stop();
   });
 
   it("fails startup when a configured card file contains an invalid card", async () => {
