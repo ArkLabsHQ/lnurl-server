@@ -588,6 +588,19 @@ describe("DiscoveryService", () => {
     expect(regtest.status().candidateCount).toBe(1);
   });
 
+  it("keeps a solver's public relays and drops only its private ones", async () => {
+    const card = { ...solverCard("cheap", 10), transports: { nostr: { relays: ["wss://10.0.0.5", "wss://cheap.relay.test"] } } };
+    const service = new DiscoveryService({
+      network: "bitcoin", registryUrls: [registryUrl], cardStore: new CardStore(), cacheStore: new CacheStore(),
+      fetchImpl: async () => response(registryIndex(card, 1_000)),
+      transportCards: null, now: () => 1_000_000, refreshIntervalMs: 0,
+    });
+
+    await service.start();
+    expect(service.selectLightningReceive(10_000, EMULATOR).map((candidate) => candidate.relays)).toEqual([["wss://cheap.relay.test"]]);
+    expect(service.status().warnings).toContain("cheap: relay wss://10.0.0.5 refused: private host");
+  });
+
   it("resolves a pointer card pinned in the card file from the card its solver publishes", async () => {
     const service = new DiscoveryService({
       network: "bitcoin", registryUrls: [], cardsFile: "cards.json", cardStore: new CardStore(), cacheStore: new CacheStore(),
