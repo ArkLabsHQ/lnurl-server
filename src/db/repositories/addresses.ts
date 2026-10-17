@@ -2,6 +2,7 @@ import type { Db } from "../connection.js";
 import type { EncryptedToken } from "../../crypto.js";
 import type { AddressRow, AddressStatus, CreateAddressParams } from "../../types/index.js";
 import { parseDisabledRails, serializeDisabledRails, type RailId } from "../../rails.js";
+import { validateHdReceive, type HdReceiveConfig } from "../../hd-receive.js";
 
 interface AddressRecord {
   id: number;
@@ -17,6 +18,7 @@ interface AddressRecord {
   arkade_address: string | null;
   claim_public_key: string | null;
   boarding_address: string | null;
+  hd_receive: string | null;
   disabled_rails: string | null;
   session_lnurl: number;
   created_at: number;
@@ -44,6 +46,7 @@ function rowToAddress(r: AddressRecord): AddressRow {
     arkadeAddress: r.arkade_address,
     claimPublicKey: r.claim_public_key,
     boardingAddress: r.boarding_address,
+    hdReceive: r.hd_receive == null ? null : validateHdReceive(JSON.parse(r.hd_receive)),
     disabledRails: parseDisabledRails(r.disabled_rails),
     sessionLnurl: r.session_lnurl === 1,
     createdAt: r.created_at,
@@ -93,10 +96,10 @@ export class AddressesRepo {
     return r ? rowToAddress(r) : undefined;
   }
 
-  getSessionLnurl(domainId: number, sessionId: string): AddressRow | undefined {
+  getSessionLnurl(domainId: number, sessionId: string, includeRevoked = false): AddressRow | undefined {
     const r = this.db
-      .prepare("SELECT * FROM addresses WHERE domain_id = ? AND session_id = ? AND session_lnurl = 1 AND status = 'active'")
-      .get(domainId, sessionId) as AddressRecord | undefined;
+      .prepare("SELECT * FROM addresses WHERE domain_id = ? AND session_id = ? AND session_lnurl = 1 AND (status = 'active' OR (? = 1 AND status = 'revoked')) ORDER BY (status = 'active') DESC, id DESC LIMIT 1")
+      .get(domainId, sessionId, includeRevoked ? 1 : 0) as AddressRecord | undefined;
     return r ? rowToAddress(r) : undefined;
   }
 
@@ -121,18 +124,28 @@ export class AddressesRepo {
   }
 
   setOfflineReceive(id: number, arkadeAddress: string, claimPublicKey: string): void {
-    this.db
-      .prepare("UPDATE addresses SET arkade_address = ?, claim_public_key = ?, updated_at = ? WHERE id = ?")
+    if (this.getById(id)?.hdReceive) throw new Error("HD receive cannot be implicitly replaced by a static destination");
+    const result = this.db
+      .prepare("UPDATE addresses SET arkade_address = ?, claim_public_key = ?, updated_at = ? WHERE id = ? AND hd_receive IS NULL")
       .run(arkadeAddress, claimPublicKey, Date.now(), id);
+    if (!result.changes && this.getById(id)?.hdReceive) throw new Error("HD receive cannot be implicitly replaced by a static destination");
+  }
+
+  setHdReceive(id: number, config: HdReceiveConfig): void {
+    const hd = validateHdReceive(config);
+    this.db.prepare("UPDATE addresses SET hd_receive = ?, arkade_address = NULL, claim_public_key = NULL, boarding_address = NULL, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(hd), Date.now(), id);
   }
 
   /** The onchain rail's destination. Separate from setOfflineReceive because the
    *  two are independent: registering an Arkade identity says nothing about
    *  wanting to be paid on-chain, and passing null withdraws the rail. */
   setBoardingAddress(id: number, boardingAddress: string | null): void {
-    this.db
-      .prepare("UPDATE addresses SET boarding_address = ?, updated_at = ? WHERE id = ?")
-      .run(boardingAddress, Date.now(), id);
+    if (boardingAddress !== null && this.getById(id)?.hdReceive) throw new Error("static boarding destination is disabled for HD receive");
+    const result = this.db
+      .prepare("UPDATE addresses SET boarding_address = ?, updated_at = ? WHERE id = ? AND (hd_receive IS NULL OR ? IS NULL)")
+      .run(boardingAddress, Date.now(), id, boardingAddress);
+    if (!result.changes && boardingAddress !== null && this.getById(id)?.hdReceive) throw new Error("static boarding destination is disabled for HD receive");
   }
 
   /** Replace the per-address rail policy (operator-controlled, per LNURL). */

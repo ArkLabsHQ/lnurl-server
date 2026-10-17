@@ -614,7 +614,10 @@ export const openApiSpec = {
         description:
           "Sets the Arkade address + claim public key the server uses to quote a solver-mediated " +
           "corridor swap for this address when the wallet is offline. Requires the owning session token. " +
-          "An optional `boardingAddress` registers the `onchain` rail in the same call.",
+          "An optional `boardingAddress` registers the `onchain` rail in the same call. " +
+          "Alternatively send only `hd` (plus optional `domain`) to register a dedicated public HD receive branch. " +
+          "Each callback reserves a fresh claim key and payout script, including while the wallet is offline. " +
+          "HD registration removes static destinations and cannot be implicitly downgraded by a legacy client.",
         tags: ["LN Address"],
         security: [{ bearerAuth: [] }],
         parameters: [
@@ -638,17 +641,65 @@ export const openApiSpec = {
                       "existing one alone.",
                   },
                   domain: { type: "string", description: "Target domain (defaults to the Host header)" },
+                  hd: {
+                    type: "object",
+                    properties: {
+                      version: { type: "integer", enum: [1] },
+                      descriptor: { type: "string", description: "Scoped public branch: tr([fingerprint/origin]xpub-or-tpub/*); origin depth >= 4, matching the extended key. No private keys or account xpubs." },
+                      serverPubKey: { type: "string", pattern: "^[0-9a-fA-F]{64}$" },
+                      hrp: { type: "string", enum: ["ark", "tark"] },
+                      exitDelay: {
+                        type: "object",
+                        properties: { type: { type: "string", enum: ["seconds", "blocks"] }, value: { type: "integer", minimum: 1 } },
+                        required: ["type", "value"],
+                      },
+                    },
+                    required: ["version", "descriptor", "serverPubKey", "hrp", "exitDelay"],
+                  },
                 },
-                required: ["arkadeAddress", "claimPublicKey"],
+                oneOf: [
+                  { required: ["arkadeAddress", "claimPublicKey"], not: { required: ["hd"] } },
+                  { required: ["hd"], not: { anyOf: [{ required: ["arkadeAddress"] }, { required: ["claimPublicKey"] }, { required: ["boardingAddress"] }] } },
+                ],
               },
             },
           },
         },
         responses: {
-          "200": { description: "Identity stored", content: { "application/json": { schema: { type: "object", properties: { ok: { type: "boolean" } } } } } },
+          "200": { description: "Identity stored; HD clients must check receiveMode is hd", content: { "application/json": { schema: { type: "object", properties: { ok: { type: "boolean" }, receiveMode: { type: "string", enum: ["hd"] } } } } } },
           "400": { description: "Missing arkadeAddress, a non-compressed/invalid claimPublicKey, or a malformed arkadeAddress" },
           "401": { description: "Missing auth token" },
           "404": { description: "Unknown domain, or address not found / not owned by this token" },
+        },
+      },
+    },
+    "/lnurl/address/{handle}/arkade/allocations": {
+      get: {
+        summary: "Recover HD receive allocations, including unpaid attempts and old registrations",
+        tags: ["LN Address"],
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: "handle", in: "path", required: true, schema: { type: "string" }, description: HANDLE_PARAM },
+          { name: "domain", in: "query", schema: { type: "string" } },
+          { name: "after", in: "query", schema: { type: "integer", minimum: 0 }, description: "Exclusive allocation id; start at 0" },
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 200, default: 100 } },
+        ],
+        responses: {
+          "200": {
+            description: "Owner-only immutable allocation page; available after receiver revocation",
+            content: { "application/json": { schema: {
+              type: "object", required: ["allocations", "nextAfter"], properties: {
+                allocations: { type: "array", items: { type: "object", required: ["id", "index", "descriptor", "arkadeAddress", "claimPublicKey", "hd", "createdAt"], properties: {
+                  id: { type: "integer" }, index: { type: "integer" }, descriptor: { type: "string" }, arkadeAddress: { type: "string" },
+                  claimPublicKey: { type: "string" }, hd: { type: "object", description: "Original versioned receive configuration" }, createdAt: { type: "integer" },
+                } } },
+                nextAfter: { type: "integer", description: "Last allocation id, or the input cursor for an empty page" },
+              },
+            } } },
+          },
+          "400": { description: "Invalid cursor or page size" },
+          "401": { description: "Missing or invalid auth token" },
+          "404": { description: "Unknown receiver or not owned by this token" },
         },
       },
     },

@@ -1,6 +1,11 @@
 import type { Db } from "./db/connection.js";
-import type { Outpoint } from "@arkade-os/sdk";
+import { ArkAddress, type Outpoint } from "@arkade-os/sdk";
 import type { QuotedAmount } from "./quote-provider.js";
+
+const destinationKey = (destination: string): string => {
+  try { return Buffer.from(ArkAddress.decode(destination).pkScript).toString("hex"); }
+  catch { return destination.toLowerCase(); }
+};
 
 const encodeOutpoint = (outpoint: Outpoint | null): string | null => {
   if (!outpoint) return null;
@@ -120,9 +125,8 @@ export interface SettlementStore {
    *  contract and every event, so scanning the whole pending set to find its
    *  record made a catch-up pass cost contracts x open payments. */
   pendingByCovenantScript(script: string): PendingDestination | undefined;
-  /** True when a reference (e.g. an Arkade txid) already settled some record —
-   *  one observed payment must not settle two records across watcher passes. */
-  isReferenceUsed(reference: string): boolean;
+  /** Whether a reference already settled a record, optionally scoped to an output script. */
+  isReferenceUsed(reference: string, destinationScript?: string): boolean;
   /** Newest-first audit view for the admin API (no TTL filter — history, not polling).
    *  Filters are pushed into the query so a filtered page isn't silently truncated. */
   listRecent(limit: number, opts?: { settled?: boolean; option?: string }): SettlementRecord[];
@@ -308,8 +312,10 @@ export class MemorySettlementStore implements SettlementStore {
     return out;
   }
 
-  isReferenceUsed(reference: string): boolean {
-    for (const r of this.map.values()) if (r.paymentReference === reference) return true;
+  isReferenceUsed(reference: string, destinationScript?: string): boolean {
+    for (const r of this.map.values()) {
+      if (r.paymentReference === reference && (destinationScript === undefined || (r.paymentDestination !== null && destinationKey(r.paymentDestination) === destinationScript))) return true;
+    }
     return false;
   }
 
@@ -570,7 +576,11 @@ export class DbSettlementStore implements SettlementStore {
     return [...settled, ...open].map((r) => r.covenant_script);
   }
 
-  isReferenceUsed(reference: string): boolean {
+  isReferenceUsed(reference: string, destinationScript?: string): boolean {
+    if (destinationScript !== undefined) {
+      const rows = this.db.prepare("SELECT payment_destination FROM settlements WHERE payment_reference = ?").all(reference) as { payment_destination: string | null }[];
+      return rows.some((r) => r.payment_destination !== null && destinationKey(r.payment_destination) === destinationScript);
+    }
     return Boolean(this.db.prepare("SELECT 1 FROM settlements WHERE payment_reference = ? LIMIT 1").get(reference));
   }
 

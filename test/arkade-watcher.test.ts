@@ -5,7 +5,7 @@ import { hex } from "@scure/base";
 import { ArkAddress, RestIndexerProvider } from "@arkade-os/sdk";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { settleDestinationPayments, startArkadeWatcher, SETTLEMENT_SKEW_MS } from "../src/workers/arkade-watcher.js";
-import { MemorySettlementStore } from "../src/settlement-store.js";
+import { DbSettlementStore, MemorySettlementStore } from "../src/settlement-store.js";
 import { createServer } from "../src/http/server.js";
 import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
@@ -158,6 +158,38 @@ describe("settleDestinationPayments", () => {
     store.create({ paymentHash: "r2", pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination: DEST, amountMsat: 50_000 });
     expect(await settleDestinationPayments(store, new RestIndexerProvider(indexerCtx.baseUrl))).toBe(0);
     expect(store.get("r2")!.settled).toBe(false);
+  });
+
+  it.each(["memory", "db"])("attributes a batched transaction by script across address aliases (%s)", async (backend) => {
+    const db = backend === "db" ? openDb(":memory:") : undefined;
+    if (db) runMigrations(db);
+    const store = db ? new DbSettlementStore(db, 3_600_000) : new MemorySettlementStore(3_600_000);
+    const decoded = ArkAddress.decode(DEST);
+    const alias = new ArkAddress(new Uint8Array(32).fill(1), decoded.vtxoTaprootKey, "tark").encode();
+    const other = new ArkAddress(new Uint8Array(32).fill(2), new Uint8Array(32).fill(3), "tark").encode();
+    const otherScript = hex.encode(ArkAddress.decode(other).pkScript);
+    const lookups: (string | undefined)[] = [];
+    const isReferenceUsed = store.isReferenceUsed.bind(store);
+    store.isReferenceUsed = (reference, script) => { lookups.push(script); return isReferenceUsed(reference, script); };
+    try {
+      for (const [paymentHash, paymentDestination] of [["original", DEST], ["alias", alias], ["other", other]]) {
+        store.create({ paymentHash, pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination, amountMsat: 50_000 });
+      }
+      const txid = randomBytes(32).toString("hex");
+      const createdAtSec = Math.floor(Date.now() / 1000);
+      indexerVtxos = [DEST_SCRIPT, otherScript].map((script, vout) => ({
+        ...wireVtxo({ txid, valueSat: 50, createdAtSec, script }), outpoint: { txid, vout },
+      }));
+      const indexer = new RestIndexerProvider(indexerCtx.baseUrl);
+      expect(await settleDestinationPayments(store, indexer)).toBe(2);
+      expect(store.get("original")!.settled).toBe(true);
+      expect(store.get("other")!.settled).toBe(true);
+      expect(store.get("alias")!.settled).toBe(false);
+      expect(await settleDestinationPayments(store, indexer)).toBe(0);
+      expect(store.get("alias")!.settled).toBe(false);
+      expect(isReferenceUsed(txid)).toBe(true);
+      expect(new Set(lookups)).toEqual(new Set([DEST_SCRIPT, otherScript]));
+    } finally { db?.close(); }
   });
 
   // The cost that decides whether this scales: a pass used to spend one round

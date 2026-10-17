@@ -15,6 +15,11 @@
       "types": "./dist/arkade.d.ts",
       "import": "./dist/arkade.js",
       "default": "./dist/arkade.js"
+    },
+    "./hd": {
+      "types": "./dist/hd.d.ts",
+      "import": "./dist/hd.js",
+      "default": "./dist/hd.js"
     }
   },
   "files": [
@@ -25,6 +30,7 @@
     "access": "public"
   },
   "dependencies": {
+    "@scure/bip32": "2.4.0",
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
     "@scure/base": "^2.0.0"

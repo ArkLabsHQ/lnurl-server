@@ -10,7 +10,7 @@ pnpm add @arkade-os/lnurl-client
 
 The SDK is an optional peer: `>=0.5.0-rc.0` (0.5.0 release candidates and stable 0.5+ releases). The main entry point needs no SDK; `/arkade` uses the SDK installed by your app.
 
-Runtime dependencies are `@scure/base` and `@noble/hashes` - nothing else is pulled in, and the package never imports the server, so app bundles stay free of `express` and `sqlite`.
+Runtime dependencies are the Scure and Noble cryptography packages; the package never imports the server, so app bundles stay free of `express` and `sqlite`.
 
 ## With an Arkade wallet
 
@@ -63,6 +63,42 @@ Receiving accepts a `LnurlWallet`: only `identity.signMessage`, `identity.compre
 CI checks the client against SDK `0.5.0-rc.0` and `0.5.0-rc.19` in isolated installs, independent of the server's SDK pin. Run the same types, tests, build, and consumer checks with `node scripts/check-client-sdk-compat.mjs <sdk-version>` from the repository root.
 
 Everything below is the surface these are built on; reach for it when the facade does not fit.
+
+## HD offline receiving
+
+The optional `/hd` entry contains the branch and restoration helpers. HD receiving keeps the account authentication signer stable while deriving a fresh payout address and claim key for each payment. The ordinary Arkade and boarding addresses are never sent when `hd` is configured.
+
+```ts
+import { arkadeLnurl } from '@arkade-os/lnurl-client/arkade'
+import { createHdReceiveBranch, restoreHdReceiveAllocation } from '@arkade-os/lnurl-client/hd'
+
+const delay = Number(arkInfo.unilateralExitDelay)
+const branch = createHdReceiveBranch({
+  accountDescriptor: wallet.identity.descriptor,
+  branchPath: '2/7',
+  serverPubKey: arkInfo.signerPubkey.slice(-64),
+  hrp: 'tark',
+  exitDelay: { type: delay < 512 ? 'blocks' : 'seconds', value: delay },
+})
+const lnurl = arkadeLnurl({ wallet, hd: branch.hd, baseUrl: 'https://lnurl.example.com' })
+const receiver = await lnurl.claim({ username: 'alice' })
+const manager = await wallet.getContractManager()
+let after = 0
+for (;;) {
+  const page = await receiver.allocations({ after, limit: 100 })
+  for (const allocation of page.allocations) {
+    await restoreHdReceiveAllocation(manager, allocation, branch)
+  }
+  if (!page.allocations.length) break
+  after = page.nextAfter
+}
+```
+
+Reserve a distinct branch path for each LNURL service, outside ordinary receive and change paths. Persist the branch path and public configuration before registration; the example reserves `2/7`. Only its scoped branch xpub goes to the server. `accountDescriptor` and the returned `signingDescriptor(index)` mapping stay local so the original SDK identity can sign received coins. A raw mainnet `signerPubkey` may include a compression prefix: pass the x-only 64-character key. Read the actual exit delay and signer from Arkade info rather than copying the example's delay. Match the SDK's delay convention: values below 512 are blocks, otherwise seconds.
+
+Allocation history includes unpaid and failed invoice attempts, including old configurations after registration changes. Restore each historical allocation with its original saved branch configuration; do not substitute today's server key or delay. Save a pagination cursor only after every row on that page was registered successfully, and start at zero when restoring a fresh local wallet. A normal gap-limit wallet scan cannot cover arbitrary unpaid-invoice gaps. Allocation history remains authenticated and available after revocation. Registration requires an explicit HD-mode acknowledgement; it never falls back to a static address.
+
+The main entry point exposes `HdReceiveConfig`, `HdReceiveAllocation`, `HdReceiveAllocationPage`, `registerArkadeIdentity({ token, handle, hd })`, and `listHdAllocations(token, handle, opts)` without importing the SDK. The separate `/hd` entry adds the branch and restore helpers without loading them for static `/arkade` callers. Received funds still need the application's normal shielding flow; the LNURL service can still associate payments with the alias.
 
 ## Payer
 
