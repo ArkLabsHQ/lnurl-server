@@ -38,6 +38,17 @@ afterEach(() => {
 });
 
 describe("durable HD receive allocations", () => {
+  it("preserves the original BEGIN error and the caller's transaction", () => {
+    const { db, repos, address } = setup();
+    repos.addresses.setHdReceive(address.id, config());
+    db.exec("BEGIN IMMEDIATE");
+    const pending = repos.addresses.create({ domainId: address.domainId, username: "pending", status: "active" });
+    expect(() => repos.hdReceive.allocate(address.id, config())).toThrow(/cannot start a transaction within a transaction/);
+    db.exec("COMMIT");
+    expect(repos.addresses.getById(pending.id)).toBeDefined();
+    expect(repos.hdReceive.allocate(address.id, config()).index).toBe(0);
+  });
+
   it("keeps legacy receive data through migration and replaces all static destinations on opt-in", () => {
     const db = openDb(":memory:");
     dbs.push(db);

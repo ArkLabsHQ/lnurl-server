@@ -77,7 +77,7 @@ export async function settleDestinationPayments(
         arrivalsByScript.set(v.script, bucket);
       }
       for (const script of chunk) {
-        settled += settleAtScript(store, byScript.get(script)!, arrivalsByScript.get(script) ?? []);
+        settled += settleAtScript(store, script, byScript.get(script)!, arrivalsByScript.get(script) ?? []);
       }
     } catch (err) {
       // A failed chunk skips its own destinations only, and the next tick
@@ -93,7 +93,8 @@ export async function settleDestinationPayments(
  *  and an under-payment never flips anything. */
 function settleAtScript(
   store: SettlementStore,
-  records: { paymentHash: string; paymentDestination: string; amountMsat: number; createdAt: number }[],
+  script: string,
+  records: { paymentHash: string; amountMsat: number; createdAt: number }[],
   vtxos: { txid: string; vout: number; value: number; createdAt: Date }[],
 ): number {
   let settled = 0;
@@ -101,7 +102,7 @@ function settleAtScript(
   const arrivals = vtxos
     .filter((v) => v.createdAt.getTime() >= oldest - SETTLEMENT_SKEW_MS)
     // One transaction may pay several scripts, but cannot pay the same record twice.
-    .filter((v) => !store.isReferenceUsed(v.txid, records[0]!.paymentDestination))
+    .filter((v) => !store.isReferenceUsed(v.txid, script))
     // Same-second ties smallest first, so an older small record cannot take the payment
     // a larger one needs; then txid:vout, so the indexer's listing order never decides.
     .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.value - b.value || a.txid.localeCompare(b.txid) || a.vout - b.vout);

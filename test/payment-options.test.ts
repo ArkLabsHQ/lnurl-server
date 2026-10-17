@@ -31,6 +31,12 @@ describe("resolvePaymentOption", () => {
     });
   });
 
+  it("defers HD destinations without returning a static or empty address", () => {
+    expect(resolvePaymentOption("arkade", { ...withArkade, hdReceive: {} })).toEqual({
+      kind: "hd-destination", paymentOption: "arkade",
+    });
+  });
+
   it("errors on arkade without an identity, and on unknown options", () => {
     expect(resolvePaymentOption("arkade", noArkade)).toEqual({ kind: "error", reason: "Unsupported paymentOption" });
     expect(resolvePaymentOption("onchain", withArkade)).toEqual({ kind: "error", reason: "Unsupported paymentOption" });

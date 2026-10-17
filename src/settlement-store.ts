@@ -125,8 +125,8 @@ export interface SettlementStore {
    *  contract and every event, so scanning the whole pending set to find its
    *  record made a catch-up pass cost contracts x open payments. */
   pendingByCovenantScript(script: string): PendingDestination | undefined;
-  /** Whether a reference already settled a record, optionally scoped to a destination. */
-  isReferenceUsed(reference: string, destination?: string): boolean;
+  /** Whether a reference already settled a record, optionally scoped to an output script. */
+  isReferenceUsed(reference: string, destinationScript?: string): boolean;
   /** Newest-first audit view for the admin API (no TTL filter — history, not polling).
    *  Filters are pushed into the query so a filtered page isn't silently truncated. */
   listRecent(limit: number, opts?: { settled?: boolean; option?: string }): SettlementRecord[];
@@ -312,10 +312,9 @@ export class MemorySettlementStore implements SettlementStore {
     return out;
   }
 
-  isReferenceUsed(reference: string, destination?: string): boolean {
-    const key = destination === undefined ? undefined : destinationKey(destination);
+  isReferenceUsed(reference: string, destinationScript?: string): boolean {
     for (const r of this.map.values()) {
-      if (r.paymentReference === reference && (key === undefined || (r.paymentDestination !== null && destinationKey(r.paymentDestination) === key))) return true;
+      if (r.paymentReference === reference && (destinationScript === undefined || (r.paymentDestination !== null && destinationKey(r.paymentDestination) === destinationScript))) return true;
     }
     return false;
   }
@@ -577,11 +576,10 @@ export class DbSettlementStore implements SettlementStore {
     return [...settled, ...open].map((r) => r.covenant_script);
   }
 
-  isReferenceUsed(reference: string, destination?: string): boolean {
-    if (destination !== undefined) {
-      const key = destinationKey(destination);
+  isReferenceUsed(reference: string, destinationScript?: string): boolean {
+    if (destinationScript !== undefined) {
       const rows = this.db.prepare("SELECT payment_destination FROM settlements WHERE payment_reference = ?").all(reference) as { payment_destination: string | null }[];
-      return rows.some((r) => r.payment_destination !== null && destinationKey(r.payment_destination) === key);
+      return rows.some((r) => r.payment_destination !== null && destinationKey(r.payment_destination) === destinationScript);
     }
     return Boolean(this.db.prepare("SELECT 1 FROM settlements WHERE payment_reference = ? LIMIT 1").get(reference));
   }

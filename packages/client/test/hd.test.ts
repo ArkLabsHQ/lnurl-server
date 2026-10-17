@@ -124,4 +124,9 @@ describe("HD receiving", () => {
       await expect(client.listHdAllocations("secret", "alice", { after: 30 })).rejects.toThrow("Invalid HD allocation");
     }
   });
+
+  it("accepts an empty allocation history at the initial recovery cursor", async () => {
+    const client = createLnurlClient({ baseUrl: "https://receiver.example", fetchImpl: async () => json({ allocations: [], nextAfter: 0 }) });
+    await expect(client.listHdAllocations("secret", "alice", { after: 0 })).resolves.toEqual({ allocations: [], nextAfter: 0 });
+  });
 });

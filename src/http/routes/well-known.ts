@@ -45,7 +45,10 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
   const receiveDestination = (address: AddressRow) => {
     if (!address.hdReceive) return { arkadeAddress: address.arkadeAddress!, claimPublicKey: address.claimPublicKey! };
     try { return repos.hdReceive.allocate(address.id, address.hdReceive); }
-    catch { throw new LnurlError("HD receive destination is unavailable"); }
+    catch (error) {
+      logger.error("hd_receive_allocation_failed", { addressId: address.id, error });
+      throw new LnurlError("HD receive destination is unavailable");
+    }
   };
   // Each token callback spends one of a handful of provider orders a minute, so one IP or
   // one receiver must not be able to hold them all.
@@ -117,7 +120,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     if (resolved.kind === "error") throw new LnurlError(resolved.reason);
     // Per-address rail policy: a disabled rail fails loudly instead of serving.
     const railStates = railStatesFor(address, railCaps);
-    if (resolved.kind === "destination" && railStates.get("arkade")?.enabled === false) {
+    if ((resolved.kind === "destination" || resolved.kind === "hd-destination") && railStates.get("arkade")?.enabled === false) {
       throw new LnurlError("paymentOption arkade is disabled for this address");
     }
 
@@ -177,7 +180,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       return;
     }
 
-    if (resolved.kind === "destination") {
+    if (resolved.kind === "destination" || resolved.kind === "hd-destination") {
       // Unauthed store-writing branch — same per-IP guard as the offline-swap branch.
       if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) throw new LnurlError("Too many requests", 429);
       const arkadeBounds = optionBounds("arkade", railAddress, railCaps, base) ?? base;
@@ -188,9 +191,10 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       // exactly and MUST NOT round — a sub-satoshi amount is not exactly
       // representable in a whole-sat destination payment, so reject it.
       if (amountMsat % 1000 !== 0) throw new LnurlError("Amount must be a whole number of satoshis");
-      const allocation = resolved.paymentOption === "arkade" && address.hdReceive ? receiveDestination(address) : undefined;
-      const targetAddress = allocation?.arkadeAddress ?? resolved.paymentDestination;
-      const targetKey = allocation?.claimPublicKey ?? address.claimPublicKey;
+      const target = resolved.kind === "hd-destination" ? receiveDestination(address)
+        : { arkadeAddress: resolved.paymentDestination, claimPublicKey: address.claimPublicKey };
+      const targetAddress = target.arkadeAddress;
+      const targetKey = target.claimPublicKey;
       // The payer pays the destination directly, so the server isn't in the payment path:
       // `verify` records the agreed amount, but `settled` only flips once an Arkade watcher
       // observes the payment (follow-up). Keyed by an opaque verify id (not a payment hash).
@@ -252,7 +256,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
         // be told someone else's arrived. The record is still written — the
         // watcher settles it and the activity list shows it — but the payer is
         // not handed a URL whose answer the server cannot stand behind.
-        ...(derived || (allocation && railCaps.arkServerUrl) ? { verify: `${settings.baseUrl()}/lnurl/verify/${verifyId}`, verifyBatch: `${settings.baseUrl()}${BATCH_PATH}` } : {}),
+        ...(derived || (resolved.kind === "hd-destination" && railCaps.arkServerUrl) ? { verify: `${settings.baseUrl()}/lnurl/verify/${verifyId}`, verifyBatch: `${settings.baseUrl()}${BATCH_PATH}` } : {}),
       } satisfies LnurlPayDestinationResponse);
       return;
     }

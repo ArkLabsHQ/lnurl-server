@@ -61,6 +61,25 @@ describe("HD LNURL receive", () => {
     expect(repos.addresses.getById(addressId)!.arkadeAddress).toBeNull();
   });
 
+  it("logs allocation failures while keeping internal details out of the payer response", async () => {
+    const error = vi.fn();
+    const server = app({ logger: { info: vi.fn(), warn: vi.fn(), error } });
+    await register(server); await callback(server);
+    db.exec("UPDATE hd_receive_sources SET next_index = 0");
+    const result = await callback(server);
+    expect(result.body).toMatchObject({ status: "ERROR", reason: "HD receive destination is unavailable" });
+    expect(result.body.paymentDestination).toBeUndefined();
+    expect(error).toHaveBeenCalledWith("hd_receive_allocation_failed", { addressId, error: expect.any(Error) });
+    expect((error.mock.calls[0]![1].error as Error).message).toContain("counter is inconsistent");
+  });
+
+  it("refuses a disabled HD Arkade rail before reserving an allocation", async () => {
+    const server = app(); await register(server);
+    repos.addresses.setDisabledRails(addressId, ["arkade"]);
+    expect((await callback(server)).body.reason).toContain("arkade is disabled");
+    expect(repos.hdReceive.list(addressId, 0, 100)).toEqual([]);
+  });
+
   it("refuses instead of falling back when covenant derivation fails", async () => {
     const derive = vi.fn().mockRejectedValue(new Error("emulator unavailable"));
     const server = app({ covenantDestinations: { derive } });

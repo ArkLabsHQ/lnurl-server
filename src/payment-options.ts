@@ -59,6 +59,7 @@ export function advertisedOptions(address: OptionAddress): PaymentOption[] {
 export type ResolvedPaymentOption =
   | { kind: "lightning" }
   | { kind: "destination"; paymentOption: string; paymentDestination: string }
+  | { kind: "hd-destination"; paymentOption: "arkade" }
   | { kind: "fixedfloat"; optionId: string; ffCode: string }
   | { kind: "error"; reason: string };
 
@@ -85,8 +86,9 @@ export function resolvePaymentOption(
   }
   if (id === undefined || id === "lightning") return { kind: "lightning" };
   if (id === "arkade") {
-    return address.arkadeAddress || address.hdReceive
-      ? { kind: "destination", paymentOption: "arkade", paymentDestination: address.arkadeAddress ?? "" }
+    if (address.hdReceive) return { kind: "hd-destination", paymentOption: "arkade" };
+    return address.arkadeAddress
+      ? { kind: "destination", paymentOption: "arkade", paymentDestination: address.arkadeAddress }
       : { kind: "error", reason: "Unsupported paymentOption" };
   }
   if (id === "onchain") {
