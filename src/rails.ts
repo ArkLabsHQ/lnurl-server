@@ -230,6 +230,7 @@ export function describeServerRails(caps: ServerRailCaps): ServerRailState[] {
 
 /** The address fields rail resolution depends on. */
 export interface RailAddress {
+  hdReceive?: unknown;
   arkadeAddress: string | null;
   claimPublicKey: string | null;
   /** Arkade boarding address; the onchain rail is advertised only when set. */
@@ -297,17 +298,18 @@ export function serializeDisabledRails(rails: readonly RailId[]): string {
 /** Effective per-address rail states: policy, then capability, then identity. */
 export function effectiveRails(address: RailAddress, caps: ServerRailCaps): AddressRailState[] {
   const disabled = disabledSet(address);
-  const hasIdentity = Boolean(address.arkadeAddress && address.claimPublicKey);
+  const hasIdentity = Boolean(address.hdReceive || (address.arkadeAddress && address.claimPublicKey));
   const noIdentityReason = "address has no registered Arkade identity";
   const discoveryReason = caps.discoveryReason ?? "no usable lightning-receive solver cards";
   const interactive: AddressRailState = {
     id: "interactive-lightning",
     label: RAIL_DEFS["interactive-lightning"].label,
     enabled: !disabled.has("interactive-lightning"),
-    applicable: true,
-    available: !disabled.has("interactive-lightning"),
+    applicable: !address.hdReceive,
+    available: !disabled.has("interactive-lightning") && !address.hdReceive,
   };
   if (!interactive.enabled) interactive.reason = "disabled for this address";
+  else if (address.hdReceive) interactive.reason = "HD receive requires per-payment swap destinations";
   const offline: AddressRailState = {
     id: "offline-swap",
     label: RAIL_DEFS["offline-swap"].label,
@@ -344,10 +346,11 @@ export function effectiveRails(address: RailAddress, caps: ServerRailCaps): Addr
     id: "onchain",
     label: RAIL_DEFS.onchain.label,
     enabled: !disabled.has("onchain"),
-    applicable: Boolean(address.boardingAddress),
-    available: !disabled.has("onchain") && Boolean(address.boardingAddress),
+    applicable: Boolean(address.boardingAddress) && !address.hdReceive,
+    available: !disabled.has("onchain") && Boolean(address.boardingAddress) && !address.hdReceive,
   };
   if (!onchain.enabled) onchain.reason = "disabled for this address";
+  else if (address.hdReceive) onchain.reason = "static boarding destinations are disabled for HD receive";
   else if (!address.boardingAddress) onchain.reason = "address has no registered boarding address";
   // The corridor pays the user's Arkade identity, so the token rail needs one too.
   const ff = caps.fixedFloat;
@@ -522,7 +525,7 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
   // Without server caps (unit scope) keep the historical rule: an Arkade
   // identity offers both options, otherwise the address stays pure LUD-06.
   if (!caps) {
-    if (!address.arkadeAddress) return [];
+    if (!address.arkadeAddress && !address.hdReceive) return [];
     return [
       { id: "lightning", type: "lightning" },
       { id: "arkade", type: "arkade" },
@@ -554,7 +557,7 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
   // `available` is emitted only when false: LUD-XX says an absent one means true,
   // so stating it on every healthy option would be noise. `verifiable` is always
   // stated, since absent means unknown: arkade answers with verify only for a covenant destination.
-  const arkadeVerifiable = states.get("covenant")?.available === true;
+  const arkadeVerifiable = Boolean(address.hdReceive && caps.arkServerUrl) || states.get("covenant")?.available === true;
   if (lightning.offer) options.push({ id: "lightning", type: "lightning", verifiable: true, ...(lightning.available ? {} : { available: false }) });
   if (arkadeReady) options.push({ id: "arkade", type: "arkade", verifiable: arkadeVerifiable, ...(arkadeState.available ? {} : { available: false }) });
   if (onchainReady) options.push({ id: "onchain", type: "onchain", verifiable: false, ...(onchainState.available ? {} : { available: false }) });

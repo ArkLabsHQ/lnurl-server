@@ -10,6 +10,7 @@ import { deriveSessionId } from "./token.js";
 import { syncPayments, type PaymentSyncStore, type StoredPayment } from "./sync.js";
 import type { DomainCapabilities } from "./addresses.js";
 import type { PayRequest, PaymentPage, UnitAmount } from "./types.js";
+import type { HdReceiveConfig, HdReceiveAllocationPage } from "./addresses.js";
 import { arkadePaymentRouter } from "./sdk-adapter.js";
 
 export { arkadePaymentRouter } from "./sdk-adapter.js";
@@ -35,8 +36,9 @@ export function encodeLnurl(url: string): string {
 /** A wallet supplies the signer and both addresses. Without one — a script, a
  *  test, a server holding only a key — name them; only sending needs a wallet. */
 export type ArkadeLnurlSource =
-  | { wallet: LnurlWallet; router?: LnurlPaymentRouter; identity?: never; arkadeAddress?: never }
-  | { wallet?: never; router?: never; identity: ArkadeSigner; arkadeAddress: string; boardingAddress?: string };
+  | { wallet: LnurlWallet; router?: LnurlPaymentRouter; identity?: never; arkadeAddress?: never; hd?: HdReceiveConfig }
+  | { wallet?: never; router?: never; identity: ArkadeSigner; arkadeAddress: string; boardingAddress?: string; hd?: never }
+  | { wallet?: never; router?: never; identity: ArkadeSigner; hd: HdReceiveConfig; arkadeAddress?: never; boardingAddress?: never };
 
 export type ArkadeLnurlOptions = ArkadeLnurlSource & ArkadeLnurlConfig;
 
@@ -73,6 +75,7 @@ export interface Receiver {
    *  (`claim`, `upgrade`); `resolve(lnurl)` always asks the server. */
   payRequest(): Promise<PayRequest>;
   payments(opts?: { since?: number; limit?: number }): Promise<PaymentPage>;
+  allocations(opts?: { after?: number; limit?: number }): Promise<HdReceiveAllocationPage>;
   sync(): Promise<{ synced: number; failures: unknown[] }>;
   /** Names a nameless receiver in place; everything handed out while nameless
    *  keeps working. Does not re-bind the Arkade identity, already on the row. */
@@ -103,9 +106,11 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
   const { wallet, baseUrl } = opts;
   const domain = opts.domain ?? new URL(baseUrl).hostname;
   const identity = wallet ? wallet.identity : opts.identity;
-  const addresses = async () => (wallet
-    ? { arkadeAddress: await wallet.getAddress(), boardingAddress: await wallet.getBoardingAddress() }
-    : { arkadeAddress: opts.arkadeAddress, ...(opts.boardingAddress ? { boardingAddress: opts.boardingAddress } : {}) });
+  const addresses = async (): Promise<{ arkadeAddress: string; boardingAddress?: string }> => {
+    if (wallet) return { arkadeAddress: await wallet.getAddress(), boardingAddress: await wallet.getBoardingAddress() };
+    if (!opts.arkadeAddress) throw new LnurlError("Static receive requires an Arkade address");
+    return { arkadeAddress: opts.arkadeAddress, ...(opts.boardingAddress ? { boardingAddress: opts.boardingAddress } : {}) };
+  };
   const client = opts.client ?? createLnurlClient({ baseUrl });
   // A client per target, never this one: a client is pinned to one baseUrl, so
   // sharing it would send this server's bearer token to another.
@@ -158,6 +163,7 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
         return entry.pr;
       },
       payments: (listOpts) => client.listPayments(held, handle, { domain, ...listOpts }),
+      allocations: (listOpts) => client.listHdAllocations(held, handle, { domain, ...listOpts }),
       sync: async () => syncPayments(
         [{ baseUrl, token: held, handle, domain }],
         { client: (target) => createLnurlClient({ baseUrl: target }), store: needStore() },
@@ -197,7 +203,7 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
       }
       // Boarding rides along: a later call omitting it leaves the rail unregistered.
       await client.registerArkadeIdentity(
-        await arkadeIdentityRequest({
+        opts.hd ? { token: held, handle: registered.handle, domain, hd: opts.hd } : await arkadeIdentityRequest({
           identity,
           token: held,
           handle: registered.handle,

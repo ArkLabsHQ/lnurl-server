@@ -26,6 +26,7 @@ export interface PaymentOption {
 
 /** The address fields the option logic depends on. */
 export interface OptionAddress {
+  hdReceive?: unknown;
   arkadeAddress: string | null;
   claimPublicKey: string | null;
   /** Arkade boarding address; the onchain rail resolves to it. */
@@ -45,7 +46,7 @@ export interface TokenRailRef {
  *  pure LUD-06 and `paymentOptions` is omitted. Add rails here as they land.
  *  States no `verifiable`: without the server's rail caps it is unknown. */
 export function advertisedOptions(address: OptionAddress): PaymentOption[] {
-  if (!address.arkadeAddress) return [];
+  if (!address.arkadeAddress && !address.hdReceive) return [];
   return [
     { id: "lightning", type: "lightning" },
     { id: "arkade", type: "arkade" },
@@ -84,17 +85,17 @@ export function resolvePaymentOption(
   }
   if (id === undefined || id === "lightning") return { kind: "lightning" };
   if (id === "arkade") {
-    return address.arkadeAddress
-      ? { kind: "destination", paymentOption: "arkade", paymentDestination: address.arkadeAddress }
+    return address.arkadeAddress || address.hdReceive
+      ? { kind: "destination", paymentOption: "arkade", paymentDestination: address.arkadeAddress ?? "" }
       : { kind: "error", reason: "Unsupported paymentOption" };
   }
   if (id === "onchain") {
-    return address.boardingAddress
+    return address.boardingAddress && !address.hdReceive
       ? { kind: "destination", paymentOption: "onchain", paymentDestination: address.boardingAddress }
       : { kind: "error", reason: "Unsupported paymentOption" };
   }
   const token = tokenRails.find((rail) => rail.optionId === id);
-  if (token && address.arkadeAddress && address.claimPublicKey) {
+  if (token && (address.hdReceive || (address.arkadeAddress && address.claimPublicKey))) {
     if (address.disabledRails?.includes("fixedfloat")) {
       return { kind: "error", reason: `paymentOption ${token.optionId} is disabled for this address` };
     }

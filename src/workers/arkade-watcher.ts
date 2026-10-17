@@ -93,15 +93,15 @@ export async function settleDestinationPayments(
  *  and an under-payment never flips anything. */
 function settleAtScript(
   store: SettlementStore,
-  records: { paymentHash: string; amountMsat: number; createdAt: number }[],
+  records: { paymentHash: string; paymentDestination: string; amountMsat: number; createdAt: number }[],
   vtxos: { txid: string; vout: number; value: number; createdAt: Date }[],
 ): number {
   let settled = 0;
   const oldest = Math.min(...records.map((r) => r.createdAt));
   const arrivals = vtxos
     .filter((v) => v.createdAt.getTime() >= oldest - SETTLEMENT_SKEW_MS)
-    // A txid that already settled a record must not settle another one later.
-    .filter((v) => !store.isReferenceUsed(v.txid))
+    // One transaction may pay several scripts, but cannot pay the same record twice.
+    .filter((v) => !store.isReferenceUsed(v.txid, records[0]!.paymentDestination))
     // Same-second ties smallest first, so an older small record cannot take the payment
     // a larger one needs; then txid:vout, so the indexer's listing order never decides.
     .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.value - b.value || a.txid.localeCompare(b.txid) || a.vout - b.vout);

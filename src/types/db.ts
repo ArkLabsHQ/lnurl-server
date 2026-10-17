@@ -1,5 +1,6 @@
 import type { EncryptedToken } from "../crypto.js";
 import type { RailId } from "../rails.js";
+import type { HdReceiveConfig } from "../hd-receive.js";
 
 export type AllocationMode = "self" | "random" | "admin" | "session";
 export type AddressStatus = "reserved" | "active" | "revoked";
@@ -48,6 +49,7 @@ export interface AddressRow {
   claimPublicKey: string | null;
   /** Arkade boarding address, when the owner registered one for the onchain rail. */
   boardingAddress: string | null;
+  hdReceive?: HdReceiveConfig | null;
   /** Rail ids the operator disabled for this address (per-LNURL policy). */
   disabledRails: RailId[];
   /** Also served at /lnurl/<sessionId>; survives a rename. */

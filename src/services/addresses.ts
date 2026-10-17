@@ -6,6 +6,7 @@ import { deriveSessionId, isValidToken } from "../session-token.js";
 import { validateUsername, randomUsername } from "../usernames.js";
 import { normalizeDisabledRails } from "../rails.js";
 import { InvalidRailPolicyError, ProvisioningError } from "../errors.js";
+import { validateHdReceive, type HdReceiveConfig } from "../hd-receive.js";
 
 const MAX_RANDOM_ATTEMPTS = 20;
 const HEX_HANDLE = /^[0-9a-f]{32}$/;
@@ -97,7 +98,7 @@ export class AddressService {
     if (!isValidToken(token)) return undefined;
     const h = handle.toLowerCase();
     const a = this.repos.addresses.getByDomainAndUsername(domain.id, h)
-      ?? (HEX_HANDLE.test(h) ? this.repos.addresses.getSessionLnurl(domain.id, h) : undefined);
+      ?? (HEX_HANDLE.test(h) ? this.repos.addresses.getSessionLnurl(domain.id, h, true) : undefined);
     return a && a.sessionId === deriveSessionId(token) ? a : undefined;
   }
 
@@ -155,12 +156,20 @@ export class AddressService {
   ): boolean {
     const a = this.ownedByHandle(domain, handle, token);
     if (!a || a.status !== "active") return false;
+    if (a.hdReceive) throw new ProvisioningError("invalid_rails", "An HD receiver cannot be downgraded by a static registration");
     this.repos.addresses.setOfflineReceive(a.id, cfg.arkadeAddress, cfg.claimPublicKey);
     // Only when named: a caller re-registering its identity without one should
     // not silently withdraw an onchain rail it registered earlier.
     if (cfg.boardingAddress !== undefined) {
       this.repos.addresses.setBoardingAddress(a.id, cfg.boardingAddress);
     }
+    return true;
+  }
+
+  setHdReceive(domain: DomainRow, handle: string, token: string, config: HdReceiveConfig): boolean {
+    const a = this.ownedByHandle(domain, handle, token);
+    if (!a || a.status !== "active") return false;
+    this.repos.addresses.setHdReceive(a.id, validateHdReceive(config));
     return true;
   }
 

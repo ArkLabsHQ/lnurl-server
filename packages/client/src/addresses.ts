@@ -2,6 +2,29 @@ import { apiFetch, type FetchImpl } from "./http.js";
 import type { Bolt11Activity, DestinationActivity, PaymentActivity, PaymentPage, QuotedAmount } from "./types.js";
 import { LnurlError } from "./errors.js";
 
+export interface HdReceiveConfig {
+  version: 1;
+  descriptor: string;
+  serverPubKey: string;
+  hrp: "ark" | "tark";
+  exitDelay: { type: "seconds" | "blocks"; value: number };
+}
+
+export interface HdReceiveAllocation {
+  id: number;
+  index: number;
+  descriptor: string;
+  arkadeAddress: string;
+  claimPublicKey: string;
+  hd: HdReceiveConfig;
+  createdAt: number;
+}
+
+export interface HdReceiveAllocationPage {
+  allocations: HdReceiveAllocation[];
+  nextAfter: number;
+}
+
 /**
  * What registering a LUD-16 lightning address needs. `token` owns the
  * address: the server derives the session id from it and keys ownership off
@@ -72,20 +95,26 @@ export interface DomainCapabilities {
  * itself is NOT validated client-side because that would need the SDK, which
  * is deliberately not a dependency.
  */
-export interface RegisterArkadeIdentityRequest {
+export type RegisterArkadeIdentityRequest = {
   /** Token owning the address; sent as the Bearer credential. */
   token: string;
   /** Handle of the already-registered address. */
   handle: string;
+  domain?: string;
+} & ({
   /** Arkade address receiving offline payments; validated server-side. */
   arkadeAddress: string;
   /** Compressed 33-byte public key: `02`/`03` prefix plus 64 hex chars. */
   claimPublicKey: string;
   /** Boarding address the onchain rail pays; omit it to leave a registered one alone. */
   boardingAddress?: string;
-  /** Receiving domain; the server default when omitted. */
-  domain?: string;
-}
+  hd?: never;
+} | {
+  hd: HdReceiveConfig;
+  arkadeAddress?: never;
+  claimPublicKey?: never;
+  boardingAddress?: never;
+});
 
 function rootOf(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, "");
@@ -311,15 +340,56 @@ export async function registerArkadeIdentity(
 ): Promise<void> {
   // Free to check locally and it is the covenant receiver role; the Arkade
   // address itself is left to the server, validating it needs @arkade-os/sdk.
-  if (!COMPRESSED_KEY.test(req.claimPublicKey)) {
+  if (!req.hd && !COMPRESSED_KEY.test(req.claimPublicKey)) {
     throw new LnurlError("claimPublicKey must be a compressed 33-byte public key (02/03 prefix plus 64 hex chars)");
   }
-  const body: Record<string, string> = { arkadeAddress: req.arkadeAddress, claimPublicKey: req.claimPublicKey };
-  if (req.boardingAddress !== undefined) body["boardingAddress"] = req.boardingAddress;
+  if (req.hd && (req.arkadeAddress !== undefined || req.claimPublicKey !== undefined || req.boardingAddress !== undefined)) {
+    throw new LnurlError("HD receive cannot include a static wallet destination");
+  }
+  const body: Record<string, unknown> = req.hd ? { hd: req.hd } : { arkadeAddress: req.arkadeAddress, claimPublicKey: req.claimPublicKey };
+  if (!req.hd && req.boardingAddress !== undefined) body["boardingAddress"] = req.boardingAddress;
   if (req.domain !== undefined) body["domain"] = req.domain;
-  await apiFetch<unknown>(`${rootOf(baseUrl)}/lnurl/address/${encodeURIComponent(req.handle)}/arkade`, {
+  const result = await apiFetch<{ receiveMode?: string }>(`${rootOf(baseUrl)}/lnurl/address/${encodeURIComponent(req.handle)}/arkade`, {
     method: "POST",
     headers: { "content-type": "application/json", Authorization: `Bearer ${req.token}` },
     body: JSON.stringify(body),
   }, fetchImpl);
+  if (req.hd && result?.receiveMode !== "hd") throw new LnurlError("Server did not confirm HD receive mode");
+}
+
+export async function listHdAllocations(
+  baseUrl: string,
+  token: string,
+  handle: string,
+  opts: { domain?: string; after?: number; limit?: number } | undefined,
+  fetchImpl: FetchImpl,
+): Promise<HdReceiveAllocationPage> {
+  if (opts?.after !== undefined && (!Number.isSafeInteger(opts.after) || opts.after < 0)) {
+    throw new LnurlError("Allocation cursor must be a non-negative integer");
+  }
+  if (opts?.limit !== undefined && (!Number.isSafeInteger(opts.limit) || opts.limit <= 0)) {
+    throw new LnurlError("Allocation limit must be a positive integer");
+  }
+  const params = new URLSearchParams();
+  if (opts?.domain !== undefined) params.set("domain", opts.domain);
+  if (opts?.after !== undefined) params.set("after", String(opts.after));
+  if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+  const query = params.size ? `?${params.toString()}` : "";
+  const page = await apiFetch<HdReceiveAllocationPage>(`${rootOf(baseUrl)}/lnurl/address/${encodeURIComponent(handle)}/arkade/allocations${query}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  }, fetchImpl);
+  if (!page || !Array.isArray(page.allocations) || !Number.isSafeInteger(page.nextAfter)) {
+    throw new LnurlError("Invalid HD allocation page");
+  }
+  let previous = opts?.after ?? 0;
+  for (const allocation of page.allocations) {
+    if (!allocation || !Number.isSafeInteger(allocation.id) || allocation.id <= previous
+      || !Number.isSafeInteger(allocation.index) || allocation.index < 0 || allocation.index >= 0x80000000
+      || typeof allocation.descriptor !== "string" || typeof allocation.arkadeAddress !== "string"
+      || !COMPRESSED_KEY.test(allocation.claimPublicKey) || !allocation.hd || allocation.hd.version !== 1
+      || !Number.isSafeInteger(allocation.createdAt)) throw new LnurlError("Invalid HD allocation page");
+    previous = allocation.id;
+  }
+  if (page.nextAfter !== previous) throw new LnurlError("Invalid HD allocation cursor");
+  return page;
 }
