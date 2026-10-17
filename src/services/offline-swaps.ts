@@ -76,11 +76,16 @@ export interface OfflineSwapRecoveryV1 {
   script: Record<string, string>;
 }
 
+/** Wire states a receive never settles from. Not `stuck`: its operator may still settle it. */
+export const CLOSED_RFQ_STATES: ReadonlySet<string> = new Set(["expired", "refused", "refunded"]);
+
 export interface OfflineSwapCreator {
   /** Quote a solver-mediated receive paying `receiveAddress`. */
   create(params: OfflineSwapParams): Promise<OfflineSwapResult>;
   /** True once the solver reports the payer's invoice settled. */
   isSettled(swapId: string, recovery?: OfflineSwapRecoveryV1): Promise<boolean>;
+  /** The solver's own state for the swap, undefined while unknown. Read in place of `isSettled` when present. */
+  status?(swapId: string, recovery?: OfflineSwapRecoveryV1): Promise<string | undefined>;
   /** Present only under OFFLINE_SELF_CLAIM. @see SelfClaimer */
   selfClaim?(swapId: string, preimage: string, recovery?: OfflineSwapRecoveryV1): Promise<SelfClaimOutcome>;
   /** Close and forget one terminal swap's pinned transport. */
@@ -213,6 +218,16 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
     if (!transport) return;
     pinned.delete(swapId);
     await transport.close().catch(() => {});
+  };
+  const status = async (swapId: string, recovery?: OfflineSwapRecoveryV1): Promise<string | undefined> => {
+    let transport = pinned.get(swapId);
+    if (!transport && recovery) {
+      if (recovery.rfqId !== swapId) throw new Error("offline swap recovery RFQ id mismatch");
+      transport = transportFor({ name: recovery.solverName, discoveryPubkey: recovery.solverPubkey, relays: recovery.relays });
+      pinned.set(swapId, transport);
+    }
+    if (!transport) throw new Error(`no pinned solver transport for swap ${swapId}`);
+    return (await transport.status(swapId))?.state;
   };
 
   let cached: { at: number; ctx: Promise<CorridorContext> } | null = null;
@@ -350,16 +365,10 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
       throw new SolverQuoteError(`all solver candidates failed: ${failures.join("; ")}`);
     },
 
+    status,
+
     async isSettled(swapId, recovery) {
-      let transport = pinned.get(swapId);
-      if (!transport && recovery) {
-        if (recovery.rfqId !== swapId) throw new Error("offline swap recovery RFQ id mismatch");
-        transport = transportFor({ name: recovery.solverName, discoveryPubkey: recovery.solverPubkey, relays: recovery.relays });
-        pinned.set(swapId, transport);
-      }
-      if (!transport) throw new Error(`no pinned solver transport for swap ${swapId}`);
-      const status = await transport.status(swapId);
-      return status?.state === "settled";
+      return (await status(swapId, recovery)) === "settled";
     },
 
     ...(settings.selfClaimer

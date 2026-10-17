@@ -354,6 +354,14 @@ describe("createOfflineSwapCoordinator", () => {
     }
   });
 
+  it("reports the solver's own state for a swap, unknown as undefined", async () => {
+    const swap = await creator.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
+    expect(await creator.status!(swap.swapId)).toBeUndefined();
+    solver.statuses.set(swap.swapId, "expired");
+    expect(await creator.status!(swap.swapId)).toBe("expired");
+    expect(await creator.isSettled(swap.swapId)).toBe(false);
+  });
+
   it("follows solver status for isSettled", async () => {
     const swap = await creator.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
     expect(await creator.isSettled(swap.swapId)).toBe(false); // 404 → unknown
