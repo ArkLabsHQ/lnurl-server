@@ -277,6 +277,8 @@ export type { PendingConfirmations, ReceiverConfirmation } from "./confirmations
 export { clearLnurlPaymentsForReset, createLnurlPaymentRepository } from "./repository.js";
 export type { LnurlPaymentRepository, LnurlPaymentStore, LnurlPaymentWatermarkStore } from "./repository.js";
 export { formatUnitAmount, parseUnitAmount } from "./units.js";
+export { normalizeTokenQuote, payableTokenUri } from "./token-quotes.js";
+export type { TokenQuote } from "./token-quotes.js";
 export type { HdReceiveConfig, HdReceiveAllocation, HdReceiveAllocationPage } from "./addresses.js";
 export type {
   AddressListEntry,

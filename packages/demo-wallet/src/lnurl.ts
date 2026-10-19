@@ -1,5 +1,5 @@
 import { browserPaymentStore, createLnurlClient } from "@arkade-os/lnurl-client";
-import { arkadeLnurl, type ArkadeLnurl, type ArkadeLnurlSource, type ClaimOptions, type Receiver } from "@arkade-os/lnurl-client/arkade";
+import { arkadeLnurl, bootstrapReceiver, type ArkadeLnurl, type ArkadeLnurlSource, type Receiver } from "@arkade-os/lnurl-client/arkade";
 import { LNURL_BASE, LNURL_DOMAIN } from "./config.js";
 
 /** Payer calls resolve against the target's own host, so they need neither a
@@ -13,18 +13,15 @@ export function receiverAt(baseUrl: string, domain: string, source: ArkadeLnurlS
 export const receiver = (source: ArkadeLnurlSource): ArkadeLnurl =>
   receiverAt(LNURL_BASE, LNURL_DOMAIN, source);
 
-/** Asked even with no wallet open: a kept phrase whose wallet failed to open still
- *  owns its address, and claiming again would give the token a second one. */
-export const claimOrAdopt = async (rx: ArkadeLnurl, opts: ClaimOptions): Promise<Receiver> =>
-  (await rx.owned()) ?? rx.claim(opts);
+export { claimOrAdopt } from "@arkade-os/lnurl-client/arkade";
 
 export type BootState = { kind: "ready"; receiver: Receiver } | { kind: "onboard" } | { kind: "unreachable"; error: string };
 
 /** Only "owns nothing" may lead to onboarding: a returning user whose server is down must not be offered a new wallet. */
-export const bootState = async (rx: Pick<ArkadeLnurl, "owned">): Promise<BootState> => {
+export const bootState = async (rx: Pick<ArkadeLnurl, "owned" | "capabilities" | "claim">): Promise<BootState> => {
   try {
-    const owned = await rx.owned();
-    return owned ? { kind: "ready", receiver: owned } : { kind: "onboard" };
+    const boot = await bootstrapReceiver(rx);
+    return boot.kind === "ready" ? { kind: "ready", receiver: boot.receiver } : { kind: "onboard" };
   } catch (e) {
     return { kind: "unreachable", error: (e as Error).message };
   }
