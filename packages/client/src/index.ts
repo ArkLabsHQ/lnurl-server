@@ -216,7 +216,7 @@ export function createLnurlClient(opts?: LnurlClientOptions): LnurlClient {
     resolve: (input) => resolve(input, fetchImpl),
     requestInvoice: (payRequest, reqOpts) => requestInvoice(payRequest, reqOpts, fetchImpl),
     pollVerify: (verifyUrl, pollOpts) => pollVerify(verifyUrl, pollOpts, fetchImpl),
-    batchVerify: (verifyBatchUrl, verifyUrls, opts) => batchVerify(verifyBatchUrl, verifyUrls, opts, opts?.fetchImpl),
+    batchVerify: (verifyBatchUrl, verifyUrls, opts) => batchVerify(verifyBatchUrl, verifyUrls, opts, opts?.fetchImpl ?? fetchImpl),
     openSession: async (sessionOpts, handlers) =>
       openSession(needBase("openSession"), sessionOpts, handlers, fetchImpl),
     openVerifyBatchStream: (streamOpts, handlers) =>
@@ -272,6 +272,10 @@ export {
   verifyStatusIsFor,
 };
 export { browserPaymentStore, forgetStoredPayments, storedPayments } from "./stores.js";
+export { CONFIRMATION_TIMEOUT_MS, createPendingConfirmations } from "./confirmations.js";
+export type { PendingConfirmations, ReceiverConfirmation } from "./confirmations.js";
+export { clearLnurlPaymentsForReset, createLnurlPaymentRepository } from "./repository.js";
+export type { LnurlPaymentRepository, LnurlPaymentStore, LnurlPaymentWatermarkStore } from "./repository.js";
 export { formatUnitAmount, parseUnitAmount } from "./units.js";
 export type { HdReceiveConfig, HdReceiveAllocation, HdReceiveAllocationPage } from "./addresses.js";
 export type {

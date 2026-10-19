@@ -351,7 +351,56 @@ These matter for correctness. `syncPayments` handles them all; you must handle t
 
 ### Activity resolvers
 
-`@arkade-os/lnurl-client/arkade` also exports `lnurlActivityResolver(payments)` and `sentActivityResolver(sends)`, `ActivityResolver`s that label an `ArkTransaction` with the LNURL payment or send it corresponds to. Both take a getter rather than a store: storage — where `payments`/`sends` come from, and where a completed send is recorded (`mergeSentPayment` computes the merge; writing it is yours) — stays entirely with the caller.
+`@arkade-os/lnurl-client/arkade` also exports `lnurlActivityResolver(payments)` and `sentActivityResolver(sends)`, `ActivityResolver`s that label an `ArkTransaction` with the LNURL payment or send it corresponds to. Both take a synchronous getter. For a database-backed receive store, refresh a local snapshot from `repository.all()` before calling the resolver's `prepare()`.
+
+### Shared persistence and send tracking
+
+`createLnurlPaymentRepository(payments, watermarks)` provides the write gate and reset ordering over injected backends. It implements `PaymentSyncStore`, so pass it directly as `arkadeLnurl`'s or `syncPayments`'s `store`. Each wallet instance needs its own repository.
+
+```ts
+import { createLnurlPaymentRepository, clearLnurlPaymentsForReset } from '@arkade-os/lnurl-client'
+
+const repository = createLnurlPaymentRepository(
+  {
+    read: () => paymentDb.readAll(),
+    write: (records) => paymentDb.upsert(records),
+    clear: () => paymentDb.clear(),
+  },
+  {
+    read: (baseUrl, address) => cursorDb.read(baseUrl, address),
+    write: (baseUrl, address, since) => cursorDb.write(baseUrl, address, since),
+    clear: () => cursorDb.clear(),
+  },
+)
+```
+
+The record backend must upsert by `key` and resolve writes only after commit. Cursor values are inclusive and may move backwards; store them exactly. All writes must go through the repository for its gate to cover them. Keep each backend scoped to the wallet's LNURL data.
+
+Before clearing other wallet data, stop the app's sync producers and call `await clearLnurlPaymentsForReset(repository)`. This closes admission synchronously, waits for accepted record and cursor writes, then clears cursors followed by records. A late writer is ignored. Failure rejects and reopens admission so the app can abandon reset; success leaves writes closed until a new wallet repository is created. The two backends are not cleared atomically: if clearing records fails, cursors have already been removed, allowing the next sync to replay safely. An explicit `repository.clear()` purges both backends without closing admission; use the reset helper when writers may still be active.
+
+`createPendingConfirmations(client?)` shares a batch request per advertised endpoint and falls back to `pollVerify` without one. Pass the quote's `expect` to bind a response to the intended payment. Each registration accepts `startedAt` in milliseconds and optional `timeoutMs` (default 180,000); resuming retains the original deadline. Registrations deduplicate by optional `key`, defaulting to `verifyUrl`. Use distinct keys when separate sends share a verify URL. `forget()` aborts active work and suppresses its later callbacks. The demo wallet uses this factory too.
+
+`createLnurlSendTracker` from `/arkade` records funding and later settlement updates, merges by transaction id, and resumes unfinished receiver confirmations:
+
+```ts
+import { createLnurlSendTracker, sentActivityResolver } from '@arkade-os/lnurl-client/arkade'
+
+const sends = createLnurlSendTracker({
+  read: () => sentStore.read(),
+  write: (records) => sentStore.write(records),
+}, { onError: showStorageError })
+wallet.activity.use(sentActivityResolver(sends.all))
+sends.resume()
+
+const handle = await quote.send()
+sends.record(handle, quote, target)
+// Once a funding txid is known, start its receiver confirmation.
+sends.watch(txid, verifyUrl, verifyBatch, startedAt, expect)
+```
+
+The send backend reads and writes synchronously. Supply `onError` to surface persistence failures from payment or confirmation callbacks; SDK payment handles otherwise swallow subscriber exceptions. An optional `confirmations` in the same options object injects a shared tracker. `record()` returns an unsubscribe function and releases subscriptions on settlement or failure. It retains the quote's verify URLs, expected payment identity, and unit amount alongside later preimages. `resume()` watches only rows without a recorded confirmation outcome. `mark(txid, confirmed)` updates an existing row; `all()` reads the stored sends.
+
+Call `sends.forget()` before clearing its backend on reset: it unsubscribes payment handles and suppresses stale confirmation callbacks, so an old wallet cannot write a preimage into the next wallet's records. It does not delete records; clearing the app's send backend remains the app's responsibility. The existing browser demo store and all earlier APIs remain available. No IndexedDB, localStorage or native persistence dependency is added to these helpers.
 
 ## Errors
 

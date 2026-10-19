@@ -30,6 +30,8 @@ export {
   SENT_RESOLVER_ID,
 } from "./activity.js";
 export type { SentPayment } from "./activity.js";
+export { createLnurlSendTracker } from "./sends.js";
+export type { LnurlSentPaymentStore, LnurlSendTrackerOptions } from "./sends.js";
 
 /** The slice of `@arkade-os/sdk`'s `Identity` these helpers need. */
 export interface ArkadeSigner {

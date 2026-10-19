@@ -1,6 +1,6 @@
 import type { ActivityResolver, ArkTransaction } from "@arkade-os/sdk";
 import type { StoredPayment } from "./sync.js";
-import type { QuotedAmount } from "./types.js";
+import type { QuotedAmount, VerifyExpectation } from "./types.js";
 import { formatUnitAmount } from "./units.js";
 
 /** "5.00 USD": how a quoted amount reads in an activity row. */
@@ -37,6 +37,7 @@ export interface SentPayment {
    *  confirmation still pending when the app closes can be resumed. */
   verify?: string;
   verifyBatch?: string;
+  expect?: VerifyExpectation;
   /** Set once the receiver's LUD-21 verify answers, where a rail hands one out. */
   receiverConfirmed?: boolean;
   /** What the payer asked to pay in a LUD-XX unit; absent when they paid in sats. */
