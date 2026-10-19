@@ -3,7 +3,7 @@ import { ArkAddress, type PaymentOption, type RouteQuote, type WalletBalance } f
 import type { DomainCapabilities, InvoiceResult, PayRequest, Unit } from "@arkade-os/lnurl-client";
 import { isLnAddress, isValidLnUrl, parseUnitAmount, tokenOptions } from "@arkade-os/lnurl-client";
 import type { ClaimOptions, Receiver, SentPayment } from "@arkade-os/lnurl-client/arkade";
-import { lnurlActivityResolver, lnurlQuoteMeta, quotedLabel, sentActivityResolver } from "@arkade-os/lnurl-client/arkade";
+import { lnurlActivityResolver, lnurlQuoteMeta, lnurlRailLimits, quotedLabel, sentActivityResolver } from "@arkade-os/lnurl-client/arkade";
 import { EXPLORER, LNURL_DOMAIN, USERNAME_KEY } from "./config.js";
 import { mergeFeed, readWalletActivity, type FeedRow, type FeedStatus } from "./activity.js";
 import { balanceView } from "./balance.js";
@@ -20,6 +20,7 @@ import { Settings } from "./Settings.js";
 import { forgetStoredPayments } from "@arkade-os/lnurl-client";
 import { forgetSent, recordSent, sentPayments } from "./sent-store.js";
 import { CopyableQr, ReceiveQr } from "./Qr.js";
+import { receivePaymentValue } from "./receive-payment.js";
 
 type Tab = "Receive" | "Send" | "Activity" | "Settings";
 const TABS: Tab[] = ["Receive", "Send", "Activity", "Settings"];
@@ -419,7 +420,7 @@ function Receive({ receiver: shown, onRenamed }: { receiver: Receiver; onRenamed
         ...(optionId === "lightning" ? {} : { paymentOption: optionId }),
       });
       const key = Date.now();
-      const payable = (value.kind === "bolt11" ? value.pr : value.paymentDestination) ?? "";
+      const payable = receivePaymentValue(payRequest!, optionId, value);
       // Absence is "no answer available", not failure: only a destination that
       // identifies the payment gets a verify URL. @see lnurl.ts
       const status = !value.verify ? "" : value.verifyBatch ? "watching" : "polling verify…";
@@ -441,7 +442,7 @@ function Receive({ receiver: shown, onRenamed }: { receiver: Receiver; onRenamed
   const result = requests[0];
   const tracked = requests.filter((r) => r.status);
   const line = watchLine(watching);
-  const options = payRequest?.paymentOptions ?? (payRequest ? [{ id: "lightning", type: "lightning" }] : []);
+  const options: NonNullable<PayRequest["paymentOptions"]> = payRequest?.paymentOptions ?? (payRequest ? [{ id: "lightning", type: "lightning" }] : []);
 
   return (
     <>
@@ -483,20 +484,24 @@ function Receive({ receiver: shown, onRenamed }: { receiver: Receiver; onRenamed
           </p>
         )}
 
-        {options.map((option) => (
-          <div key={option.id}
-            style={{ display: "flex", gap: 12, alignItems: "center", padding: "8px 0", borderTop: "1px solid #eee", fontSize: 13 }}>
-            <span style={{ width: 90 }}>{option.id}</span>
-            <span style={{ color: "#666", flex: 1 }}>
-              {option.minSendable !== undefined && option.maxSendable !== undefined
-                ? `${option.minSendable / 1000}–${option.maxSendable / 1000} sats`
-                : "inherits the address bounds"}
-            </span>
-            <button style={btn} disabled={busy !== ""} onClick={() => void request(option.id)}>
-              {busy === option.id ? "Requesting…" : `Request ${amount} sats`}
-            </button>
-          </div>
-        ))}
+        {options.map((option) => {
+          const bounds = lnurlRailLimits({ ...payRequest!, paymentOptions: [option] })[0];
+          const range = bounds
+            ? `${bounds.min}–${bounds.max} sats`
+            : option.minSendable !== undefined && option.maxSendable !== undefined
+              ? `${option.minSendable / 1000}–${option.maxSendable / 1000} sats`
+              : "inherits the address bounds";
+          return (
+            <div key={option.id}
+              style={{ display: "flex", gap: 12, alignItems: "center", padding: "8px 0", borderTop: "1px solid #eee", fontSize: 13 }}>
+              <span style={{ width: 90 }}>{option.id}</span>
+              <span style={{ color: "#666", flex: 1 }}>{range}</span>
+              <button style={btn} disabled={busy !== "" || option.available === false || (bounds !== undefined && (amount < bounds.min || amount > bounds.max))} onClick={() => void request(option.id)}>
+                {busy === option.id ? "Requesting…" : `Request ${amount} sats`}
+              </button>
+            </div>
+          );
+        })}
         {options.length > 0 && (
           <Call code={[
             "const payer = createLnurlClient()",

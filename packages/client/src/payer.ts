@@ -2,7 +2,8 @@ import { lnurlFetch, type FetchImpl } from "./http.js";
 import { LnurlError, LnurlTimeoutError, LnurlTransportError } from "./errors.js";
 import { toPayRequestUrl } from "./encoding.js";
 import type { Bolt11Result, DestinationResult, InvoiceResult, PayRequest, PaymentQuote, PollVerifyOptions, RequestInvoiceOptions, Unit, VerifyExpectation, VerifyStatus } from "./types.js";
-import { isTokenAddress, tokenOptions, type TokenOption } from "./token-options.js";
+import { tokenOptions } from "./token-options.js";
+import { payableTokenUri } from "./token-quotes.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { hex } from "@scure/base";
 import { amountMsatOf, paymentHashOf } from "./bolt11.js";
@@ -11,20 +12,6 @@ function preimageOpens(preimage: string, pr: string): boolean {
   const hash = paymentHashOf(pr);
   if (!hash || !/^[0-9a-f]{64}$/i.test(preimage)) return false;
   return hex.encode(sha256(hex.decode(preimage.toLowerCase()))) === hash;
-}
-
-/** The checks the BTCPay plugin makes of a token answer (LnurlTokenRequester.cs): the
- *  option it asked for, an address on the token's own chain, and a whole amount of the token. */
-function assertTokenAnswer(token: TokenOption, answer: DestinationResult): void {
-  if (answer.paymentOption !== token.id) throw new LnurlError(`The callback answered for ${answer.paymentOption}, not ${token.id}`);
-  if (!answer.paymentDestination || !isTokenAddress(token.asset.namespace, answer.paymentDestination)) {
-    throw new LnurlError(`The callback returned no ${token.asset.namespace} address to pay`);
-  }
-  const payment = answer.paymentQuote?.payment as { amount?: unknown; unit?: unknown } | undefined;
-  const whole = typeof payment?.amount === "string" && /^[0-9]{1,78}$/.test(payment.amount) && /[1-9]/.test(payment.amount);
-  if (!whole || typeof payment?.unit !== "string" || payment.unit.toUpperCase() !== token.unit.code) {
-    throw new LnurlError(`The callback quoted no whole amount of ${token.unit.code}`);
-  }
 }
 
 /** The advertised unit `code` names, after the amount checks the receiver would make. */
@@ -163,7 +150,10 @@ export async function requestInvoice(
       ...(typeof body.verify === "string" ? { verify: body.verify } : {}),
       ...(typeof body.verifyBatch === "string" ? { verifyBatch: body.verifyBatch } : {}),
     };
-    if (token) assertTokenAnswer(token, result);
+    if (token) {
+      const paymentURI = payableTokenUri(token, result);
+      if (result.paymentURI !== undefined) result.paymentURI = paymentURI;
+    }
     // Only the check: a destination carries no amount of its own, so the caller pays the quote's.
     if (unit) quotedMsat(body.paymentQuote, unit.code, opts.amount!);
     return result;

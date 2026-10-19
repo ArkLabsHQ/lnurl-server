@@ -46,7 +46,7 @@ for (const [candidate, expected] of [["0.4.79", false], ["0.5.0-rc.0", true], ["
 const run = (entry, args) => execFileSync(process.execPath, [join(dir, "node_modules", entry), ...args], { cwd: dir, stdio: "inherit" });
 run("typescript/bin/tsc", ["--noEmit"]);
 run("vitest/vitest.mjs", ["run"]);
-run("tsup/dist/cli-default.js", ["src/index.ts", "src/arkade.ts", "src/hd.ts", "--format", "esm", "--dts", "--external", "@arkade-os/sdk"]);
+run("tsup/dist/cli-default.js", ["src/index.ts", "src/arkade.ts", "src/hd.ts", "src/browser.ts", "--format", "esm", "--dts", "--external", "@arkade-os/sdk"]);
 writeFileSync(join(dir, "consumer.ts"), `
 import { createDefaultPaymentRouter, type Wallet } from '@arkade-os/sdk';
 import { arkadeLnurl, type LnurlWallet, type LnurlPaymentRouter } from '@arkade-os/lnurl-client/arkade';
@@ -58,6 +58,8 @@ arkadeLnurl({ wallet: receiver, router, baseUrl: 'https://lnurl.example.com' });
 run("typescript/bin/tsc", ["--noEmit"]);
 writeFileSync(join(dir, "smoke.mjs"), `
 import { createLnurlClient } from '@arkade-os/lnurl-client';
+import { createIndexedDbLnurlPaymentStore } from '@arkade-os/lnurl-client/browser';
+if (typeof createIndexedDbLnurlPaymentStore().read !== 'function') throw new Error('Browser adapter import failed');
 const client = createLnurlClient({ fetchImpl: async () => new Response(JSON.stringify({
   tag: 'payRequest', callback: 'https://example.com/callback', minSendable: 1000,
   maxSendable: 1000000, metadata: '[["text/plain","alice"]]',
