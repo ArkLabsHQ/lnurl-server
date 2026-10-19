@@ -327,7 +327,7 @@ const { synced, failures } = await syncPayments(
 )
 ```
 
-**`browserPaymentStore()` is the only storage shipped, and it is `localStorage`** — synchronous, a few megabytes, and it rewrites every record per upsert. Fine for a demo, wrong past that, and absent entirely in Node and React Native. Anything real supplies its own store, the same injection the package uses for `fetchImpl`:
+**`browserPaymentStore()` is a small localStorage demo store**: synchronous, a few megabytes, and it rewrites every record per upsert. Browser apps can instead use the optional `/browser` IndexedDB backend described below. Node and React Native supply their own persistence through the same injection the package uses for `fetchImpl`:
 
 ```ts
 interface PaymentSyncStore {
@@ -351,7 +351,104 @@ These matter for correctness. `syncPayments` handles them all; you must handle t
 
 ### Activity resolvers
 
-`@arkade-os/lnurl-client/arkade` also exports `lnurlActivityResolver(payments)` and `sentActivityResolver(sends)`, `ActivityResolver`s that label an `ArkTransaction` with the LNURL payment or send it corresponds to. Both take a getter rather than a store: storage — where `payments`/`sends` come from, and where a completed send is recorded (`mergeSentPayment` computes the merge; writing it is yours) — stays entirely with the caller.
+`@arkade-os/lnurl-client/arkade` also exports `lnurlActivityResolver(payments)` and `sentActivityResolver(sends)`, `ActivityResolver`s that label an `ArkTransaction` with the LNURL payment or send it corresponds to. Both take a synchronous getter. For a database-backed receive store, refresh a local snapshot from `repository.all()` before calling the resolver's `prepare()`.
+
+### Shared persistence and send tracking
+
+`createLnurlPaymentRepository(payments, watermarks)` provides the write gate and reset ordering over injected backends. It implements `PaymentSyncStore`, so pass it directly as `arkadeLnurl`'s or `syncPayments`'s `store`. Each wallet instance needs its own repository.
+
+```ts
+import { createLnurlPaymentRepository, clearLnurlPaymentsForReset } from '@arkade-os/lnurl-client'
+
+const repository = createLnurlPaymentRepository(
+  {
+    read: () => paymentDb.readAll(),
+    write: (records) => paymentDb.upsert(records),
+    clear: () => paymentDb.clear(),
+  },
+  {
+    read: (baseUrl, address) => cursorDb.read(baseUrl, address),
+    write: (baseUrl, address, since) => cursorDb.write(baseUrl, address, since),
+    clear: () => cursorDb.clear(),
+  },
+)
+```
+
+The record backend must upsert by `key` and resolve writes only after commit. Cursor values are inclusive and may move backwards; store them exactly. All writes must go through the repository for its gate to cover them. Keep each backend scoped to the wallet's LNURL data.
+
+Before clearing other wallet data, stop the app's sync producers and call `await clearLnurlPaymentsForReset(repository)`. This closes admission synchronously, waits for accepted record and cursor writes, then clears cursors followed by records. A late writer is ignored. Failure rejects and reopens admission so the app can abandon reset; success leaves writes closed until a new wallet repository is created. The two backends are not cleared atomically: if clearing records fails, cursors have already been removed, allowing the next sync to replay safely. An explicit `repository.clear()` purges both backends without closing admission; use the reset helper when writers may still be active.
+
+`createPendingConfirmations(client?)` shares a batch request per advertised endpoint and falls back to `pollVerify` without one. Pass the quote's `expect` to bind a response to the intended payment. Each registration accepts `startedAt` in milliseconds and optional `timeoutMs` (default 180,000); resuming retains the original deadline. Registrations deduplicate by optional `key`, defaulting to `verifyUrl`. Use distinct keys when separate sends share a verify URL. `forget()` aborts active work and suppresses its later callbacks. The demo wallet uses this factory too.
+
+`createLnurlSendTracker` from `/arkade` records funding and later settlement updates, merges by transaction id, and resumes unfinished receiver confirmations:
+
+```ts
+import { createLnurlSendTracker, sentActivityResolver } from '@arkade-os/lnurl-client/arkade'
+
+const sends = createLnurlSendTracker({
+  read: () => sentStore.read(),
+  write: (records) => sentStore.write(records),
+}, { onError: showStorageError })
+wallet.activity.use(sentActivityResolver(sends.all))
+sends.resume()
+
+const handle = await quote.send()
+sends.record(handle, quote, target)
+// Once a funding txid is known, start its receiver confirmation.
+sends.watch(txid, verifyUrl, verifyBatch, startedAt, expect)
+```
+
+The send backend reads and writes synchronously. Supply `onError` to surface persistence failures from payment or confirmation callbacks; SDK payment handles otherwise swallow subscriber exceptions. An optional `confirmations` in the same options object injects a shared tracker. `record()` returns an unsubscribe function and releases subscriptions on settlement or failure. It retains the quote's verify URLs, expected payment identity, and unit amount alongside later preimages. `resume()` watches only rows without a recorded confirmation outcome. `mark(txid, confirmed)` updates an existing row; `all()` reads the stored sends.
+
+Call `sends.forget()` before clearing its backend on reset: it unsubscribes payment handles and suppresses stale confirmation callbacks, so an old wallet cannot write a preimage into the next wallet's records. It does not delete records; clearing the app's send backend remains the app's responsibility. The existing browser demo store and all earlier APIs remain available. No IndexedDB, localStorage or native persistence dependency is added to these helpers.
+
+### Token quotes
+
+For selected token options, `requestInvoice` now keeps a supplied `paymentURI` only when it pays the quoted token, chain, recipient and amount. A malformed, unsupported or mismatched URI falls back to the validated deposit address; an absent URI remains absent. EIP-681 transfers reject ambiguous or extra transfer arguments, and Solana Pay transfers bind any required memo. The result still carries `paymentDestinationTag`: an app that cannot present or carry it must refuse that deposit.
+
+```ts
+import { normalizeTokenQuote, tokenOptions } from '@arkade-os/lnurl-client'
+
+const token = tokenOptions(payRequest).find((option) => option.id === selectedId)!
+const answer = await client.requestInvoice(payRequest, { amountSat, paymentOption: token.id })
+if (answer.kind !== 'destination') throw new Error('Expected a token destination')
+const quote = normalizeTokenQuote(token, answer)
+// quote.value, destination, baseUnits, amount, expiresAt, paymentDestinationTag
+```
+
+`normalizeTokenQuote` requires a valid future `paymentQuote.expiresAt` and formats base units exactly through 36 decimals without floating-point conversion. `payableTokenUri(token, answer)` performs the same payment binding without requiring expiry. Existing `requestInvoice` callers retain control over optional expiry handling. Minimum remaining lifetime, fiat-price tolerance, expiry timers and explicit regeneration remain app policy; neither helper places another order.
+
+### Receive rails and startup
+
+```ts
+import { bootstrapReceiver, claimOrAdopt, lnurlRailLimits, resolveLnurlRails } from '@arkade-os/lnurl-client/arkade'
+
+const boot = await bootstrapReceiver(facade, { autoClaimNameless: true })
+if (boot.kind === 'ready') {
+  const limits = lnurlRailLimits(await boot.receiver.payRequest())
+  const targets = await resolveLnurlRails(boot.receiver, amountSat,
+    ['lightning', 'arkade', 'onchain'], { arkade: ownArkade, onchain: ownBoarding }, client)
+}
+const receiver = await claimOrAdopt(facade, { username: chosenName })
+```
+
+Bootstrap discovers an owned receiver first. Named receivers need no capabilities request; a nameless receiver remains usable if naming capabilities cannot be fetched, with the error returned as `capabilitiesError`. Only a successful empty ownership lookup can lead to onboarding. Nameless allocation defaults off and requires explicit opt-in, the advertised `session` mode, and no API-key requirement. A newly allocated result carries `claimed: true`; the app decides whether to sync afterwards.
+
+`claimOrAdopt` returns an owned receiver or claims with the supplied options; lookup errors propagate without allocation. The demo wallet uses these startup helpers. UI choice ordering and translated errors stay with the app.
+
+`lnurlRailLimits` converts each enabled Bitcoin option's millisat bounds to whole sats and excludes token options. `resolveLnurlRails` returns an ordered `Promise.allSettled` result, validates option availability, bounds and response identity, and checks returned payment kinds. Legacy Lightning fallback applies only when `paymentOptions` is absent. Onchain targets must equal the supplied boarding address; Arkade targets must share the supplied address's network and operator. That operator check does not prove recipient ownership: covenant-derived destinations may differ from the static address. An optional injected client controls callback transport. The demo uses the bounds helper when offering receive options.
+
+### IndexedDB backend
+
+```ts
+import { createIndexedDbLnurlPaymentStore } from '@arkade-os/lnurl-client/browser'
+import { createLnurlPaymentRepository } from '@arkade-os/lnurl-client'
+
+const payments = createIndexedDbLnurlPaymentStore()
+const repository = createLnurlPaymentRepository(payments, watermarks)
+```
+
+The optional browser entry point touches IndexedDB only when a store operation runs. Defaults preserve the wallet backend's `arkade-lnurl-payments` database, version 1, `payments` store and `key` key path; custom database/store names are accepted. Writes resolve after commit, an aborted transaction rejects, and a synchronous failure while queuing a batch aborts its earlier writes. Every opened operation closes its connection on completion or failure. Cursor persistence stays injected through the repository; this adapter neither migrates nor deletes an existing schema.
 
 ## Errors
 

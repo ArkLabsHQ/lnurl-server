@@ -1,7 +1,7 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["packages/client/src/index.ts", "packages/client/src/arkade.ts", "packages/client/src/hd.ts"],
+  entry: ["packages/client/src/index.ts", "packages/client/src/arkade.ts", "packages/client/src/hd.ts", "packages/client/src/browser.ts"],
   outDir: "packages/client/dist",
   format: ["esm"],
   dts: true,

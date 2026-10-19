@@ -51,9 +51,9 @@ export interface StoredPayment {
 }
 
 /**
- * The persistence the sync loop needs. The package ships no implementation:
- * IndexedDB does not exist in Node or React Native, so the consumer supplies
- * the store — exactly as it already supplies `fetchImpl`. `upsert` is a
+ * The persistence the sync loop needs. Applications can wrap their own backends
+ * with createLnurlPaymentRepository, or use browserPaymentStore for a small demo.
+ * IndexedDB does not exist in Node or React Native. `upsert` is a
  * primitive rather than read-then-write so a database-backed store can do it
  * in one statement instead of loading every record on every sync.
  */

@@ -30,6 +30,12 @@ export {
   SENT_RESOLVER_ID,
 } from "./activity.js";
 export type { SentPayment } from "./activity.js";
+export { createLnurlSendTracker } from "./sends.js";
+export type { LnurlSentPaymentStore, LnurlSendTrackerOptions, LnurlSendTracker } from "./sends.js";
+export { lnurlRailLimits, resolveLnurlRails } from "./receive-rails.js";
+export type { LnurlRailType } from "./receive-rails.js";
+export { bootstrapReceiver, claimOrAdopt } from "./receiver-bootstrap.js";
+export type { ReceiverBootstrapOptions, ReceiverBootstrapResult } from "./receiver-bootstrap.js";
 
 /** The slice of `@arkade-os/sdk`'s `Identity` these helpers need. */
 export interface ArkadeSigner {
