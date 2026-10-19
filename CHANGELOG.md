@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.4.0 - 2026-10-19
 
 ### Added
 - Share token quote URI/memo validation and normalization, receive-rail limits and destination checks, receiver bootstrap orchestration, and an optional IndexedDB backend through the LNURL client. The demo uses the shared startup, bounds and token payment helpers.
@@ -48,6 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed the unused `@noble/ciphers` dependency.
 
 ### Fixed
+- Run client package publishing with an OIDC-capable npm CLI and include repository metadata for provenance.
 - **Unit quotes round up to a whole sat** — a price-feed quote landed on an exact millisat, which the offline-swap corridor refuses, so a unit payment to an offline receiver failed at most prices.
 - **The settlement poller stops asking the solver about a swap the solver has closed** — an offline invoice nobody paid stayed pending for `VERIFY_TTL_MS`, and every 15 s pass asked the solver for its status over Nostr: about 5,600 requests per unpaid invoice. Once the solver reports `expired`, `refused` or `refunded`, the poller logs `offline_swap_closed` once with that state, closes the swap's solver transport and stops asking. It keeps trying the self-claim until the refund deadline, so a solver that closes a swap by mistake cannot strand a paid lockup. `stuck` does not count as closed, since its operator may still settle it.
 - **Offline-swap log lines name their swap** — the settlement poller's events and `offline_lockup_register_failed` logged `swapId`, which the logger always redacts because it is 64-character hex, so no line could be traced back to its swap. They now log `swapRef`, the first 12 characters of the id, as the lockup watcher and the self-claim timing line already do.

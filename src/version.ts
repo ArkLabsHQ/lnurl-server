@@ -1,2 +1,2 @@
 // The one literal a release bumps. test/version.test.ts fails if package.json drifts.
-export const VERSION = "0.3.4";
+export const VERSION = "0.4.0";

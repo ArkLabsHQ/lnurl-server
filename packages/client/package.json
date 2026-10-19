@@ -2,6 +2,11 @@
   "name": "@arkade-os/lnurl-client",
   "version": "0.7.0",
   "description": "Full-duplex client for the lnurl-server protocol (payer and receiver)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ArkLabsHQ/lnurl-server.git",
+    "directory": "packages/client"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
