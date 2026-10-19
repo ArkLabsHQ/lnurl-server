@@ -14,11 +14,20 @@ export interface LnurlSendTrackerOptions {
   confirmations?: PendingConfirmations;
 }
 
+export interface LnurlSendTracker {
+  all(): SentPayment[];
+  record(handle: PaymentHandle, quote: RouteQuote, target: string): () => void;
+  watch(txid: string, verify: string, verifyBatch?: string, startedAt?: number, expect?: VerifyExpectation): void;
+  resume(): void;
+  mark(txid: string, confirmed: boolean): void;
+  forget(): void;
+}
+
 /** Shared send bookkeeping over the application's synchronous persistence. */
 export function createLnurlSendTracker(
   store: LnurlSentPaymentStore,
   options: LnurlSendTrackerOptions,
-) {
+): LnurlSendTracker {
   const confirmations = options.confirmations ?? createPendingConfirmations();
   const subscriptions = new Set<() => void>();
   let generation = 0;
