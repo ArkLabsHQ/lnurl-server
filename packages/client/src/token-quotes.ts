@@ -57,7 +57,11 @@ function paysQuote(uri: string, { destination, baseUnits, amount, paymentDestina
   const only = (key: string): string | undefined => q.getAll(key).length === 1 ? q.get(key)! : undefined;
   if (asset.namespace === "eip155" && url.protocol === "ethereum:") {
     const target = /^(0x[0-9a-f]{40})(?:@(\d+))?\/transfer$/i.exec(url.pathname);
-    return paymentDestinationTag === undefined && target !== null && [...q.keys()].every((key) => key === "address" || key === "uint256") &&
+    let transferArgumentsOnly = true;
+    q.forEach((_value, key) => {
+      if (key !== "address" && key !== "uint256") transferArgumentsOnly = false;
+    });
+    return paymentDestinationTag === undefined && target !== null && transferArgumentsOnly &&
       target[1]!.toLowerCase() === asset.reference.toLowerCase() &&
       (target[2] ?? "1") === asset.chainReference &&
       only("address")?.toLowerCase() === destination.toLowerCase() && only("uint256") === baseUnits;
