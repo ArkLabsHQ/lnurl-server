@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
-- **`@arkade-os/lnurl-client`: the browser glue a wallet otherwise writes itself** — `createLocalStorageLnurlWatermarkStore(key?)` from `/browser` is the cursor backend `createLnurlPaymentRepository` needs beside the IndexedDB record store: one JSON map of `${baseUrl}|${lightningAddress}` cursors under `key`, where a map that cannot be read counts as empty so the next sync replays rather than skips. `lnurlActivityResolver` and `sentActivityResolver` await their getter on every `prepare`, so `() => repository.all()` passes straight in. `arkadeLnurl().sessionLnurl()` returns the LNURL a nameless claim will serve, before the claim lands. `chainName(chainId)` names a CAIP-2 chain as the BTCPay LNURLVerify plugin does.
+- **`@arkade-os/lnurl-client` 0.8.0: the browser glue a wallet otherwise writes itself** — `createLocalStorageLnurlWatermarkStore(key?)` from `/browser` is the cursor backend `createLnurlPaymentRepository` needs beside the IndexedDB record store: one JSON map of `${baseUrl}|${lightningAddress}` cursors under `key`, where a map that cannot be read counts as empty so the next sync replays rather than skips. `lnurlActivityResolver` and `sentActivityResolver` await their getter on every `prepare`, so `() => repository.all()` passes straight in. `arkadeLnurl().sessionLnurl()` returns the LNURL a nameless claim will serve, before the claim lands. `chainName(chainId)` names a CAIP-2 chain as the BTCPay LNURLVerify plugin does.
 
 ### Fixed
 - API docs (public and admin) load again: Redoc is pinned to v2.5.4, since `latest` now serves the 3.x ES-module bundle, which a classic script tag cannot run.
