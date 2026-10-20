@@ -11,7 +11,7 @@ const DOCS_HTML = `<!DOCTYPE html>
 </head>
 <body>
   <div id="redoc-container"></div>
-  <script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"></script>
+  <script src="https://cdn.redoc.ly/redoc/v2.5.4/bundles/redoc.standalone.js"></script>
   <script>
     Redoc.init(${JSON.stringify(openApiSpec)}, {
       scrollYOffset: 0,
