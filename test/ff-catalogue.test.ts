@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { FF_ASSETS, FF_UNITS, ffAssetId, isValidAddress } from "../src/rails/fixedfloat/catalogue.js";
+import { SIM_ASSETS } from "../src/rails/fixedfloat/simulate.js";
+import { chainName } from "../packages/client/src/index.js";
 import { BTCPAY_CHAINS, CAIP19 } from "./fixtures/btcpay-chains.js";
 
 describe("FixedFloat asset catalogue", () => {
@@ -38,5 +40,10 @@ describe("FixedFloat asset catalogue", () => {
 
   it("every FF_ASSETS chain reference is one BTCPay ChainDirectory already labels", () => {
     for (const [code, asset] of Object.entries(FF_ASSETS)) expect(BTCPAY_CHAINS, code).toContain(asset.chain);
+  });
+
+  it("the client names every chain BTCPay names and every chain the catalogue or simulator offers", () => {
+    const offered = [...Object.values(FF_ASSETS), ...Object.values(SIM_ASSETS)].map((asset) => asset.chain);
+    for (const chain of new Set([...BTCPAY_CHAINS, ...offered])) expect(chainName(chain), chain).not.toBe(chain);
   });
 });
