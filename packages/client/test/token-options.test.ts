@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { tokenOptions } from "../src/token-options.js";
+import { chainName, tokenOptions } from "../src/token-options.js";
 import type { PayRequest } from "../src/types.js";
 
 const ARB_USDT = "eip155:42161/erc20:0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9";
@@ -75,5 +75,15 @@ describe("tokenOptions", () => {
   it("tokenOptions accepts a chain within a supported namespace that the client has never seen", () => {
     const asset = "eip155:999999/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
     expect(tokenOptions(payRequest([{ id: "x", type: "eip155", asset, unit: "USDC" }])).map((o) => o.asset.chainId)).toEqual(["eip155:999999"]);
+  });
+});
+
+describe("chainName", () => {
+  it("names a known chain and echoes an unknown chain id", () => {
+    const [option] = tokenOptions(payRequest([{ id: "x", type: "eip155", asset: ARB_USDT, unit: "USDT" }]));
+    expect(chainName(option!.asset.chainId)).toBe("Arbitrum One");
+    expect(chainName("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp")).toBe("Solana");
+    expect(chainName("tron:0x2b6653dc")).toBe("Tron");
+    expect(chainName("eip155:999999")).toBe("eip155:999999");
   });
 });

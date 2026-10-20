@@ -41,6 +41,7 @@ const handle = await (await best.quote()).send()
 | what this domain allows | `capabilities()` |
 | the address this wallet already owns here | `owned()` |
 | claim a name (or none) and bind the identity | `claim(opts?)` |
+| the LNURL a nameless claim will serve, before it lands | `sessionLnurl()` |
 | its `user@domain`, or `undefined` when nameless | `receiver.lightningAddress` |
 | an LNURL for a QR | `receiver.lnurl` |
 | its own payRequest | `receiver.payRequest()` |
@@ -167,6 +168,8 @@ for (const option of tokenOptions(payRequest)) {
 ```
 
 `requestInvoice` refuses a token answer for another option, one whose destination is not an address on the token's chain, and one that quotes no whole amount of the token. The amount you request is still sats: what the receiver is paid before the swap's fee.
+
+`chainName(option.asset.chainId)` names the network as the plugin does ("Arbitrum One", "Tron"), or returns the CAIP-2 id for a chain it does not know.
 
 ## Receiver
 
@@ -351,7 +354,7 @@ These matter for correctness. `syncPayments` handles them all; you must handle t
 
 ### Activity resolvers
 
-`@arkade-os/lnurl-client/arkade` also exports `lnurlActivityResolver(payments)` and `sentActivityResolver(sends)`, `ActivityResolver`s that label an `ArkTransaction` with the LNURL payment or send it corresponds to. Both take a synchronous getter. For a database-backed receive store, refresh a local snapshot from `repository.all()` before calling the resolver's `prepare()`.
+`@arkade-os/lnurl-client/arkade` also exports `lnurlActivityResolver(payments)` and `sentActivityResolver(sends)`, `ActivityResolver`s that label an `ArkTransaction` with the LNURL payment or send it corresponds to. Each awaits its getter, sync or async, on every `prepare()`, so a database-backed receive store passes `() => repository.all()` as is and a sync written after construction still shows.
 
 ### Shared persistence and send tracking
 
@@ -441,14 +444,18 @@ Bootstrap discovers an owned receiver first. Named receivers need no capabilitie
 ### IndexedDB backend
 
 ```ts
-import { createIndexedDbLnurlPaymentStore } from '@arkade-os/lnurl-client/browser'
+import { createIndexedDbLnurlPaymentStore, createLocalStorageLnurlWatermarkStore } from '@arkade-os/lnurl-client/browser'
 import { createLnurlPaymentRepository } from '@arkade-os/lnurl-client'
 
-const payments = createIndexedDbLnurlPaymentStore()
-const repository = createLnurlPaymentRepository(payments, watermarks)
+const repository = createLnurlPaymentRepository(
+  createIndexedDbLnurlPaymentStore(),
+  createLocalStorageLnurlWatermarkStore(),
+)
 ```
 
-The optional browser entry point touches IndexedDB only when a store operation runs. Defaults preserve the wallet backend's `arkade-lnurl-payments` database, version 1, `payments` store and `key` key path; custom database/store names are accepted. Writes resolve after commit, an aborted transaction rejects, and a synchronous failure while queuing a batch aborts its earlier writes. Every opened operation closes its connection on completion or failure. Cursor persistence stays injected through the repository; this adapter neither migrates nor deletes an existing schema.
+The optional browser entry point touches IndexedDB only when a store operation runs. Defaults preserve the wallet backend's `arkade-lnurl-payments` database, version 1, `payments` store and `key` key path; custom database/store names are accepted. Writes resolve after commit, an aborted transaction rejects, and a synchronous failure while queuing a batch aborts its earlier writes. Every opened operation closes its connection on completion or failure. Neither adapter migrates nor deletes an existing schema.
+
+`createLocalStorageLnurlWatermarkStore(key?)` keeps the cursors as one JSON map under `key` (default `arkade-lnurl.watermarks`), keyed `${baseUrl}|${lightningAddress}`. A map it cannot read, or a cursor that is not a number, counts as absent, so the next sync replays rather than skips; a refused write rejects, and `syncPayments` reports it as that target's failure.
 
 ## Errors
 

@@ -27,7 +27,7 @@ import {
   upgradeAddress,
 } from "./addresses.js";
 import { syncPayments } from "./sync.js";
-import { isTokenAddress, tokenOptions } from "./token-options.js";
+import { chainName, isTokenAddress, tokenOptions } from "./token-options.js";
 import type { TokenAsset, TokenOption, TokenUnit } from "./token-options.js";
 import type { PaymentSyncStore, PaymentSyncTarget, StoredPayment } from "./sync.js";
 import type { HdReceiveAllocationPage } from "./addresses.js";
@@ -268,6 +268,7 @@ export {
   openVerifyBatchStream,
   upgradeAddress,
   tokenOptions,
+  chainName,
   isTokenAddress,
   verifyStatusIsFor,
 };

@@ -1,5 +1,5 @@
 /// <reference lib="dom" />
-import type { LnurlPaymentStore } from "./repository.js";
+import type { LnurlPaymentStore, LnurlPaymentWatermarkStore } from "./repository.js";
 import type { StoredPayment } from "./sync.js";
 
 export function createIndexedDbLnurlPaymentStore(
@@ -64,5 +64,28 @@ export function createIndexedDbLnurlPaymentStore(
       store.clear();
       return () => undefined;
     }),
+  };
+}
+
+/** Cursors as one JSON map under `key`. A map that cannot be read counts as empty, which replays rather than skips. */
+export function createLocalStorageLnurlWatermarkStore(key = "arkade-lnurl.watermarks"): LnurlPaymentWatermarkStore {
+  const entry = (baseUrl: string, lightningAddress: string) => `${baseUrl}|${lightningAddress}`;
+  const all = (): Record<string, unknown> => {
+    try {
+      const parsed: unknown = JSON.parse(localStorage.getItem(key) ?? "{}");
+      return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? { ...parsed } : {};
+    } catch {
+      return {};
+    }
+  };
+  return {
+    read: async (baseUrl, lightningAddress) => {
+      const since = all()[entry(baseUrl, lightningAddress)];
+      return typeof since === "number" ? since : undefined;
+    },
+    write: async (baseUrl, lightningAddress, since) => {
+      localStorage.setItem(key, JSON.stringify({ ...all(), [entry(baseUrl, lightningAddress)]: since }));
+    },
+    clear: async () => localStorage.removeItem(key),
   };
 }

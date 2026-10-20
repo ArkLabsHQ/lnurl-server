@@ -57,12 +57,12 @@ export function mergeSentPayment(existing: SentPayment[], incoming: SentPayment)
 /** Labels a payment this wallet MADE, from what it recorded at send time. Joined
  *  on the rail's txid, never inferred from amount and timing as an incoming quote
  *  may be: naming a recipient the money did not go to is worse than naming none. */
-export function sentActivityResolver(sends: () => SentPayment[]): ActivityResolver {
+export function sentActivityResolver(sends: () => SentPayment[] | Promise<SentPayment[]>): ActivityResolver {
   let byTxid = new Map<string, SentPayment>();
   return {
     id: SENT_RESOLVER_ID,
     prepare: async () => {
-      byTxid = new Map(sends().filter((s) => s.txid).map((s) => [s.txid, s]));
+      byTxid = new Map((await sends()).filter((s) => s.txid).map((s) => [s.txid, s]));
     },
     resolve: (tx: ArkTransaction) => {
       const sent = byTxid.get(tx.key.arkTxid);
@@ -91,14 +91,14 @@ export function sentActivityResolver(sends: () => SentPayment[]): ActivityResolv
 
 /** Joined on `payoutReference`, never `paymentReference`: the latter is what the
  *  service observed, which on two of the three rails is an output this wallet
- *  never holds. */
-export function lnurlActivityResolver(payments: () => StoredPayment[]): ActivityResolver {
+ *  never holds. `payments` is read on every `prepare`, so `repository.all` fits as is. */
+export function lnurlActivityResolver(payments: () => StoredPayment[] | Promise<StoredPayment[]>): ActivityResolver {
   let byTxid = new Map<string, StoredPayment>();
   return {
     id: LNURL_RESOLVER_ID,
     prepare: async () => {
       byTxid = new Map(
-        payments()
+        (await payments())
           .filter((p): p is StoredPayment & { payoutReference: string } => Boolean(p.payoutReference))
           .map((p) => [p.payoutReference, p]),
       );

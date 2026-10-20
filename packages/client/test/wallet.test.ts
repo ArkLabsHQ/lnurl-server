@@ -119,6 +119,18 @@ describe("arkadeLnurl", () => {
     expect(client.registerAddress).toHaveBeenCalledWith({ token: await lnurl.token(), domain: "lnurl.example.com", nameless: true });
   });
 
+  it("names its session lnurl before any address is claimed, as the nameless claim will serve it", async () => {
+    const client = fakeClient({
+      registerAddress: vi.fn(async () => ({ handle: "SESSIONID", username: null, lightningAddress: null, sessionLnurl: "LNURL1flagged" }) as never),
+    });
+    const lnurl = arkadeLnurl({ wallet: fakeWallet(), baseUrl: "https://lnurl.example.com:8443", client });
+
+    const early = await lnurl.sessionLnurl();
+
+    expect(client.registerAddress).not.toHaveBeenCalled();
+    expect((await lnurl.claim({ nameless: true })).lnurl).toBe(early);
+  });
+
   it("keeps the session lnurl when a nameless re-claim returns the row it already upgraded", async () => {
     const client = fakeClient({
       registerAddress: vi.fn(async () => ({

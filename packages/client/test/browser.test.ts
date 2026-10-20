@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createIndexedDbLnurlPaymentStore } from "../src/browser.js";
+import { createIndexedDbLnurlPaymentStore, createLocalStorageLnurlWatermarkStore } from "../src/browser.js";
 import type { LnurlPaymentStore } from "../src/repository.js";
 import type { StoredPayment } from "../src/sync.js";
 
@@ -194,5 +194,49 @@ describe("IndexedDB payment store", () => {
     const idb = stubIndexedDb({ openFailure: true });
     await expect(call(createIndexedDbLnurlPaymentStore())).rejects.toMatchObject({ name: "InvalidStateError" });
     expect(idb.transaction).not.toHaveBeenCalled();
+  });
+});
+
+describe("localStorage watermark store", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const stubStorage = (initial: Record<string, string> = {}) => {
+    const entries = new Map(Object.entries(initial));
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => entries.get(k) ?? null,
+      setItem: (k: string, v: string) => void entries.set(k, v),
+      removeItem: (k: string) => void entries.delete(k),
+    });
+    return entries;
+  };
+
+  it("keeps each server and address's cursor in one map under its key, and clears only that key", async () => {
+    const entries = stubStorage({ unrelated: "kept" });
+    const marks = createLocalStorageLnurlWatermarkStore("marks");
+    await marks.write("https://a", "alice@x", 5);
+    await marks.write("https://b", "alice@x", 7);
+    await expect(marks.read("https://a", "alice@x")).resolves.toBe(5);
+    expect(JSON.parse(entries.get("marks")!)).toEqual({ "https://a|alice@x": 5, "https://b|alice@x": 7 });
+    await marks.clear();
+    expect([...entries.keys()]).toEqual(["unrelated"]);
+  });
+
+  it.each([["an absent map", undefined], ["null", "null"], ["an array", "[]"], ["a number", "5"], ["unparseable JSON", "{x"], ["a string cursor", '{"https://a|alice@x":"5"}']])(
+    "reads %s as no cursor, and a write replaces it",
+    async (_shape, raw) => {
+      const entries = stubStorage(raw === undefined ? {} : { marks: raw });
+      const marks = createLocalStorageLnurlWatermarkStore("marks");
+      await expect(marks.read("https://a", "alice@x")).resolves.toBeUndefined();
+      await marks.write("https://a", "alice@x", 9);
+      expect(JSON.parse(entries.get("marks")!)).toEqual({ "https://a|alice@x": 9 });
+    },
+  );
+
+  it("reads unreadable storage as no cursor but rejects a write storage refuses", async () => {
+    const refused = new DOMException("denied", "SecurityError");
+    vi.stubGlobal("localStorage", { getItem: () => { throw refused; }, setItem: () => { throw refused; } });
+    const marks = createLocalStorageLnurlWatermarkStore();
+    await expect(marks.read("https://a", "alice@x")).resolves.toBeUndefined();
+    await expect(marks.write("https://a", "alice@x", 1)).rejects.toBe(refused);
   });
 });

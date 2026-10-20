@@ -85,6 +85,8 @@ export interface Receiver {
 export interface ArkadeLnurl {
   /** Derived once; signs twice on the first call, nothing on later ones. */
   token(): Promise<string>;
+  /** Where a nameless claim serves this identity, known before it lands; an upgrade keeps it. */
+  sessionLnurl(): Promise<string>;
   capabilities(): Promise<DomainCapabilities>;
   /** Registers an address — named, random or nameless per `opts` — and binds
    *  the identity. Until the bind lands the address advertises no
@@ -145,10 +147,9 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
   // so `upgrade` below carries it through rather than recomputing it. The session
   // id comes from `held`, never from the server's own `sessionLnurl`/`lnurl` bech32:
   // those are built from the LUD-16 domain and would drop `baseUrl`'s port.
+  const sessionLnurlOf = (held: string) => encodeLnurl(`${baseUrl}/lnurl/${deriveSessionId(held)}`);
   const receiverFrom = (held: string, handle: string, lightningAddress: string | null, flagged: boolean): Receiver => {
-    const lnurl = flagged
-      ? encodeLnurl(`${baseUrl}/lnurl/${deriveSessionId(held)}`)
-      : encodeLnurl(`${baseUrl}/.well-known/lnurlp/${handle}`);
+    const lnurl = flagged ? sessionLnurlOf(held) : encodeLnurl(`${baseUrl}/.well-known/lnurlp/${handle}`);
     let memo: { at: number; writes: number; pr: Promise<PayRequest> } | undefined;
     return {
       handle,
@@ -177,6 +178,7 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
 
   return {
     token,
+    sessionLnurl: async () => sessionLnurlOf(await token()),
     capabilities: () => client.domainCapabilities({ domain }),
     async owned() {
       const held = await token();
