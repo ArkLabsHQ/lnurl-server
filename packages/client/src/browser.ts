@@ -67,7 +67,8 @@ export function createIndexedDbLnurlPaymentStore(
   };
 }
 
-/** Cursors as one JSON map under `key`. A map that cannot be read counts as empty, which replays rather than skips. */
+/** Cursors as one JSON map under `key`. A map that cannot be read counts as empty, and two tabs writing at once can
+ *  drop one another's cursor: either way the next sync replays rather than skips. */
 export function createLocalStorageLnurlWatermarkStore(key = "arkade-lnurl.watermarks"): LnurlPaymentWatermarkStore {
   const entry = (baseUrl: string, lightningAddress: string) => `${baseUrl}|${lightningAddress}`;
   const all = (): Record<string, unknown> => {
