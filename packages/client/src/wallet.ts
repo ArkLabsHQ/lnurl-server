@@ -76,7 +76,8 @@ export interface Receiver {
   payRequest(): Promise<PayRequest>;
   payments(opts?: { since?: number; limit?: number }): Promise<PaymentPage>;
   allocations(opts?: { after?: number; limit?: number }): Promise<HdReceiveAllocationPage>;
-  sync(): Promise<{ synced: number; failures: unknown[] }>;
+  /** Stops fetching and writing once `signal` aborts. */
+  sync(opts?: { signal?: AbortSignal }): Promise<{ synced: number; failures: unknown[] }>;
   /** Names a nameless receiver in place; everything handed out while nameless
    *  keeps working. Does not re-bind the Arkade identity, already on the row. */
   upgrade(opts?: NameOptions): Promise<Receiver>;
@@ -165,9 +166,9 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
       },
       payments: (listOpts) => client.listPayments(held, handle, { domain, ...listOpts }),
       allocations: (listOpts) => client.listHdAllocations(held, handle, { domain, ...listOpts }),
-      sync: async () => syncPayments(
+      sync: async (syncOpts) => syncPayments(
         [{ baseUrl, token: held, handle, domain }],
-        { client: (target) => createLnurlClient({ baseUrl: target }), store: needStore() },
+        { client: (target) => createLnurlClient({ baseUrl: target }), store: needStore(), signal: syncOpts?.signal },
       ),
       async upgrade(upgradeOpts) {
         const registered = await client.upgradeAddress({ token: held, handle, domain, ...upgradeOpts }).finally(wrote);

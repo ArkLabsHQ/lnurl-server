@@ -131,6 +131,17 @@ describe("arkadeLnurl", () => {
     expect((await lnurl.claim({ nameless: true })).lnurl).toBe(early);
   });
 
+  it("syncs nothing once the signal handed to sync has aborted", async () => {
+    const store = { upsert: vi.fn(async () => {}), readWatermark: vi.fn(async () => undefined), writeWatermark: vi.fn(async () => {}) };
+    const lnurl = arkadeLnurl({ wallet: fakeWallet(), baseUrl: "https://lnurl.example.com", client: fakeClient(), store });
+    const rx = await lnurl.claim({ username: "alice" });
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(rx.sync({ signal: controller.signal })).resolves.toEqual({ synced: 0, failures: [] });
+    expect(store.upsert).not.toHaveBeenCalled();
+  });
+
   it("keeps the session lnurl when a nameless re-claim returns the row it already upgraded", async () => {
     const client = fakeClient({
       registerAddress: vi.fn(async () => ({

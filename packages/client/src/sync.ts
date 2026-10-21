@@ -162,6 +162,7 @@ const syncTarget = async (
   store: PaymentSyncStore,
   limit: number,
   onStored: (count: number) => void,
+  signal?: AbortSignal,
 ): Promise<void> => {
   // Not the address (null while nameless); an upgrade's new handle costs one re-read, which upsert absorbs.
   const watermarkKey = `${target.handle}@${target.domain}`;
@@ -169,7 +170,9 @@ const syncTarget = async (
   // One page's worth: how far back the cursor may reach for a pending row.
   const tail: StoredPayment[] = [];
   for (;;) {
+    if (signal?.aborted) return;
     const page = await listWithBackoff(client, target.token, target.handle, target.domain, since, limit);
+    if (signal?.aborted) return;
     const records = page.payments.map((entry) =>
       toStored(target.baseUrl, page.source.domain, page.source.lightningAddress, page.source.handle, entry),
     );
@@ -181,6 +184,8 @@ const syncTarget = async (
     if (tail.length > limit) tail.splice(0, tail.length - limit);
     const previous = since;
     since = page.nextSince;
+    // A cursor left behind only replays the page, which upsert absorbs.
+    if (signal?.aborted) return;
     await store.writeWatermark(target.baseUrl, watermarkKey, resumeFrom(tail, since));
     if (page.payments.length < limit) return;
     // The cursor is the last row's timestamp, so a full page that fails to
@@ -237,6 +242,8 @@ export function syncPayments(
     client: (baseUrl: string) => Pick<LnurlClient, "listPayments">;
     store: PaymentSyncStore;
     limit?: number;
+    /** Once aborted, nothing more is fetched or written; an abort is not a failure. */
+    signal?: AbortSignal;
   },
 ): Promise<{ synced: number; failures: { baseUrl: string; error: unknown }[] }> {
   const run = async (): Promise<{ synced: number; failures: { baseUrl: string; error: unknown }[] }> => {
@@ -244,10 +251,11 @@ export function syncPayments(
     let synced = 0;
     const failures: { baseUrl: string; error: unknown }[] = [];
     for (const target of targets) {
+      if (opts.signal?.aborted) break;
       try {
         await syncTarget(target, opts.client(target.baseUrl), opts.store, limit, (count) => {
           synced += count;
-        });
+        }, opts.signal);
       } catch (error) {
         failures.push({ baseUrl: target.baseUrl, error });
       }
