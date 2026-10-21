@@ -36,7 +36,7 @@ export function adminAddressRoutes(deps: AdminDeps): Router {
           id: a.id, username: a.username, domain: domain?.domain ?? null, status: a.status,
           sessionId: a.sessionId, online: a.sessionId ? online.has(a.sessionId) : false, createdAt: a.createdAt,
           disabledRails: a.disabledRails,
-          rails: effectiveRails({ arkadeAddress: a.arkadeAddress, claimPublicKey: a.claimPublicKey, boardingAddress: a.boardingAddress, disabledRails: a.disabledRails, hdReceive: a.hdReceive }, adminRailCaps(deps)),
+          rails: effectiveRails({ arkadeAddress: a.arkadeAddress, claimPublicKey: a.claimPublicKey, boardingAddress: a.boardingAddress, disabledRails: a.disabledRails }, adminRailCaps(deps)),
         };
       }),
       ...(rows.length > limit && last ? { nextCursor: `${last.createdAt}-${last.id}` } : {}),
@@ -73,7 +73,7 @@ export function adminAddressRoutes(deps: AdminDeps): Router {
     res.json({
       id: updated.id,
       disabledRails: updated.disabledRails,
-      rails: effectiveRails({ arkadeAddress: updated.arkadeAddress, claimPublicKey: updated.claimPublicKey, boardingAddress: updated.boardingAddress, disabledRails: updated.disabledRails, hdReceive: updated.hdReceive }, adminRailCaps(deps)),
+      rails: effectiveRails({ arkadeAddress: updated.arkadeAddress, claimPublicKey: updated.claimPublicKey, boardingAddress: updated.boardingAddress, disabledRails: updated.disabledRails }, adminRailCaps(deps)),
     });
   });
   r.delete("/addresses/:id", (req, res) => { repos.addresses.delete(idParam(req.params.id)); res.json({ ok: true }); });

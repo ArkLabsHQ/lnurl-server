@@ -223,6 +223,14 @@ describe("offline receive", () => {
     expect(repos.addresses.getById(addressId)!.arkadeAddress).toBeNull();
   });
 
+  it("answers an hd-only registration with the static identity error", async () => {
+    ctx = await start(repos);
+    const hd = { version: 1, descriptor: "tr([abcdef12/86'/1'/7'/0]tpubD/*)", serverPubKey: "ab".repeat(32), hrp: "tark", exitDelay: { type: "seconds", value: 1024 } };
+    const res = await req(`${ctx.baseUrl}/lnurl/address/off/arkade`, "POST", "domain.com", { hd }, TOKEN);
+    expect(res).toEqual({ status: 400, body: { error: "arkadeAddress and a compressed-hex claimPublicKey (02/03 + 64 hex) are required" } });
+    expect(repos.addresses.getById(addressId)!.arkadeAddress).toBeNull();
+  });
+
   it("rejects arkade identity registration on a revoked address", async () => {
     ctx = await start(repos);
     repos.addresses.updateStatus(addressId, "revoked");
