@@ -1,6 +1,7 @@
 import { LnurlError } from "./errors.js";
 import { isTokenAddress, type TokenAsset, type TokenOption } from "./token-options.js";
-import type { DestinationResult } from "./types.js";
+import { createLnurlClient, type LnurlClient } from "./index.js";
+import type { DestinationResult, PayRequest } from "./types.js";
 import { formatUnitAmount } from "./units.js";
 
 export interface TokenQuote {
@@ -94,4 +95,30 @@ export function normalizeTokenQuote(token: TokenOption, answer: DestinationResul
     value: answer.paymentURI && paysQuote(answer.paymentURI, payment, token.asset) ? answer.paymentURI : payment.destination,
     expiresAt,
   };
+}
+
+/** Whether `option` takes `amountSat`, by its own bounds or else the payRequest's. */
+export function tokenOptionAccepts(
+  option: Pick<TokenOption, "minSendable" | "maxSendable">,
+  payRequest: Pick<PayRequest, "minSendable" | "maxSendable">,
+  amountSat: number,
+): boolean {
+  const msat = amountSat * 1000;
+  return msat >= (option.minSendable ?? payRequest.minSendable) && msat <= (option.maxSendable ?? payRequest.maxSendable);
+}
+
+/** Asks the callback for `option` and returns its normalized quote, refusing one with under `minLifetimeMs` left. */
+export async function requestTokenQuote(
+  payRequest: PayRequest,
+  option: TokenOption,
+  amountSat: number,
+  opts: { minLifetimeMs?: number; client?: Pick<LnurlClient, "requestInvoice"> } = {},
+): Promise<TokenQuote> {
+  const answer = await (opts.client ?? createLnurlClient()).requestInvoice(payRequest, { amountSat, paymentOption: option.id });
+  if (answer.kind !== "destination") throw new LnurlError(`the LNURL answered ${option.id} with nothing payable on it`);
+  const quote = normalizeTokenQuote(option, answer);
+  if (quote.expiresAt - Date.now() < (opts.minLifetimeMs ?? 0)) {
+    throw new LnurlError("the token quote expires too soon to pay; check the device's clock");
+  }
+  return quote;
 }

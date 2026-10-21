@@ -279,7 +279,7 @@ export type { LnurlAddressErrorCode } from "./errors.js";
 export { clearLnurlPaymentsForReset, createLnurlPaymentRepository } from "./repository.js";
 export type { LnurlPaymentRepository, LnurlPaymentStore, LnurlPaymentWatermarkStore } from "./repository.js";
 export { formatUnitAmount, parseUnitAmount } from "./units.js";
-export { normalizeTokenQuote, payableTokenUri } from "./token-quotes.js";
+export { normalizeTokenQuote, payableTokenUri, requestTokenQuote, tokenOptionAccepts } from "./token-quotes.js";
 export type { TokenQuote } from "./token-quotes.js";
 export type { HdReceiveConfig, HdReceiveAllocation, HdReceiveAllocationPage } from "./addresses.js";
 export type {

@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { requestInvoice } from "../src/payer.js";
 import { tokenOptions } from "../src/token-options.js";
-import { normalizeTokenQuote, payableTokenUri } from "../src/token-quotes.js";
-import type { DestinationResult, PayRequest } from "../src/types.js";
+import { normalizeTokenQuote, payableTokenUri, requestTokenQuote, tokenOptionAccepts } from "../src/token-quotes.js";
+import type { DestinationResult, InvoiceResult, PayRequest } from "../src/types.js";
 
 const CONTRACT = "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9";
 const DEPOSIT = "0x" + "ab".repeat(20);
@@ -162,5 +162,31 @@ describe("normalizeTokenQuote", () => {
     const body = answer();
     body.paymentQuote!.payment.unit = "msat";
     expect(() => normalizeTokenQuote(token, body, now)).toThrow(/USDT/);
+  });
+});
+
+describe("tokenOptionAccepts", () => {
+  it("bounds an amount by the option's own limits, else the payRequest's", () => {
+    const bounded = { ...token, minSendable: 5_000_000, maxSendable: 20_000_000 };
+    expect([4_999, 5_000, 20_000, 20_001].map((sats) => tokenOptionAccepts(bounded, payRequest, sats))).toEqual([false, true, true, false]);
+    expect([100_000, 100_001].map((sats) => tokenOptionAccepts(token, payRequest, sats))).toEqual([true, false]);
+  });
+});
+
+describe("requestTokenQuote", () => {
+  const client = (result: InvoiceResult) => ({ requestInvoice: async () => result });
+
+  it("asks for the option and returns its normalized quote", async () => {
+    await expect(requestTokenQuote(payRequest, token, 10_000, { client: client(answer()) }))
+      .resolves.toMatchObject({ optionId: "usdt", destination: DEPOSIT, baseUnits: "8426000", amount: "8.426" });
+  });
+
+  it("refuses an answer with nothing to pay, and a quote expiring sooner than the caller allows", async () => {
+    await expect(requestTokenQuote(payRequest, token, 10_000, { client: client({ kind: "bolt11", pr: "lnbc1" } as InvoiceResult) }))
+      .rejects.toThrow(/nothing payable/);
+    const soon = answer();
+    soon.paymentQuote!.expiresAt = new Date(Date.now() + 30_000).toISOString();
+    await expect(requestTokenQuote(payRequest, token, 10_000, { client: client(soon), minLifetimeMs: 60_000 }))
+      .rejects.toThrow(/expires too soon/);
   });
 });
