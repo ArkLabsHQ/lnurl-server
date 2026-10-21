@@ -151,3 +151,27 @@ describe("createLnurlSendTracker", () => {
     expect(rows()[0].receiverConfirmed).toBeUndefined();
   });
 });
+
+describe("tracker.subscribe", () => {
+  it("tells listeners after a write lands, never after one that failed, until they unsubscribe", () => {
+    let rows: SentPayment[] = [{ txid: "t1", target: "alice@pay.example", railId: "lnurl-arkade", amountSat: 1, feeSat: 0, createdAt: 1 }];
+    let refuse = false;
+    const errors: unknown[] = [];
+    const tracker = createLnurlSendTracker({
+      read: () => rows,
+      write: (next) => { if (refuse) throw new Error("quota exceeded"); rows = next; },
+    }, { onError: (error) => errors.push(error), confirmations: { add: () => {}, forget: () => {} } });
+    const seen: (boolean | undefined)[] = [];
+    const stop = tracker.subscribe(() => seen.push(rows[0]!.receiverConfirmed));
+
+    refuse = true;
+    tracker.mark("t1", true);
+    refuse = false;
+    tracker.mark("t1", true);
+    stop();
+    tracker.mark("t1", false);
+
+    expect(errors).toHaveLength(1);
+    expect(seen).toEqual([true]);
+  });
+});

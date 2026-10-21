@@ -1,5 +1,7 @@
 /// <reference lib="dom" />
+import type { SentPayment } from "./activity.js";
 import type { LnurlPaymentStore, LnurlPaymentWatermarkStore } from "./repository.js";
+import type { LnurlSentPaymentStore } from "./sends.js";
 import type { StoredPayment } from "./sync.js";
 
 export function createIndexedDbLnurlPaymentStore(
@@ -88,5 +90,20 @@ export function createLocalStorageLnurlWatermarkStore(key = "arkade-lnurl.waterm
       localStorage.setItem(key, JSON.stringify({ ...all(), [entry(baseUrl, lightningAddress)]: since }));
     },
     clear: async () => localStorage.removeItem(key),
+  };
+}
+
+/** Sent payments as one JSON array under `key`, for `createLnurlSendTracker`. Unreadable data reads as none and is left as it is. */
+export function createLocalStorageLnurlSentPaymentStore(key = "arkade-lnurl.sends"): LnurlSentPaymentStore {
+  return {
+    read: () => {
+      try {
+        const parsed: unknown = JSON.parse(localStorage.getItem(key) ?? "[]");
+        return Array.isArray(parsed) ? (parsed as SentPayment[]) : [];
+      } catch {
+        return [];
+      }
+    },
+    write: (records) => localStorage.setItem(key, JSON.stringify(records)),
   };
 }
