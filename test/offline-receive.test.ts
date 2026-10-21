@@ -150,6 +150,7 @@ describe("offline receive", () => {
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({
       verify: `${ctx.baseUrl}/lnurl/verify/${hash}`,
+      verifyBatch: `${ctx.baseUrl}/lnurl/verifyBatch`,
       paymentQuote: {
         requested: { amount: "1000000", unit: "msat" },
         payment: { amount: "1001000", unit: "msat" },
@@ -188,6 +189,20 @@ describe("offline receive", () => {
     await req(`${ctx.baseUrl}/lnurl/address/off/arkade`, "POST", "domain.com", { arkadeAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY }, TOKEN);
     const response = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/invoice`, "POST", "domain.com", { receiveAmountMsat: 1000000, maxPayAmountMsat: 1000000 });
     expect(response.body.status).toBe("ERROR");
+    expect(store.get(hash)).toBeUndefined();
+  });
+
+  it.each([1000.5, 1000.0001])("rejects a %s-sat invoice rather than rounding it down to the payer ceiling", async (invoiceSats) => {
+    const hash = "cf".repeat(32);
+    const creator = new FakeCreator(hash);
+    const create = creator.create.bind(creator);
+    creator.create = async (params) => ({ ...await create(params), invoice: buildInvoice(hash, invoiceSats) });
+    const store = new MemorySettlementStore(60_000);
+    ctx = await start(repos, creator, store);
+    repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
+    const response = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/invoice`, "POST", "domain.com", { receiveAmountMsat: 1000000, maxPayAmountMsat: 1000000 });
+    expect(response.body.status).toBe("ERROR");
+    expect(creator.release).toHaveBeenCalledExactlyOnceWith("swap-1");
     expect(store.get(hash)).toBeUndefined();
   });
 
@@ -329,6 +344,24 @@ describe("offline receive", () => {
     }
     last = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=50000`, "GET", "domain.com");
     expect(last.status).toBe(429);
+    expect(creator.created).toHaveLength(30);
+  });
+
+  it("rate-limits net invoice POSTs before creating a swap and shares the callback budget", async () => {
+    const creator = new FakeCreator("cd".repeat(32));
+    repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
+    ctx = await start(repos, creator, new MemorySettlementStore(60_000));
+    const url = `${ctx.baseUrl}/.well-known/lnurlp/off/invoice`;
+    const body = { receiveAmountMsat: 1000000, maxPayAmountMsat: 1050000 };
+    for (let i = 0; i < 30; i++) {
+      const response = await req(url, "POST", "domain.com", body);
+      expect(response.body.pr).toBeDefined();
+    }
+    const blocked = await req(url, "POST", "domain.com", body);
+    expect(blocked.status).toBe(429);
+    expect(blocked.body).toMatchObject({ status: "ERROR", reason: "Too many requests" });
+    const callback = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=1000000`, "GET", "domain.com");
+    expect(callback.status).toBe(429);
     expect(creator.created).toHaveLength(30);
   });
 

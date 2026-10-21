@@ -115,7 +115,7 @@ export async function createOfflineSwapInvoice(args: {
     swap = await creator.create({ amountSat: amountMsat / 1000, receiveAddress, claimPublicKey,
       ...(net ? { amountSide: "to" as const, maxPayAmountSat: maxPayAmountMsat / 1000 } : {}),
     });
-    const payerMsat = net ? invoiceFactsFromBolt11(swap.invoice).amountSats * 1000 : amountMsat;
+    const payerMsat = net ? invoiceFactsFromBolt11(swap.invoice, true).amountSats * 1000 : amountMsat;
     if (net && (!Number.isSafeInteger(payerMsat) || payerMsat < Math.max(amountMsat, minPayAmountMsat ?? 0) || payerMsat > maxPayAmountMsat || swap.recovery.expectedAmount * 1000 !== amountMsat)) {
       throw new Error("Solver invoice does not satisfy the receive amount and payer bounds");
     }

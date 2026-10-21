@@ -23,7 +23,7 @@ const MULTIPLIER_MSAT: Record<string, bigint> = {
   m: 100_000_000n,
   u: 100_000n,
   n: 100n,
-  p: 1n, // 0.1 msat — divided by 10 below (BOLT11 rounds down)
+  p: 1n, // 0.1 msat — needs an additional factor of 10 in the divisor below
 };
 const WHOLE_BTC_MSAT = 100_000_000_000n;
 const DEFAULT_EXPIRY_SECONDS = 3600;
@@ -62,8 +62,9 @@ function taggedFields(words: number[]): { paymentHash: string | null; expiry?: n
 /** Decode the fields the offline-receive invoice gate checks: payment hash, amount
  *  (HRP), and absolute expiry (timestamp + `x` tag, default 3600s). Throws on an
  *  undecodable invoice — the caller ({@link verifyReceiveInvoice}) treats a throw as
- *  `invoice_undecodable`. Amountless invoices decode to `amountSats: 0`. */
-export function invoiceFactsFromBolt11(pr: string): InvoiceFacts {
+ *  `invoice_undecodable`. Amountless invoices decode to `amountSats: 0`.
+ *  requireWholeSats rejects fractional sats before division instead of rounding them down. */
+export function invoiceFactsFromBolt11(pr: string, requireWholeSats = false): InvoiceFacts {
   const raw = pr.toLowerCase();
   const { prefix, words } = bech32.decode(raw as `${string}1${string}`, 2000);
   const hrp = /^ln[a-z]+(?:(\d+)([munp])?)?$/.exec(prefix);
@@ -73,12 +74,12 @@ export function invoiceFactsFromBolt11(pr: string): InvoiceFacts {
   if (hrp[1] !== undefined) {
     const digits = BigInt(hrp[1]);
     const mult = hrp[2];
-    if (mult === undefined) {
-      amountSats = Number((digits * WHOLE_BTC_MSAT) / 1000n);
-    } else {
-      const msat = (digits * MULTIPLIER_MSAT[mult]) / (mult === "p" ? 10n : 1n);
-      amountSats = Number(msat / 1000n);
+    const scaled = digits * (mult === undefined ? WHOLE_BTC_MSAT : MULTIPLIER_MSAT[mult]);
+    const divisor = mult === "p" ? 10_000n : 1000n;
+    if (requireWholeSats && scaled % divisor !== 0n) {
+      throw new Error("bolt11 amount must be a whole number of satoshis");
     }
+    amountSats = Number(scaled / divisor);
   }
 
   const timestamp = wordsToInt(words.slice(0, 7));
