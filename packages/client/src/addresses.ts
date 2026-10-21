@@ -79,6 +79,10 @@ export interface AddressListEntry {
   nameless: boolean;
   /** Survives a later upgrade to a name. */
   sessionLnurl: string | null;
+  /** Where the bound identity is paid; null until bound or for an HD receiver. An older server omits all three. */
+  arkadeAddress?: string | null;
+  claimPublicKey?: string | null;
+  boardingAddress?: string | null;
 }
 
 /** What a domain allows, discoverable before calling any of its routes. */

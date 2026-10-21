@@ -8,7 +8,7 @@ import { createLnurlClient, type LnurlClient } from "./index.js";
 import { PAY_REQUEST_TTL_MS, type LnurlPaymentRequest } from "./rail.js";
 import { deriveSessionId } from "./token.js";
 import { syncPayments, type PaymentSyncStore, type StoredPayment } from "./sync.js";
-import type { DomainCapabilities } from "./addresses.js";
+import type { AddressListEntry, DomainCapabilities } from "./addresses.js";
 import type { PayRequest, PaymentPage, UnitAmount } from "./types.js";
 import type { HdReceiveConfig, HdReceiveAllocationPage } from "./addresses.js";
 import { arkadePaymentRouter } from "./sdk-adapter.js";
@@ -83,17 +83,29 @@ export interface Receiver {
   upgrade(opts?: NameOptions): Promise<Receiver>;
 }
 
+/** Once `signal` aborts, the call rejects with its reason and writes nothing more. */
+export interface AbortOptions {
+  signal?: AbortSignal;
+}
+
 export interface ArkadeLnurl {
+  /** The LUD-16 domain this facade claims and lists on. */
+  readonly domain: string;
   /** Derived once; signs twice on the first call, nothing on later ones. */
   token(): Promise<string>;
   /** Where a nameless claim serves this identity, known before it lands; an upgrade keeps it. */
   sessionLnurl(): Promise<string>;
   capabilities(): Promise<DomainCapabilities>;
+  /** Every address this identity owns on {@link domain}, revoked ones included. Writes nothing. */
+  addresses(): Promise<AddressListEntry[]>;
   /** Registers an address — named, random or nameless per `opts` — and binds
    *  the identity. Until the bind lands the address advertises no
    *  `paymentOptions` at all, so offline receive does not exist. */
-  claim(opts?: ClaimOptions): Promise<Receiver>;
-  owned(): Promise<Receiver | undefined>;
+  claim(opts?: ClaimOptions, ctl?: AbortOptions): Promise<Receiver>;
+  /** The active address this identity owns on {@link domain}, the session one first. `refresh`
+   *  first re-binds this facade's destinations wherever the list shows them bound elsewhere.
+   *  `claim`, `owned` and `upgrade` run one at a time per identity object and server. */
+  owned(opts?: AbortOptions & { refresh?: boolean }): Promise<Receiver | undefined>;
   router(): LnurlPaymentRouter;
   /** `amount` is sats, or an amount in one of the target's `units`, e.g. `{ unit: "USD", amount: 500 }`. */
   options(target: string, amount: number | UnitAmount, prefs?: RouterPreferences): Promise<PaymentOption[]>;
@@ -105,11 +117,34 @@ export const DEFAULT_RAIL_PRIORITY = [
   "lnurl-arkade", "ark", "ark-asset", "lnurl-lightning", "solver-lightning", "onchain",
 ];
 
+// Shared across facades in this realm: each screen builds its own, and their writes must not interleave.
+const receiverCalls = new WeakMap<ArkadeSigner, Map<string, Promise<unknown>>>();
+function oneAtATime<T>(identity: ArkadeSigner, key: string, action: () => Promise<T>): Promise<T> {
+  const pending = receiverCalls.get(identity) ?? new Map<string, Promise<unknown>>();
+  receiverCalls.set(identity, pending);
+  const next = (pending.get(key) ?? Promise.resolve()).catch(() => {}).then(action);
+  pending.set(key, next);
+  const clear = () => { if (pending.get(key) === next) pending.delete(key); };
+  next.then(clear, clear);
+  return next;
+}
+
+const live = (signal?: AbortSignal): void => {
+  if (signal?.aborted) throw signal.reason ?? new LnurlError("Aborted");
+};
+
+// No local boarding address is no mismatch (the server keeps its own); an older server lists none: never bound.
+const isBoundTo = (a: AddressListEntry, to: { arkadeAddress: string; claimPublicKey: string; boardingAddress?: string }) =>
+  a.arkadeAddress === to.arkadeAddress && a.claimPublicKey === to.claimPublicKey
+  && (to.boardingAddress === undefined || a.boardingAddress === to.boardingAddress);
+
 export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
   const { wallet, baseUrl } = opts;
   const domain = opts.domain ?? new URL(baseUrl).hostname;
   const identity = wallet ? wallet.identity : opts.identity;
-  const addresses = async (): Promise<{ arkadeAddress: string; boardingAddress?: string }> => {
+  const ordered = <T>(action: () => Promise<T>) =>
+    oneAtATime(identity, `${baseUrl.replace(/\/+$/, "")}|${domain.toLowerCase()}`, action);
+  const destinations = async (): Promise<{ arkadeAddress: string; boardingAddress?: string }> => {
     if (wallet) return { arkadeAddress: await wallet.getAddress(), boardingAddress: await wallet.getBoardingAddress() };
     if (!opts.arkadeAddress) throw new LnurlError("Static receive requires an Arkade address");
     return { arkadeAddress: opts.arkadeAddress, ...(opts.boardingAddress ? { boardingAddress: opts.boardingAddress } : {}) };
@@ -170,26 +205,48 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
         [{ baseUrl, token: held, handle, domain }],
         { client: (target) => createLnurlClient({ baseUrl: target }), store: needStore(), signal: syncOpts?.signal },
       ),
-      async upgrade(upgradeOpts) {
+      upgrade: (upgradeOpts) => ordered(async () => {
         const registered = await client.upgradeAddress({ token: held, handle, domain, ...upgradeOpts }).finally(wrote);
         return receiverFrom(held, registered.handle, registered.lightningAddress, flagged);
-      },
+      }),
     };
   };
 
+  const onDomain = async (held: string) =>
+    (await client.listAddresses(held)).filter((a) => a.domain.toLowerCase() === domain.toLowerCase());
+
   return {
+    domain,
     token,
     sessionLnurl: async () => sessionLnurlOf(await token()),
     capabilities: () => client.domainCapabilities({ domain }),
-    async owned() {
+    addresses: async () => onDomain(await token()),
+    owned: ({ signal, refresh } = {}) => ordered(async () => {
+      live(signal);
       const held = await token();
-      const mine = (await client.listAddresses(held)).filter((a) => a.domain.toLowerCase() === domain.toLowerCase());
-      const active = mine.filter((a) => a.status === "active");
-      const chosen = active.find((a) => a.sessionLnurl !== null) ?? active[0] ?? mine[0];
+      live(signal);
+      const active = (await onDomain(held)).filter((a) => a.status === "active");
+      live(signal);
+      // One refused alias (an HD one, say) must not leave the rest stale; it still fails discovery.
+      const refused: unknown[] = [];
+      if (refresh && !opts.hd) {
+        const current = await destinations();
+        for (const a of active) {
+          const request = await arkadeIdentityRequest({ identity, token: held, handle: a.handle, domain, ...current });
+          if (isBoundTo(a, request)) continue;
+          live(signal);
+          await client.registerArkadeIdentity(request).finally(wrote).catch((err: unknown) => { refused.push(err); });
+        }
+      }
+      live(signal);
+      if (refused.length) throw refused[0];
+      const chosen = active.find((a) => a.sessionLnurl !== null) ?? active[0];
       return chosen ? receiverFrom(held, chosen.handle, chosen.lightningAddress, chosen.sessionLnurl !== null) : undefined;
-    },
-    async claim(claimOpts) {
+    }),
+    claim: (claimOpts, { signal } = {}) => ordered(async () => {
+      live(signal);
       const held = await token();
+      live(signal);
       const registered = await client.registerAddress({
         token: held,
         domain,
@@ -205,17 +262,18 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
         );
       }
       // Boarding rides along: a later call omitting it leaves the rail unregistered.
-      await client.registerArkadeIdentity(
-        opts.hd ? { token: held, handle: registered.handle, domain, hd: opts.hd } : await arkadeIdentityRequest({
-          identity,
-          token: held,
-          handle: registered.handle,
-          domain,
-          ...(await addresses()),
-        }),
-      ).finally(wrote);
+      const binding = opts.hd ? { token: held, handle: registered.handle, domain, hd: opts.hd } : await arkadeIdentityRequest({
+        identity,
+        token: held,
+        handle: registered.handle,
+        domain,
+        ...(await destinations()),
+      });
+      live(signal);
+      await client.registerArkadeIdentity(binding).finally(wrote);
+      live(signal);
       return receiverFrom(held, registered.handle, registered.lightningAddress, flagged);
-    },
+    }),
     router,
     options: (target, amount, prefs) =>
       router().options(

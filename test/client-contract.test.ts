@@ -20,6 +20,8 @@ import {
 } from "../packages/client/src/index.js";
 import type { LnurlSession, PaymentSyncStore, StoredPayment } from "../packages/client/src/index.js";
 import { tokenOptions } from "../packages/client/src/index.js";
+import { arkadeLnurl } from "../packages/client/src/wallet.js";
+import { ArkAddress, SingleKey } from "@arkade-os/sdk";
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
 import { priceFeedQuotes } from "../src/price-feed.js";
 import { FfOrderStore } from "../src/ff-order-store.js";
@@ -617,6 +619,23 @@ describe("onchain rail contract", () => {
     );
     const payRequest = await payer.resolve(lnurl);
     expect(payRequest.paymentOptions).toContainEqual({ id: "onchain", type: "onchain", verifiable: false });
+  });
+
+  it("re-binds through the facade only an alias whose listed destination moved", async () => {
+    const owner = createLnurlClient({ baseUrl: ctx.baseUrl });
+    let binds = 0;
+    const client = { ...owner, registerArkadeIdentity: (r: Parameters<typeof owner.registerArkadeIdentity>[0]) => (binds++, owner.registerArkadeIdentity(r)) };
+    const identity = SingleKey.fromHex("22".repeat(32));
+    const facade = (arkadeAddress: string) => arkadeLnurl({ identity, arkadeAddress, boardingAddress: BOARDING, baseUrl: ctx.baseUrl, client });
+    const moved = new ArkAddress(new Uint8Array(32).fill(2), new Uint8Array(32).fill(3), "tark").encode();
+
+    await facade(ARK).claim({ username: "carol" });
+    await facade(ARK).owned({ refresh: true });
+    expect(binds).toBe(1);
+
+    await facade(moved).owned({ refresh: true });
+    expect(binds).toBe(2);
+    expect(await facade(moved).addresses()).toMatchObject([{ handle: "carol", arkadeAddress: moved, boardingAddress: BOARDING }]);
   });
 });
 

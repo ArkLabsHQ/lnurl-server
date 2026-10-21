@@ -4,6 +4,8 @@ import type { ArkadeLnurl, ClaimOptions, Receiver } from "./wallet.js";
 export interface ReceiverBootstrapOptions {
   /** Discovery does not allocate a receiver unless explicitly enabled. */
   autoClaimNameless?: boolean;
+  signal?: AbortSignal;
+  refresh?: boolean;
 }
 
 export type ReceiverBootstrapResult =
@@ -20,7 +22,8 @@ export async function bootstrapReceiver(
   facade: Pick<ArkadeLnurl, "owned" | "capabilities" | "claim">,
   opts: ReceiverBootstrapOptions = {},
 ): Promise<ReceiverBootstrapResult> {
-  const receiver = await facade.owned();
+  const { signal, refresh } = opts;
+  const receiver = await facade.owned({ signal, refresh });
   if (receiver?.lightningAddress) return { kind: "ready", receiver, claimed: false };
   if (receiver) {
     try {
@@ -32,7 +35,7 @@ export async function bootstrapReceiver(
 
   const capabilities = await facade.capabilities();
   if (opts.autoClaimNameless && capabilities.allocationModes.includes("session") && !capabilities.requireApiKey) {
-    return { kind: "ready", receiver: await facade.claim({ nameless: true }), claimed: true, capabilities };
+    return { kind: "ready", receiver: await facade.claim({ nameless: true }, { signal }), claimed: true, capabilities };
   }
   return { kind: "onboarding", capabilities };
 }
