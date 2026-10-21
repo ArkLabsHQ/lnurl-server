@@ -215,14 +215,16 @@ export class DiscoveryService {
    * emulator's key, so a quote from a deployment we have no key for could only
    * fund a lockup nothing can claim.
    */
-  selectLightningReceive(amountSat: number, emulatorPubkey: Uint8Array): SolverCandidate[] {
+  selectLightningReceive(amountSat: number, emulatorPubkey: Uint8Array, amountSide: "from" | "to" = "from"): SolverCandidate[] {
     if (!Number.isSafeInteger(amountSat) || amountSat <= 0) return [];
-    return (this.snapshot?.candidates ?? []).filter((candidate) =>
-      // The payout side has to be receive-capable, which the rendezvous rule
-      // does not ask — it only sizes the payer's side.
-      sideLimits(candidate.market, "base") !== null &&
-      solverLightningRendezvous([candidate.market], amountSat, emulatorPubkey) !== undefined,
-    );
+    return (this.snapshot?.candidates ?? []).filter((candidate) => {
+      const receive = sideLimits(candidate.market, "base");
+      const payer = sideLimits(candidate.market, "quote");
+      if (!receive || !payer) return false;
+      if (amountSide === "to" && (BigInt(amountSat) < receive.min || BigInt(amountSat) > receive.max)) return false;
+      // Preserve the SDK's corridor/key checks; the payer amount is unknown until a net quote returns.
+      return solverLightningRendezvous([candidate.market], amountSide === "to" ? Number(payer.min) : amountSat, emulatorPubkey) !== undefined;
+    });
   }
 
   status(): DiscoveryStatus {

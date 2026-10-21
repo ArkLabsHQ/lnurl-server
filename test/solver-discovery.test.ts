@@ -36,6 +36,14 @@ const publishing = (createdAt: number, asked: unknown[][] = []): TransportCardFe
 });
 
 describe("DiscoveryService", () => {
+  it("matches receive-side limits when net is below a solver's payer-side minimum", async () => {
+    const service = new DiscoveryService({ network: "bitcoin", registryUrls: [registryUrl], cardStore: new CardStore(), cacheStore: new CacheStore(), transportCards: null, fetchImpl: async (url) => response(url === registryUrl ? registryIndex(solverCard("registry", 30), Math.floor(Date.now() / 1000)) : solverCard("registry", 30)) });
+    await service.refresh();
+    expect(service.selectLightningReceive(999, EMULATOR)).toEqual([]);
+    expect(service.selectLightningReceive(999, EMULATOR, "to").map(c => c.name)).toEqual(["registry"]);
+    expect(service.selectLightningReceive(1000001, EMULATOR, "to")).toEqual([]);
+  });
+
   it("atomically merges registry, database, and startup-file cards in fee order", async () => {
     const cards = new CardStore();
     cards.rows.push({

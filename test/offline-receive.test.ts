@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import http from "node:http";
 import { randomBytes } from "node:crypto";
 import { bech32 } from "@scure/base";
@@ -22,25 +22,26 @@ const TOKEN = "cd".repeat(32);
 const RECEIVE = new ArkAddress(new Uint8Array(32), new Uint8Array(32), "tark").encode();
 const CLAIM_PUBKEY = "02" + "ab".repeat(32);
 
-function buildInvoice(paymentHashHex: string): string {
+function buildInvoice(paymentHashHex: string, amountSat?: number): string {
   const words: number[] = [];
   for (let i = 0; i < 7; i++) words.push(0);
   const hw = bech32.toWords(Uint8Array.from(Buffer.from(paymentHashHex, "hex")));
   words.push(1, 52 >> 5, 52 & 31, ...hw);
   for (let i = 0; i < 104; i++) words.push(0);
-  return bech32.encode("lnbc", words, 2000);
+  return bech32.encode(amountSat === undefined ? "lnbc" : `lnbc${amountSat * 10000}p`, words, 2000);
 }
 
 /** Deterministic in-memory offline-swap creator for tests. */
 class FakeCreator implements OfflineSwapCreator {
   created: OfflineSwapParams[] = [];
   settledIds = new Set<string>();
+  release = vi.fn(async (_swapId: string) => {});
   constructor(private hashHex: string) {}
   async create(params: OfflineSwapParams): Promise<OfflineSwapResult> {
     this.created.push(params);
     return {
       swapId: "swap-1",
-      invoice: buildInvoice(this.hashHex),
+      invoice: buildInvoice(this.hashHex, params.amountSide === "to" ? params.amountSat + 1 : undefined),
       preimage: "11".repeat(32),
       preimageHash: this.hashHex,
       lockupAddress: RECEIVE,
@@ -96,7 +97,7 @@ let addressId: number;
 
 beforeEach(() => {
   db = openDb(":memory:"); runMigrations(db); repos = createRepositories(db);
-  const domainId = repos.domains.create({ domain: "domain.com", allocationModes: ["self"] }).id;
+  const domainId = repos.domains.create({ domain: "domain.com", allocationModes: ["self", "session"] }).id;
   addressId = repos.addresses.create({
     domainId, username: "off", status: "active",
     sessionId: deriveSessionId(TOKEN), encryptedToken: encryptToken(TOKEN, KEY),
@@ -136,6 +137,123 @@ describe("offline receive", () => {
     // verify is registered but not yet settled (poller hasn't run)
     const v = await req(`${ctx.baseUrl}/lnurl/verify/${hash}`, "GET", "domain.com");
     expect(v.body).toMatchObject({ status: "OK", settled: false, preimage: null });
+  });
+
+  it("creates a net-priced invoice without owner credentials and persists the gross invoice amount", async () => {
+    const hash = "ac".repeat(32);
+    const creator = new FakeCreator(hash);
+    const store = new DbSettlementStore(db, 60_000);
+    const recovery = new OfflineSwapStore(db, 60_000);
+    ctx = await start(repos, creator, store, recovery);
+    await req(`${ctx.baseUrl}/lnurl/address/off/arkade`, "POST", "domain.com", { arkadeAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY }, TOKEN);
+    const response = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/invoice`, "POST", "domain.com", { receiveAmountMsat: 1000000, maxPayAmountMsat: 1050000 });
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      verify: `${ctx.baseUrl}/lnurl/verify/${hash}`,
+      paymentQuote: {
+        requested: { amount: "1000000", unit: "msat" },
+        payment: { amount: "1001000", unit: "msat" },
+        receive: { amount: "1000000", unit: "msat" },
+        fees: [{ name: "solver", amount: { amount: "1000", unit: "msat" } }],
+      },
+    });
+    expect(creator.created[0]).toMatchObject({ amountSat: 1000, amountSide: "to", maxPayAmountSat: 1050, receiveAddress: RECEIVE });
+    expect(store.get(hash)?.amountMsat).toBe(1001000);
+    expect(new OfflineSwapStore(db, 60_000).listPending()[0]).toMatchObject({ paymentHash: hash, recovery: { expectedAmount: 1000 } });
+    expect(store.get(hash)?.quote).toEqual({ amount: "1000", unit: "sat", decimals: 0 });
+    expect(JSON.stringify(response.body)).not.toContain('"preimage"');
+    expect(JSON.stringify(response.body)).not.toContain(TOKEN);
+    expect((await req(`${ctx.baseUrl}/lnurl/verify/${hash}`, "GET", "domain.com")).body).toMatchObject({ settled: false });
+  });
+
+  it.each([
+    { receiveAmountMsat: 0, maxPayAmountMsat: 1000000 },
+    { receiveAmountMsat: 1001, maxPayAmountMsat: 2000 },
+    { receiveAmountMsat: 2000, maxPayAmountMsat: 1000 },
+    { receiveAmountMsat: "1000", maxPayAmountMsat: 2000 },
+    { receiveAmountMsat: 1000, maxPayAmountMsat: 100000001 },
+  ])("rejects invalid net receive bounds before asking a solver: %j", async (body) => {
+    const creator = new FakeCreator("ad".repeat(32));
+    ctx = await start(repos, creator, new MemorySettlementStore(60_000));
+    await req(`${ctx.baseUrl}/lnurl/address/off/arkade`, "POST", "domain.com", { arkadeAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY }, TOKEN);
+    const response = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/invoice`, "POST", "domain.com", body);
+    expect(response.body.status).toBe("ERROR");
+    expect(creator.created).toHaveLength(0);
+  });
+
+  it("does not persist a net request when the invoice exceeds the payer ceiling", async () => {
+    const hash = "ae".repeat(32);
+    const store = new MemorySettlementStore(60_000);
+    ctx = await start(repos, new FakeCreator(hash), store);
+    await req(`${ctx.baseUrl}/lnurl/address/off/arkade`, "POST", "domain.com", { arkadeAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY }, TOKEN);
+    const response = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/invoice`, "POST", "domain.com", { receiveAmountMsat: 1000000, maxPayAmountMsat: 1000000 });
+    expect(response.body.status).toBe("ERROR");
+    expect(store.get(hash)).toBeUndefined();
+  });
+
+  it.each(["decode", "persistence"])("releases an unaccepted swap after a %s failure", async (failure) => {
+    const hash = "be".repeat(32);
+    const creator = new FakeCreator(hash);
+    const store = new MemorySettlementStore(60_000);
+    if (failure === "decode") {
+      const create = creator.create.bind(creator);
+      creator.create = async (params) => ({ ...await create(params), invoice: "not-a-bolt11" });
+    } else {
+      vi.spyOn(store, "create").mockImplementation(() => { throw new Error("storage unavailable"); });
+    }
+    ctx = await start(repos, creator, store);
+    repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
+    const response = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/invoice`, "POST", "domain.com", { receiveAmountMsat: 1000000, maxPayAmountMsat: 1050000 });
+    expect(response.body.status).toBe("ERROR");
+    expect(creator.release).toHaveBeenCalledExactlyOnceWith("swap-1");
+    expect(store.get(hash)).toBeUndefined();
+  });
+
+  it.each([
+    { net: 999, cap: 1001, accepted: true, calls: 1 },
+    { net: 998, cap: 1000, accepted: false, calls: 1 },
+    { net: 998, cap: 999, accepted: false, calls: 0 },
+  ])("applies payer bounds to the invoice rather than the net target: %j", async ({ net, cap, accepted, calls }) => {
+    const hash = "bf".repeat(32);
+    const creator = new FakeCreator(hash);
+    const store = new MemorySettlementStore(60_000);
+    db.prepare("UPDATE domains SET min_sendable = ?").run(1000000);
+    ctx = await start(repos, creator, store);
+    repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
+    const response = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/invoice`, "POST", "domain.com", { receiveAmountMsat: net * 1000, maxPayAmountMsat: cap * 1000 });
+    expect(creator.created).toHaveLength(calls);
+    if (accepted) {
+      expect(response.body).toMatchObject({ paymentQuote: { receive: { amount: "999000", unit: "msat" }, payment: { amount: "1000000", unit: "msat" } } });
+      expect(store.get(hash)?.amountMsat).toBe(1000000);
+    } else {
+      expect(response.body.status).toBe("ERROR");
+      expect(store.get(hash)).toBeUndefined();
+      expect(creator.release).toHaveBeenCalledTimes(calls);
+    }
+    const ordinary = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=999000`, "GET", "domain.com");
+    expect(ordinary.body.status).toBe("ERROR");
+    expect(creator.created).toHaveLength(calls);
+  });
+
+  it("honors address rail policy for net requests", async () => {
+    const creator = new FakeCreator("af".repeat(32));
+    ctx = await start(repos, creator, new MemorySettlementStore(60_000));
+    await req(`${ctx.baseUrl}/lnurl/address/off/arkade`, "POST", "domain.com", { arkadeAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY }, TOKEN);
+    db.prepare("UPDATE addresses SET disabled_rails = ? WHERE id = ?").run(JSON.stringify(["offline-swap"]), addressId);
+    const response = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/invoice`, "POST", "domain.com", { receiveAmountMsat: 1000000, maxPayAmountMsat: 1050000 });
+    expect(response.body).toMatchObject({ status: "ERROR", reason: "offline receive is disabled for this address" });
+    expect(creator.created).toHaveLength(0);
+  });
+
+  it("supports a nameless receiver without provisioning its owner token to the requester", async () => {
+    ctx = await start(repos, new FakeCreator("ba".repeat(32)), new MemorySettlementStore(60_000));
+    const token = "bc".repeat(32);
+    const registered = await req(`${ctx.baseUrl}/lnurl/address`, "POST", "domain.com", { token, nameless: true });
+    expect(registered.status).toBe(201);
+    const handle = registered.body.handle;
+    await req(`${ctx.baseUrl}/lnurl/address/${handle}/arkade`, "POST", "domain.com", { arkadeAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY }, token);
+    const result = await req(`${ctx.baseUrl}/lnurl/${handle}/invoice`, "POST", "domain.com", { receiveAmountMsat: 1000000, maxPayAmountMsat: 1050000 });
+    expect(result.body).toMatchObject({ paymentQuote: { receive: { amount: "1000000", unit: "msat" } } });
   });
 
   it("still errors offline when no arkade identity is configured", async () => {
