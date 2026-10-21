@@ -13,7 +13,7 @@ import { LnurlError } from "./errors.js";
 import { deriveSessionTokenWithSigner } from "./token.js";
 export type { HdReceiveConfig, HdReceiveAllocation, HdReceiveAllocationPage } from "./addresses.js";
 
-export { LNURL_ARKADE_RAIL, LNURL_LIGHTNING_RAIL, lnurlQuoteMeta, lnurlRails } from "./rail.js";
+export { firstQuote, isLnurlRail, LNURL_ARKADE_RAIL, LNURL_LIGHTNING_RAIL, lnurlQuoteMeta, lnurlRails } from "./rail.js";
 export type { LnurlPaymentRequest, LnurlQuoteMeta, LnurlRailDeps } from "./rail.js";
 export { arkadeLnurl, arkadePaymentRouter, encodeLnurl, DEFAULT_RAIL_PRIORITY } from "./wallet.js";
 export type { ArkadeLnurl, ArkadeLnurlConfig, ArkadeLnurlOptions, ArkadeLnurlSource, ClaimOptions, LnurlPaymentRouter, LnurlWallet, NameOptions, Receiver } from "./wallet.js";
@@ -35,7 +35,7 @@ export {
 export type { SentPayment } from "./activity.js";
 export { createLnurlSendTracker } from "./sends.js";
 export type { LnurlSentPaymentStore, LnurlSendTrackerOptions, LnurlSendTracker } from "./sends.js";
-export { lnurlRailLimits, resolveLnurlRails } from "./receive-rails.js";
+export { lnurlPayableRanges, lnurlRailLimits, resolveLnurlRails } from "./receive-rails.js";
 export type { LnurlRailType } from "./receive-rails.js";
 export { bootstrapReceiver, claimOrAdopt } from "./receiver-bootstrap.js";
 export type { ReceiverBootstrapOptions, ReceiverBootstrapResult } from "./receiver-bootstrap.js";

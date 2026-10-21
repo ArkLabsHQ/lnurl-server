@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PaymentRail, RouteQuote, RouterContext } from "@arkade-os/sdk";
 import { createLnurlClient } from "../src/index.js";
-import { LNURL_ARKADE_RAIL, LNURL_LIGHTNING_RAIL, lnurlQuoteMeta, lnurlRails } from "../src/rail.js";
+import { firstQuote, isLnurlRail, LNURL_ARKADE_RAIL, LNURL_LIGHTNING_RAIL, lnurlQuoteMeta, lnurlRails } from "../src/rail.js";
 import { encodeLnurl } from "../src/wallet.js";
 import { buildInvoice, HASH } from "./invoice.js";
 
@@ -215,5 +215,28 @@ describe("lnurl rails", () => {
 
       expect(inner.seen).toEqual([{ raw: invoice, amount: undefined }]);
     });
+  });
+});
+
+describe("firstQuote", () => {
+  const refusing = (railId: string, error = new Error(`${railId} refused`)) =>
+    ({ railId, quote: async (): Promise<RouteQuote> => { throw error; } });
+
+  it("returns the first option that quotes, reporting the ones that refused and asking no further", async () => {
+    const quoted = { railId: "b" } as RouteQuote;
+    const refused: string[] = [];
+    const options = [refusing("a"), { railId: "b", quote: async () => quoted }, refusing("c")];
+    await expect(firstQuote(options, (railId) => refused.push(railId))).resolves.toBe(quoted);
+    expect(refused).toEqual(["a"]);
+  });
+
+  it("throws the last refusal, or says there was nothing to quote", async () => {
+    const last = new Error("last");
+    await expect(firstQuote([refusing("a"), refusing("b", last)])).rejects.toBe(last);
+    await expect(firstQuote([])).rejects.toThrow(/nothing to quote/);
+  });
+
+  it("tells the lnurl rails apart", () => {
+    expect([LNURL_ARKADE_RAIL, LNURL_LIGHTNING_RAIL, "ark", undefined].map((id) => isLnurlRail(id))).toEqual([true, true, false, false]);
   });
 });
