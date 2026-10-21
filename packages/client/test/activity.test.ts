@@ -1,7 +1,15 @@
 import { describe, it, expect } from "vitest";
 import { TxType, type ArkTransaction } from "@arkade-os/sdk";
 import type { StoredPayment } from "../src/sync.js";
-import { absorbedPaymentKey, lnurlActivityResolver, railOf, sentActivityResolver } from "../src/activity.js";
+import {
+  absorbedPaymentKey,
+  lnurlActivity,
+  lnurlActivityResolver,
+  LNURL_ACTIVITY_KIND,
+  railOf,
+  SENT_ACTIVITY_KIND,
+  sentActivityResolver,
+} from "../src/activity.js";
 import type { SentPayment } from "../src/activity.js";
 
 const ADDRESS = "test2@lnurl.mutinynet.arkade.sh";
@@ -165,5 +173,27 @@ describe("sentActivityResolver", () => {
     const resolver = sentActivityResolver(() => [sent()]);
     await resolver.prepare?.();
     expect(resolver.resolve(tx("sendtx1"))![0]!.metadata).not.toHaveProperty("receiver");
+  });
+});
+
+describe("lnurlActivity", () => {
+  const asActivity = (membership: { groupId: string; kind?: string; metadata?: Record<string, unknown> }) =>
+    ({ id: membership.groupId, intent: { kind: membership.kind, metadata: membership.metadata } });
+
+  it("reads what each resolver recorded, typed, and nothing for a row neither tagged", async () => {
+    const received = lnurlActivityResolver(() => [payment({ payoutReference: "abc123" })]);
+    const nameless = lnurlActivityResolver(() => [payment({ payoutReference: "def456", lightningAddress: null })]);
+    const sends = sentActivityResolver(() => [sent()]);
+    await Promise.all([received.prepare?.(), nameless.prepare?.(), sends.prepare?.()]);
+    const [r] = received.resolve(tx("abc123"))!;
+    const [n] = nameless.resolve(tx("def456"))!;
+    const [s] = sends.resolve(tx("sendtx1"))!;
+
+    expect(r!.kind).toBe(LNURL_ACTIVITY_KIND);
+    expect(s!.kind).toBe(SENT_ACTIVITY_KIND);
+    expect(lnurlActivity(asActivity(r!))).toEqual({ direction: "received", address: ADDRESS, rail: "arkade" });
+    expect(lnurlActivity(asActivity(n!))).toEqual({ direction: "received", rail: "arkade" });
+    expect(lnurlActivity(asActivity(s!))).toEqual({ direction: "sent", address: TARGET, rail: "lnurl-arkade" });
+    expect(lnurlActivity({ id: "boarding:deadbeef" })).toBeUndefined();
   });
 });

@@ -13,6 +13,9 @@ export const SENT_RESOLVER_ID = "lnurl:sends";
 export const LNURL_GROUP_PREFIX = "lnurl:";
 export const SENT_GROUP_PREFIX = "sent:";
 
+export const LNURL_ACTIVITY_KIND = "lnurl";
+export const SENT_ACTIVITY_KIND = "lnurl-send";
+
 export const railOf = (p: StoredPayment): string =>
   p.kind === "bolt11" ? "lightning" : p.paymentOption ?? "destination";
 
@@ -71,7 +74,7 @@ export function sentActivityResolver(sends: () => SentPayment[] | Promise<SentPa
         groupId: `${SENT_GROUP_PREFIX}${sent.txid}`,
         // The counterparty, not the rail: that is the question a sent row answers.
         label: `→ ${sent.target}`,
-        kind: "lnurl-send",
+        kind: SENT_ACTIVITY_KIND,
         metadata: {
           target: sent.target,
           rail: sent.railId,
@@ -109,7 +112,7 @@ export function lnurlActivityResolver(payments: () => StoredPayment[] | Promise<
       return [{
         groupId: `${LNURL_GROUP_PREFIX}${payment.key}`,
         label: `${railOf(payment)} · ${payment.lightningAddress ?? "LNURL"}`,
-        kind: "lnurl",
+        kind: LNURL_ACTIVITY_KIND,
         metadata: {
           rail: railOf(payment),
           lightningAddress: payment.lightningAddress,
@@ -119,5 +122,19 @@ export function lnurlActivityResolver(payments: () => StoredPayment[] | Promise<
         },
       }];
     },
+  };
+}
+
+/** What either resolver recorded on an activity row, typed: the counterparty for a send, our own address for a receive. */
+export function lnurlActivity(activity: { id: string; intent?: { metadata?: Record<string, unknown> } }):
+  { direction: "received" | "sent"; address?: string; rail?: string } | undefined {
+  const sent = activity.id.startsWith(SENT_GROUP_PREFIX);
+  if (!sent && !activity.id.startsWith(LNURL_GROUP_PREFIX)) return undefined;
+  const meta = activity.intent?.metadata ?? {};
+  const address = sent ? meta.target : meta.lightningAddress;
+  return {
+    direction: sent ? "sent" : "received",
+    ...(typeof address === "string" ? { address } : {}),
+    ...(typeof meta.rail === "string" ? { rail: meta.rail } : {}),
   };
 }

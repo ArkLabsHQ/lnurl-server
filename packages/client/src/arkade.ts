@@ -19,13 +19,16 @@ export { arkadeLnurl, arkadePaymentRouter, encodeLnurl, DEFAULT_RAIL_PRIORITY } 
 export type { ArkadeLnurl, ArkadeLnurlConfig, ArkadeLnurlOptions, ArkadeLnurlSource, ClaimOptions, LnurlPaymentRouter, LnurlWallet, NameOptions, Receiver } from "./wallet.js";
 export {
   absorbedPaymentKey,
+  lnurlActivity,
   lnurlActivityResolver,
   mergeSentPayment,
   quotedLabel,
   railOf,
   sentActivityResolver,
+  LNURL_ACTIVITY_KIND,
   LNURL_GROUP_PREFIX,
   LNURL_RESOLVER_ID,
+  SENT_ACTIVITY_KIND,
   SENT_GROUP_PREFIX,
   SENT_RESOLVER_ID,
 } from "./activity.js";
