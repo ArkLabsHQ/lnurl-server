@@ -275,6 +275,7 @@ export {
 export { browserPaymentStore, forgetStoredPayments, storedPayments } from "./stores.js";
 export { CONFIRMATION_TIMEOUT_MS, createPendingConfirmations } from "./confirmations.js";
 export type { PendingConfirmations, ReceiverConfirmation } from "./confirmations.js";
+export type { LnurlAddressErrorCode } from "./errors.js";
 export { clearLnurlPaymentsForReset, createLnurlPaymentRepository } from "./repository.js";
 export type { LnurlPaymentRepository, LnurlPaymentStore, LnurlPaymentWatermarkStore } from "./repository.js";
 export { formatUnitAmount, parseUnitAmount } from "./units.js";
