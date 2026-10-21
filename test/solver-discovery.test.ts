@@ -561,6 +561,56 @@ describe("DiscoveryService", () => {
     expect(cards.rows[0]!.updatedAt).toBe(2);
   });
 
+  it.each(["SQLITE_BUSY", "SQLITE_FULL"])("publishes the new snapshot and saves later rows after a %s write-back failure", async (message) => {
+    const cards = new CardStore();
+    cards.rows.push(...[1, 2].map((id) => ({
+      id, label: `row${id}`, network: "bitcoin", cardJson: JSON.stringify(nostrCard(50)), enabled: true, createdAt: 1, updatedAt: 1,
+    })));
+    let fee = 50;
+    const service = new DiscoveryService({
+      network: "bitcoin", registryUrls: [], cardStore: cards, cacheStore: new CacheStore(),
+      transportCards: { fetch: async () => [{ pubkey: nostrSolver().discovery_pubkey, createdAt: 10000, card: nostrCard(fee) }] },
+      now: () => 10_000_000, refreshIntervalMs: 0,
+    });
+    await service.refresh();
+    const replace = cards.replace.bind(cards);
+    let fail = true;
+    const attempted: number[] = [];
+    cards.replace = (id, input) => {
+      attempted.push(id);
+      if (id === 1 && fail) throw new Error(message);
+      return replace(id, input);
+    };
+    fee = 10;
+    await expect(service.refresh()).resolves.toBeUndefined();
+    expect(attempted).toEqual([1, 2]);
+    expect(service.status()).toMatchObject({ ready: true, generation: 2 });
+    expect(service.selectLightningReceive(10000, EMULATOR)[0]?.market.fee_bps).toBe(10);
+    expect(JSON.parse(cards.rows[0]!.cardJson).markets).toEqual(nostrCard(50).markets);
+    expect(JSON.parse(cards.rows[1]!.cardJson).markets).toEqual(nostrCard(10).markets);
+    expect(service.status().warnings).toContain(`db:1:row1: card write-back failed: ${message}`);
+
+    fail = false;
+    await service.refresh();
+    expect(service.status().generation).toBe(3);
+    expect(JSON.parse(cards.rows[0]!.cardJson).markets).toEqual(nostrCard(10).markets);
+    expect(service.status().warnings).not.toContainEqual(expect.stringContaining("card write-back failed"));
+  });
+
+  it("ignores a malformed published signature without interrupting refresh", async () => {
+    const cards = new CardStore();
+    cards.rows.push({ id: 1, label: "pasted", network: "bitcoin", cardJson: JSON.stringify(nostrCard(50)), enabled: true, createdAt: 1, updatedAt: 1 });
+    const service = new DiscoveryService({
+      network: "bitcoin", registryUrls: [], cardStore: cards, cacheStore: new CacheStore(),
+      transportCards: { fetch: async () => [{ pubkey: nostrSolver().discovery_pubkey, createdAt: 10000, card: { ...nostrCard(10), sig: 42 } }] },
+      now: () => 10_000_000, refreshIntervalMs: 0,
+    });
+    await expect(service.refresh()).resolves.toBeUndefined();
+    expect(service.status()).toMatchObject({ ready: true, generation: 1 });
+    expect(cards.rows[0]!.updatedAt).toBe(1);
+    expect(service.selectLightningReceive(10000, EMULATOR)[0]?.market.fee_bps).toBe(50);
+  });
+
   it("keeps the cards it has when Nostr cannot be read, and only warns", async () => {
     const cards = new CardStore();
     cards.rows.push({

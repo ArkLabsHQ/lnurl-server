@@ -317,7 +317,7 @@ export class DiscoveryService {
       transportCards: this.transportCards,
       now: Math.floor(this.now() / 1000),
     });
-    this.storeDeliveredCards(dbRows);
+    const writeBackWarnings = this.storeDeliveredCards(dbRows);
     for (const source of result.sources) {
       const body = this.fetchedBodies.get(source.source);
       // Stale bodies too: discover() decides what a stale index still contributes.
@@ -337,7 +337,7 @@ export class DiscoveryService {
       ...(this.cacheUsed.has(source.source) ? { cache: "fresh" as const } : {}),
       ...(this.cacheExpired.has(source.source) ? { cache: "expired" as const } : {}),
     }));
-    this.latestWarnings = [...result.warnings, ...this.refusedRelays];
+    this.latestWarnings = [...result.warnings, ...this.refusedRelays, ...writeBackWarnings];
     if (!candidates.length) {
       const failedRegistries = new Set(result.sources
         .filter((source) => source.sourceType === "registry" && !source.ok)
@@ -369,7 +369,8 @@ export class DiscoveryService {
    * when relays are unreachable stay current. Pointers stay pointers: they
    * already fail closed, which is the operator's choice.
    */
-  private storeDeliveredCards(rows: readonly SolverCardRow[]): void {
+  private storeDeliveredCards(rows: readonly SolverCardRow[]): string[] {
+    const warnings: string[] = [];
     const now = Math.floor(this.now() / 1000);
     const latest = new Map<string, TransportCard>();
     for (const entry of this.delivered) {
@@ -379,17 +380,22 @@ export class DiscoveryService {
     for (const row of rows) {
       let stored: { name?: unknown; discovery_pubkey?: unknown; markets?: unknown; sig?: unknown };
       try { stored = JSON.parse(row.cardJson); } catch { continue; }
-      if (stored.markets === undefined || typeof stored.discovery_pubkey !== "string") continue;
-      const found = latest.get(stored.discovery_pubkey);
-      const card = found?.card as typeof stored | undefined;
-      if (!found || !card || card.discovery_pubkey !== stored.discovery_pubkey || card.name !== stored.name || card.markets === undefined) continue;
-      if (Math.abs(now - found.createdAt) > MAX_CARD_AGE_SECONDS) continue;
-      if (!verifyCardSig(card as { discovery_pubkey: string; sig: string }) || cardErrors(card, this.options.network).length) continue;
-      const { sig: _storedSig, ...storedBody } = stored;
-      const { sig: _cardSig, ...cardBody } = card;
-      if (stableStringify(storedBody) === stableStringify(cardBody)) continue;
-      this.options.cardStore.replace(row.id, { label: row.label, network: row.network, cardJson: JSON.stringify(card) });
+      try {
+        if (stored.markets === undefined || typeof stored.discovery_pubkey !== "string") continue;
+        const found = latest.get(stored.discovery_pubkey);
+        const card = found?.card as typeof stored | undefined;
+        if (!found || !card || card.discovery_pubkey !== stored.discovery_pubkey || card.name !== stored.name || card.markets === undefined) continue;
+        if (Math.abs(now - found.createdAt) > MAX_CARD_AGE_SECONDS) continue;
+        if (!verifyCardSig(card as { discovery_pubkey: string; sig: string }) || cardErrors(card, this.options.network).length) continue;
+        const { sig: _storedSig, ...storedBody } = stored;
+        const { sig: _cardSig, ...cardBody } = card;
+        if (stableStringify(storedBody) === stableStringify(cardBody)) continue;
+        this.options.cardStore.replace(row.id, { label: row.label, network: row.network, cardJson: JSON.stringify(card) });
+      } catch (error) {
+        warnings.push(`db:${row.id}:${row.label}: card write-back failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
+    return warnings;
   }
 
   private cacheAwareFetch: FetchLike = async (input, init) => {
