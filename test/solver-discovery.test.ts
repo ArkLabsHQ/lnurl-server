@@ -12,6 +12,11 @@ const twentyDaysLater = () => 1_000_000 + 20 * 86_400_000;
 class CardStore {
   rows: Array<{ id: number; label: string; network: string; cardJson: string; enabled: boolean; createdAt: number; updatedAt: number }> = [];
   listEnabled(network: string) { return this.rows.filter((row) => row.network === network); }
+  replace(id: number, input: { label: string; network: string; cardJson: string }) {
+    const row = this.rows.find((candidate) => candidate.id === id);
+    if (row) Object.assign(row, input, { updatedAt: row.updatedAt + 1 });
+    return row;
+  }
 }
 
 class CacheStore {
@@ -518,6 +523,34 @@ describe("DiscoveryService", () => {
     // The admin API reports a pasted card active off this count.
     expect(service.status().sources).toEqual([expect.objectContaining({ source: "db:1:pointer", ok: true, marketCount: 1 })]);
     service.stop();
+  });
+
+  it("stores the card its solver publishes over a stale pasted copy, and leaves pointers and rejected cards alone", async () => {
+    const cards = new CardStore();
+    const row = (id: number, card: unknown) => ({
+      id, label: `row${id}`, network: "bitcoin", cardJson: JSON.stringify(card), enabled: true, createdAt: 1, updatedAt: 1,
+    });
+    const pointer = nostrPointer();
+    cards.rows.push(row(1, nostrCard(50)), row(2, pointer));
+    const published = (createdAt: number): TransportCardFetcher => ({
+      fetch: async () => [{ pubkey: nostrSolver().discovery_pubkey, createdAt, card: nostrCard(10) }],
+    });
+    const service = (createdAt: number) => new DiscoveryService({
+      network: "bitcoin", registryUrls: [], cardStore: cards, cacheStore: new CacheStore(),
+      transportCards: published(createdAt), now: () => 10_000_000, refreshIntervalMs: 0,
+    });
+
+    // Past MAX_CARD_AGE_SECONDS: discover() refuses it, so the stored copy must not take it either.
+    await service(10_000 - 7_201).start();
+    expect(cards.rows.map((r) => r.updatedAt)).toEqual([1, 1]);
+
+    await service(10_000).start();
+    expect(JSON.parse(cards.rows[0]!.cardJson).markets).toEqual(nostrCard(10).markets);
+    expect(cards.rows[1]!.cardJson).toBe(JSON.stringify(pointer));
+
+    // Same content re-sent on the heartbeat: no write.
+    await service(10_000).start();
+    expect(cards.rows[0]!.updatedAt).toBe(2);
   });
 
   it("keeps the cards it has when Nostr cannot be read, and only warns", async () => {

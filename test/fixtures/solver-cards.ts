@@ -125,4 +125,4 @@ export const nostrSolver = (relay = "wss://nostr.relay.test") => ({
 
 export const nostrPointer = (relay?: string) => signCard({ version: 0, ...nostrSolver(relay) }, NOSTR_KEY);
 
-export const nostrCard = () => signCard({ version: 0, ...nostrSolver(), markets: solverCard("cheap", 10).markets }, NOSTR_KEY);
+export const nostrCard = (feeBps = 10) => signCard({ version: 0, ...nostrSolver(), markets: solverCard("cheap", feeBps).markets }, NOSTR_KEY);

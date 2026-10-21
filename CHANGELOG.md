@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+- **Pasted solver cards no longer go stale** — each discovery refresh rewrites a stored full card with the one its solver publishes over Nostr (kind 38859), once that card passes the same signature, validity and freshness rules discovery applies. The admin view and the fallback when relays are unreachable now show the solver's current terms instead of the copy pasted at setup. Pointer cards are left as they are.
+
 ## 0.5.0 - 2026-10-21
 
 ### Added
