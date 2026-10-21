@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ArkAddress } from "@arkade-os/sdk";
 import { createLnurlClient, type LnurlClient } from "../src/index.js";
 import type { InvoiceResult, PayRequest, PaymentOption } from "../src/types.js";
-import { lnurlRailLimits, resolveLnurlRails } from "../src/receive-rails.js";
+import { lnurlPayableRanges, lnurlRailLimits, resolveLnurlRails } from "../src/receive-rails.js";
 import { buildInvoice, HASH } from "./invoice.js";
 
 const arkAddress = (operator = 2, recipient = 3, hrp = "tark") =>
@@ -180,5 +180,25 @@ describe("resolveLnurlRails", () => {
     const client = resultClient({ kind: "destination", paymentOption: "ark", paymentDestination: own.arkade });
     expect(await resolveLnurlRails(receiver(payRequest(options)), 20, ["arkade"], { ...own, arkade: "" }, client))
       .toMatchObject([{ status: "rejected" }]);
+  });
+});
+
+describe("lnurlPayableRanges", () => {
+  it("collects what a payer can send on the given rails, and whether one amount is all it takes", () => {
+    const ranged = lnurlPayableRanges(payRequest([
+      { id: "ln", type: "lightning", minSendable: 1000, maxSendable: 50_000_000 },
+      { id: "ark", type: "arkade", minSendable: 330_000, maxSendable: 90_000_000 },
+      { id: "btc", type: "onchain", minSendable: 330_000_000, maxSendable: 900_000_000 },
+      { id: "odd", type: "lightning", minSendable: 1500, maxSendable: 1500 },
+    ]));
+    expect(ranged).toMatchObject({
+      ranges: [{ type: "lightning", min: 1, max: 50_000 }, { type: "arkade", min: 330, max: 90_000 }],
+      min: 1, max: 90_000, fixed: false,
+    });
+    expect([0, 1, 60_000, 90_001].map(ranged.accepts)).toEqual([false, true, true, false]);
+    expect(lnurlPayableRanges(payRequest([{ id: "ln", type: "lightning", minSendable: 21_000, maxSendable: 21_000 }])))
+      .toMatchObject({ min: 21, max: 21, fixed: true });
+    expect(lnurlPayableRanges(payRequest([{ id: "btc", type: "onchain" }]))).toMatchObject({ ranges: [], min: 0, max: 0, fixed: false });
+    expect(lnurlPayableRanges(payRequest([{ id: "btc", type: "onchain" }]), ["onchain"]).ranges).toEqual([{ type: "onchain", min: 1, max: 100 }]);
   });
 });
