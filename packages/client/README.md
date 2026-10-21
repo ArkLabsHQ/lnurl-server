@@ -55,7 +55,7 @@ const handle = await (await best.quote()).send()
 
 **`payRequest()` fetches once per 30 s.** Every call on one `Receiver` within that window shares a single fetch, in flight or done, so a screen asking on every amount change costs one GET; a failed fetch is not kept. `claim` and `upgrade` retire it at once, even when they fail; a change made anywhere else - another device, the operator - shows within 30 s. `createLnurlClient().resolve(receiver.lnurl)` always asks the server.
 
-**Keeping aliases pointed at this wallet.** `owned({ refresh: true })` first re-binds this facade's Arkade, claim and boarding destinations on every active alias the server lists as bound elsewhere - after an address rotation or a restore - and on all of them where the server does not report it. A missing boarding address never counts as a change, so a registered one stays. An `hd` facade does not refresh. A static one that finds an HD alias still re-binds the others, then rejects, since the server refuses that downgrade. `claim`, `owned` and `upgrade` run one at a time per identity object and server, across facades, so a receive screen and a startup sync built separately never interleave their writes. Once a `signal` passed to `owned` or `claim` aborts, the call rejects with `signal.reason` - after any call queued ahead of it - and writes nothing more.
+**Keeping aliases pointed at this wallet.** `owned({ refresh: true })` first re-binds this facade's Arkade, claim and boarding destinations on every active alias the server lists as bound elsewhere - after an address rotation or a restore - and on all of them where the server does not report it. A missing boarding address never counts as a change, so a registered one stays. An alias the server refuses does not stop the rest: they are still re-bound, then the call rejects. `claim`, `owned` and `upgrade` run one at a time per identity object and server, across facades, so a receive screen and a startup sync built separately never interleave their writes. Once a `signal` passed to `owned` or `claim` aborts, the call rejects with `signal.reason` - after any call queued ahead of it - and writes nothing more.
 
 `capabilities()` reads what a domain allows before you call it - `{ domain, allocationModes, usernameRules, requireApiKey }` - so onboarding can offer only the modes actually enabled instead of guessing and hitting `forbidden_mode`. A domain requiring an operator-reserved name takes a `claimCode` the same way on either call below: `claim({ username: 'alice', claimCode })`.
 
@@ -68,42 +68,6 @@ Receiving accepts a `LnurlWallet`: only `identity.signMessage`, `identity.compre
 CI checks the client against SDK `0.5.0-rc.0` and `0.5.0-rc.19` in isolated installs, independent of the server's SDK pin. Run the same types, tests, build, and consumer checks with `node scripts/check-client-sdk-compat.mjs <sdk-version>` from the repository root.
 
 Everything below is the surface these are built on; reach for it when the facade does not fit.
-
-## HD offline receiving
-
-The optional `/hd` entry contains the branch and restoration helpers. HD receiving keeps the account authentication signer stable while deriving a fresh payout address and claim key for each payment. The ordinary Arkade and boarding addresses are never sent when `hd` is configured.
-
-```ts
-import { arkadeLnurl } from '@arkade-os/lnurl-client/arkade'
-import { createHdReceiveBranch, restoreHdReceiveAllocation } from '@arkade-os/lnurl-client/hd'
-
-const delay = Number(arkInfo.unilateralExitDelay)
-const branch = createHdReceiveBranch({
-  accountDescriptor: wallet.identity.descriptor,
-  branchPath: '2/7',
-  serverPubKey: arkInfo.signerPubkey.slice(-64),
-  hrp: 'tark',
-  exitDelay: { type: delay < 512 ? 'blocks' : 'seconds', value: delay },
-})
-const lnurl = arkadeLnurl({ wallet, hd: branch.hd, baseUrl: 'https://lnurl.example.com' })
-const receiver = await lnurl.claim({ username: 'alice' })
-const manager = await wallet.getContractManager()
-let after = 0
-for (;;) {
-  const page = await receiver.allocations({ after, limit: 100 })
-  for (const allocation of page.allocations) {
-    await restoreHdReceiveAllocation(manager, allocation, branch)
-  }
-  if (!page.allocations.length) break
-  after = page.nextAfter
-}
-```
-
-Reserve a distinct branch path for each LNURL service, outside ordinary receive and change paths. Persist the branch path and public configuration before registration; the example reserves `2/7`. Only its scoped branch xpub goes to the server. `accountDescriptor` and the returned `signingDescriptor(index)` mapping stay local so the original SDK identity can sign received coins. A raw mainnet `signerPubkey` may include a compression prefix: pass the x-only 64-character key. Read the actual exit delay and signer from Arkade info rather than copying the example's delay. Match the SDK's delay convention: values below 512 are blocks, otherwise seconds.
-
-Allocation history includes unpaid and failed invoice attempts, including old configurations after registration changes. Restore each historical allocation with its original saved branch configuration; do not substitute today's server key or delay. Save a pagination cursor only after every row on that page was registered successfully, and start at zero when restoring a fresh local wallet. A normal gap-limit wallet scan cannot cover arbitrary unpaid-invoice gaps. Allocation history remains authenticated and available after revocation. Registration requires an explicit HD-mode acknowledgement; it never falls back to a static address.
-
-The main entry point exposes `HdReceiveConfig`, `HdReceiveAllocation`, `HdReceiveAllocationPage`, `registerArkadeIdentity({ token, handle, hd })`, and `listHdAllocations(token, handle, opts)` without importing the SDK. The separate `/hd` entry adds the branch and restore helpers without loading them for static `/arkade` callers. Received funds still need the application's normal shielding flow; the LNURL service can still associate payments with the alias.
 
 ## Payer
 

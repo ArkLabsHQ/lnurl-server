@@ -2,16 +2,6 @@
 
 LNURL service that enables amountless Lightning receives for Arkade wallets, with optional SQLite persistence, LN Address (LUD-16) serving, and a React admin UI.
 
-## HD receiving
-
-An owned Lightning address can register a dedicated public receive branch instead of a fixed Arkade address. POST `/lnurl/address/:handle/arkade` with the owning Bearer token and `{ hd: { version: 1, descriptor, serverPubKey, hrp, exitDelay }, domain? }`. The descriptor is a scoped branch such as `tr([fingerprint/86'/1'/0'/2/7]tpubBranch/*)`, not an account or master xpub. `serverPubKey` is the operator's x-only key, `hrp` is `ark` or `tark`, and `exitDelay` is `{ type: "seconds" | "blocks", value: number }` using the wallet's native script policy. Seconds must be a multiple of 512; either delay must fit BIP68. The server acknowledges `{ ok: true, receiveMode: "hd" }`.
-
-Each receive callback commits a new child index and its exact payout address/key before asking a solver or returning a destination. Lightning, direct Arkade, covenant destinations and token-swap payouts use that allocation. HD mode removes static destinations, disables the static boarding rail and interactive Lightning fallback, and refuses errors rather than paying a reusable address. Legacy receivers retain their existing behavior; legacy clients cannot downgrade an HD receiver through static registration.
-
-The owner pages GET `/lnurl/address/:handle/arkade/allocations?after=0&limit=100` to recover every reserved child, including unpaid attempts and historical configurations. `nextAfter` is an exclusive allocation-id cursor. Persist it only after registering the page's receive contracts locally. Do not rely on a wallet gap limit: requests that never become invoices still consume indexes. Recovery remains available to the owner after revocation. The client package's `/hd` helpers export a dedicated public branch and verify/rebuild receive contracts with local signing descriptors; see [the client guide](packages/client/README.md#hd-offline-receiving).
-
-Migration 26 is additive. Keep the allocation tables and counters when disabling HD issuance or rolling back application code; resetting them can reuse payment keys. Pause HD callbacks before using a server version that does not enforce HD mode. Applications must retain the seed and local branch mapping and resume watching/shielding payouts; this service never receives the private branch or performs a private-pool deposit. The LNURL operator still knows which payments belong to the Lightning alias, and amounts and timing remain observable outside the pool.
-
 ## Flow — ephemeral LNURL-pay (always available)
 
 ```
