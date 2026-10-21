@@ -1,20 +1,26 @@
 import { readFile } from "node:fs/promises";
 import {
   DEFAULT_MAX_AGE_SECONDS,
+  MAX_CARD_AGE_SECONDS,
+  cardErrors,
   discover,
   marketCorridor,
   sideLimits,
+  stableStringify,
   validateCard,
+  verifyCardSig,
   type DiscoveredMarket,
   type FetchLike,
   type Network,
   type SourceReport,
+  type TransportCard,
   type TransportCardFetcher,
 } from "@arkade-os/solver-discovery";
 import { nostrCardFetcher } from "@arkade-os/swap/nostr";
 import { solverLightningRendezvous } from "@arkade-os/swap/protocol";
 import type { SolverCardsRepo } from "../db/repositories/solver-cards.js";
 import type { SolverRegistryCacheRepo } from "../db/repositories/solver-registry-cache.js";
+import type { SolverCardRow } from "../types/index.js";
 import { ConfigError, MalformedRecordError, UpstreamError } from "../errors.js";
 import { isPrivateHost } from "../guarded-fetch.js";
 
@@ -63,7 +69,7 @@ async function readCapped(response: Awaited<ReturnType<FetchLike>>, max: number)
 // key contributes no range rather than one we could not honour.
 const ANY_EMULATOR = new Uint8Array(32).fill(1);
 
-type CardStore = Pick<SolverCardsRepo, "listEnabled">;
+type CardStore = Pick<SolverCardsRepo, "listEnabled" | "replace">;
 type CacheStore = Pick<SolverRegistryCacheRepo, "get" | "put">;
 
 export interface SolverCandidate {
@@ -137,6 +143,7 @@ export class DiscoveryService {
   private cacheExpired = new Set<string>();
   private fetchedBodies = new Map<string, string>();
   private refusedRelays = new Set<string>();
+  private delivered: TransportCard[] = [];
 
   constructor(private options: DiscoveryServiceOptions) {
     this.now = options.now ?? Date.now;
@@ -145,10 +152,13 @@ export class DiscoveryService {
     this.upstreamFetch = options.fetchImpl ?? (fetch as FetchLike);
     const fetcher = options.transportCards === null ? undefined : options.transportCards ?? nostrCardFetcher();
     this.transportCards = fetcher && {
-      fetch: (solvers, network) => fetcher.fetch(solvers.flatMap((solver) => {
-        const relays = this.allowedRelays(solver.name, solver.transports?.nostr?.relays ?? []);
-        return relays.length ? [{ ...solver, transports: { ...solver.transports, nostr: { ...solver.transports?.nostr, relays } } }] : [];
-      }), network),
+      fetch: async (solvers, network) => {
+        this.delivered = await fetcher.fetch(solvers.flatMap((solver) => {
+          const relays = this.allowedRelays(solver.name, solver.transports?.nostr?.relays ?? []);
+          return relays.length ? [{ ...solver, transports: { ...solver.transports, nostr: { ...solver.transports?.nostr, relays } } }] : [];
+        }), network);
+        return this.delivered;
+      },
     };
   }
 
@@ -288,7 +298,9 @@ export class DiscoveryService {
     this.cacheExpired.clear();
     this.fetchedBodies.clear();
     this.refusedRelays.clear();
-    const dbCards = this.options.cardStore.listEnabled(this.options.network).map((row) => {
+    this.delivered = [];
+    const dbRows = this.options.cardStore.listEnabled(this.options.network);
+    const dbCards = dbRows.map((row) => {
       try { return { card: JSON.parse(row.cardJson), network: this.options.network, label: `db:${row.id}:${row.label}` }; }
       catch { return { card: {}, network: this.options.network, label: `db:${row.id}:${row.label}` }; }
     });
@@ -305,6 +317,7 @@ export class DiscoveryService {
       transportCards: this.transportCards,
       now: Math.floor(this.now() / 1000),
     });
+    this.storeDeliveredCards(dbRows);
     for (const source of result.sources) {
       const body = this.fetchedBodies.get(source.source);
       // Stale bodies too: discover() decides what a stale index still contributes.
@@ -348,6 +361,35 @@ export class DiscoveryService {
       refreshedAt: this.now(),
       expiresAt: hasLocal ? Number.POSITIVE_INFINITY : this.now() + MAX_CACHE_AGE_MS,
     };
+  }
+
+  /**
+   * Rewrites a pasted full card with the one its solver now publishes, under the
+   * rules discover() applied to take it, so the admin view and the fallback
+   * when relays are unreachable stay current. Pointers stay pointers: they
+   * already fail closed, which is the operator's choice.
+   */
+  private storeDeliveredCards(rows: readonly SolverCardRow[]): void {
+    const now = Math.floor(this.now() / 1000);
+    const latest = new Map<string, TransportCard>();
+    for (const entry of this.delivered) {
+      const held = latest.get(entry.pubkey);
+      if (Number.isFinite(entry.createdAt) && (!held || entry.createdAt > held.createdAt)) latest.set(entry.pubkey, entry);
+    }
+    for (const row of rows) {
+      let stored: { name?: unknown; discovery_pubkey?: unknown; markets?: unknown; sig?: unknown };
+      try { stored = JSON.parse(row.cardJson); } catch { continue; }
+      if (stored.markets === undefined || typeof stored.discovery_pubkey !== "string") continue;
+      const found = latest.get(stored.discovery_pubkey);
+      const card = found?.card as typeof stored | undefined;
+      if (!found || !card || card.discovery_pubkey !== stored.discovery_pubkey || card.name !== stored.name || card.markets === undefined) continue;
+      if (Math.abs(now - found.createdAt) > MAX_CARD_AGE_SECONDS) continue;
+      if (!verifyCardSig(card as { discovery_pubkey: string; sig: string }) || cardErrors(card, this.options.network).length) continue;
+      const { sig: _storedSig, ...storedBody } = stored;
+      const { sig: _cardSig, ...cardBody } = card;
+      if (stableStringify(storedBody) === stableStringify(cardBody)) continue;
+      this.options.cardStore.replace(row.id, { label: row.label, network: row.network, cardJson: JSON.stringify(card) });
+    }
   }
 
   private cacheAwareFetch: FetchLike = async (input, init) => {
