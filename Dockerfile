@@ -1,4 +1,5 @@
-FROM node:22-slim AS base
+# Pinned so a builder's cached 22-slim can't ship an unpatched runtime; bump on each Node security release.
+FROM node:22.23.4-slim AS base
 # Match packageManager exactly so local, CI, and image installs use one toolchain.
 RUN corepack enable && corepack prepare pnpm@10.25.0 --activate
 WORKDIR /app
