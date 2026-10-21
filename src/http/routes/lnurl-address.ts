@@ -6,7 +6,6 @@ import { isValidToken } from "../../session-token.js";
 import type { AddressRow, DomainRow } from "../../types/index.js";
 import { BadRequest, NotFound, TooManyRequests, Unauthorized } from "../errors.js";
 import { bearerToken, domainFor, strParam } from "../params.js";
-import { validateHdReceive } from "../../hd-receive.js";
 import type { ServerContext } from "../server-context.js";
 
 /** One shape for register, upgrade and list, so they cannot drift. A flagged row's
@@ -38,7 +37,11 @@ export function lnurlAddressRoutes({ repos, addressService, registrationLimiter:
     if (!token) throw new Unauthorized();
     const list = addressService.listByToken(token).map((a) => {
       const domain = repos!.domains.getById(a.domainId)!;
-      return { ...addressView(domain, a, req.protocol), createdAt: a.createdAt };
+      // Owner-only: lets a client re-bind just the aliases whose destination moved.
+      return {
+        ...addressView(domain, a, req.protocol), createdAt: a.createdAt,
+        arkadeAddress: a.arkadeAddress, claimPublicKey: a.claimPublicKey, boardingAddress: a.boardingAddress,
+      };
     });
     res.json(list);
   });
@@ -110,19 +113,8 @@ export function lnurlAddressRoutes({ repos, addressService, registrationLimiter:
     if (!domain) throw new NotFound("Unknown domain");
     const token = bearerToken(req);
     if (!isValidToken(token)) throw new Unauthorized();
-    const { arkadeAddress, claimPublicKey, boardingAddress, hd } = (req.body ?? {}) as
-      { arkadeAddress?: string; claimPublicKey?: string; boardingAddress?: string; hd?: unknown };
-    if (hd !== undefined) {
-      if (arkadeAddress !== undefined || claimPublicKey !== undefined || boardingAddress !== undefined) {
-        throw new BadRequest("HD registration cannot include static destinations or claim keys");
-      }
-      let config;
-      try { config = validateHdReceive(hd); }
-      catch (error) { throw new BadRequest(error instanceof Error ? error.message : "Invalid HD receive configuration"); }
-      if (!addressService.setHdReceive(domain, req.params.handle, token, config)) throw new NotFound("Address not found or not owned by this token");
-      res.json({ ok: true, receiveMode: "hd" });
-      return;
-    }
+    const { arkadeAddress, claimPublicKey, boardingAddress } = (req.body ?? {}) as
+      { arkadeAddress?: string; claimPublicKey?: string; boardingAddress?: string };
     // Compressed 33-byte key (02/03 prefix) — the covenant's receiver role.
     if (!arkadeAddress || typeof arkadeAddress !== "string" || !claimPublicKey || !/^0[23][0-9a-f]{64}$/i.test(claimPublicKey)) {
       throw new BadRequest("arkadeAddress and a compressed-hex claimPublicKey (02/03 + 64 hex) are required");
@@ -145,22 +137,6 @@ export function lnurlAddressRoutes({ repos, addressService, registrationLimiter:
     });
     if (!ok) throw new NotFound("Address not found or not owned by this token");
     res.json({ ok: true });
-  });
-
-  r.get("/lnurl/address/:handle/arkade/allocations", (req, res) => {
-    const domain = domainFor(repos, strParam(req.query.domain) ?? req.get("host"));
-    if (!domain) throw new NotFound("Unknown domain");
-    const token = bearerToken(req);
-    if (!isValidToken(token)) throw new Unauthorized();
-    const address = addressService.ownedByHandle(domain, req.params.handle, token);
-    if (!address) throw new NotFound("Address not found or not owned by this token");
-    const after = req.query.after === undefined ? 0 : Number(strParam(req.query.after));
-    const limit = req.query.limit === undefined ? 100 : Number(strParam(req.query.limit));
-    if (!Number.isSafeInteger(after) || after < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
-      throw new BadRequest("after must be a non-negative integer and limit must be between 1 and 200");
-    }
-    const allocations = repos!.hdReceive.list(address.id, after, limit);
-    res.json({ allocations, nextAfter: allocations.at(-1)?.id ?? after });
   });
 
   // Owner payment activity as a sync source, least recently changed first, with an inclusive nextSince cursor.

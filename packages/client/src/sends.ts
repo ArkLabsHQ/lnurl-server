@@ -21,6 +21,8 @@ export interface LnurlSendTracker {
   resume(): void;
   mark(txid: string, confirmed: boolean): void;
   forget(): void;
+  /** Called after each write that landed, e.g. to refresh an open receipt; returns the unsubscribe. */
+  subscribe(listener: () => void): () => void;
 }
 
 /** Shared send bookkeeping over the application's synchronous persistence. */
@@ -30,11 +32,14 @@ export function createLnurlSendTracker(
 ): LnurlSendTracker {
   const confirmations = options.confirmations ?? createPendingConfirmations();
   const subscriptions = new Set<() => void>();
+  const listeners = new Set<() => void>();
   let generation = 0;
   const persist = (update: (existing: SentPayment[]) => SentPayment[] | undefined): void => {
     try {
       const rows = update(store.read());
-      if (rows) store.write(rows);
+      if (!rows) return;
+      store.write(rows);
+      for (const listener of listeners) listener();
     } catch (error) {
       options.onError(error);
     }
@@ -99,6 +104,10 @@ export function createLnurlSendTracker(
       generation++;
       confirmations.forget();
       for (const stop of subscriptions) stop();
+    },
+    subscribe(listener: () => void): () => void {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
     },
   };
 }

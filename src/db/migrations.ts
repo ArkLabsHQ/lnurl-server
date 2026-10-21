@@ -372,27 +372,15 @@ const MIGRATIONS: Migration[] = [
   },
   {
     version: 26,
+    // Burned: 0.4.0 shipped HD receive under it. 27 removes that schema wherever it ran.
+    up: () => {},
+  },
+  {
+    version: 27,
+    // Allocations first: they reference sources, and foreign keys are on.
     up: (db) => {
-      if (!hasColumn(db, "addresses", "hd_receive")) db.exec("ALTER TABLE addresses ADD COLUMN hd_receive TEXT;");
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS hd_receive_sources (
-          source_id TEXT PRIMARY KEY,
-          next_index INTEGER NOT NULL CHECK (next_index >= 0 AND next_index <= 2147483648)
-        );
-        CREATE TABLE IF NOT EXISTS hd_receive_allocations (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          address_id INTEGER REFERENCES addresses(id) ON DELETE SET NULL,
-          source_id TEXT NOT NULL REFERENCES hd_receive_sources(source_id),
-          child_index INTEGER NOT NULL CHECK (child_index >= 0 AND child_index < 2147483648),
-          descriptor TEXT NOT NULL,
-          arkade_address TEXT NOT NULL,
-          claim_public_key TEXT NOT NULL,
-          hd_receive TEXT NOT NULL,
-          created_at INTEGER NOT NULL,
-          UNIQUE(source_id, child_index)
-        );
-        CREATE INDEX IF NOT EXISTS idx_hd_receive_address ON hd_receive_allocations(address_id, id);
-      `);
+      db.exec("DROP TABLE IF EXISTS hd_receive_allocations; DROP TABLE IF EXISTS hd_receive_sources;");
+      if (hasColumn(db, "addresses", "hd_receive")) db.exec("ALTER TABLE addresses DROP COLUMN hd_receive;");
     },
   },
 ];

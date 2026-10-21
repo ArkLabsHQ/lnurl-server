@@ -9,7 +9,6 @@ export default defineConfig({
   resolve: {
     alias: [
       { find: "@arkade-os/lnurl-client/browser", replacement: resolve(__dirname, "packages/client/src/browser.ts") },
-      { find: "@arkade-os/lnurl-client/hd", replacement: resolve(__dirname, "packages/client/src/hd.ts") },
       { find: "@arkade-os/lnurl-client/arkade", replacement: resolve(__dirname, "packages/client/src/arkade.ts") },
       { find: "@arkade-os/lnurl-client", replacement: resolve(__dirname, "packages/client/src/index.ts") },
     ],

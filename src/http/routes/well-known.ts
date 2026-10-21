@@ -27,7 +27,7 @@ import { BATCH_PATH } from "../../services/verify-batch.js";
 
 const DEFAULT_DESTINATION_WATCH_MS = 604_800_000;
 
-const railStatesFor = (address: { arkadeAddress: string | null; claimPublicKey: string | null; hdReceive?: unknown; disabledRails: readonly unknown[] }, caps: ServerRailCaps): Map<string, AddressRailState> =>
+const railStatesFor = (address: { arkadeAddress: string | null; claimPublicKey: string | null; disabledRails: readonly unknown[] }, caps: ServerRailCaps): Map<string, AddressRailState> =>
   new Map(effectiveRails(address, caps).map((s) => [s.id, s]));
 
 /** LUD-16 `user@domain`, and a flagged address at its session LNURL: the pay request and its
@@ -42,14 +42,6 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
   // each destination hit writes a store record.
   const addressCallbackLimiter = new RateLimiter(config.callbackRateLimitPerMin ?? 30, 60_000);
   let offlineQuotes = 0;
-  const receiveDestination = (address: AddressRow) => {
-    if (!address.hdReceive) return { arkadeAddress: address.arkadeAddress!, claimPublicKey: address.claimPublicKey! };
-    try { return repos.hdReceive.allocate(address.id, address.hdReceive); }
-    catch (error) {
-      logger.error("hd_receive_allocation_failed", { addressId: address.id, error });
-      throw new LnurlError("HD receive destination is unavailable");
-    }
-  };
   // Each token callback spends one of a handful of provider orders a minute, so one IP or
   // one receiver must not be able to hold them all.
   const tokenIpLimiter = fixedFloat ? new RateLimiter(fixedFloat.ordersPerIp, fixedFloat.ipWindowSeconds * 1000) : undefined;
@@ -78,7 +70,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
   };
 
   const envelope = (domain: DomainRow, address: AddressRow) => ({
-    railAddress: { arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, boardingAddress: address.boardingAddress, disabledRails: address.disabledRails, hdReceive: address.hdReceive },
+    railAddress: { arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, boardingAddress: address.boardingAddress, disabledRails: address.disabledRails },
     base: { min: domain.minSendable ?? settings.minSendable(), max: domain.maxSendable ?? settings.maxSendable() } as Bounds,
   });
 
@@ -120,7 +112,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     if (resolved.kind === "error") throw new LnurlError(resolved.reason);
     // Per-address rail policy: a disabled rail fails loudly instead of serving.
     const railStates = railStatesFor(address, railCaps);
-    if ((resolved.kind === "destination" || resolved.kind === "hd-destination") && railStates.get("arkade")?.enabled === false) {
+    if (resolved.kind === "destination" && railStates.get("arkade")?.enabled === false) {
       throw new LnurlError("paymentOption arkade is disabled for this address");
     }
 
@@ -142,7 +134,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
 
     if (resolved.kind === "fixedfloat") {
       const rail = railCaps.fixedFloat?.rails.find((r) => r.optionId === resolved.optionId);
-      if (!fixedFloat || !creator || !rail || (!address.hdReceive && (!address.arkadeAddress || !address.claimPublicKey)) || !railStates.get("fixedfloat")?.available) {
+      if (!fixedFloat || !creator || !rail || !address.arkadeAddress || !address.claimPublicKey || !railStates.get("fixedfloat")?.available) {
         throw new LnurlError(`paymentOption ${resolved.optionId} is currently unavailable`);
       }
       if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) throw new LnurlError("Too many requests", 429);
@@ -164,9 +156,8 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       tokenQuotes++;
       tokenQuotesByAddress.set(address.id, openHere + 1);
       try {
-        const target = receiveDestination(address);
         res.json(await createFixedFloatDestination({
-          ff: fixedFloat, rail, creator, amountMsat, receiveAddress: target.arkadeAddress, claimPublicKey: target.claimPublicKey,
+          ff: fixedFloat, rail, creator, amountMsat, receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey,
           addressId: address.id, baseUrl: settings.baseUrl(), logger, requestId: res.locals.requestId as string,
           onUnroutable: () => unroutable.fail(receiver),
         }));
@@ -180,7 +171,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       return;
     }
 
-    if (resolved.kind === "destination" || resolved.kind === "hd-destination") {
+    if (resolved.kind === "destination") {
       // Unauthed store-writing branch — same per-IP guard as the offline-swap branch.
       if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) throw new LnurlError("Too many requests", 429);
       const arkadeBounds = optionBounds("arkade", railAddress, railCaps, base) ?? base;
@@ -191,16 +182,13 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       // exactly and MUST NOT round — a sub-satoshi amount is not exactly
       // representable in a whole-sat destination payment, so reject it.
       if (amountMsat % 1000 !== 0) throw new LnurlError("Amount must be a whole number of satoshis");
-      const target = resolved.kind === "hd-destination" ? receiveDestination(address)
-        : { arkadeAddress: resolved.paymentDestination, claimPublicKey: address.claimPublicKey };
-      const targetAddress = target.arkadeAddress;
-      const targetKey = target.claimPublicKey;
       // The payer pays the destination directly, so the server isn't in the payment path:
       // `verify` records the agreed amount, but `settled` only flips once an Arkade watcher
       // observes the payment (follow-up). Keyed by an opaque verify id (not a payment hash).
       // No SSE session needed on a destination rail — the record keeps one only for shape.
       const verifyId = randomBytes(16).toString("hex");
-      // Static receivers retain their fallback; HD receivers refuse derivation failures.
+      // The script identifies the payment outright. On failure fall back to the
+      // static address: ambiguous, but being paid beats refusing.
       let derived: DerivedDestination | undefined;
       // Only the arkade rail: a covenant address is an Arkade destination, so
       // deriving one for any other destination rail replaces that rail's own
@@ -208,15 +196,14 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       // address and must keep it.
       if (
         resolved.paymentOption === "arkade" &&
-        covenantDestinations && railStates.get("covenant")?.available && targetAddress && targetKey
+        covenantDestinations && railStates.get("covenant")?.available && address.arkadeAddress && address.claimPublicKey
       ) {
         try {
           derived = await covenantDestinations.derive({
-            arkadeAddress: targetAddress,
-            claimPublicKey: targetKey,
+            arkadeAddress: address.arkadeAddress,
+            claimPublicKey: address.claimPublicKey,
           });
         } catch (err) {
-          if (address.hdReceive) throw new LnurlError("HD covenant destination is unavailable");
           console.warn(`covenant destination: derivation failed, using the static address:`, err);
         }
       }
@@ -226,7 +213,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
         sessionId: address.sessionId ?? `addr:${address.id}`,
         addressId: address.id,
         paymentOption: resolved.paymentOption,
-        paymentDestination: derived?.address ?? targetAddress,
+        paymentDestination: derived?.address ?? resolved.paymentDestination,
         amountMsat,
         // The script alone: it is the attribution key, and the contract registered
         // at derivation owns the preimage, the taptree and the payout script.
@@ -235,9 +222,9 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       });
       // Only the static rail: a covenant destination is watched as a contract.
       if (resolved.paymentOption === "arkade" && !derived) {
-        onDestinationIssued?.(targetAddress);
+        onDestinationIssued?.(resolved.paymentDestination);
       }
-      const destination = derived?.address ?? targetAddress;
+      const destination = derived?.address ?? resolved.paymentDestination;
       res.json({
         status: "OK",
         paymentOption: resolved.paymentOption,
@@ -256,7 +243,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
         // be told someone else's arrived. The record is still written — the
         // watcher settles it and the activity list shows it — but the payer is
         // not handed a URL whose answer the server cannot stand behind.
-        ...(derived || (resolved.kind === "hd-destination" && railCaps.arkServerUrl) ? { verify: `${settings.baseUrl()}/lnurl/verify/${verifyId}`, verifyBatch: `${settings.baseUrl()}${BATCH_PATH}` } : {}),
+        ...(derived ? { verify: `${settings.baseUrl()}/lnurl/verify/${verifyId}`, verifyBatch: `${settings.baseUrl()}${BATCH_PATH}` } : {}),
       } satisfies LnurlPayDestinationResponse);
       return;
     }
@@ -264,7 +251,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     // Offline receive: no live SSE session for this address, but it opted in with an
     // Arkade identity, so the server quotes a corridor swap paying it (covclaimd claims it).
     // The corridor never touches the session, so a sessionless address is served too.
-    if (creator && (address.hdReceive || (address.arkadeAddress && address.claimPublicKey)) && (address.hdReceive || !address.sessionId || !sessions.isActive(address.sessionId))) {
+    if (creator && address.arkadeAddress && address.claimPublicKey && (!address.sessionId || !sessions.isActive(address.sessionId))) {
       // Sessionless receive is the offline-swap rail: a disabled policy or an
       // unready discovery fails loudly per request while the process keeps
       // serving interactive sessions (never a silent stall).
@@ -282,10 +269,9 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       if (offlineQuotes >= (config.maxConcurrentOfflineQuotes ?? 20)) throw new LnurlError("Offline quote capacity reached", 429);
       offlineQuotes++;
       try {
-        const target = receiveDestination(address);
         res.json(await createOfflineSwapInvoice({
           creator, store, offlineSwaps, baseUrl: settings.baseUrl(), amountMsat,
-          receiveAddress: target.arkadeAddress, claimPublicKey: target.claimPublicKey, addressId: address.id, paymentQuote, quoted,
+          receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, paymentQuote, quoted,
           echoLightningOption: Boolean(paymentOptionId),
           logger, requestId: res.locals.requestId as string,
         }));
@@ -296,7 +282,6 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     }
 
     // The lightning relay needs a live session to request the invoice from.
-    if (address.hdReceive) throw new LnurlError("HD receive requires the offline swap service");
     if (!address.sessionId) throw new LnurlError(offlineReason);
     if (railStates.get("interactive-lightning")?.enabled === false) throw new LnurlError("lightning receive is disabled for this address");
 

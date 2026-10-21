@@ -119,6 +119,29 @@ describe("arkadeLnurl", () => {
     expect(client.registerAddress).toHaveBeenCalledWith({ token: await lnurl.token(), domain: "lnurl.example.com", nameless: true });
   });
 
+  it("names its session lnurl before any address is claimed, as the nameless claim will serve it", async () => {
+    const client = fakeClient({
+      registerAddress: vi.fn(async () => ({ handle: "SESSIONID", username: null, lightningAddress: null, sessionLnurl: "LNURL1flagged" }) as never),
+    });
+    const lnurl = arkadeLnurl({ wallet: fakeWallet(), baseUrl: "https://lnurl.example.com:8443", client });
+
+    const early = await lnurl.sessionLnurl();
+
+    expect(client.registerAddress).not.toHaveBeenCalled();
+    expect((await lnurl.claim({ nameless: true })).lnurl).toBe(early);
+  });
+
+  it("syncs nothing once the signal handed to sync has aborted", async () => {
+    const store = { upsert: vi.fn(async () => {}), readWatermark: vi.fn(async () => undefined), writeWatermark: vi.fn(async () => {}) };
+    const lnurl = arkadeLnurl({ wallet: fakeWallet(), baseUrl: "https://lnurl.example.com", client: fakeClient(), store });
+    const rx = await lnurl.claim({ username: "alice" });
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(rx.sync({ signal: controller.signal })).resolves.toEqual({ synced: 0, failures: [] });
+    expect(store.upsert).not.toHaveBeenCalled();
+  });
+
   it("keeps the session lnurl when a nameless re-claim returns the row it already upgraded", async () => {
     const client = fakeClient({
       registerAddress: vi.fn(async () => ({
@@ -327,6 +350,174 @@ describe("arkadeLnurl", () => {
     await lnurl.capabilities();
 
     expect(client.domainCapabilities).toHaveBeenCalledWith({ domain: "lnurl.example.com" });
+  });
+});
+
+describe("arkadeLnurl receiver discovery", () => {
+  const BASE = "https://lnurl.example.com";
+  const CLAIM_KEY = hex.encode(secp256k1.getPublicKey(hex.decode(PRIVATE_KEY), true));
+  const row = (handle: string, over: Record<string, unknown> = {}) => ({
+    handle, username: handle, lightningAddress: `${handle}@lnurl.example.com`, status: "active",
+    sessionLnurl: null, domain: "lnurl.example.com", ...over,
+  });
+  const boundTo = (arkadeAddress: string | null) =>
+    ({ arkadeAddress, claimPublicKey: arkadeAddress && CLAIM_KEY, boardingAddress: arkadeAddress && BOARDING });
+  const rebound = (client: LnurlClient) =>
+    vi.mocked(client.registerArkadeIdentity).mock.calls.map(([request]) => request.handle);
+  const gate = () => {
+    let open!: () => void;
+    const shut = new Promise<void>((resolve) => (open = resolve));
+    return { shut, open };
+  };
+
+  it("names its domain and lists every address there, revoked ones included, writing nothing", async () => {
+    const client = fakeClient({
+      listAddresses: vi.fn(async () => [row("old", { status: "revoked" }), row("foreign", { domain: "other.example" })]) as never,
+    });
+    const lnurl = arkadeLnurl({ wallet: fakeWallet(), baseUrl: `${BASE}:8443`, client });
+
+    expect(lnurl.domain).toBe("lnurl.example.com");
+    expect((await lnurl.addresses()).map((a) => a.handle)).toEqual(["old"]);
+    expect(client.registerArkadeIdentity).not.toHaveBeenCalled();
+  });
+
+  it("owned() ignores revoked rows, even when they are all there is", async () => {
+    const client = fakeClient({ listAddresses: vi.fn(async () => [row("old", { status: "revoked" })]) as never });
+    expect(await arkadeLnurl({ wallet: fakeWallet(), baseUrl: BASE, client }).owned()).toBeUndefined();
+  });
+
+  it("owned({ refresh }) re-binds only the active aliases whose destination moved", async () => {
+    const client = fakeClient({
+      listAddresses: vi.fn(async () => [
+        row("current", boundTo(ARKADE_ADDRESS)),
+        row("moved", boundTo("tark1old")),
+        row("unbound", boundTo(null)),
+        row("rekeyed", { ...boundTo(ARKADE_ADDRESS), claimPublicKey: "03" + "11".repeat(32) }),
+        row("reboarded", { ...boundTo(ARKADE_ADDRESS), boardingAddress: "tb1qold" }),
+        row("revoked", { ...boundTo("tark1old"), status: "revoked" }),
+        row("foreign", { ...boundTo("tark1old"), domain: "other.example" }),
+      ]) as never,
+    });
+
+    const rx = await arkadeLnurl({ wallet: fakeWallet(), baseUrl: BASE, client }).owned({ refresh: true });
+
+    expect(rx?.handle).toBe("current");
+    expect(rebound(client)).toEqual(["moved", "unbound", "rekeyed", "reboarded"]);
+    expect(client.registerArkadeIdentity).toHaveBeenCalledWith(expect.objectContaining({
+      arkadeAddress: ARKADE_ADDRESS, claimPublicKey: CLAIM_KEY, boardingAddress: BOARDING, domain: "lnurl.example.com",
+    }));
+  });
+
+  it("owned({ refresh }) re-binds every active alias on a server that does not report destinations", async () => {
+    const client = fakeClient({ listAddresses: vi.fn(async () => [row("alice"), row("bob")]) as never });
+    await arkadeLnurl({ wallet: fakeWallet(), baseUrl: BASE, client }).owned({ refresh: true });
+    expect(rebound(client)).toEqual(["alice", "bob"]);
+  });
+
+  it("owned({ refresh }) leaves a registered boarding address alone when it has none to send", async () => {
+    const client = fakeClient({
+      listAddresses: vi.fn(async () => [row("kept", boundTo(ARKADE_ADDRESS)), row("moved", boundTo("tark1old"))]) as never,
+    });
+    const { identity } = fakeWallet();
+
+    await arkadeLnurl({ identity, arkadeAddress: ARKADE_ADDRESS, baseUrl: BASE, client }).owned({ refresh: true });
+
+    expect(rebound(client)).toEqual(["moved"]);
+    expect(client.registerArkadeIdentity).toHaveBeenCalledWith(expect.not.objectContaining({ boardingAddress: expect.anything() }));
+  });
+
+  it("owned({ refresh }) re-binds the other aliases when one is refused, then fails closed", async () => {
+    const refusal = new LnurlError("Address not found or not owned by this token");
+    const client = fakeClient({
+      listAddresses: vi.fn(async () => [row("refused", boundTo(null)), row("moved", boundTo("tark1old"))]) as never,
+      registerArkadeIdentity: vi.fn(async (request: { handle: string }) => {
+        if (request.handle === "refused") throw refusal;
+      }) as never,
+    });
+
+    await expect(arkadeLnurl({ wallet: fakeWallet(), baseUrl: BASE, client }).owned({ refresh: true })).rejects.toBe(refusal);
+    expect(rebound(client)).toEqual(["refused", "moved"]);
+  });
+
+  it("owned({ refresh }) binds no further alias once the signal aborts mid-refresh", async () => {
+    const controller = new AbortController();
+    const client = fakeClient({
+      listAddresses: vi.fn(async () => [row("first", boundTo("tark1old")), row("second", boundTo("tark1old"))]) as never,
+      registerArkadeIdentity: vi.fn(async () => { controller.abort(); }) as never,
+    });
+
+    const owned = arkadeLnurl({ wallet: fakeWallet(), baseUrl: BASE, client }).owned({ signal: controller.signal, refresh: true });
+
+    await expect(owned).rejects.toMatchObject({ name: "AbortError" });
+    expect(rebound(client)).toEqual(["first"]);
+  });
+
+  it("owned() rejects with the signal's reason and binds nothing once it aborts", async () => {
+    const listing = gate();
+    const client = fakeClient({
+      listAddresses: vi.fn(async () => { await listing.shut; return [row("moved", boundTo("tark1old"))]; }) as never,
+    });
+    const lnurl = arkadeLnurl({ wallet: fakeWallet(), baseUrl: BASE, client });
+    const controller = new AbortController();
+
+    const owned = lnurl.owned({ signal: controller.signal, refresh: true });
+    await vi.waitFor(() => expect(client.listAddresses).toHaveBeenCalled());
+    controller.abort();
+    listing.open();
+
+    await expect(owned).rejects.toBe(controller.signal.reason);
+    expect(client.registerArkadeIdentity).not.toHaveBeenCalled();
+    await expect(lnurl.owned({ signal: controller.signal })).rejects.toMatchObject({ name: "AbortError" });
+    expect(client.listAddresses).toHaveBeenCalledOnce();
+  });
+
+  it("claim() binds nothing once its signal aborts mid-claim, and registers nothing once aborted", async () => {
+    const registering = gate();
+    const client = fakeClient({
+      registerAddress: vi.fn(async () => {
+        await registering.shut;
+        return { handle: "alice", username: "alice", lightningAddress: "alice@lnurl.example.com" };
+      }) as never,
+    });
+    const lnurl = arkadeLnurl({ wallet: fakeWallet(), baseUrl: BASE, client });
+    const controller = new AbortController();
+
+    const claiming = lnurl.claim({ username: "alice" }, { signal: controller.signal });
+    await vi.waitFor(() => expect(client.registerAddress).toHaveBeenCalled());
+    controller.abort();
+    registering.open();
+
+    await expect(claiming).rejects.toBe(controller.signal.reason);
+    expect(client.registerArkadeIdentity).not.toHaveBeenCalled();
+    await expect(lnurl.claim({ username: "bob" }, { signal: controller.signal })).rejects.toMatchObject({ name: "AbortError" });
+    expect(client.registerAddress).toHaveBeenCalledOnce();
+  });
+
+  it("runs claim, owned and upgrade one at a time per identity and server, across facades and past a failure", async () => {
+    const wallet = fakeWallet();
+    const client = fakeClient({
+      registerAddress: vi.fn(async () => ({ handle: "SESSIONID", username: null, lightningAddress: null, sessionLnurl: "LNURL1flagged" })) as never,
+    });
+    const nameless = await arkadeLnurl({ wallet, baseUrl: BASE, client }).claim({ nameless: true });
+    const binding = gate();
+    vi.mocked(client.registerArkadeIdentity).mockImplementationOnce(async () => {
+      await binding.shut;
+      throw new Error("bind refused");
+    });
+
+    const claiming = arkadeLnurl({ wallet, baseUrl: BASE, client }).claim({ nameless: true });
+    const discovering = arkadeLnurl({ wallet, baseUrl: BASE, client }).owned();
+    const upgrading = nameless.upgrade({ username: "alice" });
+    await vi.waitFor(() => expect(client.registerArkadeIdentity).toHaveBeenCalledTimes(2));
+    expect(client.listAddresses).not.toHaveBeenCalled();
+    expect(client.upgradeAddress).not.toHaveBeenCalled();
+
+    binding.open();
+    await expect(claiming).rejects.toMatchObject({ message: "bind refused" });
+    await discovering;
+    await upgrading;
+    expect(client.listAddresses).toHaveBeenCalledOnce();
+    expect(client.upgradeAddress).toHaveBeenCalledOnce();
   });
 });
 

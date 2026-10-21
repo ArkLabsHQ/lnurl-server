@@ -378,3 +378,22 @@ describe("syncPayments", () => {
     expect(await store.readWatermark(SERVER_A, addressOf(targetA))).toBeUndefined();
   });
 });
+
+describe("syncPayments with a signal", () => {
+  it("stops fetching and writing once the signal aborts, without counting the abort as a failure", async () => {
+    const controller = new AbortController();
+    const full = Array.from({ length: 50 }, (_, index) => settle(makeBolt11(`hash-${index}`, 1000 + index), 1000 + index));
+    const listPayments = vi.fn<ListPayments["listPayments"]>().mockImplementationOnce(async () => {
+      controller.abort();
+      return makePage(targetA, full, 1050);
+    });
+    const store = createMemoryStore();
+
+    const result = await syncPayments([targetA, targetB], { client: () => ({ listPayments }), store, signal: controller.signal });
+
+    expect(result).toEqual({ synced: 0, failures: [] });
+    expect(listPayments).toHaveBeenCalledTimes(1);
+    expect(store.all()).toEqual([]);
+    expect(await store.readWatermark(SERVER_A, addressOf(targetA))).toBeUndefined();
+  });
+});

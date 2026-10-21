@@ -71,6 +71,22 @@ describe("address routes", () => {
     expect((res.body as unknown as unknown[]).length).toBe(1);
   });
 
+  it("GET shows the owner where each address pays", async () => {
+    await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "domain.com", body: { username: "bound", token: TOKEN } });
+    await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "domain.com", body: { username: "unbound", token: TOKEN } });
+    const destination = {
+      arkadeAddress: "tark1qpf3lesxsy69q0f8yvfnyf7gv7kglfkg83fhaxjyc0zmm0wtrl3n024rshrsa8fnnv73w38094qfl9jp5g7pzdc8j2m58metfpd8rcd37nqs45",
+      claimPublicKey: "02" + "ab".repeat(32),
+      boardingAddress: "tb1qexample",
+    };
+    const bind = await req("POST", `${ctx.baseUrl}/lnurl/address/bound/arkade`, { host: "domain.com", bearer: TOKEN, body: destination });
+    expect(bind.status).toBe(200);
+
+    const rows = (await req("GET", `${ctx.baseUrl}/lnurl/address`, { bearer: TOKEN })).body as unknown as Record<string, unknown>[];
+    expect(rows.find((a) => a.handle === "bound")).toMatchObject(destination);
+    expect(rows.find((a) => a.handle === "unbound")).toMatchObject({ arkadeAddress: null, claimPublicKey: null, boardingAddress: null });
+  });
+
   it("DELETE revokes the owner's address", async () => {
     await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "domain.com", body: { username: "gone", token: TOKEN } });
     const res = await req("DELETE", `${ctx.baseUrl}/lnurl/address/gone`, { host: "domain.com", bearer: TOKEN });

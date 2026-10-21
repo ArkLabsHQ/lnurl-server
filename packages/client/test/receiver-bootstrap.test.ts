@@ -17,7 +17,6 @@ const receiver = (lightningAddress?: string): Receiver => ({
   lnurl: "LNURL1EXAMPLE",
   payRequest: vi.fn(),
   payments: vi.fn(),
-  allocations: vi.fn(),
   sync: vi.fn(),
   upgrade: vi.fn(),
 });
@@ -79,11 +78,13 @@ describe("bootstrapReceiver", () => {
     const rx = facade(undefined, caps);
     const claimed = receiver();
     rx.claim.mockResolvedValue(claimed);
+    const { signal } = new AbortController();
 
-    expect(await bootstrapReceiver(rx, { autoClaimNameless: true })).toEqual({
+    expect(await bootstrapReceiver(rx, { autoClaimNameless: true, signal, refresh: true })).toEqual({
       kind: "ready", receiver: claimed, claimed: true, capabilities: caps,
     });
-    expect(rx.claim).toHaveBeenCalledExactlyOnceWith({ nameless: true });
+    expect(rx.owned).toHaveBeenCalledExactlyOnceWith({ signal, refresh: true });
+    expect(rx.claim).toHaveBeenCalledExactlyOnceWith({ nameless: true }, { signal });
     expect(claimed.sync).not.toHaveBeenCalled();
   });
 

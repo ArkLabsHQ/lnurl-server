@@ -39,18 +39,23 @@ const handle = await (await best.quote()).send()
 | you want | call |
 | --- | --- |
 | what this domain allows | `capabilities()` |
-| the address this wallet already owns here | `owned()` |
-| claim a name (or none) and bind the identity | `claim(opts?)` |
+| the LUD-16 domain it works on | `domain` |
+| the active address this wallet already owns here | `owned({ refresh?, signal? })` |
+| every address it owns here, revoked ones too, for display | `addresses()` |
+| claim a name (or none) and bind the identity | `claim(opts?, { signal? })` |
+| the LNURL a nameless claim will serve, before it lands | `sessionLnurl()` |
 | its `user@domain`, or `undefined` when nameless | `receiver.lightningAddress` |
 | an LNURL for a QR | `receiver.lnurl` |
 | its own payRequest | `receiver.payRequest()` |
 | one page of the server's records | `receiver.payments(opts)` |
-| everything new, into your store | `receiver.sync()` |
+| everything new, into your store | `receiver.sync({ signal? })` |
 | name a nameless receiver in place | `receiver.upgrade(opts?)` |
 | rank the ways to pay a target | `options(target, amountSat)` |
 | the router itself | `router()` |
 
 **`payRequest()` fetches once per 30 s.** Every call on one `Receiver` within that window shares a single fetch, in flight or done, so a screen asking on every amount change costs one GET; a failed fetch is not kept. `claim` and `upgrade` retire it at once, even when they fail; a change made anywhere else - another device, the operator - shows within 30 s. `createLnurlClient().resolve(receiver.lnurl)` always asks the server.
+
+**Keeping aliases pointed at this wallet.** `owned({ refresh: true })` first re-binds this facade's Arkade, claim and boarding destinations on every active alias the server lists as bound elsewhere - after an address rotation or a restore - and on all of them where the server does not report it. A missing boarding address never counts as a change, so a registered one stays. An alias the server refuses does not stop the rest: they are still re-bound, then the call rejects. `claim`, `owned` and `upgrade` run one at a time per identity object and server, across facades, so a receive screen and a startup sync built separately never interleave their writes. Once a `signal` passed to `owned` or `claim` aborts, the call rejects with `signal.reason` - after any call queued ahead of it - and writes nothing more. A `claim` aborted after its address registered but before the bind leaves that address without an Arkade destination until a later `owned({ refresh: true })` binds it.
 
 `capabilities()` reads what a domain allows before you call it - `{ domain, allocationModes, usernameRules, requireApiKey }` - so onboarding can offer only the modes actually enabled instead of guessing and hitting `forbidden_mode`. A domain requiring an operator-reserved name takes a `claimCode` the same way on either call below: `claim({ username: 'alice', claimCode })`.
 
@@ -63,42 +68,6 @@ Receiving accepts a `LnurlWallet`: only `identity.signMessage`, `identity.compre
 CI checks the client against SDK `0.5.0-rc.0` and `0.5.0-rc.19` in isolated installs, independent of the server's SDK pin. Run the same types, tests, build, and consumer checks with `node scripts/check-client-sdk-compat.mjs <sdk-version>` from the repository root.
 
 Everything below is the surface these are built on; reach for it when the facade does not fit.
-
-## HD offline receiving
-
-The optional `/hd` entry contains the branch and restoration helpers. HD receiving keeps the account authentication signer stable while deriving a fresh payout address and claim key for each payment. The ordinary Arkade and boarding addresses are never sent when `hd` is configured.
-
-```ts
-import { arkadeLnurl } from '@arkade-os/lnurl-client/arkade'
-import { createHdReceiveBranch, restoreHdReceiveAllocation } from '@arkade-os/lnurl-client/hd'
-
-const delay = Number(arkInfo.unilateralExitDelay)
-const branch = createHdReceiveBranch({
-  accountDescriptor: wallet.identity.descriptor,
-  branchPath: '2/7',
-  serverPubKey: arkInfo.signerPubkey.slice(-64),
-  hrp: 'tark',
-  exitDelay: { type: delay < 512 ? 'blocks' : 'seconds', value: delay },
-})
-const lnurl = arkadeLnurl({ wallet, hd: branch.hd, baseUrl: 'https://lnurl.example.com' })
-const receiver = await lnurl.claim({ username: 'alice' })
-const manager = await wallet.getContractManager()
-let after = 0
-for (;;) {
-  const page = await receiver.allocations({ after, limit: 100 })
-  for (const allocation of page.allocations) {
-    await restoreHdReceiveAllocation(manager, allocation, branch)
-  }
-  if (!page.allocations.length) break
-  after = page.nextAfter
-}
-```
-
-Reserve a distinct branch path for each LNURL service, outside ordinary receive and change paths. Persist the branch path and public configuration before registration; the example reserves `2/7`. Only its scoped branch xpub goes to the server. `accountDescriptor` and the returned `signingDescriptor(index)` mapping stay local so the original SDK identity can sign received coins. A raw mainnet `signerPubkey` may include a compression prefix: pass the x-only 64-character key. Read the actual exit delay and signer from Arkade info rather than copying the example's delay. Match the SDK's delay convention: values below 512 are blocks, otherwise seconds.
-
-Allocation history includes unpaid and failed invoice attempts, including old configurations after registration changes. Restore each historical allocation with its original saved branch configuration; do not substitute today's server key or delay. Save a pagination cursor only after every row on that page was registered successfully, and start at zero when restoring a fresh local wallet. A normal gap-limit wallet scan cannot cover arbitrary unpaid-invoice gaps. Allocation history remains authenticated and available after revocation. Registration requires an explicit HD-mode acknowledgement; it never falls back to a static address.
-
-The main entry point exposes `HdReceiveConfig`, `HdReceiveAllocation`, `HdReceiveAllocationPage`, `registerArkadeIdentity({ token, handle, hd })`, and `listHdAllocations(token, handle, opts)` without importing the SDK. The separate `/hd` entry adds the branch and restore helpers without loading them for static `/arkade` callers. Received funds still need the application's normal shielding flow; the LNURL service can still associate payments with the alias.
 
 ## Payer
 
@@ -130,6 +99,8 @@ That proves the answer's own `pr`, not that it is the invoice you are watching. 
 To pay in one of the payRequest's `units` instead, pass `{ unit, amount }` in place of `amountSat`, with `amount` in the unit's smallest denomination: `{ unit: "USD", amount: 500 }` is $5.00. The receiver quotes it to millisats; the answer must carry a `paymentQuote` for exactly that amount and unit, and a BOLT11 must be for the quoted millisats, or `requestInvoice` throws. `parseUnitAmount("5.00", 2)` and `formatUnitAmount("500", 2)` convert between what a person types and that integer.
 
 The payment router takes the same thing as `unitAmount` beside `raw`: `router.options({ raw: "alice@example.com", unitAmount: { unit: "USD", amount: 500 } })`, or `arkadeLnurl(...).options(target, { unit: "USD", amount: 500 })`. Only the lnurl rails can price it, on whichever of arkade and lightning the target offers; the quote records it as `lnurlQuoteMeta(quote).quote`. Keep that on the `SentPayment` you write as `quote`, and the sent row shows it as `requested`. A received payment synced from a server that records quotes carries the same `quote`, and its row shows `requested` too.
+
+The router quotes only its top-ranked option. To fall back when one lnurl rail cannot quote, filter `router.options(...)` with `isLnurlRail` and hand the rest to `firstQuote(options, onRefused?)`: it returns the first quote, reports each refusal, and throws the last.
 
 **Rails can carry different amounts, so check the option you selected.** A covenant destination is bounded by dust and VTXO shape, a solver-mediated swap by whatever the solver quotes — so an entry in `paymentOptions` may publish its own `minSendable`/`maxSendable`, and those win over the top-level pair when you select it. The top-level pair describes the rail you get by sending no `paymentOption` at all. `requestInvoice` applies that rule for you; apply it yourself if you build the callback URL by hand, or you will reject amounts the rail would have accepted.
 
@@ -167,6 +138,8 @@ for (const option of tokenOptions(payRequest)) {
 ```
 
 `requestInvoice` refuses a token answer for another option, one whose destination is not an address on the token's chain, and one that quotes no whole amount of the token. The amount you request is still sats: what the receiver is paid before the swap's fee.
+
+`chainName(option.asset.chainId)` names the network as the plugin does ("Arbitrum One", "Tron"), or returns the CAIP-2 id for a chain it does not know.
 
 ## Receiver
 
@@ -327,6 +300,8 @@ const { synced, failures } = await syncPayments(
 )
 ```
 
+Pass `signal` to stop early: once it aborts, no further page is fetched and nothing more is written, and the abort is not reported as a failure. `receiver.sync({ signal })` forwards it.
+
 **`browserPaymentStore()` is a small localStorage demo store**: synchronous, a few megabytes, and it rewrites every record per upsert. Browser apps can instead use the optional `/browser` IndexedDB backend described below. Node and React Native supply their own persistence through the same injection the package uses for `fetchImpl`:
 
 ```ts
@@ -351,7 +326,7 @@ These matter for correctness. `syncPayments` handles them all; you must handle t
 
 ### Activity resolvers
 
-`@arkade-os/lnurl-client/arkade` also exports `lnurlActivityResolver(payments)` and `sentActivityResolver(sends)`, `ActivityResolver`s that label an `ArkTransaction` with the LNURL payment or send it corresponds to. Both take a synchronous getter. For a database-backed receive store, refresh a local snapshot from `repository.all()` before calling the resolver's `prepare()`.
+`@arkade-os/lnurl-client/arkade` also exports `lnurlActivityResolver(payments)` and `sentActivityResolver(sends)`, `ActivityResolver`s that label an `ArkTransaction` with the LNURL payment or send it corresponds to. Each awaits its getter, sync or async, on every `prepare()`, so a database-backed receive store passes `() => repository.all()` as is and a sync written after construction still shows. `lnurlActivity(activity)` reads a tagged row back typed: `{ direction, address?, rail? }`, where `address` is the counterparty for a send and the receiving address for a receive. `LNURL_ACTIVITY_KIND` and `SENT_ACTIVITY_KIND` name the kinds the resolvers set.
 
 ### Shared persistence and send tracking
 
@@ -400,7 +375,9 @@ sends.watch(txid, verifyUrl, verifyBatch, startedAt, expect)
 
 The send backend reads and writes synchronously. Supply `onError` to surface persistence failures from payment or confirmation callbacks; SDK payment handles otherwise swallow subscriber exceptions. An optional `confirmations` in the same options object injects a shared tracker. `record()` returns an unsubscribe function and releases subscriptions on settlement or failure. It retains the quote's verify URLs, expected payment identity, and unit amount alongside later preimages. `resume()` watches only rows without a recorded confirmation outcome. `mark(txid, confirmed)` updates an existing row; `all()` reads the stored sends.
 
-Call `sends.forget()` before clearing its backend on reset: it unsubscribes payment handles and suppresses stale confirmation callbacks, so an old wallet cannot write a preimage into the next wallet's records. It does not delete records; clearing the app's send backend remains the app's responsibility. The existing browser demo store and all earlier APIs remain available. No IndexedDB, localStorage or native persistence dependency is added to these helpers.
+Call `sends.forget()` before clearing its backend on reset: it unsubscribes payment handles and suppresses stale confirmation callbacks, so an old wallet cannot write a preimage into the next wallet's records. It does not delete records; clearing the app's send backend remains the app's responsibility.
+
+In a browser, `createLocalStorageLnurlSentPaymentStore(key?)` from `/browser` is a ready send backend: one JSON array under `key`, where unreadable or non-array data reads as no sends and is left as it is. `sends.subscribe(listener)` is called after each write that landed, never after one that failed, so an open receipt can refresh when its confirmation arrives; it returns the unsubscribe.
 
 ### Token quotes
 
@@ -416,14 +393,14 @@ const quote = normalizeTokenQuote(token, answer)
 // quote.value, destination, baseUnits, amount, expiresAt, paymentDestinationTag
 ```
 
-`normalizeTokenQuote` requires a valid future `paymentQuote.expiresAt` and formats base units exactly through 36 decimals without floating-point conversion. `payableTokenUri(token, answer)` performs the same payment binding without requiring expiry. Existing `requestInvoice` callers retain control over optional expiry handling. Minimum remaining lifetime, fiat-price tolerance, expiry timers and explicit regeneration remain app policy; neither helper places another order.
+`normalizeTokenQuote` requires a valid future `paymentQuote.expiresAt` and formats base units exactly through 36 decimals without floating-point conversion. `payableTokenUri(token, answer)` performs the same payment binding without requiring expiry. Existing `requestInvoice` callers retain control over optional expiry handling. `requestTokenQuote(payRequest, token, amountSat, { minLifetimeMs, client })` does the request, the destination check and normalization in one call, and refuses a quote with less than `minLifetimeMs` left. `tokenOptionAccepts(token, payRequest, amountSat)` applies the option's own bounds, else the payRequest's. Fiat-price tolerance, memo handling, expiry timers and explicit regeneration remain app policy; no helper places another order unasked.
 
 ### Receive rails and startup
 
 ```ts
 import { bootstrapReceiver, claimOrAdopt, lnurlRailLimits, resolveLnurlRails } from '@arkade-os/lnurl-client/arkade'
 
-const boot = await bootstrapReceiver(facade, { autoClaimNameless: true })
+const boot = await bootstrapReceiver(facade, { autoClaimNameless: true, refresh: true, signal })
 if (boot.kind === 'ready') {
   const limits = lnurlRailLimits(await boot.receiver.payRequest())
   const targets = await resolveLnurlRails(boot.receiver, amountSat,
@@ -432,30 +409,34 @@ if (boot.kind === 'ready') {
 const receiver = await claimOrAdopt(facade, { username: chosenName })
 ```
 
-Bootstrap discovers an owned receiver first. Named receivers need no capabilities request; a nameless receiver remains usable if naming capabilities cannot be fetched, with the error returned as `capabilitiesError`. Only a successful empty ownership lookup can lead to onboarding. Nameless allocation defaults off and requires explicit opt-in, the advertised `session` mode, and no API-key requirement. A newly allocated result carries `claimed: true`; the app decides whether to sync afterwards.
+Bootstrap discovers an owned receiver first. Named receivers need no capabilities request; a nameless receiver remains usable if naming capabilities cannot be fetched, with the error returned as `capabilitiesError`. Only a successful empty ownership lookup can lead to onboarding. Nameless allocation defaults off and requires explicit opt-in, the advertised `session` mode, and no API-key requirement. A newly allocated result carries `claimed: true`; the app decides whether to sync afterwards. `refresh` and `signal` go to `owned`, and `signal` to the nameless claim too.
 
 `claimOrAdopt` returns an owned receiver or claims with the supplied options; lookup errors propagate without allocation. The demo wallet uses these startup helpers. UI choice ordering and translated errors stay with the app.
 
-`lnurlRailLimits` converts each enabled Bitcoin option's millisat bounds to whole sats and excludes token options. `resolveLnurlRails` returns an ordered `Promise.allSettled` result, validates option availability, bounds and response identity, and checks returned payment kinds. Legacy Lightning fallback applies only when `paymentOptions` is absent. Onchain targets must equal the supplied boarding address; Arkade targets must share the supplied address's network and operator. That operator check does not prove recipient ownership: covenant-derived destinations may differ from the static address. An optional injected client controls callback transport. The demo uses the bounds helper when offering receive options.
+`lnurlRailLimits` converts each enabled Bitcoin option's millisat bounds to whole sats and excludes token options. For a payer, `lnurlPayableRanges(payRequest, types?)` keeps the ranges on `types` (arkade and lightning by default) that still hold a whole sat, and returns `{ ranges, min, max, fixed, accepts(sats) }`; `accepts` rejects an amount in a gap between ranges. `resolveLnurlRails` returns an ordered `Promise.allSettled` result, validates option availability, bounds and response identity, and checks returned payment kinds. Legacy Lightning fallback applies only when `paymentOptions` is absent. Onchain targets must equal the supplied boarding address; Arkade targets must share the supplied address's network and operator. That operator check does not prove recipient ownership: covenant-derived destinations may differ from the static address. An optional injected client controls callback transport. The demo uses the bounds helper when offering receive options.
 
 ### IndexedDB backend
 
 ```ts
-import { createIndexedDbLnurlPaymentStore } from '@arkade-os/lnurl-client/browser'
+import { createIndexedDbLnurlPaymentStore, createLocalStorageLnurlWatermarkStore } from '@arkade-os/lnurl-client/browser'
 import { createLnurlPaymentRepository } from '@arkade-os/lnurl-client'
 
-const payments = createIndexedDbLnurlPaymentStore()
-const repository = createLnurlPaymentRepository(payments, watermarks)
+const repository = createLnurlPaymentRepository(
+  createIndexedDbLnurlPaymentStore(),
+  createLocalStorageLnurlWatermarkStore(),
+)
 ```
 
-The optional browser entry point touches IndexedDB only when a store operation runs. Defaults preserve the wallet backend's `arkade-lnurl-payments` database, version 1, `payments` store and `key` key path; custom database/store names are accepted. Writes resolve after commit, an aborted transaction rejects, and a synchronous failure while queuing a batch aborts its earlier writes. Every opened operation closes its connection on completion or failure. Cursor persistence stays injected through the repository; this adapter neither migrates nor deletes an existing schema.
+The optional browser entry point touches IndexedDB only when a store operation runs. Defaults preserve the wallet backend's `arkade-lnurl-payments` database, version 1, `payments` store and `key` key path; custom database/store names are accepted. Writes resolve after commit, an aborted transaction rejects, and a synchronous failure while queuing a batch aborts its earlier writes. Every opened operation closes its connection on completion or failure. Neither adapter migrates nor deletes an existing schema.
+
+`createLocalStorageLnurlWatermarkStore(key?)` keeps the cursors as one JSON map under `key` (default `arkade-lnurl.watermarks`), keyed `${baseUrl}|${lightningAddress}`. A map it cannot read, or a cursor that is not a number, counts as absent, so the next sync replays rather than skips; a refused write rejects, and `syncPayments` reports it as that target's failure.
 
 ## Errors
 
 Two shapes, both surfaced as `LnurlError`:
 
 - LUD-06 endpoints answer HTTP 200 carrying `{ status: "ERROR", reason }`.
-- Management endpoints answer a real status code carrying `{ error, code? }` (for example 409 with `USERNAME_TAKEN`).
+- Management endpoints answer a real status code carrying `{ error, code? }` (for example 409 with `taken`). `LnurlAddressErrorCode` lists the codes the address endpoints use.
 - Rate limits mix the two: HTTP 429 with the `{ status: "ERROR" }` body.
 
 `LnurlError` carries `reason`, optional `httpStatus` and `code`, and `retryable`, which is true if and only if `httpStatus === 429`. Everything else is terminal - do not retry it into a different answer.

@@ -18,6 +18,21 @@ export function lnurlRailLimits(payRequest: PayRequest): { type: string; min: nu
     }));
 }
 
+/** What a payer can send on `types`, in whole sats; ranges that round away to nothing are dropped. */
+export function lnurlPayableRanges(payRequest: PayRequest, types: readonly string[] = ["arkade", "lightning"]) {
+  const ranges = lnurlRailLimits(payRequest).filter(({ type, min, max }) =>
+    types.includes(type) && Number.isSafeInteger(min) && Number.isSafeInteger(max) && min > 0 && min <= max);
+  const min = ranges.length ? Math.min(...ranges.map((range) => range.min)) : 0;
+  const max = ranges.length ? Math.max(...ranges.map((range) => range.max)) : 0;
+  return {
+    ranges,
+    min,
+    max,
+    fixed: ranges.length > 0 && min === max,
+    accepts: (sats: number): boolean => ranges.some((range) => sats >= range.min && sats <= range.max),
+  };
+}
+
 function sameOperator(a: string, b: string): boolean {
   try {
     const [x, y] = [ArkAddress.decode(a), ArkAddress.decode(b)];

@@ -74,3 +74,9 @@ export class LnurlTimeoutError extends Error {
     this.lastSnapshot = opts?.lastSnapshot;
   }
 }
+
+/** The `code` an address-management error carries on `LnurlError.code`. */
+export type LnurlAddressErrorCode =
+  | "invalid_token" | "invalid_username" | "forbidden_mode"
+  | "blacklisted" | "taken" | "limit_reached" | "invalid_claim" | "invalid_rails"
+  | "already_named" | "not_found";

@@ -1,7 +1,40 @@
 import { describe, it, expect } from "vitest";
-import { openDb } from "../../src/db/connection.js";
+import request from "supertest";
+import { ArkAddress } from "@arkade-os/sdk";
+import { openDb, type Db } from "../../src/db/connection.js";
 import { LATEST_MIGRATION, MIGRATION_COUNT, runMigrations } from "../../src/db/migrations.js";
+import { createRepositories } from "../../src/db/repositories/index.js";
 import { DbSettlementStore } from "../../src/settlement-store.js";
+import { AddressService } from "../../src/services/addresses.js";
+import { createServer } from "../../src/http/server.js";
+import { deriveSessionId } from "../../src/session-token.js";
+import { encryptToken } from "../../src/crypto.js";
+
+// Migration 26 as 0.4.0 shipped it.
+const HD_RECEIVE_26 = `
+  ALTER TABLE addresses ADD COLUMN hd_receive TEXT;
+  CREATE TABLE IF NOT EXISTS hd_receive_sources (
+    source_id TEXT PRIMARY KEY,
+    next_index INTEGER NOT NULL CHECK (next_index >= 0 AND next_index <= 2147483648)
+  );
+  CREATE TABLE IF NOT EXISTS hd_receive_allocations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    address_id INTEGER REFERENCES addresses(id) ON DELETE SET NULL,
+    source_id TEXT NOT NULL REFERENCES hd_receive_sources(source_id),
+    child_index INTEGER NOT NULL CHECK (child_index >= 0 AND child_index < 2147483648),
+    descriptor TEXT NOT NULL,
+    arkade_address TEXT NOT NULL,
+    claim_public_key TEXT NOT NULL,
+    hd_receive TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(source_id, child_index)
+  );
+  CREATE INDEX IF NOT EXISTS idx_hd_receive_address ON hd_receive_allocations(address_id, id);
+`;
+
+const hdReceiveSchema = (db: Db) =>
+  (db.prepare("SELECT name FROM sqlite_master WHERE name LIKE '%hd_receive%' OR sql LIKE '%hd_receive%'").all() as { name: string }[])
+    .map((r) => r.name);
 
 function tableNames(db = openDb(":memory:")) {
   runMigrations(db);
@@ -272,6 +305,53 @@ describe("runMigrations", () => {
     runMigrations(db);
     const cols = db.prepare("SELECT name, dflt_value AS d FROM pragma_table_info('addresses')").all() as { name: string; d: string }[];
     expect(cols.find((c) => c.name === "disabled_rails")?.d).toBe("'[]'");
+    db.close();
+  });
+
+  it("never creates HD receive on a fresh database", () => {
+    const db = openDb(":memory:");
+    runMigrations(db, { upToVersion: 26 });
+    expect(hdReceiveSchema(db)).toEqual([]);
+    runMigrations(db);
+    expect(hdReceiveSchema(db)).toEqual([]);
+    db.close();
+  });
+
+  it("drops HD receive where 26 created it, leaving the HD address to a static bind", async () => {
+    const db = openDb(":memory:");
+    runMigrations(db, { upToVersion: 25 });
+    db.exec(HD_RECEIVE_26);
+    db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (26, 1000)").run();
+    const repos = createRepositories(db);
+    const key = Buffer.alloc(32, 9);
+    const token = "cd".repeat(32);
+    const claimPublicKey = "02" + "ab".repeat(32);
+    const domain = repos.domains.create({ domain: "domain.com", allocationModes: ["self"] });
+    const { id } = repos.addresses.create({
+      domainId: domain.id, username: "alice", status: "active", sessionId: deriveSessionId(token), encryptedToken: encryptToken(token, key),
+    });
+    db.prepare("UPDATE addresses SET hd_receive = '{\"version\":1}' WHERE id = ?").run(id);
+    db.prepare("INSERT INTO hd_receive_sources (source_id, next_index) VALUES ('source', 1)").run();
+    db.prepare(
+      "INSERT INTO hd_receive_allocations (address_id, source_id, child_index, descriptor, arkade_address, claim_public_key, hd_receive, created_at)" +
+      " VALUES (?, 'source', 0, 'tr(tpub/0)', 'tark1allocated', ?, '{\"version\":1}', 1000)",
+    ).run(id, claimPublicKey);
+    expect(hdReceiveSchema(db)).toEqual(expect.arrayContaining(["addresses", "hd_receive_sources", "hd_receive_allocations", "idx_hd_receive_address"]));
+
+    runMigrations(db);
+
+    expect(hdReceiveSchema(db)).toEqual([]);
+    const app = createServer(
+      { port: 0, baseUrl: "http://domain.com", minSendable: 1000, maxSendable: 100_000_000, invoiceTimeoutMs: 3000 },
+      { repos, addressService: new AddressService(repos, key) },
+    );
+    const paymentOptions = async () => (await request(app).get("/.well-known/lnurlp/alice").set("Host", "domain.com")).body.paymentOptions;
+    expect(await paymentOptions()).toBeUndefined();
+    const arkadeAddress = new ArkAddress(new Uint8Array(32), new Uint8Array(32), "tark").encode();
+    const bind = await request(app).post("/lnurl/address/alice/arkade").set("Host", "domain.com").auth(token, { type: "bearer" })
+      .send({ arkadeAddress, claimPublicKey });
+    expect(bind.body).toEqual({ ok: true });
+    expect(await paymentOptions()).toContainEqual(expect.objectContaining({ id: "arkade" }));
     db.close();
   });
 });

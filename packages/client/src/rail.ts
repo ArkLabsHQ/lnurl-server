@@ -21,6 +21,26 @@ import type { PayRequest, QuotedAmount, UnitAmount, VerifyExpectation } from "./
 
 export const LNURL_ARKADE_RAIL = "lnurl-arkade";
 export const LNURL_LIGHTNING_RAIL = "lnurl-lightning";
+
+export const isLnurlRail = (railId: string | undefined): boolean =>
+  railId === LNURL_ARKADE_RAIL || railId === LNURL_LIGHTNING_RAIL;
+
+/** The first option that quotes, in order: quoting spends nothing, so one that cannot yields to the next. */
+export async function firstQuote(
+  options: readonly { railId: string; quote(): Promise<RouteQuote> }[],
+  onRefused?: (railId: string, error: unknown) => void,
+): Promise<RouteQuote> {
+  let refusal: unknown = new LnurlError("nothing to quote");
+  for (const option of options) {
+    try {
+      return await option.quote();
+    } catch (error) {
+      onRefused?.(option.railId, error);
+      refusal = error;
+    }
+  }
+  throw refusal;
+}
 /** How long a payRequest is reused, here and by `Receiver.payRequest()`. */
 export const PAY_REQUEST_TTL_MS = 30_000;
 

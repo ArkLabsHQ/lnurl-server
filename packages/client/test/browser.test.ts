@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createIndexedDbLnurlPaymentStore } from "../src/browser.js";
+import {
+  createIndexedDbLnurlPaymentStore,
+  createLocalStorageLnurlSentPaymentStore,
+  createLocalStorageLnurlWatermarkStore,
+} from "../src/browser.js";
 import type { LnurlPaymentStore } from "../src/repository.js";
 import type { StoredPayment } from "../src/sync.js";
 
@@ -194,5 +198,78 @@ describe("IndexedDB payment store", () => {
     const idb = stubIndexedDb({ openFailure: true });
     await expect(call(createIndexedDbLnurlPaymentStore())).rejects.toMatchObject({ name: "InvalidStateError" });
     expect(idb.transaction).not.toHaveBeenCalled();
+  });
+});
+
+const stubStorage = (initial: Record<string, string> = {}) => {
+  const entries = new Map(Object.entries(initial));
+  vi.stubGlobal("localStorage", {
+    getItem: (k: string) => entries.get(k) ?? null,
+    setItem: (k: string, v: string) => void entries.set(k, v),
+    removeItem: (k: string) => void entries.delete(k),
+  });
+  return entries;
+};
+
+describe("localStorage watermark store", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("keeps each server and address's cursor in one map under its key, and clears only that key", async () => {
+    const entries = stubStorage({ unrelated: "kept" });
+    const marks = createLocalStorageLnurlWatermarkStore("marks");
+    await marks.write("https://a", "alice@x", 5);
+    await marks.write("https://b", "alice@x", 7);
+    await expect(marks.read("https://a", "alice@x")).resolves.toBe(5);
+    expect(JSON.parse(entries.get("marks")!)).toEqual({ "https://a|alice@x": 5, "https://b|alice@x": 7 });
+    await marks.clear();
+    expect([...entries.keys()]).toEqual(["unrelated"]);
+  });
+
+  it.each([["an absent map", undefined], ["null", "null"], ["an array", "[]"], ["a number", "5"], ["unparseable JSON", "{x"], ["a string cursor", '{"https://a|alice@x":"5"}']])(
+    "reads %s as no cursor, and a write replaces it",
+    async (_shape, raw) => {
+      const entries = stubStorage(raw === undefined ? {} : { marks: raw });
+      const marks = createLocalStorageLnurlWatermarkStore("marks");
+      await expect(marks.read("https://a", "alice@x")).resolves.toBeUndefined();
+      await marks.write("https://a", "alice@x", 9);
+      expect(JSON.parse(entries.get("marks")!)).toEqual({ "https://a|alice@x": 9 });
+    },
+  );
+
+  it("reads unreadable storage as no cursor but rejects a write storage refuses", async () => {
+    const refused = new DOMException("denied", "SecurityError");
+    vi.stubGlobal("localStorage", { getItem: () => { throw refused; }, setItem: () => { throw refused; } });
+    const marks = createLocalStorageLnurlWatermarkStore();
+    await expect(marks.read("https://a", "alice@x")).resolves.toBeUndefined();
+    await expect(marks.write("https://a", "alice@x", 1)).rejects.toBe(refused);
+  });
+});
+
+describe("localStorage sent-payment store", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const sent = { txid: "t1", target: "alice@pay.example", railId: "lnurl-arkade", amountSat: 1, feeSat: 0, createdAt: 1 };
+
+  it("keeps the records as one JSON array under its key", () => {
+    const entries = stubStorage({ unrelated: "kept" });
+    const store = createLocalStorageLnurlSentPaymentStore("sends");
+    store.write([sent]);
+    expect(store.read()).toEqual([sent]);
+    expect(JSON.parse(entries.get("sends")!)).toEqual([sent]);
+    expect(entries.get("unrelated")).toBe("kept");
+  });
+
+  it.each([["nothing stored", undefined], ["null", "null"], ["an object", "{}"], ["a number", "42"], ["unparseable JSON", "{x"]])(
+    "reads %s as no sends, without rewriting it",
+    (_shape, raw) => {
+      const entries = stubStorage(raw === undefined ? {} : { sends: raw });
+      expect(createLocalStorageLnurlSentPaymentStore("sends").read()).toEqual([]);
+      expect(entries.get("sends")).toBe(raw);
+    },
+  );
+
+  it("throws a write storage refuses, for the tracker to report", () => {
+    const refused = new DOMException("full", "QuotaExceededError");
+    vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => { throw refused; } });
+    expect(() => createLocalStorageLnurlSentPaymentStore().write([sent])).toThrow(refused);
   });
 });
