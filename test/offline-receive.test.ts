@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import http from "node:http";
 import { randomBytes } from "node:crypto";
 import { bech32 } from "@scure/base";
+import { buildInvoice as buildInvoiceWithHrp } from "./helpers/bolt11.js";
+import { invoiceFactsFromBolt11 } from "../src/bolt11.js";
 import { ArkAddress } from "@arkade-os/sdk";
 import { createServer } from "../src/http/server.js";
 import { openDb, type Db } from "../src/db/connection.js";
@@ -192,11 +194,13 @@ describe("offline receive", () => {
     expect(store.get(hash)).toBeUndefined();
   });
 
-  it.each([1000.5, 1000.0001])("rejects a %s-sat invoice rather than rounding it down to the payer ceiling", async (invoiceSats) => {
+  it.each(["10005000p", "10000001p"])("rejects a fractional-sat invoice (%s) rather than rounding it down to the payer ceiling", async (amountHrp) => {
     const hash = "cf".repeat(32);
     const creator = new FakeCreator(hash);
     const create = creator.create.bind(creator);
-    creator.create = async (params) => ({ ...await create(params), invoice: buildInvoice(hash, invoiceSats) });
+    const invoice = buildInvoiceWithHrp(hash, { amountHrp });
+    expect(invoiceFactsFromBolt11(invoice).amountSats).toBe(1000);
+    creator.create = async (params) => ({ ...await create(params), invoice });
     const store = new MemorySettlementStore(60_000);
     ctx = await start(repos, creator, store);
     repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
