@@ -46,7 +46,7 @@ const handle = await (await best.quote()).send()
 | an LNURL for a QR | `receiver.lnurl` |
 | its own payRequest | `receiver.payRequest()` |
 | one page of the server's records | `receiver.payments(opts)` |
-| everything new, into your store | `receiver.sync()` |
+| everything new, into your store | `receiver.sync({ signal? })` |
 | name a nameless receiver in place | `receiver.upgrade(opts?)` |
 | rank the ways to pay a target | `options(target, amountSat)` |
 | the router itself | `router()` |
@@ -131,6 +131,8 @@ That proves the answer's own `pr`, not that it is the invoice you are watching. 
 To pay in one of the payRequest's `units` instead, pass `{ unit, amount }` in place of `amountSat`, with `amount` in the unit's smallest denomination: `{ unit: "USD", amount: 500 }` is $5.00. The receiver quotes it to millisats; the answer must carry a `paymentQuote` for exactly that amount and unit, and a BOLT11 must be for the quoted millisats, or `requestInvoice` throws. `parseUnitAmount("5.00", 2)` and `formatUnitAmount("500", 2)` convert between what a person types and that integer.
 
 The payment router takes the same thing as `unitAmount` beside `raw`: `router.options({ raw: "alice@example.com", unitAmount: { unit: "USD", amount: 500 } })`, or `arkadeLnurl(...).options(target, { unit: "USD", amount: 500 })`. Only the lnurl rails can price it, on whichever of arkade and lightning the target offers; the quote records it as `lnurlQuoteMeta(quote).quote`. Keep that on the `SentPayment` you write as `quote`, and the sent row shows it as `requested`. A received payment synced from a server that records quotes carries the same `quote`, and its row shows `requested` too.
+
+The router quotes only its top-ranked option. To fall back when one lnurl rail cannot quote, filter `router.options(...)` with `isLnurlRail` and hand the rest to `firstQuote(options, onRefused?)`: it returns the first quote, reports each refusal, and throws the last.
 
 **Rails can carry different amounts, so check the option you selected.** A covenant destination is bounded by dust and VTXO shape, a solver-mediated swap by whatever the solver quotes — so an entry in `paymentOptions` may publish its own `minSendable`/`maxSendable`, and those win over the top-level pair when you select it. The top-level pair describes the rail you get by sending no `paymentOption` at all. `requestInvoice` applies that rule for you; apply it yourself if you build the callback URL by hand, or you will reject amounts the rail would have accepted.
 
@@ -330,6 +332,8 @@ const { synced, failures } = await syncPayments(
 )
 ```
 
+Pass `signal` to stop early: once it aborts, no further page is fetched and nothing more is written, and the abort is not reported as a failure. `receiver.sync({ signal })` forwards it.
+
 **`browserPaymentStore()` is a small localStorage demo store**: synchronous, a few megabytes, and it rewrites every record per upsert. Browser apps can instead use the optional `/browser` IndexedDB backend described below. Node and React Native supply their own persistence through the same injection the package uses for `fetchImpl`:
 
 ```ts
@@ -354,7 +358,7 @@ These matter for correctness. `syncPayments` handles them all; you must handle t
 
 ### Activity resolvers
 
-`@arkade-os/lnurl-client/arkade` also exports `lnurlActivityResolver(payments)` and `sentActivityResolver(sends)`, `ActivityResolver`s that label an `ArkTransaction` with the LNURL payment or send it corresponds to. Each awaits its getter, sync or async, on every `prepare()`, so a database-backed receive store passes `() => repository.all()` as is and a sync written after construction still shows.
+`@arkade-os/lnurl-client/arkade` also exports `lnurlActivityResolver(payments)` and `sentActivityResolver(sends)`, `ActivityResolver`s that label an `ArkTransaction` with the LNURL payment or send it corresponds to. Each awaits its getter, sync or async, on every `prepare()`, so a database-backed receive store passes `() => repository.all()` as is and a sync written after construction still shows. `lnurlActivity(activity)` reads a tagged row back typed: `{ direction, address?, rail? }`, where `address` is the counterparty for a send and the receiving address for a receive. `LNURL_ACTIVITY_KIND` and `SENT_ACTIVITY_KIND` name the kinds the resolvers set.
 
 ### Shared persistence and send tracking
 
@@ -403,7 +407,9 @@ sends.watch(txid, verifyUrl, verifyBatch, startedAt, expect)
 
 The send backend reads and writes synchronously. Supply `onError` to surface persistence failures from payment or confirmation callbacks; SDK payment handles otherwise swallow subscriber exceptions. An optional `confirmations` in the same options object injects a shared tracker. `record()` returns an unsubscribe function and releases subscriptions on settlement or failure. It retains the quote's verify URLs, expected payment identity, and unit amount alongside later preimages. `resume()` watches only rows without a recorded confirmation outcome. `mark(txid, confirmed)` updates an existing row; `all()` reads the stored sends.
 
-Call `sends.forget()` before clearing its backend on reset: it unsubscribes payment handles and suppresses stale confirmation callbacks, so an old wallet cannot write a preimage into the next wallet's records. It does not delete records; clearing the app's send backend remains the app's responsibility. The existing browser demo store and all earlier APIs remain available. No IndexedDB, localStorage or native persistence dependency is added to these helpers.
+Call `sends.forget()` before clearing its backend on reset: it unsubscribes payment handles and suppresses stale confirmation callbacks, so an old wallet cannot write a preimage into the next wallet's records. It does not delete records; clearing the app's send backend remains the app's responsibility.
+
+In a browser, `createLocalStorageLnurlSentPaymentStore(key?)` from `/browser` is a ready send backend: one JSON array under `key`, where unreadable or non-array data reads as no sends and is left as it is. `sends.subscribe(listener)` is called after each write that landed, never after one that failed, so an open receipt can refresh when its confirmation arrives; it returns the unsubscribe.
 
 ### Token quotes
 
@@ -419,7 +425,7 @@ const quote = normalizeTokenQuote(token, answer)
 // quote.value, destination, baseUnits, amount, expiresAt, paymentDestinationTag
 ```
 
-`normalizeTokenQuote` requires a valid future `paymentQuote.expiresAt` and formats base units exactly through 36 decimals without floating-point conversion. `payableTokenUri(token, answer)` performs the same payment binding without requiring expiry. Existing `requestInvoice` callers retain control over optional expiry handling. Minimum remaining lifetime, fiat-price tolerance, expiry timers and explicit regeneration remain app policy; neither helper places another order.
+`normalizeTokenQuote` requires a valid future `paymentQuote.expiresAt` and formats base units exactly through 36 decimals without floating-point conversion. `payableTokenUri(token, answer)` performs the same payment binding without requiring expiry. Existing `requestInvoice` callers retain control over optional expiry handling. `requestTokenQuote(payRequest, token, amountSat, { minLifetimeMs, client })` does the request, the destination check and normalization in one call, and refuses a quote with less than `minLifetimeMs` left. `tokenOptionAccepts(token, payRequest, amountSat)` applies the option's own bounds, else the payRequest's. Fiat-price tolerance, memo handling, expiry timers and explicit regeneration remain app policy; no helper places another order unasked.
 
 ### Receive rails and startup
 
@@ -439,7 +445,7 @@ Bootstrap discovers an owned receiver first. Named receivers need no capabilitie
 
 `claimOrAdopt` returns an owned receiver or claims with the supplied options; lookup errors propagate without allocation. The demo wallet uses these startup helpers. UI choice ordering and translated errors stay with the app.
 
-`lnurlRailLimits` converts each enabled Bitcoin option's millisat bounds to whole sats and excludes token options. `resolveLnurlRails` returns an ordered `Promise.allSettled` result, validates option availability, bounds and response identity, and checks returned payment kinds. Legacy Lightning fallback applies only when `paymentOptions` is absent. Onchain targets must equal the supplied boarding address; Arkade targets must share the supplied address's network and operator. That operator check does not prove recipient ownership: covenant-derived destinations may differ from the static address. An optional injected client controls callback transport. The demo uses the bounds helper when offering receive options.
+`lnurlRailLimits` converts each enabled Bitcoin option's millisat bounds to whole sats and excludes token options. For a payer, `lnurlPayableRanges(payRequest, types?)` keeps the ranges on `types` (arkade and lightning by default) that still hold a whole sat, and returns `{ ranges, min, max, fixed, accepts(sats) }`; `accepts` rejects an amount in a gap between ranges. `resolveLnurlRails` returns an ordered `Promise.allSettled` result, validates option availability, bounds and response identity, and checks returned payment kinds. Legacy Lightning fallback applies only when `paymentOptions` is absent. Onchain targets must equal the supplied boarding address; Arkade targets must share the supplied address's network and operator. That operator check does not prove recipient ownership: covenant-derived destinations may differ from the static address. An optional injected client controls callback transport. The demo uses the bounds helper when offering receive options.
 
 ### IndexedDB backend
 
@@ -462,7 +468,7 @@ The optional browser entry point touches IndexedDB only when a store operation r
 Two shapes, both surfaced as `LnurlError`:
 
 - LUD-06 endpoints answer HTTP 200 carrying `{ status: "ERROR", reason }`.
-- Management endpoints answer a real status code carrying `{ error, code? }` (for example 409 with `USERNAME_TAKEN`).
+- Management endpoints answer a real status code carrying `{ error, code? }` (for example 409 with `taken`). `LnurlAddressErrorCode` lists the codes the address endpoints use.
 - Rate limits mix the two: HTTP 429 with the `{ status: "ERROR" }` body.
 
 `LnurlError` carries `reason`, optional `httpStatus` and `code`, and `retryable`, which is true if and only if `httpStatus === 429`. Everything else is terminal - do not retry it into a different answer.
