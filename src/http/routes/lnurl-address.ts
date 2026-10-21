@@ -38,7 +38,11 @@ export function lnurlAddressRoutes({ repos, addressService, registrationLimiter:
     if (!token) throw new Unauthorized();
     const list = addressService.listByToken(token).map((a) => {
       const domain = repos!.domains.getById(a.domainId)!;
-      return { ...addressView(domain, a, req.protocol), createdAt: a.createdAt };
+      // Owner-only: lets a client re-bind just the aliases whose destination moved.
+      return {
+        ...addressView(domain, a, req.protocol), createdAt: a.createdAt,
+        arkadeAddress: a.arkadeAddress, claimPublicKey: a.claimPublicKey, boardingAddress: a.boardingAddress,
+      };
     });
     res.json(list);
   });

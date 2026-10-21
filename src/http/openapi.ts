@@ -499,7 +499,7 @@ export const openApiSpec = {
       },
       get: {
         summary: "List your LN addresses",
-        description: "Returns the addresses owned by the bearer token.",
+        description: "Returns the addresses owned by the bearer token, each with the destination its Arkade identity is bound to.",
         tags: ["LN Address"],
         security: [{ bearerAuth: [] }],
         responses: {
@@ -507,7 +507,12 @@ export const openApiSpec = {
             description: "Owned addresses",
             content: {
               "application/json": {
-                schema: { type: "array", items: { allOf: [{ $ref: "#/components/schemas/OwnedAddress" }, { type: "object", properties: { createdAt: { type: "number" } } }] } },
+                schema: { type: "array", items: { allOf: [{ $ref: "#/components/schemas/OwnedAddress" }, { type: "object", properties: {
+                  createdAt: { type: "number" },
+                  arkadeAddress: { type: "string", nullable: true, description: "Bound Arkade address; null until an identity is bound, or for an HD receiver" },
+                  claimPublicKey: { type: "string", nullable: true, description: "Bound claim key; null when arkadeAddress is" },
+                  boardingAddress: { type: "string", nullable: true, description: "Bound onchain destination; null when none is registered" },
+                } }] } },
               },
             },
           },
