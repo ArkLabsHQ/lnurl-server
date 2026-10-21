@@ -19,7 +19,6 @@ import type { LnurlSurface } from "./encoding.js";
 import {
   domainCapabilities,
   listAddresses,
-  listHdAllocations,
   listPayments,
   registerAddress,
   registerArkadeIdentity,
@@ -30,7 +29,6 @@ import { syncPayments } from "./sync.js";
 import { chainName, isTokenAddress, tokenOptions } from "./token-options.js";
 import type { TokenAsset, TokenOption, TokenUnit } from "./token-options.js";
 import type { PaymentSyncStore, PaymentSyncTarget, StoredPayment } from "./sync.js";
-import type { HdReceiveAllocationPage } from "./addresses.js";
 import type {
   AddressListEntry,
   DomainCapabilities,
@@ -177,7 +175,6 @@ export interface LnurlClient {
    * @returns A promise settling when the server records the identity.
    */
   registerArkadeIdentity(req: RegisterArkadeIdentityRequest): Promise<void>;
-  listHdAllocations(token: string, handle: string, opts?: { domain?: string; after?: number; limit?: number }): Promise<HdReceiveAllocationPage>;
   /**
    * Lists the payments made to one address owned by a token. Requires `baseUrl`.
    *
@@ -233,8 +230,6 @@ export function createLnurlClient(opts?: LnurlClientOptions): LnurlClient {
       revokeAddress(needBase("revokeAddress"), token, handle, revokeOpts, fetchImpl),
     registerArkadeIdentity: async (req) =>
       registerArkadeIdentity(needBase("registerArkadeIdentity"), req, fetchImpl),
-    listHdAllocations: async (token, handle, listOpts) =>
-      listHdAllocations(needBase("listHdAllocations"), token, handle, listOpts, fetchImpl),
     listPayments: async (token, handle, listOpts) =>
       listPayments(needBase("listPayments"), token, handle, listOpts, fetchImpl),
   };
@@ -251,7 +246,6 @@ export {
   isValidLnUrl,
   toPayRequestUrl,
   listAddresses,
-  listHdAllocations,
   listPayments,
   LnurlError,
   LnurlTimeoutError,
@@ -281,7 +275,6 @@ export type { LnurlPaymentRepository, LnurlPaymentStore, LnurlPaymentWatermarkSt
 export { formatUnitAmount, parseUnitAmount } from "./units.js";
 export { normalizeTokenQuote, payableTokenUri, requestTokenQuote, tokenOptionAccepts } from "./token-quotes.js";
 export type { TokenQuote } from "./token-quotes.js";
-export type { HdReceiveConfig, HdReceiveAllocation, HdReceiveAllocationPage } from "./addresses.js";
 export type {
   AddressListEntry,
   AmountObject,

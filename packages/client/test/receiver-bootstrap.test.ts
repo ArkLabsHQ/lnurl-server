@@ -17,7 +17,6 @@ const receiver = (lightningAddress?: string): Receiver => ({
   lnurl: "LNURL1EXAMPLE",
   payRequest: vi.fn(),
   payments: vi.fn(),
-  allocations: vi.fn(),
   sync: vi.fn(),
   upgrade: vi.fn(),
 });

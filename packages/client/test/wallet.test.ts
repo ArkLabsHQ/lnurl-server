@@ -427,16 +427,16 @@ describe("arkadeLnurl receiver discovery", () => {
   });
 
   it("owned({ refresh }) re-binds the other aliases when one is refused, then fails closed", async () => {
-    const refusal = new LnurlError("An HD receiver cannot be downgraded by a static registration");
+    const refusal = new LnurlError("Address not found or not owned by this token");
     const client = fakeClient({
-      listAddresses: vi.fn(async () => [row("hd", boundTo(null)), row("moved", boundTo("tark1old"))]) as never,
+      listAddresses: vi.fn(async () => [row("refused", boundTo(null)), row("moved", boundTo("tark1old"))]) as never,
       registerArkadeIdentity: vi.fn(async (request: { handle: string }) => {
-        if (request.handle === "hd") throw refusal;
+        if (request.handle === "refused") throw refusal;
       }) as never,
     });
 
     await expect(arkadeLnurl({ wallet: fakeWallet(), baseUrl: BASE, client }).owned({ refresh: true })).rejects.toBe(refusal);
-    expect(rebound(client)).toEqual(["hd", "moved"]);
+    expect(rebound(client)).toEqual(["refused", "moved"]);
   });
 
   it("owned({ refresh }) binds no further alias once the signal aborts mid-refresh", async () => {
@@ -450,16 +450,6 @@ describe("arkadeLnurl receiver discovery", () => {
 
     await expect(owned).rejects.toMatchObject({ name: "AbortError" });
     expect(rebound(client)).toEqual(["first"]);
-  });
-
-  it("owned({ refresh }) writes nothing for an HD receiver", async () => {
-    const client = fakeClient({ listAddresses: vi.fn(async () => [row("alice", boundTo(null))]) as never });
-    const hd = { version: 1, descriptor: "tr(xpub)", serverPubKey: "ff".repeat(32), hrp: "tark", exitDelay: { type: "blocks", value: 144 } } as const;
-
-    const rx = await arkadeLnurl({ identity: fakeWallet().identity, hd, baseUrl: BASE, client }).owned({ refresh: true });
-
-    expect(rx?.handle).toBe("alice");
-    expect(client.registerArkadeIdentity).not.toHaveBeenCalled();
   });
 
   it("owned() rejects with the signal's reason and binds nothing once it aborts", async () => {

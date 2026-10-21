@@ -11,7 +11,6 @@ import { ArkAddress } from "@arkade-os/sdk";
 import { hex } from "@scure/base";
 import { LnurlError } from "./errors.js";
 import { deriveSessionTokenWithSigner } from "./token.js";
-export type { HdReceiveConfig, HdReceiveAllocation, HdReceiveAllocationPage } from "./addresses.js";
 
 export { firstQuote, isLnurlRail, LNURL_ARKADE_RAIL, LNURL_LIGHTNING_RAIL, lnurlQuoteMeta, lnurlRails } from "./rail.js";
 export type { LnurlPaymentRequest, LnurlQuoteMeta, LnurlRailDeps } from "./rail.js";
