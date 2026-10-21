@@ -39,8 +39,10 @@ const handle = await (await best.quote()).send()
 | you want | call |
 | --- | --- |
 | what this domain allows | `capabilities()` |
-| the address this wallet already owns here | `owned()` |
-| claim a name (or none) and bind the identity | `claim(opts?)` |
+| the LUD-16 domain it works on | `domain` |
+| the active address this wallet already owns here | `owned({ refresh?, signal? })` |
+| every address it owns here, revoked ones too, for display | `addresses()` |
+| claim a name (or none) and bind the identity | `claim(opts?, { signal? })` |
 | the LNURL a nameless claim will serve, before it lands | `sessionLnurl()` |
 | its `user@domain`, or `undefined` when nameless | `receiver.lightningAddress` |
 | an LNURL for a QR | `receiver.lnurl` |
@@ -52,6 +54,8 @@ const handle = await (await best.quote()).send()
 | the router itself | `router()` |
 
 **`payRequest()` fetches once per 30 s.** Every call on one `Receiver` within that window shares a single fetch, in flight or done, so a screen asking on every amount change costs one GET; a failed fetch is not kept. `claim` and `upgrade` retire it at once, even when they fail; a change made anywhere else - another device, the operator - shows within 30 s. `createLnurlClient().resolve(receiver.lnurl)` always asks the server.
+
+**Keeping aliases pointed at this wallet.** `owned({ refresh: true })` first re-binds this facade's Arkade, claim and boarding destinations on every active alias the server lists as bound elsewhere - after an address rotation or a restore - and on all of them where the server does not report it. A missing boarding address never counts as a change, so a registered one stays. An `hd` facade does not refresh. A static one that finds an HD alias still re-binds the others, then rejects, since the server refuses that downgrade. `claim`, `owned` and `upgrade` run one at a time per identity object and server, across facades, so a receive screen and a startup sync built separately never interleave their writes. Once a `signal` passed to `owned` or `claim` aborts, the call rejects with `signal.reason` - after any call queued ahead of it - and writes nothing more.
 
 `capabilities()` reads what a domain allows before you call it - `{ domain, allocationModes, usernameRules, requireApiKey }` - so onboarding can offer only the modes actually enabled instead of guessing and hitting `forbidden_mode`. A domain requiring an operator-reserved name takes a `claimCode` the same way on either call below: `claim({ username: 'alice', claimCode })`.
 
@@ -432,7 +436,7 @@ const quote = normalizeTokenQuote(token, answer)
 ```ts
 import { bootstrapReceiver, claimOrAdopt, lnurlRailLimits, resolveLnurlRails } from '@arkade-os/lnurl-client/arkade'
 
-const boot = await bootstrapReceiver(facade, { autoClaimNameless: true })
+const boot = await bootstrapReceiver(facade, { autoClaimNameless: true, refresh: true, signal })
 if (boot.kind === 'ready') {
   const limits = lnurlRailLimits(await boot.receiver.payRequest())
   const targets = await resolveLnurlRails(boot.receiver, amountSat,
@@ -441,7 +445,7 @@ if (boot.kind === 'ready') {
 const receiver = await claimOrAdopt(facade, { username: chosenName })
 ```
 
-Bootstrap discovers an owned receiver first. Named receivers need no capabilities request; a nameless receiver remains usable if naming capabilities cannot be fetched, with the error returned as `capabilitiesError`. Only a successful empty ownership lookup can lead to onboarding. Nameless allocation defaults off and requires explicit opt-in, the advertised `session` mode, and no API-key requirement. A newly allocated result carries `claimed: true`; the app decides whether to sync afterwards.
+Bootstrap discovers an owned receiver first. Named receivers need no capabilities request; a nameless receiver remains usable if naming capabilities cannot be fetched, with the error returned as `capabilitiesError`. Only a successful empty ownership lookup can lead to onboarding. Nameless allocation defaults off and requires explicit opt-in, the advertised `session` mode, and no API-key requirement. A newly allocated result carries `claimed: true`; the app decides whether to sync afterwards. `refresh` and `signal` go to `owned`, and `signal` to the nameless claim too.
 
 `claimOrAdopt` returns an owned receiver or claims with the supplied options; lookup errors propagate without allocation. The demo wallet uses these startup helpers. UI choice ordering and translated errors stay with the app.
 
