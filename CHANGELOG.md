@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Add net-targeted Lightning invoices with a payer ceiling and quoted solver fees. Standard LNURL-pay callbacks are unchanged.
 
+### Security
+- **Docker image runs Node.js 22.23.4** — the base image is pinned to `node:22.23.4-slim`, the October 2026 security release (Brotli decoder out-of-bounds write, TLS hostname-check bypasses, `dns.resolve` NUL truncation, HTTP keep-alive response confusion; undici 6.29.1, OpenSSL 3.5.9). Pinning keeps a builder's cached `22-slim` from shipping the unpatched runtime.
+
 ### Fixed
 - **Pasted solver cards no longer go stale** — each discovery refresh rewrites a stored full card with the one its solver publishes over Nostr (kind 38859), once that card passes the same signature, validity and freshness rules discovery applies. The admin view and the fallback when relays are unreachable now show the solver's current terms instead of the copy pasted at setup. Pointer cards are left as they are.
 
