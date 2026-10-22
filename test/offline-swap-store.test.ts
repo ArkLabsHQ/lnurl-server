@@ -90,6 +90,32 @@ describe("OfflineSwapStore", () => {
     db.close();
   });
 
+  it("lists a settled swap inside the window whose claim recorded no payout", () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    let t = 1_000;
+    const store = new OfflineSwapStore(db, 60_000, () => t);
+    const settlements = new DbSettlementStore(db, 60_000, () => t);
+    const swap = (hash: string) => store.createAccepted({
+      paymentHash: hash, pr: "lnbc1", sessionId: "offline:1", preimage: "bb".repeat(32), amountMsat: 1_000,
+      recovery: { version: 1, solverName: "one", solverPubkey: "11".repeat(32), relays: ["wss://relay.example"], rfqId: `rfq-${hash}`, lockupAddress: "tark1", expectedAmount: 1, script: {} },
+    });
+    swap("expired");
+    store.markSettled("expired", "cc".repeat(32));
+    t = 30_000;
+    swap("unrecorded");
+    store.markSettled("unrecorded", "cc".repeat(32));
+    swap("recorded");
+    store.markSettled("recorded", "cc".repeat(32));
+    settlements.markPaidOut("recorded", "ark-tx-1");
+    swap("pending");
+    settlements.create({ paymentHash: "relay", pr: "lnbc1", sessionId: "s" });
+    t = 61_000;
+
+    expect(store.listUnrecordedPayouts().map((p) => p.paymentHash)).toEqual(["unrecorded"]);
+    db.close();
+  });
+
   it.each(["https://relay.example", "not a URL"])("rejects a persisted non-Nostr relay: %s", (relay) => {
     const db = openDb(":memory:");
     runMigrations(db);
