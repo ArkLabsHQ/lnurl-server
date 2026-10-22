@@ -167,9 +167,9 @@ export function createSelfClaimer(opts: {
         observedPayout(payTo, (await indexer.getVtxos({ scripts: [lockupScript] })).vtxos, indexer);
       if (deadline >= BigInt(LOCKTIME_THRESHOLD) && BigInt(Math.floor(Date.now() / 1000)) >= deadline) {
         const { vtxos: ever } = await indexer.getVtxos({ scripts: [lockupScript] });
-        registry.delete(swapId);
         // A claim that landed before the deadline still paid the user, however late we see it.
         const paid = await observedPayout(payTo, ever, indexer);
+        registry.delete(swapId);
         if (paid) return { state: "claimed", arkTxid: paid };
         return { state: "skipped", reason: "expired", funded: ever.length > 0 };
       }
