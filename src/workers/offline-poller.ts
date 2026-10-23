@@ -64,6 +64,30 @@ async function settleOne(store: SettlementStore, creator: OfflineSwapCreator, p:
   return false;
 }
 
+/** A claim whose reply was lost settles the swap with no payout reference, and the pending
+ *  read never returns to a settled row. One attempt each: the spend that proves a payout is
+ *  visible the moment it lands. Goes through the claim path rather than a read-only lookup,
+ *  so a settled row whose lockup is still spendable is claimed — money the user is owed. */
+async function recordMissedPayouts(store: SettlementStore, creator: OfflineSwapCreator, recovered: OfflineSwapStore, logger: Logger, asked: Set<string>): Promise<void> {
+  if (!creator.selfClaim) return;
+  const rows = recovered.listUnrecordedPayouts();
+  const live = new Set(rows.map((row) => row.paymentHash));
+  for (const paymentHash of asked) if (!live.has(paymentHash)) asked.delete(paymentHash);
+  for (const row of rows) {
+    if (asked.has(row.paymentHash)) continue;
+    const swapRef = row.recovery.rfqId.slice(0, 12);
+    try {
+      const outcome = await creator.selfClaim(row.recovery.rfqId, row.preimage, row.recovery);
+      asked.add(row.paymentHash);
+      if (outcome.state === "claimed" && store.markPaidOut(row.paymentHash, outcome.arkTxid)) {
+        logger.info("offline_swap_payout_recorded", { swapRef, arkTxid: outcome.arkTxid });
+      }
+    } catch (error) {
+      logger.warn("offline_swap_payout_lookup_failed", { swapRef, error });
+    }
+  }
+}
+
 /** One settlement pass: mark any pending offline swap settled once the solver reports
  *  its invoice settled. The server already holds the preimage, so `verify` can then
  *  reveal it. Returns how many swaps were newly settled. A transient status-check
@@ -113,6 +137,7 @@ export function startOfflineSettlementPoller(
   const expired = new Set<string>();
   // The solver will never settle these. Claims go on until the deadline, in case it is wrong.
   const closed = new Set<string>();
+  const asked = new Set<string>();
   let active = 0;
   let stopped = false;
   const runOne = (p: Pending): Promise<boolean> => {
@@ -150,6 +175,7 @@ export function startOfflineSettlementPoller(
       const live = new Set(pending.map((row) => row.swapId));
       for (const set of [expired, closed]) for (const swapId of set) if (!live.has(swapId)) set.delete(swapId);
       for (const p of pending) await runOne(p);
+      if (recovered) await recordMissedPayouts(store, creator, recovered, logger, asked);
     },
     intervalMs: catchUpIntervalMs,
     onError: (error) => logger.warn("offline_settlement_pass_failed", { error }),

@@ -401,6 +401,54 @@ describe("startOfflineSettlementPoller", () => {
     }
   });
 
+  /** A swap the solver settled while its own claim went unrecorded — today's broken rows. */
+  const settledWithoutPayout = () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    const settlements = new DbSettlementStore(db, 60_000, () => 1_001);
+    const recovered = new OfflineSwapStore(db, 60_000, () => 1_000);
+    recovered.createAccepted({
+      paymentHash: "aa".repeat(32), pr: "lnbc1", sessionId: "offline:1", preimage: "bb".repeat(32), amountMsat: 5_000_000,
+      recovery: { version: 1, solverName: "primary", solverPubkey: "11".repeat(32), relays: ["wss://relay.example"], rfqId: "22".repeat(32), lockupAddress: "tark1", expectedAmount: 4_999, script: { sender: "33".repeat(32) } },
+    });
+    recovered.markSettled("aa".repeat(32), "bb".repeat(32));
+    return { db, settlements, recovered };
+  };
+
+  it("records the payout of a settled swap its claim never reported", async () => {
+    const { db, settlements, recovered } = settledWithoutPayout();
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    const selfClaim = vi.fn(async () => ({ state: "claimed" as const, arkTxid: "ark-tx-9" }));
+
+    const poller = startOfflineSettlementPoller(settlements, { ...creatorReporting([]), selfClaim }, 15_000, recovered);
+    try {
+      await vi.waitFor(() => expect(settlements.get("aa".repeat(32))?.payoutReference).toBe("ark-tx-9"));
+      expect(selfClaim).toHaveBeenCalledWith("22".repeat(32), "bb".repeat(32), expect.objectContaining({ rfqId: "22".repeat(32) }));
+    } finally {
+      poller.stop();
+      db.close();
+    }
+  });
+
+  it("asks about a settled swap with no observable payout once, not every pass", async () => {
+    const { db, settlements, recovered } = settledWithoutPayout();
+    const selfClaim = vi.fn(async () => ({ state: "skipped" as const, reason: "unfunded" as const }));
+    const prune = vi.fn(async () => {});
+
+    const poller = startOfflineSettlementPoller(settlements, { ...creatorReporting([]), selfClaim, prune }, 15_000, recovered);
+    try {
+      await vi.waitFor(() => expect(selfClaim).toHaveBeenCalledOnce());
+      poller.trigger();
+      await vi.waitFor(() => expect(prune).toHaveBeenCalledTimes(2));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(selfClaim).toHaveBeenCalledOnce();
+      expect(settlements.get("aa".repeat(32))?.payoutReference).toBeNull();
+    } finally {
+      poller.stop();
+      db.close();
+    }
+  });
+
   it("stops passing once stopped", async () => {
     const store = pendingStore();
     const creator = creatorReporting([]);
