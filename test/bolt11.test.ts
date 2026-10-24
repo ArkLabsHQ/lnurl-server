@@ -54,7 +54,13 @@ describe("invoiceFactsFromBolt11", () => {
   it("decodes whole-bitcoin and pico denominations, rounding p down", () => {
     expect(invoiceFactsFromBolt11(buildInvoice(hash, { amountHrp: "1" })).amountSats).toBe(100_000_000);
     expect(invoiceFactsFromBolt11(buildInvoice(hash, { amountHrp: "500000p" })).amountSats).toBe(50);
+    expect(invoiceFactsFromBolt11(buildInvoice(hash, { amountHrp: "500000p" }), true).amountSats).toBe(50);
+    expect(invoiceFactsFromBolt11(buildInvoice(hash, { amountHrp: "1" }), true).amountSats).toBe(100_000_000);
     expect(invoiceFactsFromBolt11(buildInvoice(hash, { amountHrp: "15p" })).amountSats).toBe(0);
+  });
+
+  it.each(["10005n", "10005000p", "10000001p", "15p"])("rejects fractional sats in %s when whole sats are required", (amountHrp) => {
+    expect(() => invoiceFactsFromBolt11(buildInvoice(hash, { amountHrp }), true)).toThrow(/whole.*satoshi/i);
   });
 
   it("decodes amountless invoices to amountSats 0 and defaults expiry to 3600s", () => {

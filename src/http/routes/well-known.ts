@@ -91,6 +91,51 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     } satisfies LnurlPayMetadata);
   };
 
+  const offlineInvoice = async (req: Request, res: Response, domain: DomainRow, address: AddressRow, amountMsat: number,
+    options: Pick<Parameters<typeof createOfflineSwapInvoice>[0], "maxPayAmountMsat" | "paymentQuote" | "quoted" | "echoLightningOption"> = {}) => {
+    if (!creator || !address.arkadeAddress || !address.claimPublicKey) throw new LnurlError("Offline receive is unavailable");
+    const { railAddress, base } = envelope(domain, address);
+    const railCaps = currentRailCaps();
+    const railStates = railStatesFor(railAddress, railCaps);
+    // Sessionless receive is the offline-swap rail: a disabled policy or an
+    // unready discovery fails loudly per request while the process keeps
+    // serving interactive sessions (never a silent stall).
+    if (railStates.get("offline-swap")?.enabled === false) throw new LnurlError("offline receive is disabled for this address");
+    if (!railCaps.discoveryReady) {
+      throw new LnurlError(`offline receive unavailable: ${railCaps.discoveryReason ?? "no usable lightning-receive solver cards"}`);
+    }
+    if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) throw new LnurlError("Too many requests", 429);
+    const swapBounds = railBounds("offline-swap", railCaps, base);
+    // The payer amount is only known after quoting a net target.
+    const boundedAmount = options.maxPayAmountMsat ?? amountMsat;
+    if (boundedAmount < swapBounds.min || boundedAmount > swapBounds.max) {
+      throw new LnurlError(`Amount must be between ${swapBounds.min} and ${swapBounds.max} millisats`);
+    }
+    // The corridor deals in whole sats; reject before reserving capacity.
+    if (amountMsat % 1000 !== 0) throw new LnurlError("Amount must be a whole number of satoshis");
+    if (offlineQuotes >= (config.maxConcurrentOfflineQuotes ?? 20)) throw new LnurlError("Offline quote capacity reached", 429);
+    offlineQuotes++;
+    try {
+      res.json(await createOfflineSwapInvoice({
+        creator, store, offlineSwaps, baseUrl: settings.baseUrl(), amountMsat, minPayAmountMsat: swapBounds.min,
+        receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, ...options,
+        logger, requestId: res.locals.requestId as string,
+      }));
+    } finally {
+      offlineQuotes--;
+    }
+  };
+
+  const netInvoice = async (req: Request, res: Response, domain: DomainRow, address: AddressRow) => {
+    const { receiveAmountMsat, maxPayAmountMsat } = req.body ?? {};
+    if (!Number.isSafeInteger(receiveAmountMsat) || receiveAmountMsat <= 0 || receiveAmountMsat % 1000 !== 0 ||
+        !Number.isSafeInteger(maxPayAmountMsat) || maxPayAmountMsat < receiveAmountMsat || maxPayAmountMsat % 1000 !== 0) {
+      throw new LnurlError("receiveAmountMsat and maxPayAmountMsat must be whole sats, with a positive receive amount and a payer ceiling at least that amount");
+    }
+    if (!address.arkadeAddress || !address.claimPublicKey) throw new LnurlError("Net receiving requires a static Arkade identity");
+    await offlineInvoice(req, res, domain, address, receiveAmountMsat, { maxPayAmountMsat });
+  };
+
   const payCallback = async (req: Request, res: Response, domain: DomainRow, address: AddressRow): Promise<void> => {
     // `base` is the envelope only. Each branch below narrows it to what its own rail
     // can carry, because the rail that serves decides the real bound.
@@ -252,32 +297,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     // Arkade identity, so the server quotes a corridor swap paying it (covclaimd claims it).
     // The corridor never touches the session, so a sessionless address is served too.
     if (creator && address.arkadeAddress && address.claimPublicKey && (!address.sessionId || !sessions.isActive(address.sessionId))) {
-      // Sessionless receive is the offline-swap rail: a disabled policy or an
-      // unready discovery fails loudly per request while the process keeps
-      // serving interactive sessions (never a silent stall).
-      if (railStates.get("offline-swap")?.enabled === false) throw new LnurlError("offline receive is disabled for this address");
-      if (!railCaps.discoveryReady) {
-        throw new LnurlError(`offline receive unavailable: ${railCaps.discoveryReason ?? "no usable lightning-receive solver cards"}`);
-      }
-      if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) throw new LnurlError("Too many requests", 429);
-      const swapBounds = railBounds("offline-swap", railCaps, base);
-      if (amountMsat < swapBounds.min || amountMsat > swapBounds.max) {
-        throw new LnurlError(`Amount must be between ${swapBounds.min} and ${swapBounds.max} millisats`);
-      }
-      // The corridor deals in whole sats; reject before reserving capacity.
-      if (amountMsat % 1000 !== 0) throw new LnurlError("Amount must be a whole number of satoshis");
-      if (offlineQuotes >= (config.maxConcurrentOfflineQuotes ?? 20)) throw new LnurlError("Offline quote capacity reached", 429);
-      offlineQuotes++;
-      try {
-        res.json(await createOfflineSwapInvoice({
-          creator, store, offlineSwaps, baseUrl: settings.baseUrl(), amountMsat,
-          receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, paymentQuote, quoted,
-          echoLightningOption: Boolean(paymentOptionId),
-          logger, requestId: res.locals.requestId as string,
-        }));
-      } finally {
-        offlineQuotes--;
-      }
+      await offlineInvoice(req, res, domain, address, amountMsat, { paymentQuote, quoted, echoLightningOption: Boolean(paymentOptionId) });
       return;
     }
 
@@ -300,6 +320,12 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     payRequest(res, domain, address, `${originOf(req, domain)}/.well-known/lnurlp/${username}/callback`);
   });
 
+  // App-specific net pricing, not an LNURL-pay callback: the invoice may exceed the receive amount.
+  r.post("/.well-known/lnurlp/:username/invoice", async (req, res) => {
+    const { domain, address } = activeAddress(req.get("host"), req.params.username);
+    await netInvoice(req, res, domain, address);
+  });
+
   r.get("/.well-known/lnurlp/:username/callback", async (req, res) => {
     const { domain, address } = activeAddress(req.get("host"), req.params.username);
     await payCallback(req, res, domain, address);
@@ -310,6 +336,12 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     const flagged = sessionLnurlRow(req, req.params.id);
     if (!flagged) return next();
     payRequest(res, flagged.domain, flagged.address, `${originOf(req, flagged.domain)}/lnurl/${req.params.id}/callback`);
+  });
+
+  r.post("/lnurl/:id/invoice", async (req, res, next) => {
+    const flagged = sessionLnurlRow(req, req.params.id);
+    if (!flagged) return next();
+    await netInvoice(req, res, flagged.domain, flagged.address);
   });
 
   r.get("/lnurl/:id/callback", async (req, res, next) => {

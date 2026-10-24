@@ -6,7 +6,7 @@ import type { OfflineSwapStore } from "../offline-swap-store.js";
 import type { Logger } from "../logger.js";
 import type { PaymentQuote, QuotedAmount } from "../quote-provider.js";
 import { InvoiceRequestError, RailRefusedError } from "../errors.js";
-import { paymentHashFromBolt11 } from "../bolt11.js";
+import { invoiceFactsFromBolt11, paymentHashFromBolt11 } from "../bolt11.js";
 import type { LnurlPayCallbackResponse, LnurlPayDestinationResponse } from "../types/index.js";
 import { LnurlError } from "../http/errors.js";
 import { BATCH_PATH } from "./verify-batch.js";
@@ -93,6 +93,10 @@ export async function createOfflineSwapInvoice(args: {
   offlineSwaps?: OfflineSwapStore;
   baseUrl: string;
   amountMsat: number;
+  /** Opt-in app API: amountMsat is net receive amount; standard callbacks omit this. */
+  maxPayAmountMsat?: number;
+  /** Payer floor imposed by the receiving service, in millisats. */
+  minPayAmountMsat?: number;
   receiveAddress: string;
   claimPublicKey: string;
   addressId: number;
@@ -103,11 +107,28 @@ export async function createOfflineSwapInvoice(args: {
   logger: Logger;
   requestId: string;
 }): Promise<LnurlPayCallbackResponse> {
-  const { creator, store, offlineSwaps, baseUrl, amountMsat, receiveAddress, claimPublicKey, addressId, paymentQuote, quoted, echoLightningOption, logger, requestId } = args;
+  const { creator, store, offlineSwaps, baseUrl, amountMsat, maxPayAmountMsat, minPayAmountMsat, receiveAddress, claimPublicKey, addressId, paymentQuote, quoted, echoLightningOption, logger, requestId } = args;
+  let swap: OfflineSwapResult | undefined;
   try {
     // Caller guarantees whole satoshis (rejected at the route otherwise).
-    const swap = await creator.create({ amountSat: amountMsat / 1000, receiveAddress, claimPublicKey });
-    const accepted = { paymentHash: swap.preimageHash, pr: swap.invoice, sessionId: `offline:${addressId}`, preimage: swap.preimage, amountMsat, addressId, ...(quoted ? { quote: quoted } : {}) };
+    const net = maxPayAmountMsat !== undefined;
+    swap = await creator.create({ amountSat: amountMsat / 1000, receiveAddress, claimPublicKey,
+      ...(net ? { amountSide: "to" as const, maxPayAmountSat: maxPayAmountMsat / 1000 } : {}),
+    });
+    const payerMsat = net ? invoiceFactsFromBolt11(swap.invoice, true).amountSats * 1000 : amountMsat;
+    if (net && (!Number.isSafeInteger(payerMsat) || payerMsat < Math.max(amountMsat, minPayAmountMsat ?? 0) || payerMsat > maxPayAmountMsat || swap.recovery.expectedAmount * 1000 !== amountMsat)) {
+      throw new Error("Solver invoice does not satisfy the receive amount and payer bounds");
+    }
+    const amount = (value: number) => ({ amount: String(value), unit: "msat" });
+    const resultQuote = net ? {
+      requested: amount(amountMsat), payment: amount(payerMsat), receive: amount(amountMsat),
+      fees: [{ name: "solver", amount: amount(payerMsat - amountMsat) }],
+    } : paymentQuote;
+    const recordQuote = net ? { amount: String(amountMsat / 1000), unit: "sat", decimals: 0 } : quoted;
+    const accepted = {
+      paymentHash: swap.preimageHash, pr: swap.invoice, sessionId: `offline:${addressId}`, preimage: swap.preimage,
+      amountMsat: payerMsat, addressId, ...(recordQuote ? { quote: recordQuote } : {}),
+    };
     // With DB_PATH, OfflineSwapStore is the single atomic persistence boundary:
     // it writes both settlement and restart recovery rows in one transaction.
     if (offlineSwaps) offlineSwaps.createAccepted({ ...accepted, recovery: swap.recovery });
@@ -117,10 +138,11 @@ export async function createOfflineSwapInvoice(args: {
       routes: [],
       verify: `${baseUrl}/lnurl/verify/${swap.preimageHash}`,
       verifyBatch: `${baseUrl}${BATCH_PATH}`,
-      ...(paymentQuote ? { paymentQuote } : {}),
+      ...(resultQuote ? { paymentQuote: resultQuote } : {}),
       ...(echoLightningOption ? { paymentOption: "lightning" } : {}),
     };
   } catch (err) {
+    if (swap) await creator.release?.(swap.swapId).catch(() => {});
     logger.warn("offline_quote_failed", { requestId, error: err });
     const reason = err instanceof RailRefusedError ? err.message : "Unable to create offline invoice";
     throw new LnurlError(reason);

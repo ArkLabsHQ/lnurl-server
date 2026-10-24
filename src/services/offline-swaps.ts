@@ -17,6 +17,7 @@
 // solver settled the payer's hold invoice, not merely that a lockup exists.
 
 import { hex } from "@scure/base";
+import { sideLimits } from "@arkade-os/solver-discovery";
 import { ArkAddress, RestArkProvider, VHTLCV2ContractHandler, getNetwork, toXOnly, type NetworkName } from "@arkade-os/sdk";
 import {
   deriveLightningReceive,
@@ -40,8 +41,11 @@ import type { SelfClaimer, SelfClaimOutcome } from "../covenant/self-claim.js";
 import { deserializeSelfClaim } from "../covenant/self-claim-codec.js";
 
 export interface OfflineSwapParams {
-  /** Invoice amount in satoshis — the payer pays exactly this (`amountSide: "from"`). */
+  /** Invoice amount by default; exact owner payout when amountSide is "to". */
   amountSat: number;
+  amountSide?: "from" | "to";
+  /** Required payer ceiling for net-targeted invoices, in sats. */
+  maxPayAmountSat?: number;
   /** Receiver's Arkade address — the covenant claim is constrained to pay it. */
   receiveAddress: string;
   /** Receiver's compressed claim public key (hex); its x-only part is the covenant's receiver. */
@@ -279,7 +283,15 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
       if (payout.hrp !== ctx.hrp) {
         throw new Error(`receiveAddress prefix ${payout.hrp} does not match operator network (${ctx.hrp})`);
       }
-      const candidates = settings.discovery.selectLightningReceive(params.amountSat, ctx.emulatorPubkey);
+      const amountSide = params.amountSide ?? "from";
+      const maxPayAmountSat = params.maxPayAmountSat;
+      if (amountSide === "to" && (maxPayAmountSat === undefined || !Number.isSafeInteger(maxPayAmountSat) || maxPayAmountSat < params.amountSat)) {
+        throw new Error("A maximum payer amount at least equal to the receive amount is required");
+      }
+      if (amountSide !== "to" && maxPayAmountSat !== undefined) {
+        throw new Error("A maximum payer amount is only supported with amountSide 'to'");
+      }
+      const candidates = settings.discovery.selectLightningReceive(params.amountSat, ctx.emulatorPubkey, amountSide);
       if (!candidates.length) throw new RailRefusedError(`no solver card supports a ${params.amountSat} sat lightning receive`);
       const failures: string[] = [];
 
@@ -307,14 +319,20 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
             payoutPubkey,
             claimPacket,
             amount: params.amountSat,
-            amountSide: "from",
+            amountSide,
           }));
           const fromAmount = quoteSats("from_amount", quote.from_amount);
           const toAmount = quoteSats("to_amount", quote.to_amount);
-          if (fromAmount !== params.amountSat) {
-            throw new SolverQuoteError(`solver quoted from_amount ${fromAmount}, not the requested ${params.amountSat}`);
+          const targetAmount = amountSide === "to" ? toAmount : fromAmount;
+          if (targetAmount !== params.amountSat) {
+            throw new SolverQuoteError(`solver quoted ${amountSide}_amount ${targetAmount}, not the requested ${params.amountSat}`);
           }
           if (toAmount > fromAmount) throw new SolverQuoteError("solver quote pays out more than it takes in");
+          if (maxPayAmountSat !== undefined && fromAmount > maxPayAmountSat) throw new SolverQuoteError("solver quote exceeds the maximum payer amount");
+          const payer = sideLimits(candidate.market, "quote");
+          if (amountSide === "to" && (!payer || BigInt(fromAmount) < payer.min || BigInt(fromAmount) > payer.max)) {
+            throw new SolverQuoteError("solver quote exceeds its advertised payer bounds");
+          }
           const derived = deriveLightningReceive({
             quote,
             paymentHash,
