@@ -58,7 +58,7 @@ describe("normalizePaymentMethods", () => {
   });
   it("refuses an entry that is not an object", () => {
     for (const entry of [7, null, "a", ["a", "x"]]) {
-      expect(() => normalizePaymentMethods([entry])).toThrow(/object/);
+      expect(() => normalizePaymentMethods([entry])).toThrow(/must be an object/);
     }
   });
 });
@@ -69,7 +69,7 @@ describe("parsePaymentMethods", () => {
     expect(parsePaymentMethods(serializePaymentMethods(methods))).toEqual(methods);
   });
   it("drops corrupt entries instead of throwing", () => {
-    expect(parsePaymentMethods('[{"type":"a","destination":"x"},{"type":"B"},7]'))
+    expect(parsePaymentMethods('[{"type":"a","destination":"x"},{"type":"B"},7,null]'))
       .toEqual([{ type: "a", destination: "x" }]);
     expect(parsePaymentMethods("not json")).toEqual([]);
     expect(parsePaymentMethods(null)).toEqual([]);
