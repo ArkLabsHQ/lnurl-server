@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { NotFound } from "../../errors.js";
+import { Conflict, NotFound } from "../../errors.js";
 import type { AdminDeps } from "../../admin-context.js";
-import { idParam } from "../../params.js";
+import { idParam, strParam } from "../../params.js";
 
 /** Free-name claim codes. A reserved name's code is issued with the reservation, under /addresses. */
 export function adminClaimCodeRoutes(deps: AdminDeps): Router {
@@ -9,7 +9,7 @@ export function adminClaimCodeRoutes(deps: AdminDeps): Router {
   const r = Router();
 
   r.get("/claim-codes", (req, res) => {
-    const domainId = req.query.domainId ? Number(req.query.domainId) : undefined;
+    const domainId = req.query.domainId === undefined ? undefined : idParam(strParam(req.query.domainId) ?? "");
     res.json({
       claimCodes: repos.claimCodes.list(domainId).map((c) => ({
         id: c.id, domain: repos.domains.getById(c.domainId)?.domain ?? null,
@@ -25,7 +25,9 @@ export function adminClaimCodeRoutes(deps: AdminDeps): Router {
     res.status(201).json({ id: code.id, domain: domain.domain, claimCode });
   });
   r.delete("/claim-codes/:id", (req, res) => {
-    if (!repos.claimCodes.delete(idParam(req.params.id))) throw new NotFound("claim code not found");
+    const outcome = repos.claimCodes.revoke(idParam(req.params.id));
+    if (outcome === "missing") throw new NotFound("claim code not found");
+    if (outcome === "spent") throw new Conflict("a spent claim code stays as the record of the address it claimed");
     res.json({ ok: true });
   });
 

@@ -351,6 +351,7 @@ export const adminOpenApiSpec = {
               },
             } } } } } },
           },
+          ...errorResponse("400", "domainId must be a positive integer"),
         },
       },
       post: {
@@ -374,10 +375,15 @@ export const adminOpenApiSpec = {
     },
     "/claim-codes/{id}": {
       delete: {
-        summary: "Revoke a claim code",
+        summary: "Revoke an unspent claim code",
+        description: "A spent code is kept as the record of the address it claimed, so it answers 409.",
         tags: ["Addresses"],
         parameters: [idParam],
-        responses: { ...OK, ...errorResponse("404", "Claim code not found") },
+        responses: {
+          ...OK,
+          ...errorResponse("404", "Claim code not found"),
+          ...errorResponse("409", "The claim code was already spent"),
+        },
       },
     },
     "/reconcile": {

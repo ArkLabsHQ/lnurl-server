@@ -155,8 +155,14 @@ describe("admin API", () => {
     ]);
     expect(JSON.stringify(list.body)).not.toContain(issued.body.claimCode);
 
+    expect((await request(app).get("/admin/api/claim-codes?domainId=abc")).status).toBe(400);
+
     expect((await request(app).delete(`/admin/api/claim-codes/${issued.body.id}`)).status).toBe(200);
     expect((await request(app).delete(`/admin/api/claim-codes/${issued.body.id}`)).status).toBe(404);
+    expect((await request(app).delete(`/admin/api/claim-codes/${spent.body.id}`)).status).toBe(409);
+    expect((await request(app).get("/admin/api/claim-codes")).body.claimCodes).toEqual([
+      expect.objectContaining({ id: spent.body.id, username: "picked" }),
+    ]);
     expect((await request(app).post("/admin/api/claim-codes").send({ domain: "unknown.com" })).status).toBe(404);
   });
 

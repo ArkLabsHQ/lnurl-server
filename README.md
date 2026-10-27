@@ -341,7 +341,7 @@ The Docker image binds to `0.0.0.0` so isolation happens at the container/proxy 
 | POST | `/admin/api/addresses` | Reserve or mint an address |
 | GET | `/admin/api/claim-codes` | List free-name claim codes, never the codes themselves (filter: `domainId`) |
 | POST | `/admin/api/claim-codes` | Issue a free-name claim code for `{ domain }`, shown once |
-| DELETE | `/admin/api/claim-codes/:id` | Revoke a claim code |
+| DELETE | `/admin/api/claim-codes/:id` | Revoke an unspent claim code; a spent one is kept as the record of what it claimed (409) |
 | PATCH | `/admin/api/addresses/:id` | Update address status (`active`/`revoked`) |
 | DELETE | `/admin/api/addresses/:id` | Delete address |
 | GET | `/admin/api/api-keys` | List API keys |

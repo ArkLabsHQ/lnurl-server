@@ -481,7 +481,7 @@ export const openApiSpec = {
                   username: { type: "string", description: "Desired username; omit for random allocation" },
                   claimCode: { type: "string", description: "Operator claim code: alone it claims the reserved name it unlocks; a free-name code needs `username`" },
                   domain: { type: "string", description: "Target domain (defaults to the Host header)" },
-                  nameless:{ type: "boolean", description: "Register with no lightning address (requires `session` mode); cannot combine with `username`/`claimCode`" },
+                  nameless: { type: "boolean", description: "Register with no lightning address (requires `session` mode); cannot combine with `username`/`claimCode`" },
                 },
                 required: ["token"],
               },

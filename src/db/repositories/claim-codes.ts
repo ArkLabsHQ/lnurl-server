@@ -55,7 +55,9 @@ export class ClaimCodesRepo {
     return rows.map((r) => ({ ...toRow(r), username: r.username }));
   }
 
-  delete(id: number): boolean {
-    return this.db.prepare("DELETE FROM claim_codes WHERE id = ?").run(id).changes === 1;
+  /** Deletes an unspent code. A spent one is kept: it is the only link to the address it claimed. */
+  revoke(id: number): "revoked" | "spent" | "missing" {
+    if (this.db.prepare("DELETE FROM claim_codes WHERE id = ? AND redeemed_at IS NULL").run(id).changes === 1) return "revoked";
+    return this.db.prepare("SELECT 1 FROM claim_codes WHERE id = ?").get(id) ? "spent" : "missing";
   }
 }

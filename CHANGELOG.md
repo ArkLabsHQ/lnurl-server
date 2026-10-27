@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
-- **Claim codes for any free name, and a reserved name's code on its own** — `POST /admin/api/claim-codes` issues a one-time code that reserves no name: its holder claims any available username with it, on a domain without `self` mode too. `GET` lists the codes without revealing them and `DELETE /admin/api/claim-codes/:id` revokes one. A reserved name's code now claims that name when sent alone, on `POST /lnurl/address` and on the nameless upgrade. A free-name code sent alone answers `400 username_required`. In `@arkade-os/lnurl-client`, `NameOptions` takes a `claimCode` alone and `LnurlAddressErrorCode` adds `username_required`.
+- **Claim codes for any free name, and a reserved name's code on its own** — `POST /admin/api/claim-codes` issues a one-time code that reserves no name: its holder claims any available username with it, on a domain without `self` mode too. `GET` lists the codes without revealing them and `DELETE /admin/api/claim-codes/:id` revokes an unspent one; a spent code stays as the record of what it claimed. A reserved name's code now claims that name when sent alone, on `POST /lnurl/address` and on the nameless upgrade. A free-name code sent alone answers `400 username_required`. In `@arkade-os/lnurl-client`, `NameOptions` takes a `claimCode` alone and `LnurlAddressErrorCode` adds `username_required`.
 
 ### Changed
 - **A claim code that matches nothing is refused** — it answers `invalid_claim` instead of being ignored. That covers a free name on a `self` domain sent with a wrong code, and a code sent alone, which used to fall through to a random name.
