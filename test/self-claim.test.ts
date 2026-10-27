@@ -31,6 +31,11 @@ const solverRefundPkScript = new Uint8Array([0x51, 0x20, ...secp256k1.utils.rand
 const payoutXonly = toXOnly(secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true), "payout");
 const PAYOUT = new ArkAddress(operatorXonly, payoutXonly, "tark").encode();
 const PAYOUT_PKSCRIPT = ArkAddress.decode(PAYOUT).pkScript;
+const ELSEWHERE_PKSCRIPT = new ArkAddress(
+  operatorXonly,
+  toXOnly(secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true), "elsewhere"),
+  "tark",
+).pkScript;
 const CHECKPOINT_TAPSCRIPT = hex.encode(
   CSVMultisigTapscript.encode({ timelock: { type: "seconds", value: 1024n }, pubkeys: [operatorXonly] }).script,
 );
@@ -135,8 +140,17 @@ beforeEach(() => {
 });
 
 /** A claimer plus the lockup a solver would have funded for it. */
-function registered(opts: { swapId: string; expectedAmount: number; refundLocktime?: number }) {
-  const claimer = createSelfClaimer({ arkServerUrl: ark.baseUrl, emulatorUrl: ark.baseUrl });
+function registered(opts: {
+  swapId: string;
+  expectedAmount: number;
+  refundLocktime?: number;
+  emulator?: { submitTx(arkTx: string, checkpointTxs: string[]): Promise<{ signedArkTx: string; signedCheckpointTxs: string[] }> };
+}) {
+  const claimer = createSelfClaimer({
+    arkServerUrl: ark.baseUrl,
+    emulatorUrl: ark.baseUrl,
+    ...(opts.emulator ? { emulator: opts.emulator } : {}),
+  });
   const script = lightningReceiveContract({
     solverPubkey: solverXonly,
     refundLocktime: opts.refundLocktime ?? REFUND_LOCKTIME,
@@ -160,9 +174,21 @@ function addOutput(r: ReturnType<typeof registered>, valueSat: number): string {
   return txid;
 }
 
-function funded(opts: { swapId: string; expectedAmount: number; valueSat: number; refundLocktime?: number }) {
+function funded(opts: Parameters<typeof registered>[0] & { valueSat: number }) {
   const r = registered(opts);
   return { ...r, txid: addOutput(r, opts.valueSat) };
+}
+
+/** The lockup spent by an ark tx this server did not build, paying `to`. */
+function alreadySpent(r: ReturnType<typeof registered>, valueSat: number, to: { script: Uint8Array; amount: bigint }): string {
+  const { txid } = fundingTx(r.script.pkScript, valueSat);
+  const checkpointId = hex.encode(randomBytes(32));
+  const spend = new Transaction({ version: 3, allowUnknownOutputs: true });
+  spend.addInput({ txid: hex.decode(checkpointId), index: 0 });
+  spend.addOutput(to);
+  virtualTxs.set(spend.id, base64.encode(spend.toPSBT()));
+  vtxos.push({ ...wireVtxo({ txid, valueSat, script: r.lockupScript }), isSpent: true, spentBy: checkpointId, arkTxid: spend.id });
+  return spend.id;
 }
 
 describe("createSelfClaimer", () => {
@@ -206,10 +232,76 @@ describe("createSelfClaimer", () => {
     expect(hex.encode(entries[0].script)).toBe(hex.encode(arkadeScript));
   });
 
-  it("skips, and submits nothing, when the lockup is already spent or not yet funded", async () => {
+  it("skips, and submits nothing, when the lockup is not yet funded", async () => {
     const { claimer } = registered({ swapId: "swap-2", expectedAmount: 4_900 });
 
     expect(await claimer.claim("swap-2", hex.encode(PREIMAGE))).toEqual({ state: "skipped", reason: "unfunded" });
+    expect(submitted).toHaveLength(0);
+  });
+
+  it("reports the claim an earlier pass landed, off the spend rather than a lost reply", async () => {
+    const r = funded({ swapId: "swap-13", expectedAmount: 4_900, valueSat: 2_500 });
+    addOutput(r, 2_400);
+    const landed = await r.claimer.claim("swap-13", hex.encode(PREIMAGE));
+    const arkTx = Transaction.fromPSBT(base64.decode(submitted[0].arkTx));
+    const checkpoints = submitted[0].checkpointTxs.map((c) => Transaction.fromPSBT(base64.decode(c)).id);
+    virtualTxs.set(arkTx.id, submitted[0].arkTx);
+    vtxos = vtxos.map((v, i) => ({ ...v, isSpent: true, spentBy: checkpoints[i]!, arkTxid: arkTx.id }));
+    submitted = [];
+    r.claimer.register({ swapId: "swap-13", script: r.script, expectedAmount: 4_900 });
+
+    expect(landed).toEqual({ state: "claimed", arkTxid: arkTx.id });
+    expect(await r.claimer.claim("swap-13", hex.encode(PREIMAGE))).toEqual(landed);
+    expect(submitted).toHaveLength(0);
+  });
+
+  it("reports the claim it built when the emulator fails after arkd took the tx", async () => {
+    let sent: string | undefined;
+    const r = funded({
+      swapId: "swap-14",
+      expectedAmount: 4_900,
+      valueSat: 4_900,
+      emulator: {
+        submitTx: async (arkTx, checkpointTxs) => {
+          const spend = Transaction.fromPSBT(base64.decode(arkTx));
+          sent = spend.id;
+          virtualTxs.set(spend.id, arkTx);
+          const spentBy = Transaction.fromPSBT(base64.decode(checkpointTxs[0]!)).id;
+          vtxos = vtxos.map((v) => ({ ...v, isSpent: true, spentBy, arkTxid: spend.id }));
+          throw new Error("Failed to submit tx to emulator: internal error");
+        },
+      },
+    });
+
+    expect(await r.claimer.claim("swap-14", hex.encode(PREIMAGE))).toEqual({ state: "claimed", arkTxid: sent });
+  });
+
+  it("still reports the emulator's failure when the claim did not land", async () => {
+    const r = funded({
+      swapId: "swap-15",
+      expectedAmount: 4_900,
+      valueSat: 4_900,
+      emulator: { submitTx: async () => { throw new Error("Failed to submit tx to emulator: internal error"); } },
+    });
+
+    await expect(r.claimer.claim("swap-15", hex.encode(PREIMAGE))).rejects.toMatchObject({
+      message: "Failed to submit tx to emulator: internal error",
+    });
+  });
+
+  it("never reports a claim for a spend paying anywhere but the covenant's receiver", async () => {
+    const r = registered({ swapId: "swap-16", expectedAmount: 4_900 });
+    alreadySpent(r, 4_900, { script: ELSEWHERE_PKSCRIPT, amount: 4_900n });
+
+    expect(await r.claimer.claim("swap-16", hex.encode(PREIMAGE))).toEqual({ state: "skipped", reason: "unfunded" });
+    expect(submitted).toHaveLength(0);
+  });
+
+  it("never reports a claim for a spend paying the receiver less than it took", async () => {
+    const r = registered({ swapId: "swap-17", expectedAmount: 4_900 });
+    alreadySpent(r, 4_900, { script: PAYOUT_PKSCRIPT, amount: 4_899n });
+
+    expect(await r.claimer.claim("swap-17", hex.encode(PREIMAGE))).toEqual({ state: "skipped", reason: "unfunded" });
     expect(submitted).toHaveLength(0);
   });
 
@@ -296,6 +388,14 @@ describe("createSelfClaimer", () => {
     vtxos.push({ ...wireVtxo({ txid, valueSat: 4_900, script: r.lockupScript }), isSpent: true, spentBy: "ab".repeat(32) });
 
     expect(await r.claimer.claim("swap-12", hex.encode(PREIMAGE))).toEqual({ state: "skipped", reason: "expired", funded: true });
+  });
+
+  it("recognises a claim that landed before a refund deadline the server slept through", async () => {
+    const r = registered({ swapId: "swap-18", expectedAmount: 4_900, refundLocktime: Math.floor(Date.now() / 1000) - 60 });
+    const arkTxid = alreadySpent(r, 4_900, { script: PAYOUT_PKSCRIPT, amount: 4_900n });
+
+    expect(await r.claimer.claim("swap-18", hex.encode(PREIMAGE))).toEqual({ state: "claimed", arkTxid });
+    expect(submitted).toHaveLength(0);
   });
 
   it("still claims under a block-height refund locktime, which is no wall-clock deadline", async () => {

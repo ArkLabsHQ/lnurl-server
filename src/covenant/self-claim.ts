@@ -16,12 +16,14 @@ import {
   RestArkProvider,
   RestEmulatorProvider,
   RestIndexerProvider,
+  Transaction,
   attachPrevArkTxs,
   buildOffchainTx,
   setArkPsbtField,
   type ArkProvider,
   type IndexerProvider,
   type VHTLC,
+  type VirtualCoin,
 } from "@arkade-os/sdk";
 import { LOCKTIME_THRESHOLD } from "@arkade-os/swap/protocol";
 import { UpstreamError } from "../errors.js";
@@ -97,6 +99,41 @@ export async function checkEmulatorPairing(opts: {
   return "mismatched";
 }
 
+/**
+ * The ark tx that already paid a lockup out to `payTo`, if the spend itself proves it.
+ *
+ * Read from the spend, never from the emulator's reply: arkd can accept the claim and the
+ * reply still be lost, and another claimant can get there first. A spend paying anywhere
+ * but `payTo` — a solver refund — is no payout, and reporting one would settle the swap
+ * and reveal the preimage as proof of a receive that never arrived.
+ */
+async function observedPayout(
+  payTo: Uint8Array | undefined,
+  vtxos: readonly VirtualCoin[],
+  indexer: IndexerProvider,
+): Promise<string | undefined> {
+  const arkTxid = vtxos[0]?.arkTxId;
+  if (!payTo || !arkTxid || vtxos.some((v) => v.arkTxId !== arkTxid || !v.spentBy)) return undefined;
+  const spend = (await indexer.getVirtualTxs([arkTxid])).txs
+    .map((psbt) => Transaction.fromPSBT(base64.decode(psbt)))
+    .find((tx) => tx.id === arkTxid);
+  if (!spend) return undefined;
+  for (const vtxo of vtxos) {
+    // The covenant pays input i at output i, and the ark tx spends the input's checkpoint.
+    let vin = -1;
+    for (let i = 0; i < spend.inputsLength && vin < 0; i++) {
+      const txid = spend.getInput(i).txid;
+      if (txid && hex.encode(txid) === vtxo.spentBy) vin = i;
+    }
+    if (vin < 0 || vin >= spend.outputsLength) return undefined;
+    const output = spend.getOutput(vin);
+    if (!output.script || hex.encode(output.script) !== hex.encode(payTo) || (output.amount ?? 0n) < BigInt(vtxo.value)) {
+      return undefined;
+    }
+  }
+  return arkTxid;
+}
+
 export function createSelfClaimer(opts: {
   arkServerUrl: string;
   emulatorUrl: string;
@@ -124,21 +161,33 @@ export function createSelfClaimer(opts: {
       // away for nothing. A height-typed locktime is not wall clock, so it gates nothing.
       const deadline = reg.script.options.refundLocktime;
       const lockupScript = hex.encode(reg.script.pkScript);
+      const payTo = reg.script.options.nonInteractiveParameters?.receiverPkScript;
+      // The lockup's whole history, spent included — where a claim that landed is visible.
+      const landedPayout = async (): Promise<string | undefined> =>
+        observedPayout(payTo, (await indexer.getVtxos({ scripts: [lockupScript] })).vtxos, indexer);
       if (deadline >= BigInt(LOCKTIME_THRESHOLD) && BigInt(Math.floor(Date.now() / 1000)) >= deadline) {
         const { vtxos: ever } = await indexer.getVtxos({ scripts: [lockupScript] });
+        // A claim that landed before the deadline still paid the user, however late we see it.
+        const paid = await observedPayout(payTo, ever, indexer);
         registry.delete(swapId);
+        if (paid) return { state: "claimed", arkTxid: paid };
         return { state: "skipped", reason: "expired", funded: ever.length > 0 };
       }
       const { vtxos } = await indexer.getVtxos({ scripts: [lockupScript], spendableOnly: true });
       const lookupMs = Math.round(performance.now() - started);
-      // "Not funded yet" and "already spent" are the same no-op: retries are safe.
-      if (vtxos.length === 0) return { state: "skipped", reason: "unfunded" };
+      // "Not funded yet" and "already claimed" look alike from the spendable set alone, and
+      // only the second owes the payment a payout reference.
+      if (vtxos.length === 0) {
+        const paid = await landedPayout();
+        if (!paid) return { state: "skipped", reason: "unfunded" };
+        registry.delete(swapId);
+        return { state: "claimed", arkTxid: paid };
+      }
       // A sum, not one outpoint: `spendableOnly` dropped what is not live, and this one tx spends all the rest.
       const total = vtxos.reduce((sum, v) => sum + v.value, 0);
       if (total < reg.expectedAmount) return { state: "skipped", reason: "underfunded" };
 
       const [leaf, arkadeScript] = reg.script.nonInteractiveClaim();
-      const payTo = reg.script.options.nonInteractiveParameters?.receiverPkScript;
       if (!payTo) throw new Error(`self-claim: registration for ${swapId} carries no nonInteractiveParameters`);
       const packet = EmulatorPacket.create(vtxos.map((_, vin) => ({ vin, script: arkadeScript, witness: RawWitness.encode([]) })));
       let stage = performance.now();
@@ -161,10 +210,19 @@ export function createSelfClaimer(opts: {
       for (const checkpoint of checkpoints) setArkPsbtField(checkpoint, 0, ConditionWitness, [hex.decode(preimage)]);
 
       stage = performance.now();
-      await emulator.submitTx(
-        base64.encode(arkTx.toPSBT()),
-        checkpoints.map((c) => base64.encode(c.toPSBT())),
-      );
+      try {
+        await emulator.submitTx(
+          base64.encode(arkTx.toPSBT()),
+          checkpoints.map((c) => base64.encode(c.toPSBT())),
+        );
+      } catch (error) {
+        // The emulator can hang and then fail with arkd already holding the tx.
+        let landed: string | undefined;
+        try { landed = await landedPayout(); } catch { /* the emulator's failure is the one worth reporting */ }
+        if (!landed) throw error;
+        registry.delete(swapId);
+        return { state: "claimed", arkTxid: landed };
+      }
       const submitMs = Math.round(performance.now() - stage);
       logger.info("offline_swap_self_claim_timing", {
         swapRef: swapId.slice(0, 12), lookupMs, infoMs, buildMs, prevTxMs, submitMs,

@@ -116,6 +116,19 @@ export class OfflineSwapStore {
     return rows.map((row) => ({ paymentHash: row.payment_hash, preimage: row.preimage, recovery: recoveryOf(row) }));
   }
 
+  /** Settled swaps inside {@link listPending}'s window that recorded no payout — a claim
+   *  whose reply was lost settles the swap, and the pending read never returns to it. Driven
+   *  from the recovery rows: no index keys a settled settlement by its window. */
+  listUnrecordedPayouts(): PendingOfflineSwap[] {
+    const rows = this.db.prepare(
+      `SELECT s.payment_hash, s.preimage, o.rfq_id, o.solver_name, o.solver_pubkey,
+              o.relays_json, o.recovery_version, o.recovery_json, o.lockup_address, o.expected_amount
+       FROM offline_swaps o JOIN settlements s ON s.payment_hash = o.payment_hash
+       WHERE s.settled = 1 AND s.payout_reference IS NULL AND s.preimage IS NOT NULL AND o.created_at > ?`,
+    ).all(this.now() - this.ttlMs) as unknown as PendingRow[];
+    return rows.map((row) => ({ paymentHash: row.payment_hash, preimage: row.preimage, recovery: recoveryOf(row) }));
+  }
+
   /** Lockup pkScripts still worked: unsettled and inside {@link listPending}'s window, so
    *  retirement never outlives a claim attempt. `swap_id IS NOT NULL` is implied by the
    *  join, but stated so idx_settlements_pending_swaps_created serves the range. */
