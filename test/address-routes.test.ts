@@ -353,3 +353,79 @@ describe("GET /lnurl/address — nameless listing fields", () => {
     expect(afterEntry.sessionLnurl).toBe(beforeEntry.sessionLnurl);
   });
 });
+
+describe("payment methods on the arkade bind", () => {
+  const OTHER = "cd".repeat(32);
+  const IDENTITY = { arkadeAddress: "tark1qpf3lesxsy69q0f8yvfnyf7gv7kglfkg83fhaxjyc0zmm0wtrl3n024rshrsa8fnnv73w38094qfl9jp5g7pzdc8j2m58metfpd8rcd37nqs45", claimPublicKey: "02" + "ab".repeat(32) };
+  const SHIELDED = { type: "shielded", destination: "shrol21abc" };
+  const url = () => `${ctx.baseUrl}/lnurl/address/methods/arkade`;
+  const bind = (body: Record<string, unknown>) => req("POST", url(), { host: "domain.com", bearer: TOKEN, body: { ...IDENTITY, ...body } });
+  const stored = () => repos.addresses.getByDomainAndUsername(domainId, "methods")!;
+  async function listed() {
+    const rows = (await req("GET", `${ctx.baseUrl}/lnurl/address`, { bearer: TOKEN })).body as unknown as Record<string, unknown>[];
+    return rows[0].paymentMethods;
+  }
+
+  beforeEach(async () => {
+    await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "domain.com", body: { username: "methods", token: TOKEN } });
+  });
+
+  it("lists back the methods registered on the bind", async () => {
+    expect((await bind({ methods: [SHIELDED] })).status).toBe(200);
+    expect(await listed()).toEqual([SHIELDED]);
+  });
+
+  it("lists an empty method list for an address that never registered one", async () => {
+    expect(await listed()).toEqual([]);
+    await bind({});
+    expect(await listed()).toEqual([]);
+  });
+
+  it("leaves a registered list alone when methods is omitted", async () => {
+    await bind({ methods: [SHIELDED] });
+    await bind({});
+    expect(await listed()).toEqual([SHIELDED]);
+  });
+
+  it("replaces the registered list on a later bind", async () => {
+    const other = { type: "other", destination: "y" };
+    await bind({ methods: [SHIELDED] });
+    await bind({ methods: [other] });
+    expect(await listed()).toEqual([other]);
+  });
+
+  it("withdraws every registered method on an empty list", async () => {
+    await bind({ methods: [SHIELDED] });
+    await bind({ methods: [] });
+    expect(await listed()).toEqual([]);
+  });
+
+  it("refuses a reserved type with 400 and no code", async () => {
+    const res = await bind({ methods: [{ type: "arkade", destination: "x" }] });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBeUndefined();
+    expect(res.body.error).toMatch(/reserved/);
+  });
+
+  it.each([
+    ["nine entries", Array.from({ length: 9 }, (_, i) => ({ type: `m${i}`, destination: "x" }))],
+    ["a duplicate type", [SHIELDED, { type: "shielded", destination: "other" }]],
+    ["an over-long destination", [{ type: "shielded", destination: "x".repeat(513) }]],
+    ["an unknown key", [{ ...SHIELDED, label: "mine" }]],
+    ["null", null],
+  ])("refuses %s with 400 and changes nothing", async (_case, methods) => {
+    await bind({ methods: [SHIELDED] });
+    const before = stored();
+    // The bind also moves the identity, so a write ahead of the check shows in the stored row.
+    const res = await bind({ claimPublicKey: "03" + "cd".repeat(32), boardingAddress: "tb1qother", methods });
+    expect(res.status).toBe(400);
+    expect(stored()).toEqual(before);
+  });
+
+  it("registers nothing for a caller that does not own the address", async () => {
+    const body = { ...IDENTITY, methods: [SHIELDED] };
+    expect((await req("POST", url(), { host: "domain.com", body })).status).toBe(401);
+    expect((await req("POST", url(), { host: "domain.com", bearer: OTHER, body })).status).toBe(404);
+    expect(stored().paymentMethods).toEqual([]);
+  });
+});

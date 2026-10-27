@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { ArkAddress } from "@arkade-os/sdk";
 import { encodeLnurl } from "../../lnurl.js";
+import { normalizePaymentMethods, type PaymentMethod } from "../../payment-methods.js";
 import { isNameless } from "../../services/addresses.js";
 import { isValidToken } from "../../session-token.js";
 import type { AddressRow, DomainRow } from "../../types/index.js";
@@ -41,6 +42,7 @@ export function lnurlAddressRoutes({ repos, addressService, registrationLimiter:
       return {
         ...addressView(domain, a, req.protocol), createdAt: a.createdAt,
         arkadeAddress: a.arkadeAddress, claimPublicKey: a.claimPublicKey, boardingAddress: a.boardingAddress,
+        paymentMethods: a.paymentMethods,
       };
     });
     res.json(list);
@@ -113,8 +115,8 @@ export function lnurlAddressRoutes({ repos, addressService, registrationLimiter:
     if (!domain) throw new NotFound("Unknown domain");
     const token = bearerToken(req);
     if (!isValidToken(token)) throw new Unauthorized();
-    const { arkadeAddress, claimPublicKey, boardingAddress } = (req.body ?? {}) as
-      { arkadeAddress?: string; claimPublicKey?: string; boardingAddress?: string };
+    const { arkadeAddress, claimPublicKey, boardingAddress, methods: rawMethods } = (req.body ?? {}) as
+      { arkadeAddress?: string; claimPublicKey?: string; boardingAddress?: string; methods?: unknown };
     // Compressed 33-byte key (02/03 prefix) — the covenant's receiver role.
     if (!arkadeAddress || typeof arkadeAddress !== "string" || !claimPublicKey || !/^0[23][0-9a-f]{64}$/i.test(claimPublicKey)) {
       throw new BadRequest("arkadeAddress and a compressed-hex claimPublicKey (02/03 + 64 hex) are required");
@@ -130,10 +132,20 @@ export function lnurlAddressRoutes({ repos, addressService, registrationLimiter:
     if (boardingAddress !== undefined && (typeof boardingAddress !== "string" || boardingAddress.length === 0)) {
       throw new BadRequest("boardingAddress must be a non-empty string when provided");
     }
+    // A plain 400: invalid_rails is the code the Shielded wallet maps to its HD-receive refusal.
+    let methods: PaymentMethod[] | undefined;
+    if (rawMethods !== undefined) {
+      try {
+        methods = normalizePaymentMethods(rawMethods);
+      } catch (err) {
+        throw new BadRequest((err as Error).message);
+      }
+    }
     const ok = addressService.setOfflineReceive(domain, req.params.handle, token, {
       arkadeAddress,
       claimPublicKey,
       ...(boardingAddress !== undefined ? { boardingAddress } : {}),
+      ...(methods !== undefined ? { methods } : {}),
     });
     if (!ok) throw new NotFound("Address not found or not owned by this token");
     res.json({ ok: true });
