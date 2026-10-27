@@ -150,7 +150,10 @@ Wallets register a Lightning address via `POST /lnurl/address`. The request body
 |---------|-----------|
 | `username` provided, domain allows `"self"` mode | Wallet claims that specific username |
 | no `username`, domain allows `"random"` mode | Server assigns a random username |
-| `username` + `claimCode` provided | Wallet claims a pre-reserved address |
+| a reserved address's `claimCode`, alone or with its `username` | Wallet claims that reserved address |
+| `username` + a free-name `claimCode` | Wallet claims that username if it is available, even without `"self"` mode; the code is spent |
+
+A `claimCode` that matches nothing, or was already spent, is refused with `invalid_claim`. A free-name code sent without a `username` gets `username_required`.
 
 Constraints enforced per domain:
 - **`allocationModes`** — which of `"self"`, `"random"`, `"admin"`, `"session"` the domain permits. `"session"` allows a receiver with no lightning address, reachable at `/lnurl/<sessionId>`.
@@ -336,6 +339,9 @@ The Docker image binds to `0.0.0.0` so isolation happens at the container/proxy 
 | GET | `/admin/api/addresses` | List addresses newest first, one page at a time: `{ addresses, nextCursor }` (filter: `domainId`, `status`, `q`; `limit` defaults to 200, at most 1000; pass `nextCursor` back as `cursor`, absent on the last page) |
 | GET | `/admin/api/addresses/count` | Count every address: `{ count }` |
 | POST | `/admin/api/addresses` | Reserve or mint an address |
+| GET | `/admin/api/claim-codes` | List free-name claim codes, never the codes themselves (filter: `domainId`) |
+| POST | `/admin/api/claim-codes` | Issue a free-name claim code for `{ domain }`, shown once |
+| DELETE | `/admin/api/claim-codes/:id` | Revoke a claim code |
 | PATCH | `/admin/api/addresses/:id` | Update address status (`active`/`revoked`) |
 | DELETE | `/admin/api/addresses/:id` | Delete address |
 | GET | `/admin/api/api-keys` | List API keys |
@@ -359,7 +365,8 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 
 ### Reserve vs mint
 
-- **Reserve** — creates a `reserved` address with a one-time `claimCode`. Share the code with the wallet owner; the wallet uses it in a `POST /lnurl/address` request to claim and activate the address.
+- **Reserve** — creates a `reserved` address with a one-time `claimCode`. Share the code with the wallet owner; the wallet sends it in a `POST /lnurl/address` request, alone or with the username, to claim and activate the address.
+- **Free-name claim code** — `POST /admin/api/claim-codes` issues a one-time code that reserves no name. Its holder sends it with any available username, which works on a domain without `"self"` mode too.
 - **Mint** — creates an `active` address pre-bound to a `secret` (the wallet token). The wallet can immediately use the address without claiming.
 
 ## Configuration

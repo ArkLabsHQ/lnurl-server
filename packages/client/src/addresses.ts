@@ -12,7 +12,7 @@ export interface RegisterAddressRequest {
   token: string;
   /** Desired username; server-assigned when omitted. */
   username?: string;
-  /** Claim code binding the registration, on domains that issue one. */
+  /** Claim code from the operator: alone it claims the reserved name it unlocks; a free-name code needs `username`. */
   claimCode?: string;
   /** Receiving domain; the server default when omitted. */
   domain?: string;

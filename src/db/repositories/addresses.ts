@@ -93,6 +93,13 @@ export class AddressesRepo {
     return r ? rowToAddress(r) : undefined;
   }
 
+  getReservedByClaimCode(domainId: number, codeHash: Buffer): AddressRow | undefined {
+    const r = this.db
+      .prepare("SELECT * FROM addresses WHERE domain_id = ? AND claim_code_hash = ? AND status = 'reserved'")
+      .get(domainId, codeHash) as AddressRecord | undefined;
+    return r ? rowToAddress(r) : undefined;
+  }
+
   getSessionLnurl(domainId: number, sessionId: string): AddressRow | undefined {
     const r = this.db
       .prepare("SELECT * FROM addresses WHERE domain_id = ? AND session_id = ? AND session_lnurl = 1 AND status = 'active'")

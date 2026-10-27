@@ -139,6 +139,27 @@ describe("admin API", () => {
     expect(res.body.secret).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it("issues a free-name claim code once, lists it without the code, and revokes it", async () => {
+    await request(app).post("/admin/api/domains").send({ domain: "domain.com", allocationModes: ["random", "admin"] });
+    const issued = await request(app).post("/admin/api/claim-codes").send({ domain: "domain.com" });
+    expect(issued.status).toBe(201);
+    expect(issued.body).toMatchObject({ domain: "domain.com", claimCode: expect.stringMatching(/^[0-9a-f]{32}$/) });
+    const spent = await request(app).post("/admin/api/claim-codes").send({ domain: "domain.com" });
+    const holder = repos.addresses.create({ domainId: repos.domains.getByDomain("domain.com")!.id, username: "picked", status: "active" });
+    repos.claimCodes.redeem(spent.body.id, holder.id);
+
+    const list = await request(app).get("/admin/api/claim-codes");
+    expect(list.body.claimCodes).toEqual([
+      expect.objectContaining({ id: spent.body.id, domain: "domain.com", username: "picked", redeemedAt: expect.any(Number) }),
+      expect.objectContaining({ id: issued.body.id, domain: "domain.com", username: null, redeemedAt: null }),
+    ]);
+    expect(JSON.stringify(list.body)).not.toContain(issued.body.claimCode);
+
+    expect((await request(app).delete(`/admin/api/claim-codes/${issued.body.id}`)).status).toBe(200);
+    expect((await request(app).delete(`/admin/api/claim-codes/${issued.body.id}`)).status).toBe(404);
+    expect((await request(app).post("/admin/api/claim-codes").send({ domain: "unknown.com" })).status).toBe(404);
+  });
+
   it("creates an API key (raw shown once) and lists without the raw", async () => {
     const created = await request(app).post("/admin/api/api-keys").send({ label: "ci" });
     expect(created.body.key).toMatch(/^[0-9a-f]{64}$/);

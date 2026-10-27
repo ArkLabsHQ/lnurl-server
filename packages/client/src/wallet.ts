@@ -50,10 +50,9 @@ export interface ArkadeLnurlConfig {
   client?: LnurlClient;
 }
 
-/** A claim code is checked only against the reserved name it unlocks, so it never travels alone. */
-export type NameOptions =
-  | { username?: string; claimCode?: never }
-  | { username: string; claimCode: string };
+/** A claim code alone claims the reserved name it unlocks. Beside a username it claims that name: the
+ *  reserved one the code unlocks, or any available name with a free-name code. */
+export type NameOptions = { username?: string; claimCode?: string };
 
 /** `nameless` is mutually exclusive with `username`/`claimCode` at the type
  *  level, matching the server's 400 `invalid_username` on combining them. */

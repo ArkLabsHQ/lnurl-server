@@ -331,6 +331,55 @@ export const adminOpenApiSpec = {
       },
       delete: { summary: "Delete an address", tags: ["Addresses"], parameters: [idParam], responses: { ...OK } },
     },
+    "/claim-codes": {
+      get: {
+        summary: "List free-name claim codes",
+        description: "Newest first, never the codes themselves. `username` names the address a spent code claimed.",
+        tags: ["Addresses"],
+        parameters: [{ name: "domainId", in: "query", required: false, schema: { type: "integer" } }],
+        responses: {
+          "200": {
+            description: "The codes",
+            content: { "application/json": { schema: { type: "object", properties: { claimCodes: { type: "array", items: {
+              type: "object",
+              properties: {
+                id: { type: "integer" },
+                domain: { type: "string" },
+                createdAt: { type: "integer" },
+                redeemedAt: { type: "integer", nullable: true },
+                username: { type: "string", nullable: true },
+              },
+            } } } } } },
+          },
+        },
+      },
+      post: {
+        summary: "Issue a free-name claim code",
+        description:
+          "A one-time code its holder spends on any available username of the domain, `self` mode or not. " +
+          "A reserved name's code comes from POST /addresses instead.",
+        tags: ["Addresses"],
+        requestBody: jsonBody({ type: "object", properties: { domain: { type: "string" } }, required: ["domain"] }),
+        responses: {
+          "201": {
+            description: "Created — `claimCode` shown once",
+            content: { "application/json": { schema: {
+              type: "object",
+              properties: { id: { type: "integer" }, domain: { type: "string" }, claimCode: { type: "string" } },
+            } } },
+          },
+          ...errorResponse("404", "Unknown domain"),
+        },
+      },
+    },
+    "/claim-codes/{id}": {
+      delete: {
+        summary: "Revoke a claim code",
+        tags: ["Addresses"],
+        parameters: [idParam],
+        responses: { ...OK, ...errorResponse("404", "Claim code not found") },
+      },
+    },
     "/reconcile": {
       get: {
         summary: "Post-mortem in bulk: what arrived vs what was recorded, across addresses",
