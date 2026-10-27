@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A claim code that matches nothing is refused** — it answers `invalid_claim` instead of being ignored. That covers a free name on a `self` domain sent with a wrong code, and a code sent alone, which used to fall through to a random name.
 
 ### Security
+- **`body-parser` 2.4.0 and `qs` 6.17.0** — `pnpm.overrides` lifts both past the advisories `pnpm audit` now reports through `express`: GHSA-27r3-jxmh-p828 (high, a compressed request body with trailing bytes ties up the parser) and GHSA-6pq8-jhm2-2vcw (moderate, `qs.stringify` with `arrayFormat: 'comma'`).
 - **Docker image runs Node.js 22.23.4** — the base image is pinned to `node:22.23.4-slim`, the October 2026 security release (Brotli decoder out-of-bounds write, TLS hostname-check bypasses, `dns.resolve` NUL truncation, HTTP keep-alive response confusion; undici 6.29.1, OpenSSL 3.5.9). Pinning keeps a builder's cached `22-slim` from shipping the unpatched runtime.
 
 ### Fixed
