@@ -49,13 +49,14 @@ describe("admin rails", () => {
     const res = await request(app).get("/admin/api/rails");
     expect(res.status).toBe(200);
     const byId = new Map(res.body.rails.map((r: { id: string }) => [r.id, r]));
-    expect([...byId.keys()]).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat"]);
+    expect([...byId.keys()]).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat", "registered"]);
     expect(byId.get("interactive-lightning")).toMatchObject({ configured: true, ready: true });
     expect(byId.get("offline-swap")).toMatchObject({ configured: true, ready: true });
     expect(byId.get("arkade")).toMatchObject({ configured: true, ready: true });
     expect(byId.get("covenant")).toMatchObject({ configured: false, ready: false });
     // Needs no server config; a per-address boarding address decides it.
     expect(byId.get("onchain")).toMatchObject({ configured: true, ready: true });
+    expect(byId.get("registered")).toMatchObject({ configured: true, ready: true });
   });
 
   it("shows effective per-address rails on the addresses list", async () => {

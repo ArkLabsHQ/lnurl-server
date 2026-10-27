@@ -236,6 +236,13 @@ export function describeServerRails(caps: ServerRailCaps): ServerRailState[] {
   else if (!caps.offlineSwapCreator) tokens.reason = "token deposits pay through the offline swap rail, which is not configured";
   else if (!caps.discoveryReady) tokens.reason = "offline receive unavailable: " + discoveryReason;
   states.push(tokens);
+  states.push({
+    id: "registered",
+    label: RAIL_DEFS.registered.label,
+    description: RAIL_DEFS.registered.description,
+    configured: true,
+    ready: true,
+  });
   return states;
 }
 
