@@ -50,23 +50,6 @@ Wallet                    Service                     Payer
 | DELETE | `/lnurl/address/:handle` | Wallet | Revoke own address (`Authorization: Bearer <token>`) |
 | POST | `/lnurl/address/:handle/arkade` | Wallet | Register Arkade receive identity for offline receive (`Authorization: Bearer <token>`) |
 
-### Exact-net Lightning invoices (app API)
-
-Request a Lightning invoice for an exact net receive amount, with solver fees added on top:
-
-```http
-POST /.well-known/lnurlp/alice/invoice
-Content-Type: application/json
-
-{"receiveAmountMsat":1000000,"maxPayAmountMsat":1100000}
-```
-
-For a nameless address use `POST /lnurl/{handle}/invoice`. The owner must first bind a static Arkade address and claim public key; these public requests need no owner token and cannot choose or change the payout destination. This API always uses the offline solver flow, including while the owner wallet is connected. Amounts must be whole sats, expressed in millisats. The invoice amount and payer ceiling must be within the receiving service's limits.
-
-The response includes `pr`, `verify`, `verifyBatch` and a `paymentQuote` with `requested`, `payment`, `receive` and `fees` (all in msat). The example targets 1,000 sats net and permits at most 1,100 sats on the invoice. Display the returned payment amount before payment. Owner history stores the gross invoice amount and the original net request as `quote: { amount: "1000", unit: "sat", decimals: 0 }`. Normal persistence, restart recovery and public verification apply.
-
-This is **not** an LNURL-pay callback: standard callbacks continue to return a BOLT11 for exactly their requested amount. A unified BIP21 can keep its native amount at the net receive amount while embedding this separately priced invoice.
-
 ## Usage
 
 ### As a library
@@ -333,6 +316,22 @@ An unknown or unsupported unit returns `{ "status": "ERROR", "reason": "Unsuppor
 Each quoted payment records what was asked, so history can show it: the owner's `/lnurl/address/:handle/payments` rows and the admin Settlements view carry `quote: { amount, unit, decimals }` (amount in the unit's smallest denomination) beside `amountMsat`, and `null` for a payment made in sats.
 
 > Quoting applies to the Lightning path (relay + offline swap) and the `arkade`/`onchain` destination rails; token-deposit rails reject `unit`, since they quote their own payment. No spread is added: the payer pays the feed's mid price.
+
+### Receive amount
+
+A unit fixes what the payer pays. To fix what the receiver nets instead, the payer adds `receiveAmount` (millisats of whole sats), and `amount` becomes the most it will pay:
+
+```http
+GET /.well-known/lnurlp/alice/callback?amount=1100000&receiveAmount=1000000
+```
+
+Only the offline swap can price this, so a payRequest offers it as `"receiveAmountAllowed": true` while that rail can serve the address: a static Arkade identity, the rail enabled, discovery ready. It takes the offline swap even while the owner's wallet is connected, and is refused with `unit`, `receiveUnit` or a non-lightning `paymentOption`. The solver's fee rides on top, and the answer splits the invoice:
+
+```json
+{ "pr": "lnbc...", "routes": [], "verify": "...", "verifyBatch": "...", "paymentQuote": { "requested": { "amount": "1000000", "unit": "msat" }, "payment": { "amount": "1053000", "unit": "msat" }, "receive": { "amount": "1000000", "unit": "msat" }, "fees": [{ "name": "solver", "amount": { "amount": "53000", "unit": "msat" } }] } }
+```
+
+Pay only an invoice for exactly `paymentQuote.payment`, no more than `amount`, whose `receive` is what you asked for. A server that does not know `receiveAmount` ignores it and invoices plain `amount` with no `receive`: stop there. The client's `requestInvoice({ amountSat, receiveAmountSat })` makes these checks. History records the invoice amount, as for any offline-swap receive. A unified BIP21 can carry the receive amount as its `amount` and this invoice as its `lightning` leg.
 
 ## Admin backend — port 3001
 

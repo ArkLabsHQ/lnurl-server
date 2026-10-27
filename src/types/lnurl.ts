@@ -13,6 +13,8 @@ export interface LnurlPayMetadata {
   paymentOptions?: PaymentOption[];
   /** LUD-XX: advertised denomination units. Omitted when no quote provider is configured. */
   units?: Unit[];
+  /** LUD-XX: the callback takes `receiveAmount`, what the receiver nets, with `amount` as the payer's ceiling. */
+  receiveAmountAllowed?: boolean;
 }
 
 /** LNURL-pay callback response (BOLT11 / lightning) */

@@ -92,9 +92,10 @@ export async function createOfflineSwapInvoice(args: {
   store: SettlementStore;
   offlineSwaps?: OfflineSwapStore;
   baseUrl: string;
+  /** What the payer pays: exactly, or at most when `receiveAmountMsat` fixes the payout. */
   amountMsat: number;
-  /** Opt-in app API: amountMsat is net receive amount; standard callbacks omit this. */
-  maxPayAmountMsat?: number;
+  /** LUD-XX receiveAmount: what the receiver nets; the solver's fee rides on top. */
+  receiveAmountMsat?: number;
   /** Payer floor imposed by the receiving service, in millisats. */
   minPayAmountMsat?: number;
   receiveAddress: string;
@@ -107,27 +108,26 @@ export async function createOfflineSwapInvoice(args: {
   logger: Logger;
   requestId: string;
 }): Promise<LnurlPayCallbackResponse> {
-  const { creator, store, offlineSwaps, baseUrl, amountMsat, maxPayAmountMsat, minPayAmountMsat, receiveAddress, claimPublicKey, addressId, paymentQuote, quoted, echoLightningOption, logger, requestId } = args;
+  const { creator, store, offlineSwaps, baseUrl, amountMsat, receiveAmountMsat, minPayAmountMsat, receiveAddress, claimPublicKey, addressId, paymentQuote, quoted, echoLightningOption, logger, requestId } = args;
   let swap: OfflineSwapResult | undefined;
   try {
     // Caller guarantees whole satoshis (rejected at the route otherwise).
-    const net = maxPayAmountMsat !== undefined;
-    swap = await creator.create({ amountSat: amountMsat / 1000, receiveAddress, claimPublicKey,
-      ...(net ? { amountSide: "to" as const, maxPayAmountSat: maxPayAmountMsat / 1000 } : {}),
-    });
-    const payerMsat = net ? invoiceFactsFromBolt11(swap.invoice, true).amountSats * 1000 : amountMsat;
-    if (net && (!Number.isSafeInteger(payerMsat) || payerMsat < Math.max(amountMsat, minPayAmountMsat ?? 0) || payerMsat > maxPayAmountMsat || swap.recovery.expectedAmount * 1000 !== amountMsat)) {
+    swap = await creator.create(receiveAmountMsat === undefined
+      ? { amountSat: amountMsat / 1000, receiveAddress, claimPublicKey }
+      : { amountSat: receiveAmountMsat / 1000, amountSide: "to", maxPayAmountSat: amountMsat / 1000, receiveAddress, claimPublicKey });
+    const payerMsat = receiveAmountMsat === undefined ? amountMsat : invoiceFactsFromBolt11(swap.invoice, true).amountSats * 1000;
+    if (receiveAmountMsat !== undefined && (!Number.isSafeInteger(payerMsat) || payerMsat < Math.max(receiveAmountMsat, minPayAmountMsat ?? 0) ||
+        payerMsat > amountMsat || swap.recovery.expectedAmount * 1000 !== receiveAmountMsat)) {
       throw new Error("Solver invoice does not satisfy the receive amount and payer bounds");
     }
-    const amount = (value: number) => ({ amount: String(value), unit: "msat" });
-    const resultQuote = net ? {
-      requested: amount(amountMsat), payment: amount(payerMsat), receive: amount(amountMsat),
-      fees: [{ name: "solver", amount: amount(payerMsat - amountMsat) }],
-    } : paymentQuote;
-    const recordQuote = net ? { amount: String(amountMsat / 1000), unit: "sat", decimals: 0 } : quoted;
+    const msat = (value: number) => ({ amount: String(value), unit: "msat" });
+    const resultQuote = receiveAmountMsat === undefined ? paymentQuote : {
+      requested: msat(receiveAmountMsat), payment: msat(payerMsat), receive: msat(receiveAmountMsat),
+      fees: [{ name: "solver", amount: msat(payerMsat - receiveAmountMsat) }],
+    };
     const accepted = {
       paymentHash: swap.preimageHash, pr: swap.invoice, sessionId: `offline:${addressId}`, preimage: swap.preimage,
-      amountMsat: payerMsat, addressId, ...(recordQuote ? { quote: recordQuote } : {}),
+      amountMsat: payerMsat, addressId, ...(quoted ? { quote: quoted } : {}),
     };
     // With DB_PATH, OfflineSwapStore is the single atomic persistence boundary:
     // it writes both settlement and restart recovery rows in one transaction.

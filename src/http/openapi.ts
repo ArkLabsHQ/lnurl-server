@@ -3,35 +3,6 @@ import { VERSION } from "../version.js";
 const HANDLE_PARAM =
   "Handle: the username, or the session id while nameless. A row that had a session LNURL still answers to its session id after an upgrade, while it is active.";
 
-/** App-facing net pricing is deliberately separate from the LUD-06 callback. */
-const netInvoiceOperation = {
-  summary: "Create a Lightning invoice targeting an exact net Arkade receipt",
-  description: "Public app API for a statically bound receiver; no owner token is needed. Both amounts are whole-satoshi integers expressed in millisats. The solver targets receiveAmountMsat, and the returned BOLT11 may be higher, up to maxPayAmountMsat. Existing LNURL-pay callbacks still invoice exactly their requested amount. Address/domain rail policies, limits and offline quote throttling apply.",
-  tags: ["LN Address"],
-  requestBody: { required: true, content: { "application/json": { schema: {
-    type: "object", required: ["receiveAmountMsat", "maxPayAmountMsat"], properties: {
-      receiveAmountMsat: { type: "integer", minimum: 1000, multipleOf: 1000 },
-      maxPayAmountMsat: { type: "integer", minimum: 1000, multipleOf: 1000, description: "Payer ceiling, at least receiveAmountMsat and within server/domain limits" },
-    },
-  } } } },
-  responses: { "200": { description: "Invoice with requested, payment, receive and solver-fee amounts in paymentQuote (msat), or a standard LNURL error", content: { "application/json": { schema: {
-    oneOf: [
-      {
-        type: "object", required: ["pr", "routes", "verify", "verifyBatch", "paymentQuote"], properties: {
-          pr: { type: "string" }, routes: { type: "array", items: {} },
-          verify: { type: "string" }, verifyBatch: { type: "string" },
-          paymentQuote: { $ref: "#/components/schemas/PaymentQuote" },
-        },
-      },
-      {
-        type: "object", required: ["status", "reason"], properties: {
-          status: { type: "string", enum: ["ERROR"] }, reason: { type: "string" },
-        },
-      },
-    ],
-  } } } }, "429": { description: "Quote rate or concurrency limit reached" } },
-};
-
 export const openApiSpec = {
   openapi: "3.0.3",
   info: {
@@ -48,13 +19,6 @@ export const openApiSpec = {
   },
   servers: [{ url: "/" }],
   paths: {
-    "/.well-known/lnurlp/{username}/invoice": { post: { ...netInvoiceOperation, parameters: [
-      { name: "username", in: "path", required: true, schema: { type: "string" } },
-    ] } },
-    "/lnurl/{id}/invoice": { post: { ...netInvoiceOperation, parameters: [
-      { name: "id", in: "path", required: true, schema: { type: "string" }, description: "Active nameless/session-address handle, not an ephemeral wallet session" },
-    ] } },
-
     "/livez": {
       get: {
         summary: "Liveness probe",
@@ -238,6 +202,7 @@ export const openApiSpec = {
                         maxSendable: { type: "number" },
                         metadata: { type: "string" },
                         commentAllowed: { type: "number" },
+                        receiveAmountAllowed: { type: "boolean", description: "LUD-XX: the callback takes `receiveAmount`; present only while an offline swap can serve this address" },
                         units: { type: "array", description: "LUD-XX: quotable units, present when a quote provider is configured (same shape as the LN-address `units`)", items: { type: "object" } },
                       },
                     },
@@ -291,6 +256,7 @@ export const openApiSpec = {
           },
           { name: "unit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: denomination unit (e.g. `USD`); requires a configured quote provider" },
           { name: "receiveUnit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: desired receiver unit; the built-in price-feed provider accepts only `msat`" },
+          { name: "receiveAmount", in: "query", required: false, schema: { type: "number" }, description: "LUD-XX: what the receiver nets, in millisats of whole sats; `amount` becomes the payer's ceiling. Offline swap only, where the payRequest has `receiveAmountAllowed`; refused with `unit` or a non-lightning `paymentOption`" },
         ],
         responses: {
           "200": {
@@ -765,6 +731,7 @@ export const openApiSpec = {
                         maxSendable: { type: "number" },
                         metadata: { type: "string" },
                         commentAllowed: { type: "number" },
+                        receiveAmountAllowed: { type: "boolean", description: "LUD-XX: the callback takes `receiveAmount`; present only while an offline swap can serve this address" },
                         paymentOptions: {
                           type: "array",
                           description:
@@ -864,6 +831,7 @@ export const openApiSpec = {
           { name: "paymentOption", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: selected rail id (`arkade`, `onchain`, or a token option such as `ff-usdtarbitrum`); defaults to lightning" },
           { name: "unit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: denomination unit (e.g. `USD`); `amount` becomes that unit's smallest integer. Refused on token options, which quote their own payment" },
           { name: "receiveUnit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: desired receiver unit; the built-in price-feed provider accepts only `msat`" },
+          { name: "receiveAmount", in: "query", required: false, schema: { type: "number" }, description: "LUD-XX: what the receiver nets, in millisats of whole sats; `amount` becomes the payer's ceiling. Offline swap only, where the payRequest has `receiveAmountAllowed`; refused with `unit` or a non-lightning `paymentOption`" },
         ],
         responses: {
           "200": {

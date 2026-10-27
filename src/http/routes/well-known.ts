@@ -88,11 +88,12 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       commentAllowed: 140,
       ...(options.length ? { paymentOptions: options } : {}),
       ...(units.length ? { units } : {}),
+      ...(railStatesFor(railAddress, railCaps).get("offline-swap")?.available ? { receiveAmountAllowed: true } : {}),
     } satisfies LnurlPayMetadata);
   };
 
   const offlineInvoice = async (req: Request, res: Response, domain: DomainRow, address: AddressRow, amountMsat: number,
-    options: Pick<Parameters<typeof createOfflineSwapInvoice>[0], "maxPayAmountMsat" | "paymentQuote" | "quoted" | "echoLightningOption"> = {}) => {
+    options: Pick<Parameters<typeof createOfflineSwapInvoice>[0], "receiveAmountMsat" | "paymentQuote" | "quoted" | "echoLightningOption"> = {}) => {
     if (!creator || !address.arkadeAddress || !address.claimPublicKey) throw new LnurlError("Offline receive is unavailable");
     const { railAddress, base } = envelope(domain, address);
     const railCaps = currentRailCaps();
@@ -106,9 +107,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     }
     if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) throw new LnurlError("Too many requests", 429);
     const swapBounds = railBounds("offline-swap", railCaps, base);
-    // The payer amount is only known after quoting a net target.
-    const boundedAmount = options.maxPayAmountMsat ?? amountMsat;
-    if (boundedAmount < swapBounds.min || boundedAmount > swapBounds.max) {
+    if (amountMsat < swapBounds.min || amountMsat > swapBounds.max) {
       throw new LnurlError(`Amount must be between ${swapBounds.min} and ${swapBounds.max} millisats`);
     }
     // The corridor deals in whole sats; reject before reserving capacity.
@@ -124,16 +123,6 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     } finally {
       offlineQuotes--;
     }
-  };
-
-  const netInvoice = async (req: Request, res: Response, domain: DomainRow, address: AddressRow) => {
-    const { receiveAmountMsat, maxPayAmountMsat } = req.body ?? {};
-    if (!Number.isSafeInteger(receiveAmountMsat) || receiveAmountMsat <= 0 || receiveAmountMsat % 1000 !== 0 ||
-        !Number.isSafeInteger(maxPayAmountMsat) || maxPayAmountMsat < receiveAmountMsat || maxPayAmountMsat % 1000 !== 0) {
-      throw new LnurlError("receiveAmountMsat and maxPayAmountMsat must be whole sats, with a positive receive amount and a payer ceiling at least that amount");
-    }
-    if (!address.arkadeAddress || !address.claimPublicKey) throw new LnurlError("Net receiving requires a static Arkade identity");
-    await offlineInvoice(req, res, domain, address, receiveAmountMsat, { maxPayAmountMsat });
   };
 
   const payCallback = async (req: Request, res: Response, domain: DomainRow, address: AddressRow): Promise<void> => {
@@ -165,6 +154,18 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     // injected provider. Absent unit ⇒ amount stays msat.
     const unit = strParam(req.query.unit);
     const receiveUnit = strParam(req.query.receiveUnit);
+    // LUD-XX receiveAmount: the receiver nets exactly this and `amount` becomes the payer's ceiling.
+    // Only the offline swap can price it; refusing beats a relay invoicing plain `amount`.
+    const receiveAmountMsat = req.query.receiveAmount === undefined ? undefined : msatParam(req.query.receiveAmount) ?? 0;
+    if (receiveAmountMsat !== undefined) {
+      if (unit !== undefined || receiveUnit !== undefined || resolved.kind !== "lightning") {
+        throw new LnurlError("receiveAmount is priced in millisats on the lightning option only");
+      }
+      if (receiveAmountMsat <= 0 || receiveAmountMsat % 1000 !== 0 || receiveAmountMsat > amountMsat) {
+        throw new LnurlError("receiveAmount must be a whole number of satoshis, in millisats, no more than amount");
+      }
+      if (!creator || !address.arkadeAddress || !address.claimPublicKey) throw new LnurlError("receiveAmount is unavailable for this address");
+    }
     let paymentQuote: PaymentQuote | undefined;
     let quoted: QuotedAmount | undefined;
     if (unit !== undefined || receiveUnit !== undefined) {
@@ -296,8 +297,9 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     // Offline receive: no live SSE session for this address, but it opted in with an
     // Arkade identity, so the server quotes a corridor swap paying it (covclaimd claims it).
     // The corridor never touches the session, so a sessionless address is served too.
-    if (creator && address.arkadeAddress && address.claimPublicKey && (!address.sessionId || !sessions.isActive(address.sessionId))) {
-      await offlineInvoice(req, res, domain, address, amountMsat, { paymentQuote, quoted, echoLightningOption: Boolean(paymentOptionId) });
+    if (creator && address.arkadeAddress && address.claimPublicKey &&
+        (receiveAmountMsat !== undefined || !address.sessionId || !sessions.isActive(address.sessionId))) {
+      await offlineInvoice(req, res, domain, address, amountMsat, { receiveAmountMsat, paymentQuote, quoted, echoLightningOption: Boolean(paymentOptionId) });
       return;
     }
 
@@ -320,12 +322,6 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     payRequest(res, domain, address, `${originOf(req, domain)}/.well-known/lnurlp/${username}/callback`);
   });
 
-  // App-specific net pricing, not an LNURL-pay callback: the invoice may exceed the receive amount.
-  r.post("/.well-known/lnurlp/:username/invoice", async (req, res) => {
-    const { domain, address } = activeAddress(req.get("host"), req.params.username);
-    await netInvoice(req, res, domain, address);
-  });
-
   r.get("/.well-known/lnurlp/:username/callback", async (req, res) => {
     const { domain, address } = activeAddress(req.get("host"), req.params.username);
     await payCallback(req, res, domain, address);
@@ -336,12 +332,6 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     const flagged = sessionLnurlRow(req, req.params.id);
     if (!flagged) return next();
     payRequest(res, flagged.domain, flagged.address, `${originOf(req, flagged.domain)}/lnurl/${req.params.id}/callback`);
-  });
-
-  r.post("/lnurl/:id/invoice", async (req, res, next) => {
-    const flagged = sessionLnurlRow(req, req.params.id);
-    if (!flagged) return next();
-    await netInvoice(req, res, flagged.domain, flagged.address);
   });
 
   r.get("/lnurl/:id/callback", async (req, res, next) => {
