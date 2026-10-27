@@ -28,11 +28,17 @@ const BARE: ServerRailCaps = {
   covenantDestinations: false,
 };
 const IDENTITY = { arkadeAddress: "ark1xyz", claimPublicKey: "02" + "ab".repeat(32), disabledRails: [] as string[] };
+const METHOD = { type: "shielded", destination: "shrol21abc" };
 
 describe("rail registry", () => {
   it("names every rail exactly once", () => {
-    expect(RAIL_IDS).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat"]);
+    expect(RAIL_IDS).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat", "registered"]);
     expect(new Set(RAIL_IDS).size).toBe(RAIL_IDS.length);
+  });
+
+  it("accepts registered in a disabled-rails policy", () => {
+    expect(normalizeDisabledRails(["registered"])).toEqual(["registered"]);
+    expect(parseDisabledRails('["registered"]')).toEqual(["registered"]);
   });
 
   it("accepts onchain, which is no longer reserved", () => {
@@ -80,10 +86,31 @@ describe("effectiveRails", () => {
     // "fully wired" needs both. Added here and not to IDENTITY, which the
     // advertise tests share and would otherwise always offer the rail.
     const states = effectiveRails(
-      { ...IDENTITY, boardingAddress: "tb1qboarding" },
+      { ...IDENTITY, boardingAddress: "tb1qboarding", paymentMethods: [METHOD] },
       { ...FULL, fixedFloat: { provider: "FixedFloat", ready: true, rails: [] } },
     );
     expect(states.filter((s) => s.available).map((s) => s.id)).toEqual([...RAIL_IDS]);
+  });
+
+  it("offers the registered rail only once a method is registered", () => {
+    const none = effectiveRails({ ...IDENTITY, paymentMethods: [] }, FULL).find((s) => s.id === "registered")!;
+    expect(none).toMatchObject({ applicable: false, available: false, reason: "address has no registered payment methods" });
+    const one = effectiveRails({ ...IDENTITY, paymentMethods: [METHOD] }, FULL).find((s) => s.id === "registered")!;
+    expect(one).toMatchObject({ applicable: true, available: true });
+  });
+
+  it("lets the operator disable the registered rail for one address", () => {
+    const state = effectiveRails({ ...IDENTITY, paymentMethods: [METHOD], disabledRails: ["registered"] }, FULL)
+      .find((s) => s.id === "registered")!;
+    expect(state).toMatchObject({ enabled: false, available: false, reason: "disabled for this address" });
+  });
+
+  it("does not make the registered rail depend on an Arkade identity or a wired backend", () => {
+    const state = (caps: ServerRailCaps) =>
+      effectiveRails({ arkadeAddress: null, claimPublicKey: null, disabledRails: [], paymentMethods: [METHOD] }, caps)
+        .find((s) => s.id === "registered")!;
+    expect(state(FULL).available).toBe(true);
+    expect(state(BARE).available).toBe(true);
   });
 
   it("needs an Arkade identity for the offline, arkade and covenant rails", () => {

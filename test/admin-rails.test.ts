@@ -85,6 +85,29 @@ describe("admin rails", () => {
     expect(patchedRails.get("onchain")).toMatchObject({ enabled: true, available: true });
   });
 
+  it("reports and toggles the registered rail from the address's own methods", async () => {
+    const a = repos.addresses.create({ domainId, username: "erin", status: "active", sessionId: "sess-erin" });
+    repos.addresses.setPaymentMethods(a.id, [{ type: "shielded", destination: "shrol21abc" }]);
+    const registered = (rails: { id: string }[]) => rails.find((r) => r.id === "registered");
+    const patch = (disabledRails: string[]) => request(app).patch(`/admin/api/addresses/${a.id}/rails`).send({ disabledRails });
+
+    const listed = await request(app).get("/admin/api/addresses");
+    expect(registered(listed.body.addresses[0].rails)).toMatchObject({ enabled: true, applicable: true, available: true });
+    expect(registered((await patch([])).body.rails)).toMatchObject({ enabled: true, applicable: true, available: true });
+
+    const off = await patch(["registered"]);
+    expect(off.status).toBe(200);
+    expect(off.body.disabledRails).toEqual(["registered"]);
+    expect(registered(off.body.rails)).toMatchObject({ enabled: false, available: false, reason: "disabled for this address" });
+  });
+
+  it("reports the registered rail as inapplicable for an address with no methods", async () => {
+    repos.addresses.create({ domainId, username: "frank", status: "active", sessionId: "sess-frank" });
+    const listed = await request(app).get("/admin/api/addresses");
+    expect(listed.body.addresses[0].rails.find((r: { id: string }) => r.id === "registered"))
+      .toMatchObject({ enabled: true, applicable: false, available: false, reason: "address has no registered payment methods" });
+  });
+
   it("stores a per-address rail policy and returns the effective states", async () => {
     const a = repos.addresses.create({ domainId, username: "bob", status: "active", sessionId: "sess-bob" });
     repos.addresses.setOfflineReceive(a.id, ARK, CLAIMPK);

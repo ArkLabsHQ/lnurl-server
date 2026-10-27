@@ -20,6 +20,7 @@
 
 import type { Network } from "@arkade-os/solver-discovery";
 import type { PaymentOption } from "./payment-options.js";
+import type { PaymentMethod } from "./payment-methods.js";
 import { caip19Id, isRailType } from "./caip.js";
 import type { ServerDeps } from "./http/server-context.js";
 import type { FfRail } from "./rails/fixedfloat/rates.js";
@@ -28,7 +29,7 @@ import { ffRailCaps } from "./rails/fixedfloat/provider.js";
 import { InvalidRailPolicyError } from "./errors.js";
 
 /** Every receive rail the server knows. The order is the advertise order. */
-export const RAIL_IDS = ["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat"] as const;
+export const RAIL_IDS = ["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat", "registered"] as const;
 
 /** A backend that can satisfy a receive on an LN address. */
 export type RailId = (typeof RAIL_IDS)[number];
@@ -95,6 +96,16 @@ export const RAIL_DEFS: Record<RailId, RailDef> = {
     // Many ids, one per token network, so the single-option field cannot describe it.
     paymentOption: null,
     direction: "token->bolt11->arkade-btc",
+  },
+  registered: {
+    id: "registered",
+    label: "Registered methods",
+    description:
+      "Payment methods the owner registered on their address, each offered to payers as its own option. " +
+      "The destinations are the owner's own and the server never interprets them: nothing here observes or verifies a payment to one.",
+    // Many ids, one per registered method, so the single-option field cannot describe it.
+    paymentOption: null,
+    direction: null,
   },
 };
 
@@ -236,6 +247,8 @@ export interface RailAddress {
   boardingAddress?: string | null;
   /** Rail ids the operator disabled for this address (per-LNURL policy). */
   disabledRails: readonly unknown[];
+  /** Methods the owner registered; the registered rail is offered only when there is one. */
+  paymentMethods?: readonly PaymentMethod[];
 }
 
 /** Per-address state of one rail: operator policy x server capability x identity. */
@@ -364,7 +377,20 @@ export function effectiveRails(address: RailAddress, caps: ServerRailCaps): Addr
   else if (!ff.ready) tokens.reason = ff.reason ?? `${ff.provider} is unavailable`;
   else if (!caps.offlineSwapCreator) tokens.reason = "offline receive is not configured";
   else if (!caps.discoveryReady) tokens.reason = "offline receive unavailable: " + discoveryReason;
-  return [interactive, offline, arkade, covenant, onchain, tokens];
+  // Independent of the Arkade identity and of every backend on purpose: the
+  // destinations are the owner's own and never interpreted here, so the rail
+  // stands or falls on the list alone.
+  const hasMethods = Boolean(address.paymentMethods?.length);
+  const registered: AddressRailState = {
+    id: "registered",
+    label: RAIL_DEFS.registered.label,
+    enabled: !disabled.has("registered"),
+    applicable: hasMethods,
+    available: !disabled.has("registered") && hasMethods,
+  };
+  if (!registered.enabled) registered.reason = "disabled for this address";
+  else if (!hasMethods) registered.reason = "address has no registered payment methods";
+  return [interactive, offline, arkade, covenant, onchain, tokens, registered];
 }
 
 /** Rails whose payment lands as a VTXO or a boarding UTXO, so arkd's own floor
