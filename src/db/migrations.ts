@@ -8,7 +8,7 @@ interface Migration {
 const hasColumn = (db: Db, table: string, column: string): boolean =>
   (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === column);
 
-const MIGRATIONS: Migration[] = [
+export const MIGRATIONS: Migration[] = [
   {
     version: 1,
     up: `
@@ -382,6 +382,12 @@ const MIGRATIONS: Migration[] = [
       db.exec("DROP TABLE IF EXISTS hd_receive_allocations; DROP TABLE IF EXISTS hd_receive_sources;");
       if (hasColumn(db, "addresses", "hd_receive")) db.exec("ALTER TABLE addresses DROP COLUMN hd_receive;");
     },
+  },
+  {
+    version: 28,
+    // Registered methods are a short per-address list always read with the row, so a JSON
+    // column beats a table: mirrors disabled_rails (migration 10).
+    up: `ALTER TABLE addresses ADD COLUMN payment_methods TEXT NOT NULL DEFAULT '[]';`,
   },
 ];
 
