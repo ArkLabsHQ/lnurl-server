@@ -69,6 +69,18 @@ describe("LUD-XX paymentOptions", () => {
     ]);
   });
 
+  it("advertises a registered method after the rails and leaves the bounds and units alone", async () => {
+    repos.addresses.setPaymentMethods(addr("alice", true).id, [{ type: "shielded", destination: "shrol21abc" }]);
+    const meta = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com");
+    expect(meta.paymentOptions).toEqual([
+      { id: "lightning", type: "lightning", verifiable: true },
+      { id: "arkade", type: "arkade", verifiable: false },
+      { id: "registered:shielded", type: "shielded", verifiable: false },
+    ]);
+    expect(meta).toMatchObject({ minSendable: 1000, maxSendable: 100_000_000 });
+    expect(meta.units).toBeUndefined();
+  });
+
   it("omits paymentOptions without an Arkade identity (pure LUD-06)", async () => {
     addr("bob", false);
     const meta = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/bob`, "domain.com");

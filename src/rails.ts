@@ -20,7 +20,7 @@
 
 import type { Network } from "@arkade-os/solver-discovery";
 import type { PaymentOption } from "./payment-options.js";
-import type { PaymentMethod } from "./payment-methods.js";
+import { REGISTERED_OPTION_PREFIX, type PaymentMethod } from "./payment-methods.js";
 import { caip19Id, isRailType } from "./caip.js";
 import type { ServerDeps } from "./http/server-context.js";
 import type { FfRail } from "./rails/fixedfloat/rates.js";
@@ -580,9 +580,13 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
   const tokenOptions = caps.fixedFloat && tokenState.offer
     ? ffPaymentOptions(caps.fixedFloat, railBounds("offline-swap", caps, base ?? { min: 1, max: Number.MAX_SAFE_INTEGER }), tokenState.available)
     : [];
+  // Appended after withCaip, never through it: a method typed like a rail would be stamped with that rail's caip19Id.
+  const registeredOptions: PaymentOption[] = states.get("registered")?.available
+    ? (address.paymentMethods ?? []).map(({ type }) => ({ id: REGISTERED_OPTION_PREFIX + type, type, verifiable: false }))
+    : [];
   // paymentOptions exists to name a non-lightning rail; with none to offer the
   // address stays pure LUD-06 even though lightning may still serve it.
-  if (!arkadeReady && !onchainReady && tokenOptions.length === 0) return [];
+  if (!arkadeReady && !onchainReady && tokenOptions.length === 0 && registeredOptions.length === 0) return [];
   const options: PaymentOption[] = [];
   // `available` is emitted only when false: LUD-XX says an absent one means true,
   // so stating it on every healthy option would be noise. `verifiable` is always
@@ -595,7 +599,7 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
   const withCaip = (opts: PaymentOption[]): PaymentOption[] => network === undefined
     ? opts
     : opts.map((option) => isRailType(option.type) ? { ...option, caip19Id: caip19Id(option.type, network) } : option);
-  if (!base) return [...withCaip(options), ...tokenOptions];
+  if (!base) return [...withCaip(options), ...tokenOptions, ...registeredOptions];
   // Emitted relative to the pair the payRequest actually advertises, not to the
   // envelope. A client falls back to the top-level pair for an option that
   // publishes nothing, and the top level is the lightning rail's — so an option
@@ -611,5 +615,5 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
       ...(bounds.min !== advertised.min ? { minSendable: bounds.min } : {}),
       ...(bounds.max !== advertised.max ? { maxSendable: bounds.max } : {}),
     };
-  })), ...tokenOptions];
+  })), ...tokenOptions, ...registeredOptions];
 }

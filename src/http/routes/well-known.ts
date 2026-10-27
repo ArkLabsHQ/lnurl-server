@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import type { Repositories } from "../../db/repositories/index.js";
 import { RateLimiter } from "../../rate-limit.js";
 import { resolvePaymentOption } from "../../payment-options.js";
+import type { PaymentMethod } from "../../payment-methods.js";
 import {
   advertisedBounds,
   advertisedRailOptions,
@@ -27,7 +28,7 @@ import { BATCH_PATH } from "../../services/verify-batch.js";
 
 const DEFAULT_DESTINATION_WATCH_MS = 604_800_000;
 
-const railStatesFor = (address: { arkadeAddress: string | null; claimPublicKey: string | null; disabledRails: readonly unknown[] }, caps: ServerRailCaps): Map<string, AddressRailState> =>
+const railStatesFor = (address: { arkadeAddress: string | null; claimPublicKey: string | null; disabledRails: readonly unknown[]; paymentMethods?: readonly PaymentMethod[] }, caps: ServerRailCaps): Map<string, AddressRailState> =>
   new Map(effectiveRails(address, caps).map((s) => [s.id, s]));
 
 /** LUD-16 `user@domain`, and a flagged address at its session LNURL: the pay request and its
@@ -70,7 +71,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
   };
 
   const envelope = (domain: DomainRow, address: AddressRow) => ({
-    railAddress: { arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, boardingAddress: address.boardingAddress, disabledRails: address.disabledRails },
+    railAddress: { arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, boardingAddress: address.boardingAddress, disabledRails: address.disabledRails, paymentMethods: address.paymentMethods },
     base: { min: domain.minSendable ?? settings.minSendable(), max: domain.maxSendable ?? settings.maxSendable() } as Bounds,
   });
 
