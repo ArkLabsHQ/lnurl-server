@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
-- **`owned({ handle })` picks the address a wallet uses** — the client's `owned()` returns the active address with that handle when the identity owns one, and otherwise falls back as before, to the session address first. A wallet holding several addresses can keep the one its user chose as primary across restarts.
+- **`@arkade-os/lnurl-client` 0.9.1: `owned({ handle })` picks the address a wallet uses** — `owned()` returns the active address with that handle when the identity owns one, and otherwise falls back as before, to the session address first. A wallet holding several addresses can keep the one its user chose as primary across restarts.
 
 ## 0.6.0 - 2026-10-28
 
