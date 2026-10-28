@@ -1,3 +1,4 @@
+import { invoiceFactsFromBolt11 } from "../src/bolt11.js";
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import http from "node:http";
 import { createHash } from "node:crypto";
@@ -48,7 +49,7 @@ interface FakeSolver {
   baseUrl: string;
   requests: Record<string, any>[];
   statuses: Map<string, string>;
-  mode: { wrongHash?: boolean; fromAmountDelta?: number; bogusLockup?: boolean; amountsAsStrings?: boolean; expired?: boolean; refundSoon?: boolean; invoiceExpirySeconds?: number };
+  mode: { wrongHash?: boolean; fromAmountDelta?: number; toAmountDelta?: number; bogusLockup?: boolean; amountsAsStrings?: boolean; expired?: boolean; refundSoon?: boolean; invoiceExpirySeconds?: number };
   /** Unix seconds the last quote was stamped at. */
   issuedAt?: number;
   close: () => Promise<void>;
@@ -69,9 +70,10 @@ async function startFakeSolver(): Promise<FakeSolver> {
       const validUntil = mode.expired ? now - 1 : now + 600;
       const refundLocktime = mode.refundSoon ? validUntil + 1_799 : now + 7200;
       const paymentHash = mode.wrongHash ? "ff".repeat(32) : r.profile.payment_hash;
-      // The payer commits to `amount` (amount_side "from"); the invoice names exactly it.
+      const from = r.amount_side === "to" ? r.amount + 1 : r.amount;
+      const to = r.amount_side === "to" ? r.amount : r.amount - 1;
       const invoice = buildInvoice(paymentHash, {
-        amountHrp: `${r.amount * 10000}p`,
+        amountHrp: `${from * 10000}p`,
         timestamp: now,
         ...(mode.invoiceExpirySeconds ? { expirySeconds: mode.invoiceExpirySeconds } : {}),
       });
@@ -94,9 +96,9 @@ async function startFakeSolver(): Promise<FakeSolver> {
           rfq_id: r.rfq_id,
           pair: r.pair,
           from_amount: mode.amountsAsStrings
-            ? String(r.amount + (mode.fromAmountDelta ?? 0))
-            : r.amount + (mode.fromAmountDelta ?? 0),
-          to_amount: mode.amountsAsStrings ? String(r.amount - 1) : r.amount - 1,
+            ? String(from + (mode.fromAmountDelta ?? 0))
+            : from + (mode.fromAmountDelta ?? 0),
+          to_amount: mode.amountsAsStrings ? String(to + (mode.toAmountDelta ?? 0)) : to + (mode.toAmountDelta ?? 0),
           solver_pubkey: solverPub,
           valid_until: validUntil,
           refund_locktime: refundLocktime,
@@ -404,6 +406,35 @@ describe("createOfflineSwapCoordinator", () => {
     } finally {
       solver.mode.wrongHash = false;
     }
+  });
+
+  it.each([
+    { amountSide: "from" as const, maxPayAmountSat: 999 },
+    { maxPayAmountSat: 1050 },
+    { amountSide: "to" as const },
+    { amountSide: "to" as const, maxPayAmountSat: 1000.5 },
+  ])("rejects invalid payer-ceiling arguments before requesting a quote: %j", async (params) => {
+    const before = solver.requests.length;
+    await expect(creator.create({ amountSat: 1000, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY, ...params })).rejects.toThrow(/payer|maximum/i);
+    expect(solver.requests).toHaveLength(before);
+  });
+
+  it("targets net receive amount and returns a higher invoice without changing the payout", async () => {
+    const [swap, other] = await Promise.all([0, 1].map(() => creator.create({ amountSat: 1000, amountSide: "to", maxPayAmountSat: 1050, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY })));
+    expect(swap.invoice).not.toBe(other.invoice);
+    expect(swap.preimageHash).not.toBe(other.preimageHash);
+    expect(solver.requests.at(-1)).toMatchObject({ amount: 1000, amount_side: "to" });
+    expect(swap.recovery.expectedAmount).toBe(1000);
+    expect(invoiceFactsFromBolt11(swap.invoice).amountSats).toBe(1001);
+  });
+
+  it("rejects an excessive payer amount and a net quote that changes the receive amount", async () => {
+    await expect(creator.create({ amountSat: 1000, amountSide: "to", maxPayAmountSat: 1000, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY })).rejects.toThrow(/maximum/);
+    await expect(creator.create({ amountSat: 100000, amountSide: "to", maxPayAmountSat: 100001, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY })).rejects.toThrow(/payer bounds/);
+    solver.mode.toAmountDelta = -1;
+    try {
+      await expect(creator.create({ amountSat: 1000, amountSide: "to", maxPayAmountSat: 1050, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY })).rejects.toThrow(/to_amount/);
+    } finally { solver.mode.toAmountDelta = undefined; }
   });
 
   it("refuses a quote whose from_amount is not the requested amount", async () => {

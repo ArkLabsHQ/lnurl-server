@@ -39,6 +39,18 @@ function quotedMsat(raw: unknown, unit: string, amount: number): number {
   return msat;
 }
 
+/** The millisats a receive-amount quote charges, refusing one that nets anything else or costs above `maxMsat`. */
+function receivePayment(raw: unknown, receiveMsat: number, maxMsat: number): number {
+  const q = raw as Partial<PaymentQuote> | undefined;
+  if (q?.receive?.unit !== "msat" || q.receive.amount !== String(receiveMsat)) {
+    throw new LnurlError(`The callback did not quote a receive of ${receiveMsat} millisats`);
+  }
+  const msat = q.payment?.unit === "msat" && /^\d+$/.test(q.payment.amount) ? Number(q.payment.amount) : NaN;
+  if (!Number.isSafeInteger(msat) || msat <= 0) throw new LnurlError("The callback quoted no millisat amount to pay");
+  if (msat > maxMsat) throw new LnurlError(`The callback quoted ${msat} millisats to pay, above the ${maxMsat} allowed`);
+  return msat;
+}
+
 /**
  * Fetches the payRequest for a lightning address or bech32 LNURL.
  *
@@ -63,7 +75,8 @@ export async function resolve(input: string, fetchImpl: FetchImpl): Promise<PayR
  * `amountSat` is sats and is converted to millisats on the wire; it is
  * range-checked locally against the payRequest bounds before any network
  * call. With `unit` and `amount` instead, the receiver quotes the amount to
- * millisats and the invoice must match that quote. `paymentOption` is rejected
+ * millisats and the invoice must match that quote. With `receiveAmountSat`, the
+ * receiver nets exactly that and `amountSat` caps the quoted payment. `paymentOption` is rejected
  * on a session payRequest that does not advertise options: a live session's
  * callback would silently ignore it.
  * `verify` on the result is optional: the server omits it when the BOLT11
@@ -101,6 +114,16 @@ export async function requestInvoice(
   if (amountMsat !== undefined && (amountMsat < min || amountMsat > max)) {
     throw new LnurlError(`Amount must be between ${min} and ${max} millisats`);
   }
+  const receiveMsat = opts.receiveAmountSat === undefined ? undefined : opts.receiveAmountSat * 1000;
+  if (receiveMsat !== undefined) {
+    if (!payRequest.receiveAmountAllowed) throw new LnurlError("This payRequest does not take a receive amount");
+    if (opts.paymentOption !== undefined && opts.paymentOption !== "lightning") {
+      throw new LnurlError("A receive amount is priced on the lightning option only");
+    }
+    if (amountMsat === undefined || !Number.isSafeInteger(receiveMsat) || receiveMsat % 1000 !== 0 || receiveMsat <= 0 || receiveMsat > amountMsat) {
+      throw new LnurlError("Receive amount must be a positive whole number of sats, no more than the amount");
+    }
+  }
   // Checked locally for the same reason the amount is: the server would reject
   // it anyway, but a round trip later and with a less specific message. LUD-12
   // treats an absent or zero commentAllowed as "comments not supported".
@@ -119,17 +142,20 @@ export async function requestInvoice(
   if (opts.comment) params.set("comment", opts.comment);
   if (opts.paymentOption !== undefined) params.set("paymentOption", opts.paymentOption);
   if (unit) params.set("unit", unit.code);
+  if (receiveMsat !== undefined) params.set("receiveAmount", String(receiveMsat));
   const sep = payRequest.callback.includes("?") ? "&" : "?";
   const body = await lnurlFetch<Record<string, unknown>>(`${payRequest.callback}${sep}${params.toString()}`, undefined, fetchImpl);
   if (typeof body.pr === "string") {
     if (token) throw new LnurlError(`The callback answered token option ${token.id} with an invoice`);
     const invoiceMsat = amountMsatOf(body.pr);
     if (invoiceMsat === undefined) throw new LnurlError("The callback returned an invoice that does not decode");
-    const expectedMsat = unit ? quotedMsat(body.paymentQuote, unit.code, opts.amount!) : amountMsat;
+    const expectedMsat = unit ? quotedMsat(body.paymentQuote, unit.code, opts.amount!)
+      : receiveMsat !== undefined ? receivePayment(body.paymentQuote, receiveMsat, amountMsat!) : amountMsat;
     // An amountless invoice answering an amounted request is refused too: the
     // payer asked for a fixed amount, and paying it could settle for any amount.
     if (invoiceMsat !== expectedMsat) {
-      throw new LnurlError(`The callback returned an invoice for ${invoiceMsat ?? "no"} millisats, not the ${unit ? "quoted" : "requested"} ${expectedMsat}`);
+      const basis = unit || receiveMsat !== undefined ? "quoted" : "requested";
+      throw new LnurlError(`The callback returned an invoice for ${invoiceMsat ?? "no"} millisats, not the ${basis} ${expectedMsat}`);
     }
     const result: Bolt11Result = { kind: "bolt11", pr: body.pr, verify: typeof body.verify === "string" ? body.verify : undefined };
     if (typeof body.verifyBatch === "string") result.verifyBatch = body.verifyBatch;

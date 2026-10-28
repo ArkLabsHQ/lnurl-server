@@ -202,6 +202,7 @@ export const openApiSpec = {
                         maxSendable: { type: "number" },
                         metadata: { type: "string" },
                         commentAllowed: { type: "number" },
+                        receiveAmountAllowed: { type: "boolean", description: "LUD-XX: the callback takes `receiveAmount`; present only while an offline swap can serve this address" },
                         units: { type: "array", description: "LUD-XX: quotable units, present when a quote provider is configured (same shape as the LN-address `units`)", items: { type: "object" } },
                       },
                     },
@@ -255,6 +256,7 @@ export const openApiSpec = {
           },
           { name: "unit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: denomination unit (e.g. `USD`); requires a configured quote provider" },
           { name: "receiveUnit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: desired receiver unit; the built-in price-feed provider accepts only `msat`" },
+          { name: "receiveAmount", in: "query", required: false, schema: { type: "number" }, description: "LUD-XX: what the receiver nets, in millisats of whole sats; `amount` becomes the payer's ceiling. Offline swap only, where the payRequest has `receiveAmountAllowed`; refused with `unit` or a non-lightning `paymentOption`" },
         ],
         responses: {
           "200": {
@@ -450,7 +452,9 @@ export const openApiSpec = {
           "domain comes from the `domain` body field or the Host header. Behaviour " +
           "follows the domain's allocation policy: send a `username` to self-claim " +
           "(when `self` is allowed), omit it for a random username (when `random` is " +
-          "allowed), send `username` + `claimCode` to claim an admin-reserved one, or " +
+          "allowed), send a reserved name's `claimCode` (alone or beside that `username`) to " +
+          "claim it, send `username` + a free-name `claimCode` to claim any available name " +
+          "(even without `self`; the code is spent), or " +
           "send `nameless: true` (when `session` is allowed) for a receiver with no " +
           "lightning address, reachable only at its session LNURL — mutually exclusive " +
           "with `username`/`claimCode`. Returns 200 (not 201) when the call repeats: " +
@@ -477,7 +481,7 @@ export const openApiSpec = {
                 properties: {
                   token: { type: "string", description: "Wallet session token (hex, ≥32 chars)" },
                   username: { type: "string", description: "Desired username; omit for random allocation" },
-                  claimCode: { type: "string", description: "Claim code for an admin-reserved username" },
+                  claimCode: { type: "string", description: "Operator claim code: alone it claims the reserved name it unlocks; a free-name code needs `username`" },
                   domain: { type: "string", description: "Target domain (defaults to the Host header)" },
                   nameless: { type: "boolean", description: "Register with no lightning address (requires `session` mode); cannot combine with `username`/`claimCode`" },
                 },
@@ -489,8 +493,8 @@ export const openApiSpec = {
         responses: {
           "200": { description: "An existing row owned by this session was returned idempotently", content: { "application/json": { schema: { $ref: "#/components/schemas/OwnedAddress" } } } },
           "201": { description: "Address registered", content: { "application/json": { schema: { $ref: "#/components/schemas/OwnedAddress" } } } },
-          "400": { description: "Missing token, invalid token/username, or `nameless` combined with `username`/`claimCode`" },
-          "401": { description: "Missing/invalid X-API-Key, or invalid claim code" },
+          "400": { description: "Missing token, invalid token/username, `nameless` combined with `username`/`claimCode`, or a free-name `claimCode` without `username` (`username_required`)" },
+          "401": { description: "Missing/invalid X-API-Key, or a claim code that matches nothing or was already spent" },
           "403": { description: "Allocation mode not permitted for this domain" },
           "404": { description: "Unknown or disabled domain" },
           "409": { description: "Username already taken or blacklisted" },
@@ -529,8 +533,9 @@ export const openApiSpec = {
           "Gives a nameless row (registered with `nameless: true`) a name, in place: id, " +
           "session id, offline-receive identity, rail policy and payment history all carry " +
           "over. Same allocation rules as registration — `username` needs `self`, an " +
-          "omitted name needs `random`, `username` + `claimCode` claims an admin-reserved " +
-          "one, keeping the reservation's rail policy too. A row that already has a name refuses with `already_named`.",
+          "omitted name needs `random`, a reserved name's `claimCode` (alone or beside that `username`) " +
+          "claims it, keeping the reservation's rail policy too, and a free-name `claimCode` claims the " +
+          "`username` beside it. A row that already has a name refuses with `already_named`.",
         tags: ["LN Address"],
         security: [{ bearerAuth: [] }],
         parameters: [
@@ -545,7 +550,7 @@ export const openApiSpec = {
                 type: "object",
                 properties: {
                   username: { type: "string", description: "Desired username; omit for random allocation" },
-                  claimCode: { type: "string", description: "Claim code for an admin-reserved username" },
+                  claimCode: { type: "string", description: "Operator claim code: alone it claims the reserved name it unlocks; a free-name code needs `username`" },
                   domain: { type: "string", description: "Target domain (defaults to the Host header)" },
                 },
               },
@@ -554,8 +559,8 @@ export const openApiSpec = {
         },
         responses: {
           "200": { description: "Address upgraded", content: { "application/json": { schema: { $ref: "#/components/schemas/OwnedAddress" } } } },
-          "400": { description: "Invalid token or username" },
-          "401": { description: "Missing or invalid claim code" },
+          "400": { description: "Invalid token or username, or a free-name `claimCode` without `username` (`username_required`)" },
+          "401": { description: "A claim code that is missing, matches nothing, or was already spent" },
           "403": { description: "Allocation mode not permitted for this domain" },
           "404": { description: "Unknown or disabled domain, or the handle not found / not owned by this token" },
           "409": { description: "Username already taken, blacklisted, or the row already has a name" },
@@ -745,6 +750,7 @@ export const openApiSpec = {
                         maxSendable: { type: "number" },
                         metadata: { type: "string" },
                         commentAllowed: { type: "number" },
+                        receiveAmountAllowed: { type: "boolean", description: "LUD-XX: the callback takes `receiveAmount`; present only while an offline swap can serve this address" },
                         paymentOptions: {
                           type: "array",
                           description:
@@ -848,6 +854,7 @@ export const openApiSpec = {
           { name: "paymentOption", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: selected rail id (`arkade`, `onchain`, `registered:<type>` for a method the owner registered, or a token option such as `ff-usdtarbitrum`); defaults to lightning" },
           { name: "unit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: denomination unit (e.g. `USD`); `amount` becomes that unit's smallest integer. Refused on token options, which quote their own payment, and on registered options, which are never priced here" },
           { name: "receiveUnit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: desired receiver unit; the built-in price-feed provider accepts only `msat`" },
+          { name: "receiveAmount", in: "query", required: false, schema: { type: "number" }, description: "LUD-XX: what the receiver nets, in millisats of whole sats; `amount` becomes the payer's ceiling. Offline swap only, where the payRequest has `receiveAmountAllowed`; refused with `unit` or a non-lightning `paymentOption`" },
         ],
         responses: {
           "200": {

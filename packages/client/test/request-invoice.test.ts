@@ -184,6 +184,46 @@ describe("requestInvoice in a unit", () => {
   });
 });
 
+describe("requestInvoice with a receive amount", () => {
+  const net: PayRequest = { ...addressPr, receiveAmountAllowed: true };
+  // The receiver nets 1000 sats; a 53-sat solver fee rides on top.
+  const quote = {
+    requested: { amount: "1000000", unit: "msat" }, payment: { amount: "1053000", unit: "msat" },
+    receive: { amount: "1000000", unit: "msat" }, fees: [{ name: "solver", amount: { amount: "53000", unit: "msat" } }],
+  };
+  const callback = (body: Record<string, unknown>, seen: string[] = []) => async (url: string) => { seen.push(String(url)); return jsonResponse(body); };
+  const offline = async () => { throw new Error("must not be called"); };
+  const ask = (paymentQuote: unknown, invoiceSat = 1053) =>
+    requestInvoice(net, { amountSat: 1100, receiveAmountSat: 1000 }, callback({ pr: buildInvoice(HASH, invoiceSat), routes: [], paymentQuote }) as never);
+
+  it("sends amountSat as the ceiling beside the receive amount and pays the quoted invoice", async () => {
+    const seen: string[] = [];
+    const pr = buildInvoice(HASH, 1053);
+    const r = await requestInvoice(net, { amountSat: 1100, receiveAmountSat: 1000 }, callback({ pr, routes: [], paymentQuote: quote }, seen) as never);
+    expect(seen[0]).toContain("amount=1100000&receiveAmount=1000000");
+    expect(r).toMatchObject({ kind: "bolt11", pr, paymentQuote: quote });
+  });
+
+  it("refuses the answer of a server that ignored the receive amount", async () => {
+    await expect(ask(undefined, 1100)).rejects.toThrow("did not quote a receive of 1000000 millisats");
+  });
+
+  it("refuses a quote that nets less, costs more than amountSat, or disagrees with its invoice", async () => {
+    await expect(ask({ ...quote, receive: { amount: "999000", unit: "msat" } })).rejects.toThrow("did not quote a receive of 1000000 millisats");
+    await expect(ask({ ...quote, payment: { amount: "1101000", unit: "msat" } }, 1101)).rejects.toThrow("above the 1100000 allowed");
+    await expect(ask(quote, 1052)).rejects.toThrow("not the quoted 1053000");
+  });
+
+  it("refuses before the network what the receiver cannot price", async () => {
+    await expect(requestInvoice(addressPr, { amountSat: 1100, receiveAmountSat: 1000 }, offline as never)).rejects.toThrow("does not take a receive amount");
+    for (const receiveAmountSat of [0, 999.5, 1101]) {
+      await expect(requestInvoice(net, { amountSat: 1100, receiveAmountSat }, offline as never)).rejects.toThrow("no more than the amount");
+    }
+    await expect(requestInvoice(net, { amountSat: 1100, receiveAmountSat: 1000, paymentOption: "arkade" }, offline as never))
+      .rejects.toThrow("lightning option only");
+  });
+});
+
 describe("requestInvoice on a token option", () => {
   const DEPOSIT = "0x" + "ab".repeat(20);
   const tokenPr: PayRequest = {

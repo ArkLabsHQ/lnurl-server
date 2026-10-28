@@ -314,9 +314,9 @@ describe("runMigrations", () => {
     expect(LATEST_MIGRATION).toBe(Math.max(...versions));
   });
 
-  it("payment_methods defaults to an empty list on a database migrated from 27", () => {
+  it("payment_methods defaults to an empty list on a database migrated from 28", () => {
     const db = openDb(":memory:");
-    runMigrations(db, { upToVersion: 27 });
+    runMigrations(db, { upToVersion: 28 });
     const repos = createRepositories(db);
     const domain = repos.domains.create({ domain: "domain.com", allocationModes: ["self"] });
     const { id } = repos.addresses.create({ domainId: domain.id, username: "alice", status: "active" });

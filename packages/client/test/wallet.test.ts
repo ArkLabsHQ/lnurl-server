@@ -2,7 +2,7 @@ import { afterEach, describe, it, expect, vi } from "vitest";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { hex } from "@scure/base";
 import { createDefaultPaymentRouter, invoiceTarget, type PaymentRail, type RouteQuote, type Wallet } from "@arkade-os/sdk";
-import { arkadeLnurl, arkadePaymentRouter, DEFAULT_RAIL_PRIORITY, encodeLnurl, type ArkadeLnurl, type Receiver } from "../src/wallet.js";
+import { arkadeLnurl, arkadePaymentRouter, DEFAULT_RAIL_PRIORITY, encodeLnurl } from "../src/wallet.js";
 import { deriveSessionId } from "../src/token.js";
 import { createLnurlClient, type LnurlClient } from "../src/index.js";
 import { LnurlError } from "../src/errors.js";
@@ -171,14 +171,15 @@ describe("arkadeLnurl", () => {
     });
   });
 
-  it("will not type a claim code without the name it unlocks", () => {
-    const unused = (lnurl: ArkadeLnurl, rx: Receiver) => {
-      // @ts-expect-error
-      void lnurl.claim({ claimCode: "code123" });
-      // @ts-expect-error
-      void rx.upgrade({ claimCode: "code123" });
-    };
-    expect(unused).toBeTypeOf("function");
+  it("forwards a claim code alone, which claims the reserved name it unlocks", async () => {
+    const client = fakeClient();
+    const lnurl = arkadeLnurl({ wallet: fakeWallet(), baseUrl: "https://lnurl.example.com", client });
+
+    await lnurl.claim({ claimCode: "code123" });
+
+    expect(client.registerAddress).toHaveBeenCalledWith({
+      token: await lnurl.token(), domain: "lnurl.example.com", claimCode: "code123",
+    });
   });
 
   it("builds an unflagged receiver's lnurl from baseUrl, which keeps the port", async () => {

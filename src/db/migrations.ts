@@ -385,6 +385,22 @@ export const MIGRATIONS: Migration[] = [
   },
   {
     version: 28,
+    // A free-name code holds no name, so it cannot live on an addresses row as a reservation's code does.
+    up: `
+      CREATE TABLE IF NOT EXISTS claim_codes (
+        id          INTEGER PRIMARY KEY,
+        domain_id   INTEGER NOT NULL REFERENCES domains(id) ON DELETE CASCADE,
+        code_hash   BLOB NOT NULL UNIQUE,
+        address_id  INTEGER REFERENCES addresses(id) ON DELETE SET NULL,
+        created_at  INTEGER NOT NULL,
+        redeemed_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_addresses_claim_code ON addresses(domain_id, claim_code_hash)
+        WHERE claim_code_hash IS NOT NULL;
+    `,
+  },
+  {
+    version: 29,
     // Registered methods are a short per-address list always read with the row, so a JSON
     // column beats a table: mirrors disabled_rails (migration 10).
     up: `ALTER TABLE addresses ADD COLUMN payment_methods TEXT NOT NULL DEFAULT '[]';`,

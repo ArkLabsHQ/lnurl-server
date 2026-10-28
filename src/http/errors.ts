@@ -54,6 +54,7 @@ export class ServiceUnavailable extends HttpError {
 const PROVISIONING_STATUS: Record<ProvisioningCode, number> = {
   invalid_token: 400, invalid_username: 400, invalid_rails: 400, forbidden_mode: 403,
   blacklisted: 409, taken: 409, limit_reached: 429, invalid_claim: 401, already_named: 409, not_found: 404,
+  username_required: 400,
 };
 
 /** Exhaustive: a new error kind does not compile until it is mapped here. */

@@ -89,7 +89,41 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       commentAllowed: 140,
       ...(options.length ? { paymentOptions: options } : {}),
       ...(units.length ? { units } : {}),
+      ...(railStatesFor(railAddress, railCaps).get("offline-swap")?.available ? { receiveAmountAllowed: true } : {}),
     } satisfies LnurlPayMetadata);
+  };
+
+  const offlineInvoice = async (req: Request, res: Response, domain: DomainRow, address: AddressRow, amountMsat: number,
+    options: Pick<Parameters<typeof createOfflineSwapInvoice>[0], "receiveAmountMsat" | "paymentQuote" | "quoted" | "echoLightningOption"> = {}) => {
+    if (!creator || !address.arkadeAddress || !address.claimPublicKey) throw new LnurlError("Offline receive is unavailable");
+    const { railAddress, base } = envelope(domain, address);
+    const railCaps = currentRailCaps();
+    const railStates = railStatesFor(railAddress, railCaps);
+    // Sessionless receive is the offline-swap rail: a disabled policy or an
+    // unready discovery fails loudly per request while the process keeps
+    // serving interactive sessions (never a silent stall).
+    if (railStates.get("offline-swap")?.enabled === false) throw new LnurlError("offline receive is disabled for this address");
+    if (!railCaps.discoveryReady) {
+      throw new LnurlError(`offline receive unavailable: ${railCaps.discoveryReason ?? "no usable lightning-receive solver cards"}`);
+    }
+    if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) throw new LnurlError("Too many requests", 429);
+    const swapBounds = railBounds("offline-swap", railCaps, base);
+    if (amountMsat < swapBounds.min || amountMsat > swapBounds.max) {
+      throw new LnurlError(`Amount must be between ${swapBounds.min} and ${swapBounds.max} millisats`);
+    }
+    // The corridor deals in whole sats; reject before reserving capacity.
+    if (amountMsat % 1000 !== 0) throw new LnurlError("Amount must be a whole number of satoshis");
+    if (offlineQuotes >= (config.maxConcurrentOfflineQuotes ?? 20)) throw new LnurlError("Offline quote capacity reached", 429);
+    offlineQuotes++;
+    try {
+      res.json(await createOfflineSwapInvoice({
+        creator, store, offlineSwaps, baseUrl: settings.baseUrl(), amountMsat, minPayAmountMsat: swapBounds.min,
+        receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, ...options,
+        logger, requestId: res.locals.requestId as string,
+      }));
+    } finally {
+      offlineQuotes--;
+    }
   };
 
   const payCallback = async (req: Request, res: Response, domain: DomainRow, address: AddressRow): Promise<void> => {
@@ -124,6 +158,18 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     // injected provider. Absent unit ⇒ amount stays msat.
     const unit = strParam(req.query.unit);
     const receiveUnit = strParam(req.query.receiveUnit);
+    // LUD-XX receiveAmount: the receiver nets exactly this and `amount` becomes the payer's ceiling.
+    // Only the offline swap can price it; refusing beats a relay invoicing plain `amount`.
+    const receiveAmountMsat = req.query.receiveAmount === undefined ? undefined : msatParam(req.query.receiveAmount) ?? 0;
+    if (receiveAmountMsat !== undefined) {
+      if (unit !== undefined || receiveUnit !== undefined || resolved.kind !== "lightning") {
+        throw new LnurlError("receiveAmount is priced in millisats on the lightning option only");
+      }
+      if (receiveAmountMsat <= 0 || receiveAmountMsat % 1000 !== 0 || receiveAmountMsat > amountMsat) {
+        throw new LnurlError("receiveAmount must be a whole number of satoshis, in millisats, no more than amount");
+      }
+      if (!creator || !address.arkadeAddress || !address.claimPublicKey) throw new LnurlError("receiveAmount is unavailable for this address");
+    }
     let paymentQuote: PaymentQuote | undefined;
     let quoted: QuotedAmount | undefined;
     if (unit !== undefined || receiveUnit !== undefined) {
@@ -266,33 +312,9 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     // Offline receive: no live SSE session for this address, but it opted in with an
     // Arkade identity, so the server quotes a corridor swap paying it (covclaimd claims it).
     // The corridor never touches the session, so a sessionless address is served too.
-    if (creator && address.arkadeAddress && address.claimPublicKey && (!address.sessionId || !sessions.isActive(address.sessionId))) {
-      // Sessionless receive is the offline-swap rail: a disabled policy or an
-      // unready discovery fails loudly per request while the process keeps
-      // serving interactive sessions (never a silent stall).
-      if (railStates.get("offline-swap")?.enabled === false) throw new LnurlError("offline receive is disabled for this address");
-      if (!railCaps.discoveryReady) {
-        throw new LnurlError(`offline receive unavailable: ${railCaps.discoveryReason ?? "no usable lightning-receive solver cards"}`);
-      }
-      if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) throw new LnurlError("Too many requests", 429);
-      const swapBounds = railBounds("offline-swap", railCaps, base);
-      if (amountMsat < swapBounds.min || amountMsat > swapBounds.max) {
-        throw new LnurlError(`Amount must be between ${swapBounds.min} and ${swapBounds.max} millisats`);
-      }
-      // The corridor deals in whole sats; reject before reserving capacity.
-      if (amountMsat % 1000 !== 0) throw new LnurlError("Amount must be a whole number of satoshis");
-      if (offlineQuotes >= (config.maxConcurrentOfflineQuotes ?? 20)) throw new LnurlError("Offline quote capacity reached", 429);
-      offlineQuotes++;
-      try {
-        res.json(await createOfflineSwapInvoice({
-          creator, store, offlineSwaps, baseUrl: settings.baseUrl(), amountMsat,
-          receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, addressId: address.id, paymentQuote, quoted,
-          echoLightningOption: Boolean(paymentOptionId),
-          logger, requestId: res.locals.requestId as string,
-        }));
-      } finally {
-        offlineQuotes--;
-      }
+    if (creator && address.arkadeAddress && address.claimPublicKey &&
+        (receiveAmountMsat !== undefined || !address.sessionId || !sessions.isActive(address.sessionId))) {
+      await offlineInvoice(req, res, domain, address, amountMsat, { receiveAmountMsat, paymentQuote, quoted, echoLightningOption: Boolean(paymentOptionId) });
       return;
     }
 

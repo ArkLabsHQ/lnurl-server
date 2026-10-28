@@ -150,7 +150,10 @@ Wallets register a Lightning address via `POST /lnurl/address`. The request body
 |---------|-----------|
 | `username` provided, domain allows `"self"` mode | Wallet claims that specific username |
 | no `username`, domain allows `"random"` mode | Server assigns a random username |
-| `username` + `claimCode` provided | Wallet claims a pre-reserved address |
+| a reserved address's `claimCode`, alone or with its `username` | Wallet claims that reserved address |
+| `username` + a free-name `claimCode` | Wallet claims that username if it is available, even without `"self"` mode; the code is spent |
+
+A `claimCode` that matches nothing, or was already spent, is refused with `invalid_claim`. A free-name code sent without a `username` gets `username_required`.
 
 Constraints enforced per domain:
 - **`allocationModes`** — which of `"self"`, `"random"`, `"admin"`, `"session"` the domain permits. `"session"` allows a receiver with no lightning address, reachable at `/lnurl/<sessionId>`.
@@ -317,6 +320,22 @@ Each quoted payment records what was asked, so history can show it: the owner's 
 
 > Quoting applies to the Lightning path (relay + offline swap) and the `arkade`/`onchain` destination rails; token-deposit rails reject `unit`, since they quote their own payment. No spread is added: the payer pays the feed's mid price.
 
+### Receive amount
+
+A unit fixes what the payer pays. To fix what the receiver nets instead, the payer adds `receiveAmount` (millisats of whole sats), and `amount` becomes the most it will pay:
+
+```http
+GET /.well-known/lnurlp/alice/callback?amount=1100000&receiveAmount=1000000
+```
+
+Only the offline swap can price this, so a payRequest offers it as `"receiveAmountAllowed": true` while that rail can serve the address: a static Arkade identity, the rail enabled, discovery ready. It takes the offline swap even while the owner's wallet is connected, and is refused with `unit`, `receiveUnit` or a non-lightning `paymentOption`. The solver's fee rides on top, and the answer splits the invoice:
+
+```json
+{ "pr": "lnbc...", "routes": [], "verify": "...", "verifyBatch": "...", "paymentQuote": { "requested": { "amount": "1000000", "unit": "msat" }, "payment": { "amount": "1053000", "unit": "msat" }, "receive": { "amount": "1000000", "unit": "msat" }, "fees": [{ "name": "solver", "amount": { "amount": "53000", "unit": "msat" } }] } }
+```
+
+Pay only an invoice for exactly `paymentQuote.payment`, no more than `amount`, whose `receive` is what you asked for. A server that does not know `receiveAmount` ignores it and invoices plain `amount` with no `receive`: stop there. The client's `requestInvoice({ amountSat, receiveAmountSat })` makes these checks. History records the invoice amount, as for any offline-swap receive. A unified BIP21 can carry the receive amount as its `amount` and this invoice as its `lightning` leg.
+
 ## Admin backend — port 3001
 
 When `DB_PATH` is set an admin backend starts on `ADMIN_PORT` (default `3001`), bound to `ADMIN_BIND` (default `127.0.0.1` for the CLI).
@@ -336,6 +355,9 @@ The Docker image binds to `0.0.0.0` so isolation happens at the container/proxy 
 | GET | `/admin/api/addresses` | List addresses newest first, one page at a time: `{ addresses, nextCursor }` (filter: `domainId`, `status`, `q`; `limit` defaults to 200, at most 1000; pass `nextCursor` back as `cursor`, absent on the last page) |
 | GET | `/admin/api/addresses/count` | Count every address: `{ count }` |
 | POST | `/admin/api/addresses` | Reserve or mint an address |
+| GET | `/admin/api/claim-codes` | List free-name claim codes, never the codes themselves (filter: `domainId`) |
+| POST | `/admin/api/claim-codes` | Issue a free-name claim code for `{ domain }`, shown once |
+| DELETE | `/admin/api/claim-codes/:id` | Revoke an unspent claim code; a spent one is kept as the record of what it claimed (409) |
 | PATCH | `/admin/api/addresses/:id` | Update address status (`active`/`revoked`) |
 | DELETE | `/admin/api/addresses/:id` | Delete address |
 | GET | `/admin/api/api-keys` | List API keys |
@@ -359,7 +381,8 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 
 ### Reserve vs mint
 
-- **Reserve** — creates a `reserved` address with a one-time `claimCode`. Share the code with the wallet owner; the wallet uses it in a `POST /lnurl/address` request to claim and activate the address.
+- **Reserve** — creates a `reserved` address with a one-time `claimCode`. Share the code with the wallet owner; the wallet sends it in a `POST /lnurl/address` request, alone or with the username, to claim and activate the address.
+- **Free-name claim code** — `POST /admin/api/claim-codes` issues a one-time code that reserves no name. Its holder sends it with any available username, which works on a domain without `"self"` mode too.
 - **Mint** — creates an `active` address pre-bound to a `secret` (the wallet token). The wallet can immediately use the address without claiming.
 
 ## Configuration
