@@ -240,6 +240,21 @@ describe("arkadeLnurl", () => {
     expect(rx?.lightningAddress).toBeUndefined();
   });
 
+  it("owned({ handle }) picks that active address, and falls back when it is not one", async () => {
+    const client = fakeClient({
+      listAddresses: vi.fn(async () => [
+        { handle: "bob", username: "bob", lightningAddress: "bob@x", status: "active", sessionLnurl: null, domain: "lnurl.example.com" },
+        { handle: "old", username: "old", lightningAddress: "old@x", status: "revoked", sessionLnurl: null, domain: "lnurl.example.com" },
+        { handle: "SESSIONID", username: null, lightningAddress: null, status: "active", sessionLnurl: "LNURL1flagged", domain: "lnurl.example.com" },
+      ]) as never,
+    });
+    const lnurl = arkadeLnurl({ wallet: fakeWallet(), baseUrl: "https://lnurl.example.com", client });
+
+    expect((await lnurl.owned({ handle: "bob" }))?.lightningAddress).toBe("bob@x");
+    expect((await lnurl.owned({ handle: "old" }))?.handle).toBe("SESSIONID");
+    expect((await lnurl.owned({ handle: "gone" }))?.handle).toBe("SESSIONID");
+  });
+
   it("returns undefined when the token owns nothing", async () => {
     const lnurl = arkadeLnurl({ wallet: fakeWallet(), baseUrl: "https://lnurl.example.com", client: fakeClient() });
     expect(await lnurl.owned()).toBeUndefined();
