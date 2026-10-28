@@ -182,7 +182,7 @@ describe("arkadeLnurl", () => {
     });
   });
 
-  it("builds an unflagged receiver's lnurl from baseUrl, which keeps the port", async () => {
+  it("builds an unflagged receiver's lnurl from baseUrl, port kept, when the domain is its host", async () => {
     const client = fakeClient();
     const lnurl = arkadeLnurl({ wallet: fakeWallet(), baseUrl: "http://127.0.0.1:4283", client });
 
@@ -191,7 +191,7 @@ describe("arkadeLnurl", () => {
     expect(rx.lnurl).toBe(encodeLnurl("http://127.0.0.1:4283/.well-known/lnurlp/alice"));
   });
 
-  it("addresses its own payRequest through baseUrl, which keeps the port", async () => {
+  it("addresses its own payRequest through baseUrl, port kept, when the domain is its host", async () => {
     const client = fakeClient();
     const lnurl = arkadeLnurl({ wallet: fakeWallet(), baseUrl: "http://127.0.0.1:4283", client });
     const rx = await lnurl.claim({ username: "alice" });
