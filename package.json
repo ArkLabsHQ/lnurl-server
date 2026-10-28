@@ -1,6 +1,6 @@
 {
   "name": "@arkade-os/lnurl",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "LNURL service for amountless Lightning receives via Arkade swaps",
   "type": "module",
   "packageManager": "pnpm@10.25.0",
