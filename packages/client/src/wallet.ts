@@ -193,7 +193,7 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
   // so `upgrade` below carries it through rather than recomputing it. The session
   // id comes from `held`, never from the server's own `sessionLnurl`/`lnurl` bech32:
   // those are built from the LUD-16 domain and would drop `baseUrl`'s port.
-  // The server answers an address only on its domain's Host, so `baseUrl` stands in only as that host.
+  // The server answers an address only on its domain's Host; `baseUrl` is kept whole, port and all, only when it is that host.
   const api = new URL(baseUrl);
   const lnurlBase = api.hostname === domain.toLowerCase() ? baseUrl : `${api.protocol}//${domain.toLowerCase()}`;
   const sessionLnurlOf = (held: string) => encodeLnurl(`${lnurlBase}/lnurl/${deriveSessionId(held)}`);
