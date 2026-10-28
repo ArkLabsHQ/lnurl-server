@@ -621,7 +621,8 @@ export const openApiSpec = {
           "Sets the Arkade address + claim public key the server uses to quote a solver-mediated " +
           "corridor swap for this address when the wallet is offline. Requires the owning session token. " +
           "An optional `boardingAddress` registers the `onchain` rail in the same call, and an optional " +
-          "`methods` list registers the owner's own payment methods, advertised to payers as `registered:<type>` options.",
+          "`methods` list registers the owner's own payment methods, advertised to payers as `registered:<type>` " +
+          "options only while the operator has not disabled the `registered` rail for the address.",
         tags: ["LN Address"],
         security: [{ bearerAuth: [] }],
         parameters: [
@@ -650,7 +651,8 @@ export const openApiSpec = {
                     items: { $ref: "#/components/schemas/PaymentMethod" },
                     description:
                       "Optional. The owner's own payment methods, each advertised to payers as a `registered:<type>` " +
-                      "payment option and answered with its `destination` exactly as given. The server never " +
+                      "payment option and answered with its `destination` exactly as given, both only while the " +
+                      "operator has not disabled the `registered` rail for the address. The server never " +
                       "interprets, watches or verifies a destination. Omitting the field leaves any registered list " +
                       "alone; a list replaces the stored one whole, and `[]` withdraws every method. At most 8 entries, " +
                       "no two with the same `type`. A list with an invalid entry refuses the whole call with 400 and " +
@@ -871,10 +873,11 @@ export const openApiSpec = {
                         "LUD-XX non-`pr` payment option (e.g. arkade, a token deposit, or a registered method). A registered " +
                         "method answers with `status`, `paymentOption` and `paymentDestination` only (no `paymentURI`, " +
                         "`expiresAt`, `verify` or `verifyBatch`). Nothing is recorded or watched, so the payment never " +
-                        "appears in `GET /lnurl/address/{handle}/payments`. The amount must lie in the domain's sendable " +
-                        "range (the global one where the domain sets none) and be a whole number of satoshis; `unit` and " +
-                        "`receiveUnit` are refused; and the request counts against the callback's per-IP rate limit " +
-                        "(HTTP 429 past it), shared with the arkade, onchain and token options.",
+                        "appears in `GET /lnurl/address/{handle}/payments`. The amount must be a whole number of satoshis " +
+                        "between the domain's `minSendable` and `maxSendable`, each falling back to the global setting where " +
+                        "the domain sets none (a range at least as wide as the top-level pair that an option stating no " +
+                        "bounds inherits); `unit` and `receiveUnit` are refused; and the request counts against the " +
+                        "callback's per-IP rate limit (HTTP 429 past it), shared with the arkade, onchain and token options.",
                       properties: {
                         status: { type: "string", enum: ["OK"] },
                         paymentOption: { type: "string" },
@@ -947,7 +950,7 @@ export const openApiSpec = {
       },
       PaymentMethod: {
         type: "object",
-        description: "A payment method an owner registered on an address, offered to payers as the option `registered:<type>`. A bind carrying any other key is refused.",
+        description: "A payment method an owner registered on an address, offered to payers as the option `registered:<type>` only while the operator has not disabled the `registered` rail for the address. A method entry carrying any other key is refused.",
         properties: {
           type: {
             type: "string",

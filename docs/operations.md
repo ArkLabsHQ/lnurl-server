@@ -22,7 +22,7 @@ A solver can also be listed by pointer — a signed card with its name, `discove
 
 ## Receive rails
 
-`GET /admin/api/rails` shows what the process wired (interactive lightning, offline swap, arkade destination, covenant destinations, onchain boarding address). Each LN address adds its own policy: the admin UI Addresses tab (Rails) or `PATCH /admin/api/addresses/{id}/rails` with `{ "disabledRails": [...] }` disables rails for one address. The payRequest advertises only the surviving rails; a disabled or unavailable rail answers its callbacks with an explicit LNURL error instead of stalling.
+`GET /admin/api/rails` shows what the process wired (interactive lightning, offline swap, arkade destination, covenant destinations, onchain boarding address, token deposits, registered methods). Each LN address adds its own policy: the admin UI Addresses tab (Rails) or `PATCH /admin/api/addresses/{id}/rails` with `{ "disabledRails": [...] }` disables rails for one address. The payRequest advertises only the surviving rails; a disabled or unavailable rail answers its callbacks with an explicit LNURL error instead of stalling.
 
 Server-wide capability is not the whole answer: `onchain` depends on the *address* having registered a boarding address, so two addresses on the same process can legitimately disagree about it. The admin per-address rail view reports that, and it should agree with what the payRequest advertises — if it does not, treat the payRequest as the truth and the disagreement as a bug worth reporting.
 
