@@ -5,6 +5,7 @@ import {
   parsePaymentMethods,
   serializePaymentMethods,
 } from "../src/payment-methods.js";
+import { RAIL_IDS } from "../src/rails.js";
 
 describe("normalizePaymentMethods", () => {
   it("accepts a well-formed list", () => {
@@ -26,6 +27,10 @@ describe("normalizePaymentMethods", () => {
       expect(isReservedMethodType(type)).toBe(true);
       expect(() => normalizePaymentMethods([{ type, destination: "x" }])).toThrow(/reserved/);
     });
+  it.each([...RAIL_IDS])("reserves the rail id %s, so a new rail fails here until it is listed", (id) => {
+    expect(isReservedMethodType(id)).toBe(true);
+    expect(() => normalizePaymentMethods([{ type: id, destination: "x" }])).toThrow(/reserved/);
+  });
   it("refuses a destination that is empty, too long, or not printable ASCII", () => {
     expect(() => normalizePaymentMethods([{ type: "a", destination: "" }])).toThrow(/destination/);
     expect(() => normalizePaymentMethods([{ type: "a", destination: "x".repeat(513) }])).toThrow(/destination/);
@@ -73,6 +78,16 @@ describe("parsePaymentMethods", () => {
       .toEqual([{ type: "a", destination: "x" }]);
     expect(parsePaymentMethods("not json")).toEqual([]);
     expect(parsePaymentMethods(null)).toEqual([]);
+  });
+  it("keeps the first entry of a repeated type", () => {
+    expect(parsePaymentMethods('[{"type":"a","destination":"x"},{"type":"a","destination":"y"}]'))
+      .toEqual([{ type: "a", destination: "x" }]);
+    expect(parsePaymentMethods('[{"type":"a","destination":"x"},{"type":"b","destination":"z"},{"type":"a","destination":"y"}]'))
+      .toEqual([{ type: "a", destination: "x" }, { type: "b", destination: "z" }]);
+  });
+  it("does not let a refused entry claim its type", () => {
+    expect(parsePaymentMethods('[{"type":"a","destination":"has space"},{"type":"a","destination":"y"}]'))
+      .toEqual([{ type: "a", destination: "y" }]);
   });
   it("applies the entry rules of normalizePaymentMethods", () => {
     expect(parsePaymentMethods('[{"type":"arkade","destination":"x"},{"type":"a","destination":"has space"},{"type":"b","destination":"y","extra":1}]'))

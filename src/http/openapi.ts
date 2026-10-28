@@ -957,8 +957,8 @@ export const openApiSpec = {
             pattern: "^[a-z][a-z0-9-]{0,31}$",
             description:
               "The method's name, which becomes the option id `registered:<type>`: 1 to 32 lowercase letters, digits or " +
-              "hyphens, starting with a letter. Refused as reserved: `lightning`, `arkade`, `onchain`, `registered`, " +
-              "`eip155`, `solana`, `tron`.",
+              "hyphens, starting with a letter. Refused as reserved: every rail id (`interactive-lightning`, `offline-swap`, " +
+              "`arkade`, `covenant`, `onchain`, `fixedfloat`, `registered`) and `lightning`, `eip155`, `solana`, `tron`.",
           },
           destination: {
             type: "string",

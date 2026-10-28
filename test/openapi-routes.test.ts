@@ -172,7 +172,7 @@ describe("OpenAPI specs vs rail and payment-method behaviour", () => {
       const documentedAccepts = destination.length <= MAX_DESTINATION_LENGTH && destinationPattern.test(destination);
       expect(documentedAccepts, `destination ${JSON.stringify(destination)}`).toBe(accepts({ type: "ok", destination }));
     }
-    for (const reserved of ["lightning", "arkade", "onchain", "registered", "eip155", "solana", "tron"]) {
+    for (const reserved of [...RAIL_IDS, "lightning", "eip155", "solana", "tron"]) {
       expect(isReservedMethodType(reserved)).toBe(true);
       expect(method.properties.type.description).toContain(`\`${reserved}\``);
     }

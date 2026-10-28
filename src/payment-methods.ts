@@ -10,9 +10,12 @@ export const REGISTERED_OPTION_PREFIX = "registered:";
 const TYPE_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 // Printable ASCII without whitespace: the value is echoed verbatim into public JSON and payer UIs.
 const DESTINATION_PATTERN = /^[\x21-\x7e]+$/;
-// Types a payer already acts on: rail types, token namespaces and the rail id. A method typed
-// like one would be read as the real thing.
-const RESERVED_TYPES: ReadonlySet<string> = new Set(["lightning", "arkade", "onchain", "registered", "eip155", "solana", "tron"]);
+// Every rail id plus the types payers act on, so a method never reads as the real thing. Spelled out
+// because rails.ts imports this module; test/payment-methods.test.ts fails when a rail id is missing.
+const RESERVED_TYPES: ReadonlySet<string> = new Set([
+  "interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat", "registered",
+  "lightning", "eip155", "solana", "tron",
+]);
 
 export function isReservedMethodType(type: string): boolean {
   return RESERVED_TYPES.has(type);
@@ -48,11 +51,17 @@ export function normalizePaymentMethods(value: unknown): PaymentMethod[] {
   return out;
 }
 
-/** Parse the DB JSON column; entries the bind would refuse are dropped, never fatal. */
+/** Parse the DB JSON column; entries the bind would refuse, and repeats of a type, are dropped, never fatal. */
 export function parsePaymentMethods(value: unknown): PaymentMethod[] {
   try {
     const parsed: unknown = typeof value === "string" ? JSON.parse(value) : value;
-    return Array.isArray(parsed) ? parsed.filter((entry): entry is PaymentMethod => entryProblem(entry) === null) : [];
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set<string>();
+    return parsed.filter((entry): entry is PaymentMethod => {
+      if (entryProblem(entry) !== null || seen.has(entry.type)) return false;
+      seen.add(entry.type);
+      return true;
+    });
   } catch {
     return [];
   }
