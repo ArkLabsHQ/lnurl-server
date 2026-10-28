@@ -9,8 +9,8 @@ import { faucet, mine } from "../../../test/e2e/support/regtest.js";
 import {
   CARDS_FILE,
   STATE_DIR,
+  boardingAddressOf,
   forwardPortlessCallbacks,
-  requestOption,
   WALLET_PORT,
   readLocalStack,
   startLnurlServer,
@@ -95,7 +95,7 @@ test.beforeAll(async ({ browser }) => {
   await useLocalStack(payer, stack);
   await forwardPortlessCallbacks(payer, SERVER_PORT);
   const payerName = await onboard(payer, "payusd");
-  const boardingAddress = (await requestOption(stack.lnurlBase, payerName, 1000, "onchain")).paymentDestination!;
+  const boardingAddress = await boardingAddressOf(stack.lnurlBase, payerName);
   await faucet(boardingAddress, "0.001");
   await mine(1);
   await expect
