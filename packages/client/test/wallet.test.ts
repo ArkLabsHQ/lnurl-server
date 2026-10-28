@@ -201,6 +201,29 @@ describe("arkadeLnurl", () => {
     expect(client.resolve).toHaveBeenCalledWith(encodeLnurl("http://127.0.0.1:4283/.well-known/lnurlp/alice"));
   });
 
+  it("builds a lnurl on a domain apart from baseUrl, the only host the server answers it on", async () => {
+    const lnurl = arkadeLnurl({ wallet: fakeWallet(), baseUrl: "https://lnurl.example.com", domain: "Pay.Example", client: fakeClient() });
+
+    const rx = await lnurl.claim({ username: "alice" });
+
+    expect(rx.lnurl).toBe(encodeLnurl("https://pay.example/.well-known/lnurlp/alice"));
+  });
+
+  it("puts a nameless receiver's lnurl and its own payRequest on that domain too", async () => {
+    const client = fakeClient({
+      registerAddress: vi.fn(async () => ({ handle: "SESSIONID", username: null, lightningAddress: null, sessionLnurl: "LNURL1flagged" }) as never),
+    });
+    const lnurl = arkadeLnurl({ wallet: fakeWallet(), baseUrl: "https://lnurl.example.com", domain: "pay.example", client });
+    const session = encodeLnurl(`https://pay.example/lnurl/${deriveSessionId(await lnurl.token())}`);
+
+    const rx = await lnurl.claim({ nameless: true });
+    await rx.payRequest();
+
+    expect(rx.lnurl).toBe(session);
+    expect(await lnurl.sessionLnurl()).toBe(session);
+    expect(client.resolve).toHaveBeenCalledWith(session);
+  });
+
   it("derives the session token once, however often it is asked", async () => {
     const wallet = fakeWallet();
     const signMessage = vi.spyOn(wallet.identity, "signMessage");

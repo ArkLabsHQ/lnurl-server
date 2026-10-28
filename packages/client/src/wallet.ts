@@ -70,7 +70,7 @@ export interface Receiver {
   readonly lightningAddress: string | undefined;
   /** For a QR. The session LNURL when flagged (survives {@link upgrade}), else `.well-known`. */
   readonly lnurl: string;
-  /** Addressed through `baseUrl`, not the LUD-16 domain, which drops the port.
+  /** Fetched from `lnurl`, as a payer would.
    *  One fetch answers every call for 30 s, or until a write through this facade
    *  (`claim`, `upgrade`); `resolve(lnurl)` always asks the server. */
   payRequest(): Promise<PayRequest>;
@@ -193,9 +193,12 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
   // so `upgrade` below carries it through rather than recomputing it. The session
   // id comes from `held`, never from the server's own `sessionLnurl`/`lnurl` bech32:
   // those are built from the LUD-16 domain and would drop `baseUrl`'s port.
-  const sessionLnurlOf = (held: string) => encodeLnurl(`${baseUrl}/lnurl/${deriveSessionId(held)}`);
+  // The server answers an address only on its domain's Host, so `baseUrl` stands in only as that host.
+  const api = new URL(baseUrl);
+  const lnurlBase = api.hostname === domain.toLowerCase() ? baseUrl : `${api.protocol}//${domain.toLowerCase()}`;
+  const sessionLnurlOf = (held: string) => encodeLnurl(`${lnurlBase}/lnurl/${deriveSessionId(held)}`);
   const receiverFrom = (held: string, handle: string, lightningAddress: string | null, flagged: boolean): Receiver => {
-    const lnurl = flagged ? sessionLnurlOf(held) : encodeLnurl(`${baseUrl}/.well-known/lnurlp/${handle}`);
+    const lnurl = flagged ? sessionLnurlOf(held) : encodeLnurl(`${lnurlBase}/.well-known/lnurlp/${handle}`);
     let memo: { at: number; writes: number; pr: Promise<PayRequest> } | undefined;
     return {
       handle,

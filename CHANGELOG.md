@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **`@arkade-os/lnurl-client` 0.9.1: `owned({ handle })` picks the address a wallet uses** — `owned()` returns the active address with that handle when the identity owns one, and otherwise falls back as before, to the session address first. A wallet holding several addresses can keep the one its user chose as primary across restarts.
 
+### Fixed
+- **`@arkade-os/lnurl-client`: an address on a domain apart from `baseUrl` gets LNURLs that resolve** — `receiver.lnurl`, `sessionLnurl()` and `payRequest()` were built on `baseUrl`, but the server answers an address only on its own domain's `Host`. A wallet whose `domain` is not `baseUrl`'s host handed payers a nameless LNURL that answered "This LNURL is no longer active", and a named one that resolved the same username on `baseUrl`'s domain, which may belong to someone else. They now point at `https://<domain>`; with no `domain`, or one equal to `baseUrl`'s host, nothing changes.
+
 ## 0.6.0 - 2026-10-28
 
 ### Added
