@@ -147,8 +147,8 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     if (resolved.kind === "error") throw new LnurlError(resolved.reason);
     // Per-address rail policy: a disabled rail fails loudly instead of serving.
     const railStates = railStatesFor(address, railCaps);
-    if (resolved.kind === "destination" && railStates.get("arkade")?.enabled === false) {
-      throw new LnurlError("paymentOption arkade is disabled for this address");
+    if (resolved.kind === "destination" && railStates.get(resolved.paymentOption)?.enabled === false) {
+      throw new LnurlError(`paymentOption ${resolved.paymentOption} is disabled for this address`);
     }
     if (resolved.kind === "registered" && railStates.get("registered")?.enabled === false) {
       throw new LnurlError(`paymentOption ${resolved.paymentOption} is disabled for this address`);
@@ -232,9 +232,9 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     if (resolved.kind === "destination") {
       // Unauthed store-writing branch — same per-IP guard as the offline-swap branch.
       if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) throw new LnurlError("Too many requests", 429);
-      const arkadeBounds = optionBounds("arkade", railAddress, railCaps, base) ?? base;
-      if (amountMsat < arkadeBounds.min || amountMsat > arkadeBounds.max) {
-        throw new LnurlError(`Amount must be between ${arkadeBounds.min} and ${arkadeBounds.max} millisats`);
+      const bounds = optionBounds(resolved.paymentOption, railAddress, railCaps, base) ?? base;
+      if (amountMsat < bounds.min || amountMsat > bounds.max) {
+        throw new LnurlError(`Amount must be between ${bounds.min} and ${bounds.max} millisats`);
       }
       // LUD-XX (lnurl/luds#303): a non-pr option MUST honor the requested amount
       // exactly and MUST NOT round — a sub-satoshi amount is not exactly
