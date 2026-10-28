@@ -116,6 +116,9 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     if (resolved.kind === "destination" && railStates.get("arkade")?.enabled === false) {
       throw new LnurlError("paymentOption arkade is disabled for this address");
     }
+    if (resolved.kind === "registered" && railStates.get("registered")?.enabled === false) {
+      throw new LnurlError(`paymentOption ${resolved.paymentOption} is disabled for this address`);
+    }
 
     // LUD-XX paymentQuote: a unit-denominated request is quoted to a msat amount by the
     // injected provider. Absent unit ⇒ amount stays msat.
@@ -125,7 +128,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     let quoted: QuotedAmount | undefined;
     if (unit !== undefined || receiveUnit !== undefined) {
       // A token rail quotes its own payment, but only for an amount in millisats.
-      if (resolved.kind === "fixedfloat") throw new LnurlError("unit is not supported for this paymentOption");
+      if (resolved.kind === "fixedfloat" || resolved.kind === "registered") throw new LnurlError("unit is not supported for this paymentOption");
       const q = applyQuote(quoteProvider, { amount: amountMsat, unit, receiveUnit, paymentOption: paymentOptionId?.includes(":") ? "lightning" : paymentOptionId });
       if (!q.ok) throw new LnurlError(q.reason);
       amountMsat = q.amountMsat;
@@ -169,6 +172,14 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
         if (left > 0) tokenQuotesByAddress.set(address.id, left);
         else tokenQuotesByAddress.delete(address.id);
       }
+      return;
+    }
+
+    if (resolved.kind === "registered") {
+      if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) throw new LnurlError("Too many requests", 429);
+      if (amountMsat < base.min || amountMsat > base.max) throw new LnurlError(`Amount must be between ${base.min} and ${base.max} millisats`);
+      if (amountMsat % 1000 !== 0) throw new LnurlError("Amount must be a whole number of satoshis");
+      res.json({ status: "OK", paymentOption: resolved.paymentOption, paymentDestination: resolved.paymentDestination } satisfies LnurlPayDestinationResponse);
       return;
     }
 
