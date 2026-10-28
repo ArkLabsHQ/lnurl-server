@@ -61,4 +61,4 @@ The server builds each callback as `<protocol>://<domain>`, using the protocol o
 | `This LNURL is no longer active` from `/lnurl/<session id>` | The request reached the server under another `Host`. From a wallet, this is often a client older than 0.9.2. |
 | A callback that starts with `http://` | The hop in front of the server reported plain HTTP. Check `X-Forwarded-Proto` and `TRUST_PROXY`. |
 | Cloudflare `Error 1016 Origin DNS error`, or a bare `error code: 502` | Cloudflare ignored the override, so the request went back to the domain itself. Check the override hostname, character for character, and that a zone Worker serves the routes, not a Pages Function. |
-| `401` with `WWW-Authenticate: Basic realm="traefik"` | The proxy's route for the domain carries an authentication middleware, for example one meant for the admin. |
+| `401 Unauthorized` on a lookup | The proxy's route for the domain carries an authentication middleware, for example one meant for the admin. A proxy in front, such as a Worker serving only safe headers, can drop its `WWW-Authenticate`; `curl -k --resolve pay.example:443:<server IP>` asks the server directly. |
