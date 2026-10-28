@@ -512,6 +512,7 @@ export const openApiSpec = {
                   arkadeAddress: { type: "string", nullable: true, description: "Bound Arkade address; null until an identity is bound" },
                   claimPublicKey: { type: "string", nullable: true, description: "Bound claim key; null when arkadeAddress is" },
                   boardingAddress: { type: "string", nullable: true, description: "Bound onchain destination; null when none is registered" },
+                  paymentMethods: { type: "array", items: { $ref: "#/components/schemas/PaymentMethod" }, description: "Methods registered on this address; empty when none" },
                 } }] } },
               },
             },
@@ -619,7 +620,8 @@ export const openApiSpec = {
         description:
           "Sets the Arkade address + claim public key the server uses to quote a solver-mediated " +
           "corridor swap for this address when the wallet is offline. Requires the owning session token. " +
-          "An optional `boardingAddress` registers the `onchain` rail in the same call.",
+          "An optional `boardingAddress` registers the `onchain` rail in the same call, and an optional " +
+          "`methods` list registers the owner's own payment methods, advertised to payers as `registered:<type>` options.",
         tags: ["LN Address"],
         security: [{ bearerAuth: [] }],
         parameters: [
@@ -642,6 +644,18 @@ export const openApiSpec = {
                       "operator's network, which this server does not police. Omitting it leaves any " +
                       "existing one alone.",
                   },
+                  methods: {
+                    type: "array",
+                    maxItems: 8,
+                    items: { $ref: "#/components/schemas/PaymentMethod" },
+                    description:
+                      "Optional. The owner's own payment methods, each advertised to payers as a `registered:<type>` " +
+                      "payment option and answered with its `destination` exactly as given. The server never " +
+                      "interprets, watches or verifies a destination. Omitting the field leaves any registered list " +
+                      "alone; a list replaces the stored one whole, and `[]` withdraws every method. At most 8 entries, " +
+                      "no two with the same `type`. A list with an invalid entry refuses the whole call with 400 and " +
+                      "stores nothing.",
+                  },
                   domain: { type: "string", description: "Target domain (defaults to the Host header)" },
                 },
                 required: ["arkadeAddress", "claimPublicKey"],
@@ -651,7 +665,7 @@ export const openApiSpec = {
         },
         responses: {
           "200": { description: "Identity stored", content: { "application/json": { schema: { type: "object", properties: { ok: { type: "boolean" } } } } } },
-          "400": { description: "Missing arkadeAddress, a non-compressed/invalid claimPublicKey, or a malformed arkadeAddress" },
+          "400": { description: "Missing arkadeAddress, a non-compressed/invalid claimPublicKey, a malformed arkadeAddress, or an invalid `methods` list" },
           "401": { description: "Missing auth token" },
           "404": { description: "Unknown domain, or address not found / not owned by this token" },
         },
@@ -732,13 +746,16 @@ export const openApiSpec = {
                         paymentOptions: {
                           type: "array",
                           description:
-                            "LUD-XX: advertised payment rails; present only when a non-lightning rail (e.g. arkade) is offered. " +
-                            "Token options (ids ff-<code>) always state both minSendable and maxSendable.",
+                            "LUD-XX: advertised payment rails; present only when a non-lightning rail (e.g. arkade, or a registered method) is offered. " +
+                            "Token options (ids ff-<code>) always state both minSendable and maxSendable. " +
+                            "Each method the owner registered is one more option, id `registered:<type>`, after all the others, " +
+                            "present only while the operator has not disabled the `registered` rail for the address. " +
+                            "It states `verifiable: false` and no `caip19Id`, `asset`, `minSendable` or `maxSendable`.",
                           items: {
                             type: "object",
                             properties: {
                               id: { type: "string" },
-                              type: { type: "string", description: "e.g. lightning, arkade, onchain; on a token option the asset's CAIP-2 namespace (eip155, solana, tron)" },
+                              type: { type: "string", description: "e.g. lightning, arkade, onchain; on a token option the asset's CAIP-2 namespace (eip155, solana, tron); on a registered option the owner's own method type" },
                               asset: { type: "string", description: "Token options only: the CAIP-19 asset id, e.g. eip155:42161/erc20:0xfd08…" },
                               unit: { type: "string", description: "Token options only: the `units[]` code the option is quoted in (USDT, USDC)" },
                               provider: {
@@ -761,7 +778,7 @@ export const openApiSpec = {
                                   "Whether callback answers for this rail carry a LUD-21 `verify` URL, so a payer that must " +
                                   "detect settlement can skip a rail without requesting it. Always stated: lightning `true`; " +
                                   "arkade `true` only while per-payment covenant destinations serve it (the static address " +
-                                  "fallback identifies no payment); onchain `false`.",
+                                  "fallback identifies no payment); onchain and registered `false`.",
                               },
                               minSendable: {
                                 type: "number",
@@ -816,8 +833,9 @@ export const openApiSpec = {
           "Requests payment for the address. Default (lightning): returns a bolt11 from the " +
           "wallet's SSE session, or a server-created offline reverse swap, or an error when " +
           "offline. LUD-XX: pass `paymentOption` to select an advertised rail — `arkade` " +
-          "returns an Arkade destination instead of a bolt11, and `onchain` returns the " +
-          "address's registered boarding address. LUD-XX: " +
+          "returns an Arkade destination instead of a bolt11, `onchain` returns the " +
+          "address's registered boarding address, and `registered:<type>` returns the " +
+          "destination the owner registered under that type. LUD-XX: " +
           "`unit`/`receiveUnit` denominate the amount (requires a configured quote provider); " +
           "the response then includes `paymentQuote`.",
         tags: ["LN Address"],
@@ -825,8 +843,8 @@ export const openApiSpec = {
           { name: "username", in: "path", required: true, schema: { type: "string" }, description: "LN address local part" },
           { name: "amount", in: "query", required: true, schema: { type: "number" }, description: "Amount — millisatoshis, or the smallest unit of `unit` when set" },
           { name: "comment", in: "query", required: false, schema: { type: "string" }, description: "Optional payer comment" },
-          { name: "paymentOption", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: selected rail id (`arkade`, `onchain`, or a token option such as `ff-usdtarbitrum`); defaults to lightning" },
-          { name: "unit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: denomination unit (e.g. `USD`); `amount` becomes that unit's smallest integer. Refused on token options, which quote their own payment" },
+          { name: "paymentOption", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: selected rail id (`arkade`, `onchain`, `registered:<type>` for a method the owner registered, or a token option such as `ff-usdtarbitrum`); defaults to lightning" },
+          { name: "unit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: denomination unit (e.g. `USD`); `amount` becomes that unit's smallest integer. Refused on token options, which quote their own payment, and on registered options, which are never priced here" },
           { name: "receiveUnit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: desired receiver unit; the built-in price-feed provider accepts only `msat`" },
         ],
         responses: {
@@ -849,11 +867,18 @@ export const openApiSpec = {
                     },
                     {
                       type: "object",
-                      description: "LUD-XX non-`pr` payment option (e.g. arkade, or a token deposit)",
+                      description:
+                        "LUD-XX non-`pr` payment option (e.g. arkade, a token deposit, or a registered method). A registered " +
+                        "method answers with `status`, `paymentOption` and `paymentDestination` only (no `paymentURI`, " +
+                        "`expiresAt`, `verify` or `verifyBatch`). Nothing is recorded or watched, so the payment never " +
+                        "appears in `GET /lnurl/address/{handle}/payments`. The amount must lie in the domain's sendable " +
+                        "range (the global one where the domain sets none) and be a whole number of satoshis; `unit` and " +
+                        "`receiveUnit` are refused; and the request counts against the callback's per-IP rate limit " +
+                        "(HTTP 429 past it), shared with the arkade, onchain and token options.",
                       properties: {
                         status: { type: "string", enum: ["OK"] },
                         paymentOption: { type: "string" },
-                        paymentDestination: { type: "string", description: "Rail destination, e.g. an Arkade address, or the provider's deposit address on a token option" },
+                        paymentDestination: { type: "string", description: "Rail destination, e.g. an Arkade address, or the provider's deposit address on a token option; on a registered method, the destination the owner registered, verbatim" },
                         paymentQuote: {
                           $ref: "#/components/schemas/PaymentQuote",
                           description:
@@ -870,7 +895,7 @@ export const openApiSpec = {
                             "one exists. NOT a deadline on the money: past it a payment still reaches the destination, " +
                             "and on the covenant rail the sweeper still moves it — what lapses is the record, so verify " +
                             "stops answering and the payment leaves no trace in the address's history. Absent on rails " +
-                            "nothing here watches, such as onchain boarding, and on token options, whose deadline is " +
+                            "nothing here watches, such as onchain boarding and registered methods, and on token options, whose deadline is " +
                             "paymentQuote.expiresAt.",
                         },
                         paymentURI: {
@@ -919,6 +944,31 @@ export const openApiSpec = {
           sessionLnurl: { type: "string", nullable: true, description: "The session LNURL string when this row is also served at /lnurl/<sessionId>, else null" },
         },
         required: ["lightningAddress", "lnurl", "username", "handle", "domain", "status", "nameless", "sessionLnurl"],
+      },
+      PaymentMethod: {
+        type: "object",
+        description: "A payment method an owner registered on an address, offered to payers as the option `registered:<type>`. A bind carrying any other key is refused.",
+        properties: {
+          type: {
+            type: "string",
+            pattern: "^[a-z][a-z0-9-]{0,31}$",
+            description:
+              "The method's name, which becomes the option id `registered:<type>`: 1 to 32 lowercase letters, digits or " +
+              "hyphens, starting with a letter. Refused as reserved: `lightning`, `arkade`, `onchain`, `registered`, " +
+              "`eip155`, `solana`, `tron`.",
+          },
+          destination: {
+            type: "string",
+            minLength: 1,
+            maxLength: 512,
+            pattern: "^[\\x21-\\x7e]+$",
+            description:
+              "Handed to the payer verbatim as `paymentDestination`, in whatever form the method defines; the server " +
+              "does not parse it. Printable ASCII without whitespace or control characters.",
+          },
+        },
+        required: ["type", "destination"],
+        additionalProperties: false,
       },
       AmountObject: {
         type: "object",
