@@ -101,10 +101,10 @@ export interface ArkadeLnurl {
    *  the identity. Until the bind lands the address advertises no
    *  `paymentOptions` at all, so offline receive does not exist. */
   claim(opts?: ClaimOptions, ctl?: AbortOptions): Promise<Receiver>;
-  /** The active address this identity owns on {@link domain}, the session one first. `refresh`
-   *  first re-binds this facade's destinations and methods wherever the list shows them bound elsewhere.
-   *  `claim`, `owned` and `upgrade` run one at a time per identity object and server. */
-  owned(opts?: AbortOptions & { refresh?: boolean }): Promise<Receiver | undefined>;
+  /** The active address this identity owns on {@link domain}: `handle`'s when it is one of them, else the
+   *  session one first. `refresh` first re-binds this facade's destinations and methods wherever the list
+   *  shows them bound elsewhere. `claim`, `owned` and `upgrade` run one at a time per identity object and server. */
+  owned(opts?: AbortOptions & { refresh?: boolean; handle?: string }): Promise<Receiver | undefined>;
   router(): LnurlPaymentRouter;
   /** `amount` is sats, or an amount in one of the target's `units`, e.g. `{ unit: "USD", amount: 500 }`. */
   options(target: string, amount: number | UnitAmount, prefs?: RouterPreferences): Promise<PaymentOption[]>;
@@ -230,7 +230,7 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
     sessionLnurl: async () => sessionLnurlOf(await token()),
     capabilities: () => client.domainCapabilities({ domain }),
     addresses: async () => onDomain(await token()),
-    owned: ({ signal, refresh } = {}) => ordered(async () => {
+    owned: ({ signal, refresh, handle } = {}) => ordered(async () => {
       live(signal);
       const held = await token();
       live(signal);
@@ -248,7 +248,7 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
       }
       live(signal);
       if (refused.length) throw refused[0];
-      const chosen = active.find((a) => a.sessionLnurl !== null) ?? active[0];
+      const chosen = active.find((a) => a.handle === handle) ?? active.find((a) => a.sessionLnurl !== null) ?? active[0];
       return chosen ? receiverFrom(held, chosen.handle, chosen.lightningAddress, chosen.sessionLnurl !== null) : undefined;
     }),
     claim: (claimOpts, { signal } = {}) => ordered(async () => {

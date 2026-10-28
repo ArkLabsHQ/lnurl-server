@@ -40,7 +40,7 @@ const handle = await (await best.quote()).send()
 | --- | --- |
 | what this domain allows | `capabilities()` |
 | the LUD-16 domain it works on | `domain` |
-| the active address this wallet already owns here | `owned({ refresh?, signal? })` |
+| the active address this wallet already owns here, `handle`'s if it is one | `owned({ refresh?, handle?, signal? })` |
 | every address it owns here, revoked ones too, for display | `addresses()` |
 | claim a name (or none) and bind the identity | `claim(opts?, { signal? })` |
 | the LNURL a nameless claim will serve, before it lands | `sessionLnurl()` |
