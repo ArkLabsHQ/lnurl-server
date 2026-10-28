@@ -7,6 +7,7 @@ import {
   registerArkadeIdentity,
   upgradeAddress,
   domainCapabilities,
+  type PaymentMethod,
 } from "../src/addresses.js";
 import { LnurlError } from "../src/errors.js";
 
@@ -164,6 +165,29 @@ describe("registerArkadeIdentity", () => {
       token: "tok", handle: "alice", arkadeAddress: "ark1qqq", claimPublicKey: "02" + "ab".repeat(32),
     }, fetchImpl as never);
     expect("boardingAddress" in body).toBe(false);
+  });
+
+  const bindBody = async (extra: { methods?: PaymentMethod[] }) => {
+    let body: Record<string, unknown> = {};
+    const fetchImpl = async (_u: string, init?: RequestInit) => { body = JSON.parse(String(init?.body)); return json({ ok: true }); };
+    await registerArkadeIdentity("https://x", {
+      token: "tok", handle: "alice", arkadeAddress: "ark1qqq", claimPublicKey: "02" + "ab".repeat(32), ...extra,
+    }, fetchImpl as never);
+    return body;
+  };
+  const METHOD = { type: "shielded", destination: "shrol21abc" };
+
+  it("sends the registered methods when given", async () => {
+    expect((await bindBody({ methods: [METHOD] })).methods).toEqual([METHOD]);
+  });
+
+  it("omits methods entirely when none are given", async () => {
+    expect("methods" in (await bindBody({}))).toBe(false);
+  });
+
+  // Absent leaves the registered list alone server-side; an empty list withdraws it.
+  it("sends an empty list as given", async () => {
+    expect((await bindBody({ methods: [] })).methods).toEqual([]);
   });
 });
 describe("listPayments", () => {

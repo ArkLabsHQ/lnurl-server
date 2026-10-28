@@ -82,4 +82,12 @@ describe("arkadeIdentityRequest", () => {
     });
     expect("boardingAddress" in (await arkadeIdentityRequest(base))).toBe(false);
   });
+
+  it("passes registered methods through, an empty list too, and omits the key without any", async () => {
+    const base = { identity, arkadeAddress: ARKADE_ADDRESS, token: "tok", handle: "alice" };
+    const methods = [{ type: "shielded", destination: "shrol21abc" }];
+    await expect(arkadeIdentityRequest({ ...base, methods })).resolves.toMatchObject({ methods });
+    await expect(arkadeIdentityRequest({ ...base, methods: [] })).resolves.toMatchObject({ methods: [] });
+    expect("methods" in (await arkadeIdentityRequest(base))).toBe(false);
+  });
 });

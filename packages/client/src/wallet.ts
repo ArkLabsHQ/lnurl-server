@@ -8,7 +8,7 @@ import { createLnurlClient, type LnurlClient } from "./index.js";
 import { PAY_REQUEST_TTL_MS, type LnurlPaymentRequest } from "./rail.js";
 import { deriveSessionId } from "./token.js";
 import { syncPayments, type PaymentSyncStore, type StoredPayment } from "./sync.js";
-import type { AddressListEntry, DomainCapabilities } from "./addresses.js";
+import type { AddressListEntry, DomainCapabilities, PaymentMethod } from "./addresses.js";
 import type { PayRequest, PaymentPage, UnitAmount } from "./types.js";
 import { arkadePaymentRouter } from "./sdk-adapter.js";
 
@@ -48,6 +48,9 @@ export interface ArkadeLnurlConfig {
   store?: PaymentSyncStore;
   lightningRail?: PaymentRail;
   client?: LnurlClient;
+  /** Replaces the registered list on every bind and is kept in step by `owned({ refresh })`. Omitted,
+   *  the server's list is never touched; `[]` withdraws every method. */
+  methods?: PaymentMethod[];
 }
 
 /** A claim code is checked only against the reserved name it unlocks, so it never travels alone. */
@@ -100,7 +103,7 @@ export interface ArkadeLnurl {
    *  `paymentOptions` at all, so offline receive does not exist. */
   claim(opts?: ClaimOptions, ctl?: AbortOptions): Promise<Receiver>;
   /** The active address this identity owns on {@link domain}, the session one first. `refresh`
-   *  first re-binds this facade's destinations wherever the list shows them bound elsewhere.
+   *  first re-binds this facade's destinations and methods wherever the list shows them bound elsewhere.
    *  `claim`, `owned` and `upgrade` run one at a time per identity object and server. */
   owned(opts?: AbortOptions & { refresh?: boolean }): Promise<Receiver | undefined>;
   router(): LnurlPaymentRouter;
@@ -130,10 +133,21 @@ const live = (signal?: AbortSignal): void => {
   if (signal?.aborted) throw signal.reason ?? new LnurlError("Aborted");
 };
 
-// No local boarding address is no mismatch (the server keeps its own); an older server lists none: never bound.
-const isBoundTo = (a: AddressListEntry, to: { arkadeAddress: string; claimPublicKey: string; boardingAddress?: string }) =>
+const methodKeys = (methods: PaymentMethod[]) => methods.map((m) => JSON.stringify([m.type, m.destination])).sort();
+const sameMethods = (listed: PaymentMethod[] | null | undefined, wanted: PaymentMethod[]) => {
+  if (!Array.isArray(listed)) return false;
+  const have = methodKeys(listed), want = methodKeys(wanted);
+  return have.length === want.length && have.every((key, i) => key === want[i]);
+};
+
+// No local boarding address or methods is no mismatch (the server keeps its own); an older server lists none: never bound.
+const isBoundTo = (
+  a: AddressListEntry,
+  to: { arkadeAddress: string; claimPublicKey: string; boardingAddress?: string; methods?: PaymentMethod[] },
+) =>
   a.arkadeAddress === to.arkadeAddress && a.claimPublicKey === to.claimPublicKey
-  && (to.boardingAddress === undefined || a.boardingAddress === to.boardingAddress);
+  && (to.boardingAddress === undefined || a.boardingAddress === to.boardingAddress)
+  && (to.methods === undefined || sameMethods(a.paymentMethods, to.methods));
 
 export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
   const { wallet, baseUrl } = opts;
@@ -141,9 +155,10 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
   const identity = wallet ? wallet.identity : opts.identity;
   const ordered = <T>(action: () => Promise<T>) =>
     oneAtATime(identity, `${baseUrl.replace(/\/+$/, "")}|${domain.toLowerCase()}`, action);
-  const destinations = async (): Promise<{ arkadeAddress: string; boardingAddress?: string }> => {
-    if (wallet) return { arkadeAddress: await wallet.getAddress(), boardingAddress: await wallet.getBoardingAddress() };
-    return { arkadeAddress: opts.arkadeAddress, ...(opts.boardingAddress ? { boardingAddress: opts.boardingAddress } : {}) };
+  const destinations = async (): Promise<{ arkadeAddress: string; boardingAddress?: string; methods?: PaymentMethod[] }> => {
+    const methods = opts.methods !== undefined ? { methods: opts.methods } : {};
+    if (wallet) return { arkadeAddress: await wallet.getAddress(), boardingAddress: await wallet.getBoardingAddress(), ...methods };
+    return { arkadeAddress: opts.arkadeAddress, ...(opts.boardingAddress ? { boardingAddress: opts.boardingAddress } : {}), ...methods };
   };
   const client = opts.client ?? createLnurlClient({ baseUrl });
   // A client per target, never this one: a client is pinned to one baseUrl, so

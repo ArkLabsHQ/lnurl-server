@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- **Registered payment methods** — an owner can register wallet-defined destinations on an address and a payer can fetch one. `POST /lnurl/address/{handle}/arkade` takes an optional `methods: [{ type, destination }]` (at most 8; omitted leaves the list alone, `[]` withdraws it) and `GET /lnurl/address` lists them as `paymentMethods`. Each is advertised in `paymentOptions` as `registered:<type>` and answered with its destination verbatim; the server never interprets, watches or verifies it. `@arkade-os/lnurl-client` 0.9.0 sends and reads both fields (`methods` on `registerArkadeIdentity`, `arkadeIdentityRequest` and `arkadeLnurl({ methods })`, `paymentMethods` on `AddressListEntry`, and the `PaymentMethod` type), and `owned({ refresh: true })` re-binds an alias whose listed methods differ from the facade's, compared by type and destination in any order. A facade given no `methods` never touches the list. A server older than this release ignores `methods` and lists no `paymentMethods`, so a facade that sets `methods` re-binds on every `refresh` against it, as it already does for `boardingAddress`.
+
 ### Security
 - **`body-parser` 2.4.0 and `qs` 6.17.0** — `pnpm.overrides` lifts both past the advisories `pnpm audit` now reports through `express`: GHSA-27r3-jxmh-p828 (high, a compressed request body with trailing bytes ties up the parser) and GHSA-6pq8-jhm2-2vcw (moderate, `qs.stringify` with `arrayFormat: 'comma'`).
 - **Docker image runs Node.js 22.23.4** — the base image is pinned to `node:22.23.4-slim`, the October 2026 security release (Brotli decoder out-of-bounds write, TLS hostname-check bypasses, `dns.resolve` NUL truncation, HTTP keep-alive response confusion; undici 6.29.1, OpenSSL 3.5.9). Pinning keeps a builder's cached `22-slim` from shipping the unpatched runtime.

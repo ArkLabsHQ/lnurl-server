@@ -6,12 +6,15 @@ import { arkadeLnurl, arkadePaymentRouter, DEFAULT_RAIL_PRIORITY, encodeLnurl, t
 import { deriveSessionId } from "../src/token.js";
 import { createLnurlClient, type LnurlClient } from "../src/index.js";
 import { LnurlError } from "../src/errors.js";
+import type { PaymentMethod } from "../src/addresses.js";
 import { PAY_REQUEST_TTL_MS } from "../src/rail.js";
 
 const PRIVATE_KEY = "22".repeat(32);
 const ARKADE_ADDRESS =
   "tark1qpf3lesxsy69q0f8yvfnyf7gv7kglfkg83fhaxjyc0zmm0wtrl3n024rshrsa8fnnv73w38094qfl9jp5g7pzdc8j2m58metfpd8rcd37nqs45";
 const BOARDING = "tb1qexample";
+const METHOD = { type: "shielded", destination: "shrol21abc" };
+const OTHER = { type: "nostr", destination: "npub1abc" };
 
 /** Only the members the facade touches; `router()` is the one path needing more. */
 const fakeWallet = () => ({
@@ -283,6 +286,25 @@ describe("arkadeLnurl", () => {
     );
   });
 
+  it.each(["a wallet", "an identity and an address"])("claims with %s binding the configured methods", async (source) => {
+    const client = fakeClient();
+    const holder = source === "a wallet" ? { wallet: fakeWallet() } : { identity: fakeWallet().identity, arkadeAddress: ARKADE_ADDRESS };
+
+    await arkadeLnurl({ ...holder, baseUrl: "https://lnurl.example.com", client, methods: [METHOD] }).claim({ username: "alice" });
+
+    expect(client.registerArkadeIdentity).toHaveBeenCalledWith(expect.objectContaining({ methods: [METHOD] }));
+  });
+
+  it("claims without methods unless some are configured, and an empty list counts as configured", async () => {
+    const plain = fakeClient();
+    await arkadeLnurl({ wallet: fakeWallet(), baseUrl: "https://lnurl.example.com", client: plain }).claim({ username: "alice" });
+    expect(plain.registerArkadeIdentity).toHaveBeenCalledWith(expect.not.objectContaining({ methods: expect.anything() }));
+
+    const emptied = fakeClient();
+    await arkadeLnurl({ wallet: fakeWallet(), baseUrl: "https://lnurl.example.com", client: emptied, methods: [] }).claim({ username: "alice" });
+    expect(emptied.registerArkadeIdentity).toHaveBeenCalledWith(expect.objectContaining({ methods: [] }));
+  });
+
   it("says a wallet is needed before it fails somewhere obscure", () => {
     const lnurl = arkadeLnurl({
       identity: fakeWallet().identity,
@@ -424,6 +446,53 @@ describe("arkadeLnurl receiver discovery", () => {
 
     expect(rebound(client)).toEqual(["moved"]);
     expect(client.registerArkadeIdentity).toHaveBeenCalledWith(expect.not.objectContaining({ boardingAddress: expect.anything() }));
+  });
+
+  const refreshed = async (extra: Record<string, unknown>, methods?: PaymentMethod[]) => {
+    const client = fakeClient({ listAddresses: vi.fn(async () => [row("alice", { ...boundTo(ARKADE_ADDRESS), ...extra })]) as never });
+    await arkadeLnurl({ wallet: fakeWallet(), baseUrl: BASE, client, ...(methods ? { methods } : {}) }).owned({ refresh: true });
+    return client;
+  };
+
+  it.each([
+    ["methods are added", [], [METHOD]],
+    ["a method is added", [METHOD], [METHOD, OTHER]],
+    ["a method is dropped", [METHOD, OTHER], [METHOD]],
+    ["every method is withdrawn", [METHOD], []],
+    ["a method changes type", [{ ...METHOD, type: OTHER.type }], [METHOD]],
+    ["a destination changes", [{ ...METHOD, destination: "shrol21xyz" }], [METHOD]],
+    ["a duplicate stands in for a method", [METHOD, OTHER], [METHOD, METHOD]],
+  ])("owned({ refresh }) re-binds an alias whose registered methods drifted: %s", async (_drift, listed, wanted) => {
+    expect(rebound(await refreshed({ paymentMethods: listed }, wanted))).toEqual(["alice"]);
+  });
+
+  it("owned({ refresh }) leaves an alias alone when its methods already match", async () => {
+    expect(rebound(await refreshed({ paymentMethods: [METHOD] }, [METHOD]))).toEqual([]);
+    expect(rebound(await refreshed({ paymentMethods: [] }, []))).toEqual([]);
+  });
+
+  it("compares registered methods by type and destination, whatever the order of the list or of a method's keys", async () => {
+    expect(rebound(await refreshed({ paymentMethods: [OTHER, METHOD] }, [METHOD, OTHER]))).toEqual([]);
+    const reordered = { destination: METHOD.destination, label: "ignored", type: METHOD.type };
+    expect(rebound(await refreshed({ paymentMethods: [reordered] }, [METHOD]))).toEqual([]);
+  });
+
+  it("owned({ refresh }) never re-binds over the server's methods for a caller that supplies none", async () => {
+    expect(rebound(await refreshed({ paymentMethods: [METHOD] }))).toEqual([]);
+    expect(rebound(await refreshed({ paymentMethods: [] }))).toEqual([]);
+  });
+
+  it.each([
+    ["omits the field", {}],
+    ["lists null", { paymentMethods: null }],
+  ])("owned({ refresh }) re-binds an alias when the server %s and methods are wanted, even an empty list", async (_listing, extra) => {
+    expect(rebound(await refreshed(extra, [METHOD]))).toEqual(["alice"]);
+    expect(rebound(await refreshed(extra, []))).toEqual(["alice"]);
+  });
+
+  it("owned({ refresh }) sends the configured methods on the re-bind", async () => {
+    const client = await refreshed({ paymentMethods: [] }, [METHOD, OTHER]);
+    expect(client.registerArkadeIdentity).toHaveBeenCalledWith(expect.objectContaining({ handle: "alice", methods: [METHOD, OTHER] }));
   });
 
   it("owned({ refresh }) re-binds the other aliases when one is refused, then fails closed", async () => {
