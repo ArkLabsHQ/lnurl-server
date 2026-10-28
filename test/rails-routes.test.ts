@@ -6,6 +6,7 @@ import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
 import type { OfflineSwapCreator } from "../src/services/offline-swaps.js";
 import type { CovenantDestinationProvider } from "../src/covenant/destination.js";
+import type { RailId } from "../src/rails.js";
 import type { LnurlServiceConfig } from "../src/types/index.js";
 
 const CONFIG: LnurlServiceConfig = { port: 0, baseUrl: "", minSendable: 1000, maxSendable: 100_000_000, invoiceTimeoutMs: 3000 };
@@ -56,6 +57,17 @@ function sessionlessIdentity(username: string) {
   return repos.addresses.getById(a.id)!;
 }
 
+const BOARDING = "tb1qboardingexample";
+
+function boardingIdentity(username: string, disabledRails: RailId[]) {
+  const a = sessionlessIdentity(username);
+  repos.addresses.setBoardingAddress(a.id, BOARDING);
+  repos.addresses.setDisabledRails(a.id, disabledRails);
+}
+
+const callback = (username: string, query: string) =>
+  getJson(`${ctx.baseUrl}/.well-known/lnurlp/${username}/callback?${query}`, "domain.com");
+
 describe("per-address rail policy", () => {
   it("omits a disabled arkade rail from the payRequest", async () => {
     const a = sessionlessIdentity("alice");
@@ -71,6 +83,36 @@ describe("per-address rail policy", () => {
     await withServer();
     const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000&paymentOption=arkade`, "domain.com");
     expect(cb).toMatchObject({ status: "ERROR", reason: "paymentOption arkade is disabled for this address" });
+  });
+
+  it("serves onchain when only arkade is disabled for the address", async () => {
+    boardingIdentity("alice", ["arkade"]);
+    await withServer();
+    expect(await callback("alice", "amount=50000&paymentOption=onchain"))
+      .toMatchObject({ status: "OK", paymentOption: "onchain", paymentDestination: BOARDING });
+  });
+
+  it("rejects paymentOption=onchain when that rail is disabled and arkade is not", async () => {
+    boardingIdentity("alice", ["onchain"]);
+    await withServer();
+    expect(await callback("alice", "amount=50000&paymentOption=onchain"))
+      .toMatchObject({ status: "ERROR", reason: "paymentOption onchain is disabled for this address" });
+  });
+
+  it("still rejects paymentOption=arkade with the arkade message while onchain is enabled", async () => {
+    boardingIdentity("alice", ["arkade"]);
+    await withServer();
+    expect(await callback("alice", "amount=50000&paymentOption=arkade"))
+      .toMatchObject({ status: "ERROR", reason: "paymentOption arkade is disabled for this address" });
+  });
+
+  it("holds an onchain amount to the onchain bounds, not arkade's", async () => {
+    boardingIdentity("alice", []);
+    // 5000 sat clears arkade's dust floor but not the 10000 sat onchain floor.
+    await withServer({ onchainMinSat: 10_000 });
+    expect(await callback("alice", "amount=5000000&paymentOption=arkade")).toMatchObject({ status: "OK", paymentOption: "arkade" });
+    expect(await callback("alice", "amount=5000000&paymentOption=onchain"))
+      .toMatchObject({ status: "ERROR", reason: "Amount must be between 10000000 and 100000000 millisats" });
   });
 
   it("fails loudly (not silently) when discovery is down while staying up", async () => {
