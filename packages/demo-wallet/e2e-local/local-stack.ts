@@ -181,7 +181,7 @@ export async function requestOption(
 }
 
 /** The boarding address the `onchain` rail hands out — this wallet's funding path. */
-export async function boardingAddressOf(base: string, username: string, sats = 1000): Promise<string> {
+export async function boardingAddressOf(base: string, username: string, sats = 100_000): Promise<string> {
   const { paymentDestination } = await requestOption(base, username, sats, "onchain");
   if (!paymentDestination) throw new Error("onchain rail returned no destination");
   return paymentDestination;
