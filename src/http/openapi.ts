@@ -202,6 +202,7 @@ export const openApiSpec = {
                         maxSendable: { type: "number" },
                         metadata: { type: "string" },
                         commentAllowed: { type: "number" },
+                        receiveAmountAllowed: { type: "boolean", description: "LUD-XX: the callback takes `receiveAmount`; present only while an offline swap can serve this address" },
                         units: { type: "array", description: "LUD-XX: quotable units, present when a quote provider is configured (same shape as the LN-address `units`)", items: { type: "object" } },
                       },
                     },
@@ -255,6 +256,7 @@ export const openApiSpec = {
           },
           { name: "unit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: denomination unit (e.g. `USD`); requires a configured quote provider" },
           { name: "receiveUnit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: desired receiver unit; the built-in price-feed provider accepts only `msat`" },
+          { name: "receiveAmount", in: "query", required: false, schema: { type: "number" }, description: "LUD-XX: what the receiver nets, in millisats of whole sats; `amount` becomes the payer's ceiling. Offline swap only, where the payRequest has `receiveAmountAllowed`; refused with `unit` or a non-lightning `paymentOption`" },
         ],
         responses: {
           "200": {
@@ -732,6 +734,7 @@ export const openApiSpec = {
                         maxSendable: { type: "number" },
                         metadata: { type: "string" },
                         commentAllowed: { type: "number" },
+                        receiveAmountAllowed: { type: "boolean", description: "LUD-XX: the callback takes `receiveAmount`; present only while an offline swap can serve this address" },
                         paymentOptions: {
                           type: "array",
                           description:
@@ -831,6 +834,7 @@ export const openApiSpec = {
           { name: "paymentOption", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: selected rail id (`arkade`, `onchain`, or a token option such as `ff-usdtarbitrum`); defaults to lightning" },
           { name: "unit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: denomination unit (e.g. `USD`); `amount` becomes that unit's smallest integer. Refused on token options, which quote their own payment" },
           { name: "receiveUnit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: desired receiver unit; the built-in price-feed provider accepts only `msat`" },
+          { name: "receiveAmount", in: "query", required: false, schema: { type: "number" }, description: "LUD-XX: what the receiver nets, in millisats of whole sats; `amount` becomes the payer's ceiling. Offline swap only, where the payRequest has `receiveAmountAllowed`; refused with `unit` or a non-lightning `paymentOption`" },
         ],
         responses: {
           "200": {

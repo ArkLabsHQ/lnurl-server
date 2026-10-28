@@ -320,6 +320,22 @@ Each quoted payment records what was asked, so history can show it: the owner's 
 
 > Quoting applies to the Lightning path (relay + offline swap) and the `arkade`/`onchain` destination rails; token-deposit rails reject `unit`, since they quote their own payment. No spread is added: the payer pays the feed's mid price.
 
+### Receive amount
+
+A unit fixes what the payer pays. To fix what the receiver nets instead, the payer adds `receiveAmount` (millisats of whole sats), and `amount` becomes the most it will pay:
+
+```http
+GET /.well-known/lnurlp/alice/callback?amount=1100000&receiveAmount=1000000
+```
+
+Only the offline swap can price this, so a payRequest offers it as `"receiveAmountAllowed": true` while that rail can serve the address: a static Arkade identity, the rail enabled, discovery ready. It takes the offline swap even while the owner's wallet is connected, and is refused with `unit`, `receiveUnit` or a non-lightning `paymentOption`. The solver's fee rides on top, and the answer splits the invoice:
+
+```json
+{ "pr": "lnbc...", "routes": [], "verify": "...", "verifyBatch": "...", "paymentQuote": { "requested": { "amount": "1000000", "unit": "msat" }, "payment": { "amount": "1053000", "unit": "msat" }, "receive": { "amount": "1000000", "unit": "msat" }, "fees": [{ "name": "solver", "amount": { "amount": "53000", "unit": "msat" } }] } }
+```
+
+Pay only an invoice for exactly `paymentQuote.payment`, no more than `amount`, whose `receive` is what you asked for. A server that does not know `receiveAmount` ignores it and invoices plain `amount` with no `receive`: stop there. The client's `requestInvoice({ amountSat, receiveAmountSat })` makes these checks. History records the invoice amount, as for any offline-swap receive. A unified BIP21 can carry the receive amount as its `amount` and this invoice as its `lightning` leg.
+
 ## Admin backend — port 3001
 
 When `DB_PATH` is set an admin backend starts on `ADMIN_PORT` (default `3001`), bound to `ADMIN_BIND` (default `127.0.0.1` for the CLI).

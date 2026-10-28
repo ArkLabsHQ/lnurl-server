@@ -95,6 +95,8 @@ export interface PayRequest {
   commentAllowed?: number;
   paymentOptions?: PaymentOption[];
   units?: Unit[];
+  /** LUD-XX: the callback takes `receiveAmount`, what the receiver nets, with `amount` as the payer's ceiling. */
+  receiveAmountAllowed?: boolean;
   /** Where this payRequest came from; drives the rail guards downstream. */
   source: { url: string; surface: "address" | "session" };
 }
@@ -110,8 +112,10 @@ export type RequestInvoiceOptions = {
   paymentOption?: string;
 } & (
   | {
-      /** Amount to pay in sats; converted to millisats on the wire. */
+      /** Amount to pay in sats; converted to millisats on the wire. The most to pay, with `receiveAmountSat`. */
       amountSat: number;
+      /** What the receiver must net, in sats, where the payRequest has `receiveAmountAllowed`. */
+      receiveAmountSat?: number;
       unit?: undefined;
       amount?: undefined;
     }
@@ -121,6 +125,7 @@ export type RequestInvoiceOptions = {
       /** In the unit's smallest denomination: `500` is $5.00 in a 2-decimal USD. */
       amount: number;
       amountSat?: undefined;
+      receiveAmountSat?: undefined;
     }
 );
 /**

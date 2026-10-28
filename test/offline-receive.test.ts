@@ -1,7 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import http from "node:http";
 import { randomBytes } from "node:crypto";
 import { bech32 } from "@scure/base";
+import { buildInvoice as buildInvoiceWithHrp } from "./helpers/bolt11.js";
+import { invoiceFactsFromBolt11 } from "../src/bolt11.js";
 import { ArkAddress } from "@arkade-os/sdk";
 import { createServer } from "../src/http/server.js";
 import { openDb, type Db } from "../src/db/connection.js";
@@ -22,25 +24,26 @@ const TOKEN = "cd".repeat(32);
 const RECEIVE = new ArkAddress(new Uint8Array(32), new Uint8Array(32), "tark").encode();
 const CLAIM_PUBKEY = "02" + "ab".repeat(32);
 
-function buildInvoice(paymentHashHex: string): string {
+function buildInvoice(paymentHashHex: string, amountSat?: number): string {
   const words: number[] = [];
   for (let i = 0; i < 7; i++) words.push(0);
   const hw = bech32.toWords(Uint8Array.from(Buffer.from(paymentHashHex, "hex")));
   words.push(1, 52 >> 5, 52 & 31, ...hw);
   for (let i = 0; i < 104; i++) words.push(0);
-  return bech32.encode("lnbc", words, 2000);
+  return bech32.encode(amountSat === undefined ? "lnbc" : `lnbc${amountSat * 10000}p`, words, 2000);
 }
 
 /** Deterministic in-memory offline-swap creator for tests. */
 class FakeCreator implements OfflineSwapCreator {
   created: OfflineSwapParams[] = [];
   settledIds = new Set<string>();
+  release = vi.fn(async (_swapId: string) => {});
   constructor(private hashHex: string) {}
   async create(params: OfflineSwapParams): Promise<OfflineSwapResult> {
     this.created.push(params);
     return {
       swapId: "swap-1",
-      invoice: buildInvoice(this.hashHex),
+      invoice: buildInvoice(this.hashHex, params.amountSide === "to" ? params.amountSat + 1 : undefined),
       preimage: "11".repeat(32),
       preimageHash: this.hashHex,
       lockupAddress: RECEIVE,
@@ -80,6 +83,18 @@ function start(repos: Repositories, creator?: OfflineSwapCreator, settlements?: 
   });
 }
 
+function openSse(baseUrl: string, token: string) {
+  return new Promise<{ abort: () => void }>((resolve, reject) => {
+    const r = http.request(`${baseUrl}/lnurl/session`, { method: "POST", headers: { "Content-Type": "application/json" } });
+    r.on("response", (res) => {
+      let buf = "";
+      res.on("data", (c: Buffer) => { buf += c.toString(); if (buf.includes("session_created")) resolve({ abort: () => { res.destroy(); r.destroy(); } }); });
+      res.on("error", reject);
+    });
+    r.on("error", reject); r.write(JSON.stringify({ token })); r.end();
+  });
+}
+
 function req(url: string, method: string, host: string, body?: unknown, token?: string) {
   return new Promise<{ status: number; body: Record<string, unknown> }>((resolve, reject) => {
     const headers: Record<string, string> = { "Content-Type": "application/json", Host: host };
@@ -96,7 +111,7 @@ let addressId: number;
 
 beforeEach(() => {
   db = openDb(":memory:"); runMigrations(db); repos = createRepositories(db);
-  const domainId = repos.domains.create({ domain: "domain.com", allocationModes: ["self"] }).id;
+  const domainId = repos.domains.create({ domain: "domain.com", allocationModes: ["self", "session"] }).id;
   addressId = repos.addresses.create({
     domainId, username: "off", status: "active",
     sessionId: deriveSessionId(TOKEN), encryptedToken: encryptToken(TOKEN, KEY),
@@ -136,6 +151,173 @@ describe("offline receive", () => {
     // verify is registered but not yet settled (poller hasn't run)
     const v = await req(`${ctx.baseUrl}/lnurl/verify/${hash}`, "GET", "domain.com");
     expect(v.body).toMatchObject({ status: "OK", settled: false, preimage: null });
+  });
+
+  it("advertises receiveAmountAllowed only where an offline swap can serve", async () => {
+    ctx = await start(repos, new FakeCreator("ca".repeat(32)), new MemorySettlementStore(60_000));
+    const payRequest = async () => (await req(`${ctx.baseUrl}/.well-known/lnurlp/off`, "GET", "domain.com")).body;
+    expect(await payRequest()).not.toHaveProperty("receiveAmountAllowed");
+    repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
+    expect(await payRequest()).toMatchObject({ receiveAmountAllowed: true });
+    db.prepare("UPDATE addresses SET disabled_rails = ? WHERE id = ?").run(JSON.stringify(["offline-swap"]), addressId);
+    expect(await payRequest()).not.toHaveProperty("receiveAmountAllowed");
+  });
+
+  it("prices a receive amount on the callback without owner credentials and records the invoice amount", async () => {
+    const hash = "ac".repeat(32);
+    const creator = new FakeCreator(hash);
+    const store = new DbSettlementStore(db, 60_000);
+    const recovery = new OfflineSwapStore(db, 60_000);
+    ctx = await start(repos, creator, store, recovery);
+    await req(`${ctx.baseUrl}/lnurl/address/off/arkade`, "POST", "domain.com", { arkadeAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY }, TOKEN);
+    const response = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=1050000&receiveAmount=1000000`, "GET", "domain.com");
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      verify: `${ctx.baseUrl}/lnurl/verify/${hash}`,
+      verifyBatch: `${ctx.baseUrl}/lnurl/verifyBatch`,
+      paymentQuote: {
+        requested: { amount: "1000000", unit: "msat" },
+        payment: { amount: "1001000", unit: "msat" },
+        receive: { amount: "1000000", unit: "msat" },
+        fees: [{ name: "solver", amount: { amount: "1000", unit: "msat" } }],
+      },
+    });
+    expect(creator.created[0]).toMatchObject({ amountSat: 1000, amountSide: "to", maxPayAmountSat: 1050, receiveAddress: RECEIVE });
+    expect(store.get(hash)?.amountMsat).toBe(1001000);
+    expect(new OfflineSwapStore(db, 60_000).listPending()[0]).toMatchObject({ paymentHash: hash, recovery: { expectedAmount: 1000 } });
+    expect(store.get(hash)?.quote).toBeNull();
+    expect(JSON.stringify(response.body)).not.toContain('"preimage"');
+    expect(JSON.stringify(response.body)).not.toContain(TOKEN);
+    expect((await req(`${ctx.baseUrl}/lnurl/verify/${hash}`, "GET", "domain.com")).body).toMatchObject({ settled: false });
+  });
+
+  it.each([
+    ["amount=1000000&receiveAmount=0", /receiveAmount/],
+    ["amount=2000&receiveAmount=1001", /receiveAmount/],
+    ["amount=1000000&receiveAmount=2000000", /receiveAmount/],
+    ["amount=2000000&receiveAmount=1e6", /receiveAmount/],
+    ["amount=1000000&receiveAmount=1000000&unit=USD", /receiveAmount/],
+    ["amount=1000000&receiveAmount=1000000&paymentOption=arkade", /receiveAmount/],
+    ["amount=100000001&receiveAmount=1000000", /between/],
+  ])("rejects %s before asking a solver", async (query, reason) => {
+    const creator = new FakeCreator("ad".repeat(32));
+    ctx = await start(repos, creator, new MemorySettlementStore(60_000));
+    await req(`${ctx.baseUrl}/lnurl/address/off/arkade`, "POST", "domain.com", { arkadeAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY }, TOKEN);
+    const response = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?${query}`, "GET", "domain.com");
+    expect(response.body).toMatchObject({ status: "ERROR", reason: expect.stringMatching(reason) });
+    expect(creator.created).toHaveLength(0);
+  });
+
+  it("refuses a receive amount the live wallet would otherwise invoice as a plain amount", async () => {
+    ctx = await start(repos, new FakeCreator("ab".repeat(32)), new MemorySettlementStore(60_000));
+    const sse = await openSse(ctx.baseUrl, TOKEN);
+    try {
+      const response = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=1050000&receiveAmount=1000000`, "GET", "domain.com");
+      expect(response.body).toMatchObject({ status: "ERROR", reason: expect.stringMatching(/receiveAmount/) });
+    } finally { sse.abort(); }
+  });
+
+  it("prices a receive amount on the offline swap even while the owner's wallet is connected", async () => {
+    const creator = new FakeCreator("cb".repeat(32));
+    repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
+    ctx = await start(repos, creator, new MemorySettlementStore(60_000));
+    const sse = await openSse(ctx.baseUrl, TOKEN);
+    try {
+      const response = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=1050000&receiveAmount=1000000`, "GET", "domain.com");
+      expect(response.body).toMatchObject({ paymentQuote: { receive: { amount: "1000000", unit: "msat" } } });
+      expect(creator.created).toHaveLength(1);
+    } finally { sse.abort(); }
+  });
+
+  it("does not persist a net request when the invoice exceeds the payer ceiling", async () => {
+    const hash = "ae".repeat(32);
+    const store = new MemorySettlementStore(60_000);
+    ctx = await start(repos, new FakeCreator(hash), store);
+    await req(`${ctx.baseUrl}/lnurl/address/off/arkade`, "POST", "domain.com", { arkadeAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY }, TOKEN);
+    const response = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=1000000&receiveAmount=1000000`, "GET", "domain.com");
+    expect(response.body.status).toBe("ERROR");
+    expect(store.get(hash)).toBeUndefined();
+  });
+
+  it.each(["10005000p", "10000001p"])("rejects a fractional-sat invoice (%s) rather than rounding it down to the payer ceiling", async (amountHrp) => {
+    const hash = "cf".repeat(32);
+    const creator = new FakeCreator(hash);
+    const create = creator.create.bind(creator);
+    const invoice = buildInvoiceWithHrp(hash, { amountHrp });
+    expect(invoiceFactsFromBolt11(invoice).amountSats).toBe(1000);
+    creator.create = async (params) => ({ ...await create(params), invoice });
+    const store = new MemorySettlementStore(60_000);
+    ctx = await start(repos, creator, store);
+    repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
+    const response = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=1000000&receiveAmount=1000000`, "GET", "domain.com");
+    expect(response.body.status).toBe("ERROR");
+    expect(creator.release).toHaveBeenCalledExactlyOnceWith("swap-1");
+    expect(store.get(hash)).toBeUndefined();
+  });
+
+  it.each(["decode", "persistence"])("releases an unaccepted swap after a %s failure", async (failure) => {
+    const hash = "be".repeat(32);
+    const creator = new FakeCreator(hash);
+    const store = new MemorySettlementStore(60_000);
+    if (failure === "decode") {
+      const create = creator.create.bind(creator);
+      creator.create = async (params) => ({ ...await create(params), invoice: "not-a-bolt11" });
+    } else {
+      vi.spyOn(store, "create").mockImplementation(() => { throw new Error("storage unavailable"); });
+    }
+    ctx = await start(repos, creator, store);
+    repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
+    const response = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=1050000&receiveAmount=1000000`, "GET", "domain.com");
+    expect(response.body.status).toBe("ERROR");
+    expect(creator.release).toHaveBeenCalledExactlyOnceWith("swap-1");
+    expect(store.get(hash)).toBeUndefined();
+  });
+
+  it.each([
+    { net: 999, cap: 1001, accepted: true, calls: 1 },
+    { net: 998, cap: 1000, accepted: false, calls: 1 },
+    { net: 998, cap: 999, accepted: false, calls: 0 },
+  ])("applies payer bounds to the invoice rather than the net target: %j", async ({ net, cap, accepted, calls }) => {
+    const hash = "bf".repeat(32);
+    const creator = new FakeCreator(hash);
+    const store = new MemorySettlementStore(60_000);
+    db.prepare("UPDATE domains SET min_sendable = ?").run(1000000);
+    ctx = await start(repos, creator, store);
+    repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
+    const response = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=${cap * 1000}&receiveAmount=${net * 1000}`, "GET", "domain.com");
+    expect(creator.created).toHaveLength(calls);
+    if (accepted) {
+      expect(response.body).toMatchObject({ paymentQuote: { receive: { amount: "999000", unit: "msat" }, payment: { amount: "1000000", unit: "msat" } } });
+      expect(store.get(hash)?.amountMsat).toBe(1000000);
+    } else {
+      expect(response.body.status).toBe("ERROR");
+      expect(store.get(hash)).toBeUndefined();
+      expect(creator.release).toHaveBeenCalledTimes(calls);
+    }
+    const ordinary = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=999000`, "GET", "domain.com");
+    expect(ordinary.body.status).toBe("ERROR");
+    expect(creator.created).toHaveLength(calls);
+  });
+
+  it("honors address rail policy for net requests", async () => {
+    const creator = new FakeCreator("af".repeat(32));
+    ctx = await start(repos, creator, new MemorySettlementStore(60_000));
+    await req(`${ctx.baseUrl}/lnurl/address/off/arkade`, "POST", "domain.com", { arkadeAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY }, TOKEN);
+    db.prepare("UPDATE addresses SET disabled_rails = ? WHERE id = ?").run(JSON.stringify(["offline-swap"]), addressId);
+    const response = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=1050000&receiveAmount=1000000`, "GET", "domain.com");
+    expect(response.body).toMatchObject({ status: "ERROR", reason: "offline receive is disabled for this address" });
+    expect(creator.created).toHaveLength(0);
+  });
+
+  it("supports a nameless receiver without provisioning its owner token to the requester", async () => {
+    ctx = await start(repos, new FakeCreator("ba".repeat(32)), new MemorySettlementStore(60_000));
+    const token = "bc".repeat(32);
+    const registered = await req(`${ctx.baseUrl}/lnurl/address`, "POST", "domain.com", { token, nameless: true });
+    expect(registered.status).toBe(201);
+    const handle = registered.body.handle;
+    await req(`${ctx.baseUrl}/lnurl/address/${handle}/arkade`, "POST", "domain.com", { arkadeAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY }, token);
+    const result = await req(`${ctx.baseUrl}/lnurl/${handle}/callback?amount=1050000&receiveAmount=1000000`, "GET", "domain.com");
+    expect(result.body).toMatchObject({ paymentQuote: { receive: { amount: "1000000", unit: "msat" } } });
   });
 
   it("still errors offline when no arkade identity is configured", async () => {
