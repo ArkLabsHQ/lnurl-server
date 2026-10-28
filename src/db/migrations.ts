@@ -383,6 +383,22 @@ const MIGRATIONS: Migration[] = [
       if (hasColumn(db, "addresses", "hd_receive")) db.exec("ALTER TABLE addresses DROP COLUMN hd_receive;");
     },
   },
+  {
+    version: 28,
+    // A free-name code holds no name, so it cannot live on an addresses row as a reservation's code does.
+    up: `
+      CREATE TABLE IF NOT EXISTS claim_codes (
+        id          INTEGER PRIMARY KEY,
+        domain_id   INTEGER NOT NULL REFERENCES domains(id) ON DELETE CASCADE,
+        code_hash   BLOB NOT NULL UNIQUE,
+        address_id  INTEGER REFERENCES addresses(id) ON DELETE SET NULL,
+        created_at  INTEGER NOT NULL,
+        redeemed_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_addresses_claim_code ON addresses(domain_id, claim_code_hash)
+        WHERE claim_code_hash IS NOT NULL;
+    `,
+  },
 ];
 
 export const LATEST_MIGRATION = Math.max(...MIGRATIONS.map((m) => m.version));

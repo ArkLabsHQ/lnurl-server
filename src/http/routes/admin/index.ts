@@ -5,6 +5,7 @@ import type { AdminDeps } from "../../admin-context.js";
 import { adminDiscoveryRoutes } from "./discovery.js";
 import { adminDomainRoutes } from "./domains.js";
 import { adminAddressRoutes } from "./addresses.js";
+import { adminClaimCodeRoutes } from "./claim-codes.js";
 import { adminReconcileRoutes } from "./reconcile.js";
 import { adminApiKeyRoutes } from "./api-keys.js";
 import { adminBlacklistRoutes } from "./blacklist.js";
@@ -23,6 +24,7 @@ export function createAdminApi(deps: AdminDeps): Router {
   r.use(adminDiscoveryRoutes(deps));
   r.use(adminDomainRoutes(deps));
   r.use(adminAddressRoutes(deps));
+  r.use(adminClaimCodeRoutes(deps));
   r.use(adminReconcileRoutes(deps));
   r.use(adminApiKeyRoutes(deps));
   r.use(adminBlacklistRoutes(deps));

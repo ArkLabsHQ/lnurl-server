@@ -45,6 +45,13 @@ beforeEach(async () => {
 afterEach(async () => { await ctx.close(); db.close(); });
 
 describe("address routes", () => {
+  it("POST claims a reserved name with its claim code alone", async () => {
+    const { claimCode } = new AddressService(repos, KEY).reserve(repos.domains.getById(domainId)!, "held");
+    const res = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "domain.com", body: { token: TOKEN, claimCode } });
+    expect(res.status).toBe(201);
+    expect(res.body.lightningAddress).toBe("held@domain.com");
+  });
+
   it("POST self-registers and returns lnurl", async () => {
     const res = await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "domain.com", body: { username: "devious", token: TOKEN } });
     expect(res.status).toBe(201);

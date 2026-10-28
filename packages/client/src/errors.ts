@@ -79,4 +79,4 @@ export class LnurlTimeoutError extends Error {
 export type LnurlAddressErrorCode =
   | "invalid_token" | "invalid_username" | "forbidden_mode"
   | "blacklisted" | "taken" | "limit_reached" | "invalid_claim" | "invalid_rails"
-  | "already_named" | "not_found";
+  | "already_named" | "not_found" | "username_required";

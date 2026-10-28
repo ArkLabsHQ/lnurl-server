@@ -47,8 +47,11 @@ describe("provisioning failures answer the same status on every API", () => {
     repos.blacklist.add({ domainId: null, username: "banned" });
     await request(admin).post("/admin/api/addresses").send({ domain: "domain.com", username: "reserved" });
     await register("one-each.com", { username: "first" });
+    const freeCode = (await request(admin).post("/admin/api/claim-codes").send({ domain: "domain.com" })).body.claimCode;
 
     const cases: [string, Record<string, unknown>, number, string][] = [
+      ["domain.com", { claimCode: freeCode }, 400, "username_required"],
+      ["domain.com", { username: "fresh", claimCode: "wrong" }, 401, "invalid_claim"],
       ["domain.com", { username: "alice", token: OTHER }, 409, "taken"],
       ["domain.com", { username: "Not Valid!" }, 400, "invalid_username"],
       ["domain.com", { username: "banned" }, 409, "blacklisted"],

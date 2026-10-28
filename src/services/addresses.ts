@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { Repositories } from "../db/repositories/index.js";
+import type { ClaimCodeRow } from "../db/repositories/claim-codes.js";
 import type { AddressRow, DomainRow } from "../types/index.js";
 import { encryptToken, hashSecret } from "../crypto.js";
 import { deriveSessionId, isValidToken } from "../session-token.js";
@@ -29,9 +30,7 @@ export class AddressService {
       const username = p.username.toLowerCase();
       const existing = this.repos.addresses.getByDomainAndUsername(domain.id, username);
       if (existing && existing.status === "reserved") {
-        if (!p.claimCode || !existing.claimCodeHash || !hashSecret(p.claimCode).equals(existing.claimCodeHash)) {
-          throw new ProvisioningError("invalid_claim", "invalid or missing claim code");
-        }
+        this.assertReservationCode(domain, existing, p.claimCode);
         this.enforceMax(domain, sessionId);
         this.repos.addresses.bind(existing.id, { sessionId, encryptedToken: encryptToken(token, this.key) });
         return this.result(domain, username, true);
@@ -43,11 +42,20 @@ export class AddressService {
         return this.result(domain, username, false);
       }
       if (existing) throw new ProvisioningError("taken", "username already taken");
-      if (!domain.allocationModes.includes("self")) throw new ProvisioningError("forbidden_mode", "self-registration disabled");
-      this.assertUsername(domain, username);
+      const code = this.freeNameCode(domain, username, p.claimCode);
       this.enforceMax(domain, sessionId);
-      this.repos.addresses.create({ domainId: domain.id, username, status: "active", sessionId, encryptedToken: encryptToken(token, this.key) });
+      this.repos.transaction(() => {
+        const address = this.repos.addresses.create({ domainId: domain.id, username, status: "active", sessionId, encryptedToken: encryptToken(token, this.key) });
+        if (code) this.spend(code, address.id);
+      });
       return this.result(domain, username, true);
+    }
+
+    if (p.claimCode) {
+      const reserved = this.reservationFor(domain, p.claimCode);
+      this.enforceMax(domain, sessionId);
+      this.repos.addresses.bind(reserved.id, { sessionId, encryptedToken: encryptToken(token, this.key) });
+      return this.result(domain, reserved.username, true);
     }
 
     if (!domain.allocationModes.includes("random")) throw new ProvisioningError("forbidden_mode", "random allocation disabled");
@@ -108,6 +116,12 @@ export class AddressService {
     const claimCode = randomBytes(16).toString("hex");
     const address = this.repos.addresses.create({ domainId: domain.id, username: u, status: "reserved", claimCodeHash: hashSecret(claimCode) });
     return { address, claimCode };
+  }
+
+  /** A single-use code for any free name its holder picks on this domain, `self` mode or not. */
+  issueClaimCode(domain: DomainRow): { code: ClaimCodeRow; claimCode: string } {
+    const claimCode = randomBytes(16).toString("hex");
+    return { code: this.repos.claimCodes.create(domain.id, hashSecret(claimCode)), claimCode };
   }
 
   mint(domain: DomainRow, username: string): { address: AddressRow; secret: string } {
@@ -180,21 +194,58 @@ export class AddressService {
       const name = username.toLowerCase();
       const existing = this.repos.addresses.getByDomainAndUsername(domain.id, name);
       if (existing && existing.status === "reserved") {
-        if (!claimCode || !existing.claimCodeHash || !hashSecret(claimCode).equals(existing.claimCodeHash)) {
-          throw new ProvisioningError("invalid_claim", "invalid or missing claim code");
-        }
-        // Union, not replace: both policies are the operator's, and dropping either re-enables a rail they turned off.
-        this.repos.addresses.setDisabledRails(target.id, normalizeDisabledRails([...target.disabledRails, ...existing.disabledRails]));
-        this.repos.addresses.delete(existing.id);
+        this.assertReservationCode(domain, existing, claimCode);
+        this.absorbReservation(target, existing);
         return name;
       }
       if (existing) throw new ProvisioningError("taken", "username already taken");
-      if (!domain.allocationModes.includes("self")) throw new ProvisioningError("forbidden_mode", "self-registration disabled");
-      this.assertUsername(domain, name);
+      const code = this.freeNameCode(domain, name, claimCode);
+      if (code) this.spend(code, target.id);
       return name;
+    }
+    if (claimCode) {
+      const reserved = this.reservationFor(domain, claimCode);
+      this.absorbReservation(target, reserved);
+      return reserved.username;
     }
     if (!domain.allocationModes.includes("random")) throw new ProvisioningError("forbidden_mode", "random allocation disabled");
     return this.pickRandomUsername(domain);
+  }
+
+  private absorbReservation(target: AddressRow, reserved: AddressRow): void {
+    // Union, not replace: both policies are the operator's, and dropping either re-enables a rail they turned off.
+    this.repos.addresses.setDisabledRails(target.id, normalizeDisabledRails([...target.disabledRails, ...reserved.disabledRails]));
+    this.repos.addresses.delete(reserved.id);
+  }
+
+  /** A reservation opens only to its own code. A free code offered for it means the name is someone else's. */
+  private assertReservationCode(domain: DomainRow, reserved: AddressRow, claimCode?: string): void {
+    const hash = claimCode ? hashSecret(claimCode) : undefined;
+    if (hash && reserved.claimCodeHash?.equals(hash)) return;
+    if (hash && this.repos.claimCodes.getUnspent(domain.id, hash)) throw new ProvisioningError("taken", "username already taken");
+    throw new ProvisioningError("invalid_claim", "invalid or missing claim code");
+  }
+
+  /** A new name needs `self` mode or a free claim code. A code that matches nothing is refused, not ignored. */
+  private freeNameCode(domain: DomainRow, username: string, claimCode?: string): ClaimCodeRow | undefined {
+    const code = claimCode ? this.repos.claimCodes.getUnspent(domain.id, hashSecret(claimCode)) : undefined;
+    if (claimCode && !code) throw new ProvisioningError("invalid_claim", "invalid or missing claim code");
+    if (!code && !domain.allocationModes.includes("self")) throw new ProvisioningError("forbidden_mode", "self-registration disabled");
+    this.assertUsername(domain, username);
+    return code;
+  }
+
+  /** The reservation a code names on its own. A free code names nothing, so it needs a username beside it. */
+  private reservationFor(domain: DomainRow, claimCode: string): AddressRow {
+    const hash = hashSecret(claimCode);
+    const reserved = this.repos.addresses.getReservedByClaimCode(domain.id, hash);
+    if (reserved) return reserved;
+    if (this.repos.claimCodes.getUnspent(domain.id, hash)) throw new ProvisioningError("username_required", "this claim code needs a username");
+    throw new ProvisioningError("invalid_claim", "invalid or missing claim code");
+  }
+
+  private spend(code: ClaimCodeRow, addressId: number): void {
+    if (!this.repos.claimCodes.redeem(code.id, addressId)) throw new ProvisioningError("invalid_claim", "claim code already used");
   }
 
   private enforceMax(domain: DomainRow, sessionId: string): void {
