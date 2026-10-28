@@ -319,6 +319,7 @@ describe("LUD-XX paymentOptions", () => {
     aliceWithShieldedMethod();
     expect((await registeredCallback("amount=1500")).reason).toBe("Amount must be a whole number of satoshis");
     expect((await registeredCallback("amount=1")).reason).toMatch(/Amount must be between/);
+    expect((await registeredCallback("amount=100001000")).reason).toMatch(/Amount must be between/);
   });
 
   it("does not let the arkade rail's policy gate a registered callback", async () => {

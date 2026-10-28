@@ -127,7 +127,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     let paymentQuote: PaymentQuote | undefined;
     let quoted: QuotedAmount | undefined;
     if (unit !== undefined || receiveUnit !== undefined) {
-      // A token rail quotes its own payment, but only for an amount in millisats.
+      // A token rail quotes its own payment and a registered one is never priced here, so both take millisats only.
       if (resolved.kind === "fixedfloat" || resolved.kind === "registered") throw new LnurlError("unit is not supported for this paymentOption");
       const q = applyQuote(quoteProvider, { amount: amountMsat, unit, receiveUnit, paymentOption: paymentOptionId?.includes(":") ? "lightning" : paymentOptionId });
       if (!q.ok) throw new LnurlError(q.reason);
@@ -259,6 +259,9 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       } satisfies LnurlPayDestinationResponse);
       return;
     }
+
+    // Not dead code: a new paymentOption kind with no branch above fails type-check here instead of being sent an invoice.
+    resolved satisfies { kind: "lightning" };
 
     // Offline receive: no live SSE session for this address, but it opted in with an
     // Arkade identity, so the server quotes a corridor swap paying it (covclaimd claims it).
