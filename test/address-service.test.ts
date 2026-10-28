@@ -143,6 +143,80 @@ describe("reserve + claim + mint", () => {
   });
 });
 
+describe("claim codes", () => {
+  let codes: DomainRow;
+  beforeEach(() => {
+    codes = repos.domains.create({ domain: "codes.example", allocationModes: ["random", "admin", "session"] });
+  });
+
+  it("claims a reserved name with its claim code alone", () => {
+    const { claimCode } = svc.reserve(codes, "held");
+    const r = svc.register({ domain: codes, token: TOKEN, claimCode });
+    expect(r.lightningAddress).toBe("held@codes.example");
+    expect(r.address.status).toBe("active");
+    expect(r.address.sessionId).toBe(deriveSessionId(TOKEN));
+  });
+
+  it("does not take a reserved name's code for another name", () => {
+    const { claimCode } = svc.reserve(codes, "held");
+    expect(() => svc.register({ domain: codes, username: "other", token: TOKEN, claimCode }))
+      .toThrow(expect.objectContaining({ code: "invalid_claim" }));
+  });
+
+  it("takes any free name with a free claim code, without self mode, and spends the code", () => {
+    const { claimCode } = svc.issueClaimCode(codes);
+    expect(() => svc.register({ domain: codes, username: "picked", token: TOKEN }))
+      .toThrow(expect.objectContaining({ code: "forbidden_mode" }));
+
+    const r = svc.register({ domain: codes, username: "Picked", token: TOKEN, claimCode });
+    expect(r.lightningAddress).toBe("picked@codes.example");
+    expect(() => svc.register({ domain: codes, username: "again", token: OTHER, claimCode }))
+      .toThrow(expect.objectContaining({ code: "invalid_claim" }));
+  });
+
+  it("asks for a name when a free claim code comes alone, and keeps it unspent", () => {
+    const { claimCode } = svc.issueClaimCode(codes);
+    expect(() => svc.register({ domain: codes, token: TOKEN, claimCode }))
+      .toThrow(expect.objectContaining({ code: "username_required" }));
+    expect(svc.register({ domain: codes, username: "later", token: TOKEN, claimCode }).created).toBe(true);
+  });
+
+  it("keeps a code unspent when the name it is offered is refused", () => {
+    svc.reserve(codes, "held");
+    svc.register({ domain: codes, username: "taken-one", token: OTHER, claimCode: svc.issueClaimCode(codes).claimCode });
+    const { claimCode } = svc.issueClaimCode(codes);
+    for (const [username, refusal] of [["held", "taken"], ["taken-one", "taken"], ["ab".repeat(16), "invalid_username"]]) {
+      expect(() => svc.register({ domain: codes, username, token: TOKEN, claimCode }))
+        .toThrow(expect.objectContaining({ code: refusal }));
+    }
+    expect(svc.register({ domain: codes, username: "fine", token: TOKEN, claimCode }).created).toBe(true);
+  });
+
+  it("refuses an unknown code, and one issued for another domain", () => {
+    for (const claimCode of ["nope", svc.issueClaimCode(domain()).claimCode]) {
+      expect(() => svc.register({ domain: codes, token: TOKEN, claimCode }))
+        .toThrow(expect.objectContaining({ code: "invalid_claim" }));
+      expect(() => svc.register({ domain: codes, username: "named", token: TOKEN, claimCode }))
+        .toThrow(expect.objectContaining({ code: "invalid_claim" }));
+    }
+  });
+
+  it("names a nameless receiver with a reserved name's code alone, or a free code and a name", () => {
+    const { address: reserved, claimCode: reservedCode } = svc.reserve(codes, "held");
+    const first = svc.registerNameless({ domain: codes, token: TOKEN }).address;
+    const second = svc.registerNameless({ domain: codes, token: OTHER }).address;
+
+    expect(svc.upgrade({ domain: codes, handle: first.username, token: TOKEN, claimCode: reservedCode }).username).toBe("held");
+    expect(repos.addresses.getById(reserved.id)).toBeUndefined();
+    const { claimCode } = svc.issueClaimCode(codes);
+    expect(() => svc.upgrade({ domain: codes, handle: second.username, token: OTHER, claimCode }))
+      .toThrow(expect.objectContaining({ code: "username_required" }));
+    expect(svc.upgrade({ domain: codes, handle: second.username, token: OTHER, username: "mine", claimCode }).username).toBe("mine");
+    expect(() => svc.register({ domain: codes, username: "again", token: TOKEN, claimCode }))
+      .toThrow(expect.objectContaining({ code: "invalid_claim" }));
+  });
+});
+
 describe("list + revokeOwn", () => {
   it("lists by token and revokes only the owner's address", () => {
     svc.register({ domain: domain(), username: "mine", token: TOKEN });

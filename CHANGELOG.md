@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Receive amount (LUD-XX)** — a callback with `receiveAmount` (millisats) asks for the receiver to net exactly that, with the solver's fee on top and `amount` as the payer's ceiling. Offline swap only, advertised as `receiveAmountAllowed: true` while an address can take one; the response's `paymentQuote` splits the invoice into `receive` and `fees`. The client's `requestInvoice` takes it as `receiveAmountSat` and refuses an answer that does not net it or costs more than `amountSat`.
+- **Claim codes for any free name, and a reserved name's code on its own** — `POST /admin/api/claim-codes` issues a one-time code that reserves no name: its holder claims any available username with it, on a domain without `self` mode too. `GET` lists the codes without revealing them and `DELETE /admin/api/claim-codes/:id` revokes an unspent one; a spent code stays as the record of what it claimed. A reserved name's code now claims that name when sent alone, on `POST /lnurl/address` and on the nameless upgrade. A free-name code sent alone answers `400 username_required`. In `@arkade-os/lnurl-client`, `NameOptions` takes a `claimCode` alone and `LnurlAddressErrorCode` adds `username_required`.
+
+### Changed
+- **A claim code that matches nothing is refused** — it answers `invalid_claim` instead of being ignored. That covers a free name on a `self` domain sent with a wrong code, and a code sent alone, which used to fall through to a random name.
 
 ### Security
 - **`body-parser` 2.4.0 and `qs` 6.17.0** — `pnpm.overrides` lifts both past the advisories `pnpm audit` now reports through `express`: GHSA-27r3-jxmh-p828 (high, a compressed request body with trailing bytes ties up the parser) and GHSA-6pq8-jhm2-2vcw (moderate, `qs.stringify` with `arrayFormat: 'comma'`).
