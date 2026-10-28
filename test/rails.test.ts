@@ -13,6 +13,7 @@ import {
   type Bounds,
   type ServerRailCaps,
 } from "../src/rails.js";
+import type { FfRail } from "../src/rails/fixedfloat/rates.js";
 
 const BASE: Bounds = { min: 1_000, max: 100_000_000 };
 
@@ -28,11 +29,19 @@ const BARE: ServerRailCaps = {
   covenantDestinations: false,
 };
 const IDENTITY = { arkadeAddress: "ark1xyz", claimPublicKey: "02" + "ab".repeat(32), disabledRails: [] as string[] };
+const METHOD = { type: "shielded", destination: "shrol21abc" };
+// withCaip stamps nothing without a network, so only caps that have one can show a method escaping it.
+const MUTINY: ServerRailCaps = { ...FULL, network: "mutinynet" };
 
 describe("rail registry", () => {
   it("names every rail exactly once", () => {
-    expect(RAIL_IDS).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat"]);
+    expect(RAIL_IDS).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat", "registered"]);
     expect(new Set(RAIL_IDS).size).toBe(RAIL_IDS.length);
+  });
+
+  it("accepts registered in a disabled-rails policy", () => {
+    expect(normalizeDisabledRails(["registered"])).toEqual(["registered"]);
+    expect(parseDisabledRails('["registered"]')).toEqual(["registered"]);
   });
 
   it("accepts onchain, which is no longer reserved", () => {
@@ -76,14 +85,36 @@ describe("describeServerRails", () => {
 
 describe("effectiveRails", () => {
   it("serves everything when wired with an identity and empty policy", () => {
-    // onchain keys off the boarding address rather than the Arkade identity, so
-    // "fully wired" needs both. Added here and not to IDENTITY, which the
-    // advertise tests share and would otherwise always offer the rail.
+    // onchain keys off the boarding address and registered off a method, not the
+    // Arkade identity, so "fully wired" needs all three. Added here and not to
+    // IDENTITY, which the advertise tests share and would then always offer both.
     const states = effectiveRails(
-      { ...IDENTITY, boardingAddress: "tb1qboarding" },
+      { ...IDENTITY, boardingAddress: "tb1qboarding", paymentMethods: [METHOD] },
       { ...FULL, fixedFloat: { provider: "FixedFloat", ready: true, rails: [] } },
     );
     expect(states.filter((s) => s.available).map((s) => s.id)).toEqual([...RAIL_IDS]);
+  });
+
+  it("offers the registered rail only once a method is registered", () => {
+    const none = effectiveRails({ ...IDENTITY, paymentMethods: [] }, FULL).find((s) => s.id === "registered")!;
+    expect(none).toMatchObject({ applicable: false, available: false, reason: "address has no registered payment methods" });
+    const one = effectiveRails({ ...IDENTITY, paymentMethods: [METHOD] }, FULL).find((s) => s.id === "registered")!;
+    expect(one).toMatchObject({ applicable: true, available: true });
+    expect(effectiveRails(IDENTITY, FULL).find((s) => s.id === "registered")).toMatchObject({ applicable: false, available: false });
+  });
+
+  it("lets the operator disable the registered rail for one address", () => {
+    const state = effectiveRails({ ...IDENTITY, paymentMethods: [METHOD], disabledRails: ["registered"] }, FULL)
+      .find((s) => s.id === "registered")!;
+    expect(state).toMatchObject({ enabled: false, available: false, reason: "disabled for this address" });
+  });
+
+  it("does not make the registered rail depend on an Arkade identity or a wired backend", () => {
+    const state = (caps: ServerRailCaps) =>
+      effectiveRails({ arkadeAddress: null, claimPublicKey: null, disabledRails: [], paymentMethods: [METHOD] }, caps)
+        .find((s) => s.id === "registered")!;
+    expect(state(FULL).available).toBe(true);
+    expect(state(BARE).available).toBe(true);
   });
 
   it("needs an Arkade identity for the offline, arkade and covenant rails", () => {
@@ -205,6 +236,50 @@ describe("advertisedRailOptions — `verifiable`", () => {
 
   it("says nothing without server caps, where it is unknown", () => {
     for (const option of advertisedRailOptions(IDENTITY)) expect(option).not.toHaveProperty("verifiable");
+  });
+});
+
+describe("advertisedRailOptions — registered methods", () => {
+  const withMethods = (...paymentMethods: { type: string; destination: string }[]) => ({ ...IDENTITY, paymentMethods });
+  const noIdentity = { arkadeAddress: null, claimPublicKey: null, disabledRails: [] as string[], paymentMethods: [METHOD] };
+  const bases = [["with a base", BASE], ["without one", undefined]] as const;
+  const TOKEN: FfRail = { optionId: "ff-usdttrc", ffCode: "USDTTRC", asset: "tron:0x2b6653dc/trc20:TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", unit: "USDT", decimals: 6, minSat: 11_996, maxSat: 17_819_507 };
+
+  it.each(bases)("advertises one option per method, last, with no caip19Id and no bounds (%s)", (_, base) => {
+    const options = advertisedRailOptions(withMethods(METHOD), MUTINY, base);
+    expect(options.at(-1)).toEqual({ id: "registered:shielded", type: "shielded", verifiable: false });
+    expect(options.find((o) => o.id === "arkade")).toHaveProperty("caip19Id");
+  });
+
+  it("keeps one option per method, in registration order, after the rails", () => {
+    const other = { type: "silent-payments", destination: "sp1qabc" };
+    expect(advertisedRailOptions(withMethods(METHOD, other), MUTINY, BASE).map((o) => o.id))
+      .toEqual(["lightning", "arkade", "registered:shielded", "registered:silent-payments"]);
+  });
+
+  it.each(bases)("lists the methods after the token options (%s)", (_, base) => {
+    const caps: ServerRailCaps = { ...MUTINY, fixedFloat: { provider: "FixedFloat", ready: true, rails: [TOKEN] } };
+    expect(advertisedRailOptions(withMethods(METHOD), caps, base).map((o) => o.id))
+      .toEqual(["lightning", "arkade", "ff-usdttrc", "registered:shielded"]);
+  });
+
+  it.each(bases)("never stamps a caip19Id on a method, even one typed like a rail (%s)", (_, base) => {
+    const options = advertisedRailOptions(withMethods({ type: "arkade", destination: "x" }), MUTINY, base);
+    expect(options.find((o) => o.id === "registered:arkade")).toEqual({ id: "registered:arkade", type: "arkade", verifiable: false });
+  });
+
+  it("omits the methods when the operator disabled the registered rail", () => {
+    const options = advertisedRailOptions({ ...withMethods(METHOD), disabledRails: ["registered"] }, MUTINY, BASE);
+    expect(options.map((o) => o.id)).toEqual(["lightning", "arkade"]);
+  });
+
+  it("emits paymentOptions for a method alone, but not for one the operator disabled", () => {
+    expect(advertisedRailOptions(noIdentity, MUTINY, BASE).map((o) => o.id)).toEqual(["lightning", "registered:shielded"]);
+    expect(advertisedRailOptions({ ...noIdentity, disabledRails: ["registered"] }, MUTINY, BASE)).toEqual([]);
+  });
+
+  it("advertises exactly what it did before when the list is empty", () => {
+    expect(advertisedRailOptions({ ...IDENTITY, paymentMethods: [] }, MUTINY, BASE).map((o) => o.id)).toEqual(["lightning", "arkade"]);
   });
 });
 

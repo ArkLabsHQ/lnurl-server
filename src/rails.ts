@@ -20,6 +20,7 @@
 
 import type { Network } from "@arkade-os/solver-discovery";
 import type { PaymentOption } from "./payment-options.js";
+import { REGISTERED_OPTION_PREFIX, type PaymentMethod } from "./payment-methods.js";
 import { caip19Id, isRailType } from "./caip.js";
 import type { ServerDeps } from "./http/server-context.js";
 import type { FfRail } from "./rails/fixedfloat/rates.js";
@@ -28,7 +29,7 @@ import { ffRailCaps } from "./rails/fixedfloat/provider.js";
 import { InvalidRailPolicyError } from "./errors.js";
 
 /** Every receive rail the server knows. The order is the advertise order. */
-export const RAIL_IDS = ["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat"] as const;
+export const RAIL_IDS = ["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat", "registered"] as const;
 
 /** A backend that can satisfy a receive on an LN address. */
 export type RailId = (typeof RAIL_IDS)[number];
@@ -95,6 +96,16 @@ export const RAIL_DEFS: Record<RailId, RailDef> = {
     // Many ids, one per token network, so the single-option field cannot describe it.
     paymentOption: null,
     direction: "token->bolt11->arkade-btc",
+  },
+  registered: {
+    id: "registered",
+    label: "Registered methods",
+    description:
+      "Payment methods the owner registered on their address, each offered to payers as its own option. " +
+      "The destinations are the owner's own and the server never interprets them: nothing here observes or verifies a payment to one.",
+    // Many ids, one per registered method, so the single-option field cannot describe it.
+    paymentOption: null,
+    direction: null,
   },
 };
 
@@ -225,6 +236,13 @@ export function describeServerRails(caps: ServerRailCaps): ServerRailState[] {
   else if (!caps.offlineSwapCreator) tokens.reason = "token deposits pay through the offline swap rail, which is not configured";
   else if (!caps.discoveryReady) tokens.reason = "offline receive unavailable: " + discoveryReason;
   states.push(tokens);
+  states.push({
+    id: "registered",
+    label: RAIL_DEFS.registered.label,
+    description: RAIL_DEFS.registered.description,
+    configured: true,
+    ready: true,
+  });
   return states;
 }
 
@@ -236,6 +254,8 @@ export interface RailAddress {
   boardingAddress?: string | null;
   /** Rail ids the operator disabled for this address (per-LNURL policy). */
   disabledRails: readonly unknown[];
+  /** Methods the owner registered; the registered rail is offered only when there is one. */
+  paymentMethods?: readonly PaymentMethod[];
 }
 
 /** Per-address state of one rail: operator policy x server capability x identity. */
@@ -364,7 +384,20 @@ export function effectiveRails(address: RailAddress, caps: ServerRailCaps): Addr
   else if (!ff.ready) tokens.reason = ff.reason ?? `${ff.provider} is unavailable`;
   else if (!caps.offlineSwapCreator) tokens.reason = "offline receive is not configured";
   else if (!caps.discoveryReady) tokens.reason = "offline receive unavailable: " + discoveryReason;
-  return [interactive, offline, arkade, covenant, onchain, tokens];
+  // Independent of the Arkade identity and of every backend on purpose: the
+  // destinations are the owner's own and never interpreted here, so the rail
+  // stands or falls on the list alone.
+  const hasMethods = Boolean(address.paymentMethods?.length);
+  const registered: AddressRailState = {
+    id: "registered",
+    label: RAIL_DEFS.registered.label,
+    enabled: !disabled.has("registered"),
+    applicable: hasMethods,
+    available: !disabled.has("registered") && hasMethods,
+  };
+  if (!registered.enabled) registered.reason = "disabled for this address";
+  else if (!hasMethods) registered.reason = "address has no registered payment methods";
+  return [interactive, offline, arkade, covenant, onchain, tokens, registered];
 }
 
 /** Rails whose payment lands as a VTXO or a boarding UTXO, so arkd's own floor
@@ -547,9 +580,13 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
   const tokenOptions = caps.fixedFloat && tokenState.offer
     ? ffPaymentOptions(caps.fixedFloat, railBounds("offline-swap", caps, base ?? { min: 1, max: Number.MAX_SAFE_INTEGER }), tokenState.available)
     : [];
+  // Appended after withCaip, never through it: a method typed like a rail would be stamped with that rail's caip19Id.
+  const registeredOptions: PaymentOption[] = states.get("registered")?.available
+    ? (address.paymentMethods ?? []).map(({ type }) => ({ id: REGISTERED_OPTION_PREFIX + type, type, verifiable: false }))
+    : [];
   // paymentOptions exists to name a non-lightning rail; with none to offer the
   // address stays pure LUD-06 even though lightning may still serve it.
-  if (!arkadeReady && !onchainReady && tokenOptions.length === 0) return [];
+  if (!arkadeReady && !onchainReady && tokenOptions.length === 0 && registeredOptions.length === 0) return [];
   const options: PaymentOption[] = [];
   // `available` is emitted only when false: LUD-XX says an absent one means true,
   // so stating it on every healthy option would be noise. `verifiable` is always
@@ -562,7 +599,7 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
   const withCaip = (opts: PaymentOption[]): PaymentOption[] => network === undefined
     ? opts
     : opts.map((option) => isRailType(option.type) ? { ...option, caip19Id: caip19Id(option.type, network) } : option);
-  if (!base) return [...withCaip(options), ...tokenOptions];
+  if (!base) return [...withCaip(options), ...tokenOptions, ...registeredOptions];
   // Emitted relative to the pair the payRequest actually advertises, not to the
   // envelope. A client falls back to the top-level pair for an option that
   // publishes nothing, and the top level is the lightning rail's — so an option
@@ -578,5 +615,5 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
       ...(bounds.min !== advertised.min ? { minSendable: bounds.min } : {}),
       ...(bounds.max !== advertised.max ? { maxSendable: bounds.max } : {}),
     };
-  })), ...tokenOptions];
+  })), ...tokenOptions, ...registeredOptions];
 }

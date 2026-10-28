@@ -2,6 +2,7 @@ import type { Db } from "../connection.js";
 import type { EncryptedToken } from "../../crypto.js";
 import type { AddressRow, AddressStatus, CreateAddressParams } from "../../types/index.js";
 import { parseDisabledRails, serializeDisabledRails, type RailId } from "../../rails.js";
+import { parsePaymentMethods, serializePaymentMethods, type PaymentMethod } from "../../payment-methods.js";
 
 interface AddressRecord {
   id: number;
@@ -18,6 +19,7 @@ interface AddressRecord {
   claim_public_key: string | null;
   boarding_address: string | null;
   disabled_rails: string | null;
+  payment_methods: string | null;
   session_lnurl: number;
   created_at: number;
   updated_at: number;
@@ -45,6 +47,7 @@ function rowToAddress(r: AddressRecord): AddressRow {
     claimPublicKey: r.claim_public_key,
     boardingAddress: r.boarding_address,
     disabledRails: parseDisabledRails(r.disabled_rails),
+    paymentMethods: parsePaymentMethods(r.payment_methods),
     sessionLnurl: r.session_lnurl === 1,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -147,6 +150,13 @@ export class AddressesRepo {
     this.db
       .prepare("UPDATE addresses SET disabled_rails = ?, updated_at = ? WHERE id = ?")
       .run(serializeDisabledRails(rails), Date.now(), id);
+  }
+
+  /** Replace the receiver's registered payment methods; an empty list withdraws them all. */
+  setPaymentMethods(id: number, methods: readonly PaymentMethod[]): void {
+    this.db
+      .prepare("UPDATE addresses SET payment_methods = ?, updated_at = ? WHERE id = ?")
+      .run(serializePaymentMethods(methods), Date.now(), id);
   }
 
   list(filter: {

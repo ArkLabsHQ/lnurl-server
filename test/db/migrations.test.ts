@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import request from "supertest";
 import { ArkAddress } from "@arkade-os/sdk";
 import { openDb, type Db } from "../../src/db/connection.js";
-import { LATEST_MIGRATION, MIGRATION_COUNT, runMigrations } from "../../src/db/migrations.js";
+import { LATEST_MIGRATION, MIGRATIONS, MIGRATION_COUNT, runMigrations } from "../../src/db/migrations.js";
 import { createRepositories } from "../../src/db/repositories/index.js";
 import { DbSettlementStore } from "../../src/settlement-store.js";
 import { AddressService } from "../../src/services/addresses.js";
@@ -175,7 +175,7 @@ describe("runMigrations", () => {
   it("allows migration 9 after legacy offline swaps expire", () => {
     const db = openDb(":memory:");
     runMigrations(db);
-    db.exec("DROP TABLE ff_orders; DROP TABLE offline_swaps; ALTER TABLE addresses DROP COLUMN disabled_rails; ALTER TABLE addresses DROP COLUMN boarding_address; DROP INDEX IF EXISTS idx_settlements_address_updated; ALTER TABLE settlements DROP COLUMN updated_at; DROP INDEX IF EXISTS idx_settlements_address; ALTER TABLE settlements DROP COLUMN address_id; DROP INDEX IF EXISTS idx_settlements_active_covenants; DROP INDEX IF EXISTS idx_settlements_reference; DROP INDEX IF EXISTS idx_settlements_pending_swaps_created; ALTER TABLE settlements DROP COLUMN payout_reference; DROP INDEX IF EXISTS uq_addresses_session_lnurl; ALTER TABLE addresses DROP COLUMN session_lnurl; DELETE FROM schema_migrations WHERE version >= 9;");
+    db.exec("DROP TABLE ff_orders; DROP TABLE offline_swaps; ALTER TABLE addresses DROP COLUMN disabled_rails; ALTER TABLE addresses DROP COLUMN boarding_address; DROP INDEX IF EXISTS idx_settlements_address_updated; ALTER TABLE settlements DROP COLUMN updated_at; DROP INDEX IF EXISTS idx_settlements_address; ALTER TABLE settlements DROP COLUMN address_id; DROP INDEX IF EXISTS idx_settlements_active_covenants; DROP INDEX IF EXISTS idx_settlements_reference; DROP INDEX IF EXISTS idx_settlements_pending_swaps_created; ALTER TABLE settlements DROP COLUMN payout_reference; DROP INDEX IF EXISTS uq_addresses_session_lnurl; ALTER TABLE addresses DROP COLUMN session_lnurl; ALTER TABLE addresses DROP COLUMN payment_methods; DELETE FROM schema_migrations WHERE version >= 9;");
     db.prepare("INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, created_at) VALUES ('aa', 'lnbc1', 'offline:1', 0, 'bb', 'legacy-rfq', 8000)").run();
 
     expect(() => runMigrations(db, { legacySwapTtlMs: 1000, now: () => 10_000 })).not.toThrow();
@@ -305,6 +305,29 @@ describe("runMigrations", () => {
     runMigrations(db);
     const cols = db.prepare("SELECT name, dflt_value AS d FROM pragma_table_info('addresses')").all() as { name: string; d: string }[];
     expect(cols.find((c) => c.name === "disabled_rails")?.d).toBe("'[]'");
+    db.close();
+  });
+
+  it("migration versions are unique and strictly increasing", () => {
+    const versions = MIGRATIONS.map((m) => m.version);
+    expect(versions).toEqual([...new Set(versions)].sort((a, b) => a - b));
+    expect(LATEST_MIGRATION).toBe(Math.max(...versions));
+  });
+
+  it("payment_methods defaults to an empty list on a database migrated from 28", () => {
+    const db = openDb(":memory:");
+    runMigrations(db, { upToVersion: 28 });
+    const repos = createRepositories(db);
+    const domain = repos.domains.create({ domain: "domain.com", allocationModes: ["self"] });
+    const { id } = repos.addresses.create({ domainId: domain.id, username: "alice", status: "active" });
+    const columns = () => (db.prepare("SELECT name FROM pragma_table_info('addresses')").all() as { name: string }[]).map((c) => c.name);
+    expect(columns()).not.toContain("payment_methods");
+
+    runMigrations(db);
+
+    expect(columns()).toContain("payment_methods");
+    expect(db.prepare("SELECT payment_methods AS m FROM addresses WHERE id = ?").get(id)).toEqual({ m: "[]" });
+    expect(repos.addresses.getById(id)!.paymentMethods).toEqual([]);
     db.close();
   });
 

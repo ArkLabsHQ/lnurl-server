@@ -55,7 +55,7 @@ const handle = await (await best.quote()).send()
 
 **`payRequest()` fetches once per 30 s.** Every call on one `Receiver` within that window shares a single fetch, in flight or done, so a screen asking on every amount change costs one GET; a failed fetch is not kept. `claim` and `upgrade` retire it at once, even when they fail; a change made anywhere else - another device, the operator - shows within 30 s. `createLnurlClient().resolve(receiver.lnurl)` always asks the server.
 
-**Keeping aliases pointed at this wallet.** `owned({ refresh: true })` first re-binds this facade's Arkade, claim and boarding destinations on every active alias the server lists as bound elsewhere - after an address rotation or a restore - and on all of them where the server does not report it. A missing boarding address never counts as a change, so a registered one stays. An alias the server refuses does not stop the rest: they are still re-bound, then the call rejects. `claim`, `owned` and `upgrade` run one at a time per identity object and server, across facades, so a receive screen and a startup sync built separately never interleave their writes. Once a `signal` passed to `owned` or `claim` aborts, the call rejects with `signal.reason` - after any call queued ahead of it - and writes nothing more. A `claim` aborted after its address registered but before the bind leaves that address without an Arkade destination until a later `owned({ refresh: true })` binds it.
+**Keeping aliases pointed at this wallet.** `owned({ refresh: true })` first re-binds this facade's Arkade, claim and boarding destinations on every active alias the server lists as bound elsewhere - after an address rotation or a restore - and on all of them where the server does not report it. A missing boarding address never counts as a change, so a registered one stays. `methods` follows the same rule: give `arkadeLnurl` a list and the refresh also re-binds an alias whose listed `paymentMethods` differ from it - compared by type and destination, in any order - with your list replacing the server's whole; give it none and the server's list is never compared or touched. `methods: []` is a list, and re-binding it withdraws every method the server holds. A server older than this release ignores `methods` and lists no `paymentMethods`, so a facade that sets it can never see a match there and re-binds on every explicit `refresh`, as it already does for `boardingAddress`. An alias the server refuses does not stop the rest: they are still re-bound, then the call rejects. `claim`, `owned` and `upgrade` run one at a time per identity object and server, across facades, so a receive screen and a startup sync built separately never interleave their writes. Once a `signal` passed to `owned` or `claim` aborts, the call rejects with `signal.reason` - after any call queued ahead of it - and writes nothing more. A `claim` aborted after its address registered but before the bind leaves that address without an Arkade destination until a later `owned({ refresh: true })` binds it.
 
 `capabilities()` reads what a domain allows before you call it - `{ domain, allocationModes, usernameRules, requireApiKey }` - so onboarding can offer only the modes actually enabled instead of guessing and hitting `forbidden_mode`. An operator's `claimCode` works the same way on either call below. Alone, `claim({ claimCode })` claims the reserved name the code unlocks. With a name, `claim({ username: 'alice', claimCode })` claims that name: the reserved one, or any available name with a free-name code. A free-name code sent alone fails with `username_required`.
 
@@ -255,12 +255,17 @@ await client.registerArkadeIdentity({
   arkadeAddress: 'ark1…',
   claimPublicKey: '02…',      // compressed 33-byte key, validated locally
   boardingAddress: 'bc1…',    // optional: adds the onchain rail
+  methods: [{ type: 'shielded', destination: 'shrol21…' }],  // optional: registered payment methods
 })
 ```
 
 **Call it again to update it.** The server overwrites, so re-registering is how you point an address at a new Arkade address or claim key; there is no separate update call.
 
 `boardingAddress` is the one exception to that overwrite: register it and the address advertises an `onchain` payment option paying it, omit it and an already-registered one is left alone — so a later identity update does not silently withdraw the rail. It is sent unvalidated, unlike `claimPublicKey`, because it is an ordinary Bitcoin address on whatever network the operator runs and this package cannot know which. Payers get no `verify` URL on that rail: nothing server-side observes Bitcoin, so those payments never settle there and a URL could only ever answer "not yet".
+
+`methods` registers destinations of your own kind beside those rails. Each `{ type, destination }` is advertised to payers as a `registered:<type>` payment option and answered with the destination exactly as given: the server never interprets, watches or verifies one, so nothing here can say whether a payment to it arrived, and this package has no payer for one — `requestInvoice` hands the destination back as a `destination` result and `lnurlRails` leaves the option alone. It follows `boardingAddress`'s omit rule with one addition: omit `methods` and the registered list is left alone, pass a list and it replaces the stored one whole, pass `[]` and every method is withdrawn.
+
+The server refuses a malformed list with a 400 before it changes anything: at most 8 entries, each `type` once, a `type` of 1–32 lowercase letters, digits or hyphens starting with a letter (never a rail id: `interactive-lightning`, `offline-swap`, `arkade`, `covenant`, `onchain`, `fixedfloat`, `registered`; nor `lightning`, `eip155`, `solana` or `tron`, which payers also act on), and a `destination` of 1–512 printable ASCII characters with no whitespace. `listAddresses` reports the stored list as `paymentMethods`. A method is public — anyone who resolves the address learns its `type`, and every payer is handed the same `destination` — so register one only with the user's consent. A server older than this release ignores `methods` and lists no `paymentMethods`: nothing is advertised there, and `arkadeLnurl({ methods })` re-binds on every explicit `owned({ refresh: true })`.
 
 ### With the Arkade SDK
 
@@ -273,7 +278,7 @@ import { arkadeIdentityRequest, deriveSessionTokenForIdentity } from '@arkade-os
 const token = await deriveSessionTokenForIdentity(identity, 'example.com')
 
 // Validates the Arkade address and derives claimPublicKey from the identity.
-// boardingAddress is optional here too, and passed through unchecked.
+// boardingAddress and methods are optional here too, and passed through unchecked.
 await client.registerArkadeIdentity(
   await arkadeIdentityRequest({ identity, arkadeAddress, token, username: 'alice' }),
 )

@@ -40,6 +40,12 @@ export interface RegisteredAddress {
   sessionLnurl: string | null;
 }
 
+/** A destination the owner registers under a type of their choosing; payers receive it verbatim, never interpreted. */
+export interface PaymentMethod {
+  type: string;
+  destination: string;
+}
+
 /** One address owned by a token, as listed by the server; same nullability as `RegisteredAddress`. */
 export interface AddressListEntry {
   username: string | null;
@@ -60,6 +66,8 @@ export interface AddressListEntry {
   arkadeAddress?: string | null;
   claimPublicKey?: string | null;
   boardingAddress?: string | null;
+  /** Methods registered on this address; an older server omits it. */
+  paymentMethods?: PaymentMethod[] | null;
 }
 
 /** What a domain allows, discoverable before calling any of its routes. */
@@ -88,6 +96,8 @@ export interface RegisterArkadeIdentityRequest {
   claimPublicKey: string;
   /** Boarding address the onchain rail pays; omit it to leave a registered one alone. */
   boardingAddress?: string;
+  /** Replaces the registered methods whole; omit it to leave them alone, `[]` withdraws them all. */
+  methods?: PaymentMethod[];
 }
 
 function rootOf(baseUrl: string): string {
@@ -301,9 +311,10 @@ const COMPRESSED_KEY = /^0[23][0-9a-f]{64}$/i;
  * `boardingAddress` is unvalidated for a stronger reason — it is a Bitcoin
  * address on the operator's network, which this package cannot know — and
  * omitting it sends no field, read server-side as "leave the onchain rail".
+ * `methods` is validated server-side and sent whenever defined, `[]` included.
  *
  * @param baseUrl - Server root, e.g. `https://lnurl.example.com`.
- * @param req - Token, handle, Arkade address, claim key, optional boarding address and domain.
+ * @param req - Token, handle, Arkade address, claim key, optional boarding address, methods and domain.
  * @param fetchImpl - The injected `fetch` implementation to call.
  * @returns A promise settling when the server records the identity.
  */
@@ -317,8 +328,9 @@ export async function registerArkadeIdentity(
   if (!COMPRESSED_KEY.test(req.claimPublicKey)) {
     throw new LnurlError("claimPublicKey must be a compressed 33-byte public key (02/03 prefix plus 64 hex chars)");
   }
-  const body: Record<string, string> = { arkadeAddress: req.arkadeAddress, claimPublicKey: req.claimPublicKey };
+  const body: Record<string, string | PaymentMethod[]> = { arkadeAddress: req.arkadeAddress, claimPublicKey: req.claimPublicKey };
   if (req.boardingAddress !== undefined) body["boardingAddress"] = req.boardingAddress;
+  if (req.methods !== undefined) body["methods"] = req.methods;
   if (req.domain !== undefined) body["domain"] = req.domain;
   await apiFetch<unknown>(`${rootOf(baseUrl)}/lnurl/address/${encodeURIComponent(req.handle)}/arkade`, {
     method: "POST",

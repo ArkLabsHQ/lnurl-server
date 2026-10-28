@@ -18,10 +18,22 @@ import {
   LnurlError,
   LnurlTimeoutError,
 } from "../packages/client/src/index.js";
-import type { LnurlSession, PaymentSyncStore, StoredPayment } from "../packages/client/src/index.js";
+import type {
+  AddressListEntry,
+  LnurlSession,
+  PayRequest,
+  PaymentMethod,
+  PaymentSyncStore,
+  RegisterArkadeIdentityRequest,
+  RequestInvoiceOptions,
+  StoredPayment,
+} from "../packages/client/src/index.js";
 import { tokenOptions } from "../packages/client/src/index.js";
-import { arkadeLnurl } from "../packages/client/src/wallet.js";
-import { ArkAddress, SingleKey } from "@arkade-os/sdk";
+import { lnurlRails } from "../packages/client/src/rail.js";
+import { arkadeLnurl, type ArkadeLnurlConfig } from "../packages/client/src/wallet.js";
+import { ArkAddress, SingleKey, type PaymentRail, type RouterContext } from "@arkade-os/sdk";
+import type { PaymentMethod as ServerPaymentMethod } from "../src/payment-methods.js";
+import type { AddressRow } from "../src/types/index.js";
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
 import { priceFeedQuotes } from "../src/price-feed.js";
 import { FfOrderStore } from "../src/ff-order-store.js";
@@ -636,6 +648,143 @@ describe("onchain rail contract", () => {
     await facade(moved).owned({ refresh: true });
     expect(binds).toBe(2);
     expect(await facade(moved).addresses()).toMatchObject([{ handle: "carol", arkadeAddress: moved, boardingAddress: BOARDING }]);
+  });
+});
+
+type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+
+describe("registered methods contract", () => {
+  const KEY = randomBytes(32);
+  const TOKEN = "ef".repeat(32);
+  const ARK = "tark1qpf3lesxsy69q0f8yvfnyf7gv7kglfkg83fhaxjyc0zmm0wtrl3n024rshrsa8fnnv73w38094qfl9jp5g7pzdc8j2m58metfpd8rcd37nqs45";
+  const CLAIMPK = "02" + "ab".repeat(32);
+  const BOARDING = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
+  const METHOD = { type: "shielded", destination: "shrol21abc" };
+  const OTHER = { type: "nostr", destination: "npub1xyz" };
+  let db: Db;
+  let ctx: { baseUrl: string; close: () => Promise<void> };
+
+  beforeEach(async () => {
+    db = openDb(":memory:");
+    runMigrations(db);
+    const repos = createRepositories(db);
+    repos.domains.create({ domain: "127.0.0.1", allocationModes: ["self"] });
+    const server = http.createServer();
+    ctx = await new Promise<typeof ctx>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        const { port } = server.address() as { port: number };
+        const baseUrl = `http://127.0.0.1:${port}`;
+        server.on("request", createServer({ ...CONFIG, baseUrl }, {
+          repos,
+          addressService: new AddressService(repos, KEY),
+          registrationLimiter: new RateLimiter(100, 60_000),
+          settlements: new DbSettlementStore(db, 86_400_000),
+        }));
+        resolve({ baseUrl, close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }) });
+      });
+    });
+  });
+
+  afterEach(async () => {
+    await ctx.close();
+    db.close();
+  });
+
+  const payRequestOf = async (handle: string): Promise<PayRequest> => {
+    const lnurl = bech32.encode("lnurl", bech32.toWords(new TextEncoder().encode(`${ctx.baseUrl}/.well-known/lnurlp/${handle}`)), 1023);
+    const payRequest = await createLnurlClient().resolve(lnurl);
+    return { ...payRequest, callback: payRequest.callback.replace("127.0.0.1", new URL(ctx.baseUrl).host) };
+  };
+
+  it("the client's method type matches the server's bind contract", () => {
+    const method: Same<PaymentMethod, ServerPaymentMethod> = true;
+    const bind: Same<RegisterArkadeIdentityRequest["methods"], ServerPaymentMethod[] | undefined> = true;
+    const config: Same<ArkadeLnurlConfig["methods"], ServerPaymentMethod[] | undefined> = true;
+    const listed: Same<AddressListEntry["paymentMethods"], AddressRow["paymentMethods"] | null | undefined> = true;
+    expect([method, bind, config, listed]).toEqual([true, true, true, true]);
+  });
+
+  it("binds methods, lists them back, and hands a payer the destination of a registered option", async () => {
+    const owner = createLnurlClient({ baseUrl: ctx.baseUrl });
+    await owner.registerAddress({ token: TOKEN, username: "alice" });
+    await owner.registerArkadeIdentity({ token: TOKEN, handle: "alice", arkadeAddress: ARK, claimPublicKey: CLAIMPK, methods: [METHOD, OTHER] });
+    expect(await owner.listAddresses(TOKEN)).toMatchObject([{ handle: "alice", paymentMethods: [METHOD, OTHER] }]);
+
+    const payRequest = await payRequestOf("alice");
+    expect(payRequest.paymentOptions).toContainEqual({ id: "registered:shielded", type: "shielded", verifiable: false });
+    expect(tokenOptions(payRequest)).toEqual([]);
+    const result = await createLnurlClient().requestInvoice(payRequest, { amountSat: 1_000, paymentOption: "registered:shielded" });
+    expect(result).toEqual({ kind: "destination", paymentOption: "registered:shielded", paymentDestination: METHOD.destination });
+  });
+
+  it("leaves the registered methods alone when a later bind omits them, and withdraws them with an empty list", async () => {
+    const owner = createLnurlClient({ baseUrl: ctx.baseUrl });
+    await owner.registerAddress({ token: TOKEN, username: "bob" });
+    const bind = { token: TOKEN, handle: "bob", arkadeAddress: ARK, claimPublicKey: CLAIMPK };
+    const listed = async () => (await owner.listAddresses(TOKEN))[0]?.paymentMethods;
+
+    await owner.registerArkadeIdentity({ ...bind, methods: [METHOD] });
+    await owner.registerArkadeIdentity(bind);
+    expect(await listed()).toEqual([METHOD]);
+    await owner.registerArkadeIdentity({ ...bind, methods: [] });
+    expect(await listed()).toEqual([]);
+  });
+
+  it("lnurlRails quote the arkade option and ignore the registered one beside it", async () => {
+    const owner = createLnurlClient({ baseUrl: ctx.baseUrl });
+    await owner.registerAddress({ token: TOKEN, username: "carol" });
+    await owner.registerArkadeIdentity({ token: TOKEN, handle: "carol", arkadeAddress: ARK, claimPublicKey: CLAIMPK, methods: [METHOD] });
+    const payRequest = await payRequestOf("carol");
+    expect(payRequest.paymentOptions).toContainEqual(expect.objectContaining({ id: "registered:shielded" }));
+    const payer = createLnurlClient();
+    const railsOver = (resolved: PayRequest) => {
+      const asked: (string | undefined)[] = [];
+      const client = {
+        ...payer,
+        resolve: async () => resolved,
+        requestInvoice: (pr: PayRequest, o: RequestInvoiceOptions) => (asked.push(o.paymentOption), payer.requestInvoice(pr, o)),
+      };
+      const inner = (id: string) => ({
+        id, match: () => true, quote: async () => ({ railId: id, amount: 1_000, fee: 0, total: 1_000, send: async () => ({}) }),
+      }) as unknown as PaymentRail;
+      return { asked, rails: lnurlRails({ client, arkade: inner("ark"), lightning: inner("solver-lightning") }) };
+    };
+    const req = { raw: "carol@127.0.0.1", amount: 1_000 };
+    const ctxStub = {} as RouterContext;
+
+    const beside = railsOver(payRequest);
+    expect(beside.rails.map((r) => r.id)).toEqual(["lnurl-arkade", "lnurl-lightning"]);
+    await beside.rails[0]!.quote(req, ctxStub);
+    expect(beside.asked).toEqual(["arkade"]);
+
+    const alone = railsOver({ ...payRequest, paymentOptions: payRequest.paymentOptions!.filter((o) => o.type === "shielded") });
+    for (const rail of alone.rails) expect(await rail.available!(req, ctxStub)).toBe(false);
+  });
+
+  it("keeps the server's methods in step through the facade, and only when the facade supplies them", async () => {
+    const owner = createLnurlClient({ baseUrl: ctx.baseUrl });
+    let binds = 0;
+    const client = { ...owner, registerArkadeIdentity: (r: Parameters<typeof owner.registerArkadeIdentity>[0]) => (binds++, owner.registerArkadeIdentity(r)) };
+    const identity = SingleKey.fromHex("22".repeat(32));
+    const facade = (methods?: PaymentMethod[]) =>
+      arkadeLnurl({ identity, arkadeAddress: ARK, boardingAddress: BOARDING, baseUrl: ctx.baseUrl, client, ...(methods ? { methods } : {}) });
+    const listed = async () => (await facade().addresses())[0]?.paymentMethods;
+
+    await facade([METHOD]).claim({ username: "dave" });
+    expect([binds, await listed()]).toEqual([1, [METHOD]]);
+
+    await facade([METHOD]).owned({ refresh: true });
+    expect(binds).toBe(1);
+
+    await facade([METHOD, OTHER]).owned({ refresh: true });
+    expect([binds, await listed()]).toEqual([2, [METHOD, OTHER]]);
+
+    await facade().owned({ refresh: true });
+    expect([binds, await listed()]).toEqual([2, [METHOD, OTHER]]);
+
+    await facade([]).owned({ refresh: true });
+    await facade([]).owned({ refresh: true });
+    expect([binds, await listed()]).toEqual([3, []]);
   });
 });
 

@@ -49,13 +49,14 @@ describe("admin rails", () => {
     const res = await request(app).get("/admin/api/rails");
     expect(res.status).toBe(200);
     const byId = new Map(res.body.rails.map((r: { id: string }) => [r.id, r]));
-    expect([...byId.keys()]).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat"]);
+    expect([...byId.keys()]).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat", "registered"]);
     expect(byId.get("interactive-lightning")).toMatchObject({ configured: true, ready: true });
     expect(byId.get("offline-swap")).toMatchObject({ configured: true, ready: true });
     expect(byId.get("arkade")).toMatchObject({ configured: true, ready: true });
     expect(byId.get("covenant")).toMatchObject({ configured: false, ready: false });
     // Needs no server config; a per-address boarding address decides it.
     expect(byId.get("onchain")).toMatchObject({ configured: true, ready: true });
+    expect(byId.get("registered")).toMatchObject({ configured: true, ready: true });
   });
 
   it("shows effective per-address rails on the addresses list", async () => {
@@ -83,6 +84,29 @@ describe("admin rails", () => {
     const patched = await request(app).patch(`/admin/api/addresses/${a.id}/rails`).send({ disabledRails: [] });
     const patchedRails = new Map(patched.body.rails.map((r: { id: string }) => [r.id, r]));
     expect(patchedRails.get("onchain")).toMatchObject({ enabled: true, available: true });
+  });
+
+  it("reports and toggles the registered rail from the address's own methods", async () => {
+    const a = repos.addresses.create({ domainId, username: "erin", status: "active", sessionId: "sess-erin" });
+    repos.addresses.setPaymentMethods(a.id, [{ type: "shielded", destination: "shrol21abc" }]);
+    const registered = (rails: { id: string }[]) => rails.find((r) => r.id === "registered");
+    const patch = (disabledRails: string[]) => request(app).patch(`/admin/api/addresses/${a.id}/rails`).send({ disabledRails });
+
+    const listed = await request(app).get("/admin/api/addresses");
+    expect(registered(listed.body.addresses[0].rails)).toMatchObject({ enabled: true, applicable: true, available: true });
+    expect(registered((await patch([])).body.rails)).toMatchObject({ enabled: true, applicable: true, available: true });
+
+    const off = await patch(["registered"]);
+    expect(off.status).toBe(200);
+    expect(off.body.disabledRails).toEqual(["registered"]);
+    expect(registered(off.body.rails)).toMatchObject({ enabled: false, available: false, reason: "disabled for this address" });
+  });
+
+  it("reports the registered rail as inapplicable for an address with no methods", async () => {
+    repos.addresses.create({ domainId, username: "frank", status: "active", sessionId: "sess-frank" });
+    const listed = await request(app).get("/admin/api/addresses");
+    expect(listed.body.addresses[0].rails.find((r: { id: string }) => r.id === "registered"))
+      .toMatchObject({ enabled: true, applicable: false, available: false, reason: "address has no registered payment methods" });
   });
 
   it("stores a per-address rail policy and returns the effective states", async () => {

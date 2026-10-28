@@ -59,6 +59,14 @@ function addr(username: string, withArkade: boolean) {
   return a;
 }
 
+function aliceWithShieldedMethod(): number {
+  const { id } = addr("alice", true);
+  repos.addresses.setPaymentMethods(id, [{ type: "shielded", destination: "shrol21abc" }]);
+  return id;
+}
+const registeredCallback = (query: string) =>
+  getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?${query}&paymentOption=registered:shielded`, "domain.com");
+
 describe("LUD-XX paymentOptions", () => {
   it("advertises lightning + arkade when an Arkade identity is registered", async () => {
     addr("alice", true);
@@ -67,6 +75,18 @@ describe("LUD-XX paymentOptions", () => {
       { id: "lightning", type: "lightning", verifiable: true },
       { id: "arkade", type: "arkade", verifiable: false },
     ]);
+  });
+
+  it("advertises a registered method after the rails and leaves the bounds and units alone", async () => {
+    repos.addresses.setPaymentMethods(addr("alice", true).id, [{ type: "shielded", destination: "shrol21abc" }]);
+    const meta = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice`, "domain.com");
+    expect(meta.paymentOptions).toEqual([
+      { id: "lightning", type: "lightning", verifiable: true },
+      { id: "arkade", type: "arkade", verifiable: false },
+      { id: "registered:shielded", type: "shielded", verifiable: false },
+    ]);
+    expect(meta).toMatchObject({ minSendable: 1000, maxSendable: 100_000_000 });
+    expect(meta.units).toBeUndefined();
   });
 
   it("omits paymentOptions without an Arkade identity (pure LUD-06)", async () => {
@@ -269,5 +289,41 @@ describe("LUD-XX paymentOptions", () => {
     const implicit = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000`, "domain.com");
     expect(implicit.pr).toBe("lnbc1offline");
     expect(implicit.paymentOption).toBeUndefined();
+  });
+
+  it("answers a registered callback with the destination and nothing the server cannot stand behind", async () => {
+    aliceWithShieldedMethod();
+    expect(await registeredCallback("amount=1000")).toEqual({ status: "OK", paymentOption: "registered:shielded", paymentDestination: "shrol21abc" });
+  });
+
+  it("writes no settlement record for a registered callback", async () => {
+    const settlements = new MemorySettlementStore(60_000);
+    await ctx.close();
+    ctx = await start(repos, settlements);
+    const id = aliceWithShieldedMethod();
+    expect((await registeredCallback("amount=1000")).status).toBe("OK");
+    expect(settlements.listByAddress(id, 10)).toHaveLength(0);
+  });
+
+  it("refuses a registered callback the operator disabled for this address", async () => {
+    repos.addresses.setDisabledRails(aliceWithShieldedMethod(), ["registered"]);
+    expect((await registeredCallback("amount=1000")).reason).toMatch(/registered:shielded is disabled/);
+  });
+
+  it("refuses a unit-denominated registered callback", async () => {
+    aliceWithShieldedMethod();
+    expect((await registeredCallback("amount=100&unit=USD")).reason).toBe("unit is not supported for this paymentOption");
+  });
+
+  it("refuses a sub-satoshi and an out-of-range amount on a registered callback", async () => {
+    aliceWithShieldedMethod();
+    expect((await registeredCallback("amount=1500")).reason).toBe("Amount must be a whole number of satoshis");
+    expect((await registeredCallback("amount=1")).reason).toMatch(/Amount must be between/);
+    expect((await registeredCallback("amount=100001000")).reason).toMatch(/Amount must be between/);
+  });
+
+  it("does not let the arkade rail's policy gate a registered callback", async () => {
+    repos.addresses.setDisabledRails(aliceWithShieldedMethod(), ["arkade"]);
+    expect((await registeredCallback("amount=1000")).status).toBe("OK");
   });
 });

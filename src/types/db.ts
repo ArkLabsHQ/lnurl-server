@@ -1,5 +1,6 @@
 import type { EncryptedToken } from "../crypto.js";
 import type { RailId } from "../rails.js";
+import type { PaymentMethod } from "../payment-methods.js";
 
 export type AllocationMode = "self" | "random" | "admin" | "session";
 export type AddressStatus = "reserved" | "active" | "revoked";
@@ -50,6 +51,8 @@ export interface AddressRow {
   boardingAddress: string | null;
   /** Rail ids the operator disabled for this address (per-LNURL policy). */
   disabledRails: RailId[];
+  /** Payment methods the owner registered; empty when none. */
+  paymentMethods: PaymentMethod[];
   /** Also served at /lnurl/<sessionId>; survives a rename. */
   sessionLnurl: boolean;
   createdAt: number;

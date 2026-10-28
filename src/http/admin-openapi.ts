@@ -1,4 +1,5 @@
 import { openApiSpec } from "./openapi.js";
+import { RAIL_IDS } from "../rails.js";
 
 // Shorthands for the response shapes used across the admin API.
 const OK = {
@@ -129,7 +130,7 @@ export const adminOpenApiSpec = {
     "/rails": {
       get: {
         summary: "List server-level receive-rail capabilities",
-        description: "One entry per rail this process wired (interactive lightning, offline swap, arkade destination, covenant destinations) with its configured/ready state. Per-address policy and effective states ride on the addresses list.",
+        description: `One entry per receive rail (${RAIL_IDS.join(", ")}) with its configured/ready state. Per-address policy and effective states ride on the addresses list.`,
         tags: ["Rails"],
         responses: {
           "200": {
@@ -264,8 +265,8 @@ export const adminOpenApiSpec = {
                   status: { type: "string", enum: ["reserved", "active", "revoked"] },
                   sessionId: { type: "string", nullable: true },
                   online: { type: "boolean", description: "Whether the bound session is currently connected" },
-                  disabledRails: { type: "array", items: { type: "string" }, description: "Rail ids the operator disabled for this address" },
-                  rails: { type: "array", items: { type: "object", properties: { id: { type: "string" }, label: { type: "string" }, enabled: { type: "boolean" }, available: { type: "boolean" }, reason: { type: "string", description: "Present when disabled or unavailable" } } }, description: "Effective per-address rail states" },
+                  disabledRails: { type: "array", items: { type: "string" }, description: "Rail ids the operator disabled for this address. Disabling `registered` takes every registered method off the payRequest and refuses a callback for one; the methods stay stored." },
+                  rails: { type: "array", items: { type: "object", properties: { id: { type: "string" }, label: { type: "string" }, enabled: { type: "boolean" }, applicable: { type: "boolean", description: "The address has what the rail needs: an Arkade identity (offline-swap, arkade, covenant, fixedfloat), a boarding address (onchain) or a registered method (registered); always true for interactive-lightning. Unlike `available`, it ignores operator policy and whether the server can serve the rail right now." }, available: { type: "boolean" }, reason: { type: "string", description: "Present when disabled or unavailable" } } }, description: "Effective per-address rail states" },
                   createdAt: { type: "integer" },
                 },
               } },
@@ -492,7 +493,7 @@ export const adminOpenApiSpec = {
         description: "Disable (or re-enable) receive rails for one LN address. Unknown rail ids are rejected; the response carries the stored policy plus the effective states.",
         tags: ["Addresses"],
         parameters: [idParam],
-        requestBody: jsonBody({ type: "object", properties: { disabledRails: { type: "array", items: { type: "string", enum: ["interactive-lightning", "offline-swap", "arkade", "covenant"] } } }, required: ["disabledRails"] }),
+        requestBody: jsonBody({ type: "object", properties: { disabledRails: { type: "array", items: { type: "string", enum: [...RAIL_IDS] } } }, required: ["disabledRails"] }),
         responses: { "200": { description: "Stored policy and effective states" }, ...errorResponse("400", "Unknown rail id"), ...errorResponse("404", "Address not found") },
       },
     },

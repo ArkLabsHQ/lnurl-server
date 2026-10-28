@@ -1,5 +1,6 @@
 import type { Network } from "@arkade-os/solver-discovery";
 import { matchCaip19Id } from "./caip.js";
+import { REGISTERED_OPTION_PREFIX, type PaymentMethod } from "./payment-methods.js";
 
 // LUD-XX paymentOptions: advertise multiple payment rails on a LUD-06 payRequest
 // and resolve the wallet's selection. The rail registry lives in ./rails.js -
@@ -32,6 +33,7 @@ export interface OptionAddress {
   boardingAddress?: string | null;
   /** Rail ids the operator disabled for this address. */
   disabledRails?: readonly unknown[];
+  paymentMethods?: readonly PaymentMethod[];
 }
 
 /** A token option the provider currently offers. */
@@ -59,6 +61,7 @@ export type ResolvedPaymentOption =
   | { kind: "lightning" }
   | { kind: "destination"; paymentOption: string; paymentDestination: string }
   | { kind: "fixedfloat"; optionId: string; ffCode: string }
+  | { kind: "registered"; paymentOption: string; methodType: string; paymentDestination: string }
   | { kind: "error"; reason: string };
 
 /** Resolve the wallet's `paymentOption` query value. Extend with new rails here. A token
@@ -72,6 +75,14 @@ export function resolvePaymentOption(
 ): ResolvedPaymentOption {
   // Ids are canonical lowercase; be liberal about the case payers send.
   const raw = optionId?.toLowerCase();
+  // Must run before the CAIP-19 branch below, which claims every id containing ':' and refuses this one.
+  if (raw?.startsWith(REGISTERED_OPTION_PREFIX)) {
+    const methodType = raw.slice(REGISTERED_OPTION_PREFIX.length);
+    const method = address.paymentMethods?.find((m) => m.type === methodType);
+    return method
+      ? { kind: "registered", paymentOption: raw, methodType, paymentDestination: method.destination }
+      : { kind: "error", reason: "Unsupported paymentOption" };
+  }
   let id = raw;
   if (raw?.includes(":")) {
     if (!network) return { kind: "error", reason: "Unsupported paymentOption" };

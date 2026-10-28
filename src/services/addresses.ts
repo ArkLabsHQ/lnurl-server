@@ -6,6 +6,7 @@ import { encryptToken, hashSecret } from "../crypto.js";
 import { deriveSessionId, isValidToken } from "../session-token.js";
 import { validateUsername, randomUsername } from "../usernames.js";
 import { normalizeDisabledRails } from "../rails.js";
+import type { PaymentMethod } from "../payment-methods.js";
 import { InvalidRailPolicyError, ProvisioningError } from "../errors.js";
 
 const MAX_RANDOM_ATTEMPTS = 20;
@@ -165,7 +166,7 @@ export class AddressService {
     domain: DomainRow,
     handle: string,
     token: string,
-    cfg: { arkadeAddress: string; claimPublicKey: string; boardingAddress?: string },
+    cfg: { arkadeAddress: string; claimPublicKey: string; boardingAddress?: string; methods?: PaymentMethod[] },
   ): boolean {
     const a = this.ownedByHandle(domain, handle, token);
     if (!a || a.status !== "active") return false;
@@ -174,6 +175,9 @@ export class AddressService {
     // not silently withdraw an onchain rail it registered earlier.
     if (cfg.boardingAddress !== undefined) {
       this.repos.addresses.setBoardingAddress(a.id, cfg.boardingAddress);
+    }
+    if (cfg.methods !== undefined) {
+      this.repos.addresses.setPaymentMethods(a.id, cfg.methods);
     }
     return true;
   }

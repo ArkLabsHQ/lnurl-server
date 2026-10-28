@@ -62,6 +62,37 @@ describe("AddressesRepo", () => {
     expect(repo.getByDomainAndUsername(domainId, "x")!.status).toBe("revoked");
   });
 
+  it("a row never written to reads an empty method list", () => {
+    const created = repo.create({ domainId, username: "plain", status: "active" });
+    expect(created.paymentMethods).toEqual([]);
+    expect(repo.getById(created.id)!.paymentMethods).toEqual([]);
+  });
+
+  it("setPaymentMethods replaces the list and bumps updated_at", () => {
+    const a = repo.create({ domainId, username: "methods", status: "active" });
+    const other = repo.create({ domainId, username: "bystander", status: "active" });
+    db.prepare("UPDATE addresses SET updated_at = 1000 WHERE id = ?").run(a.id);
+    const shielded = { type: "shielded", destination: "shrol21abc" };
+
+    repo.setPaymentMethods(a.id, [shielded, { type: "other", destination: "x" }]);
+    expect(repo.getById(a.id)!.paymentMethods).toEqual([shielded, { type: "other", destination: "x" }]);
+    expect(repo.getById(a.id)!.updatedAt).toBeGreaterThan(1000);
+    expect(repo.getById(other.id)!.paymentMethods).toEqual([]);
+
+    repo.setPaymentMethods(a.id, [{ type: "shielded", destination: "shrol21def" }]);
+    expect(repo.getById(a.id)!.paymentMethods).toEqual([{ type: "shielded", destination: "shrol21def" }]);
+
+    repo.setPaymentMethods(a.id, []);
+    expect(repo.getById(a.id)!.paymentMethods).toEqual([]);
+  });
+
+  it("a stored method list survives a corrupt entry beside it", () => {
+    const a = repo.create({ domainId, username: "corrupt", status: "active" });
+    db.prepare("UPDATE addresses SET payment_methods = ? WHERE id = ?")
+      .run('[{"type":"shielded","destination":"shrol21abc"},{"type":"Bad"}]', a.id);
+    expect(repo.getById(a.id)!.paymentMethods).toEqual([{ type: "shielded", destination: "shrol21abc" }]);
+  });
+
   it("enforces unique (domain, username)", () => {
     repo.create({ domainId, username: "dup", status: "active", sessionId: "s", encryptedToken: encryptToken("f".repeat(64), key) });
     expect(() =>

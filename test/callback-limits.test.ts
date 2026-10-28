@@ -13,6 +13,7 @@ beforeEach(() => {
   const domainId = repos.domains.create({ domain: "domain.com", allocationModes: ["self"] }).id;
   const alice = repos.addresses.create({ domainId, username: "alice", status: "active", sessionId: "sess-alice" });
   repos.addresses.setOfflineReceive(alice.id, "ark1qexampledestination", "02" + "ab".repeat(32));
+  repos.addresses.setPaymentMethods(alice.id, [{ type: "shielded", destination: "shrol21abc" }]);
 });
 afterEach(() => db.close());
 
@@ -68,5 +69,13 @@ describe("LUD-16 callback limiter", () => {
     expect([await callback(listed, "198.51.100.1"), await callback(listed, "198.51.100.2")]).toEqual([200, 200]);
     const unlisted = server({ trustProxy: false, callbackRateLimitPerMin: 1 });
     expect([await callback(unlisted, "198.51.100.1"), await callback(unlisted, "198.51.100.2")]).toEqual([200, 429]);
+  });
+
+  it("rate-limits the registered branch on the shared per-IP callback limiter", async () => {
+    const app = server({});
+    const registered = () => request(app).get("/.well-known/lnurlp/alice/callback?amount=50000&paymentOption=registered:shielded").set("Host", "domain.com");
+    for (let i = 0; i < 30; i++) expect((await registered()).body.status).toBe("OK");
+    expect((await registered()).status).toBe(429);
+    expect(await callback(app)).toBe(429);
   });
 });

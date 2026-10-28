@@ -70,4 +70,30 @@ describe("resolvePaymentOption", () => {
     });
     expect(resolvePaymentOption("LIGHTNING", noArkade)).toEqual({ kind: "lightning" });
   });
+
+  const withMethod = { ...withArkade, paymentMethods: [{ type: "shielded", destination: "shrol21abc" }] };
+
+  it("resolves a registered option to its destination, before the CAIP-19 branch", () => {
+    expect(resolvePaymentOption("registered:shielded", withMethod, [], "mutinynet")).toEqual({
+      kind: "registered", paymentOption: "registered:shielded", methodType: "shielded", paymentDestination: "shrol21abc",
+    });
+  });
+
+  it("resolves a registered option with no network configured", () => {
+    expect(resolvePaymentOption("registered:shielded", withMethod, []).kind).toBe("registered");
+  });
+
+  it("accepts the id in any case the payer sends", () => {
+    expect(resolvePaymentOption("Registered:Shielded", withMethod, [], "mutinynet").kind).toBe("registered");
+  });
+
+  it("refuses an unregistered type and a bare prefix", () => {
+    for (const id of ["registered:nope", "registered:", "registered"]) {
+      expect(resolvePaymentOption(id, withMethod, [], "mutinynet")).toEqual({ kind: "error", reason: "Unsupported paymentOption" });
+    }
+  });
+
+  it("still refuses a real CAIP-19 id on the wrong network", () => {
+    expect(resolvePaymentOption("arkade:bitcoin/slip44:0", withMethod, [], "mutinynet").kind).toBe("error");
+  });
 });

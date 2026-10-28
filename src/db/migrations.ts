@@ -8,7 +8,7 @@ interface Migration {
 const hasColumn = (db: Db, table: string, column: string): boolean =>
   (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === column);
 
-const MIGRATIONS: Migration[] = [
+export const MIGRATIONS: Migration[] = [
   {
     version: 1,
     up: `
@@ -398,6 +398,12 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_addresses_claim_code ON addresses(domain_id, claim_code_hash)
         WHERE claim_code_hash IS NOT NULL;
     `,
+  },
+  {
+    version: 29,
+    // Registered methods are a short per-address list always read with the row, so a JSON
+    // column beats a table: mirrors disabled_rails (migration 10).
+    up: `ALTER TABLE addresses ADD COLUMN payment_methods TEXT NOT NULL DEFAULT '[]';`,
   },
 ];
 
