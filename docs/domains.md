@@ -39,11 +39,14 @@ The server builds each callback as `<protocol>://<domain>`, using the protocol o
      If the site holds secrets, as a wallet does, forward only `/lnurl/<session id>` and its callback, since the rest of `/lnurl/` is the wallet API. Also:
      - drop `Authorization` and `Cookie` before forwarding;
      - serve the answers as `application/json` with `X-Content-Type-Options: nosniff` and `Content-Security-Policy: default-src 'none'; sandbox`, so nothing from upstream runs or sets cookies on that origin.
-   - **A domain on Cloudflare, served by Pages or a Worker:** a Worker or Pages Function on the payer paths fetches with `cf: { resolveOverride: "<origin record>" }`. The origin record is a proxied hostname in the same zone that points at the server, and the request keeps `Host: pay.example`. Cloudflare ignores the override for a hostname in another zone, so `*.pages.dev` previews cannot use it.
+   - **A domain on Cloudflare, served by Pages or a Worker:** a zone Worker on the routes `pay.example/.well-known/lnurlp/*` and `pay.example/lnurl/*` fetches with `cf: { resolveOverride: "<origin record>" }`. Zone routes take precedence over Pages.
+     - The origin record is a proxied hostname in the same zone, such as an A record for the server or a CNAME to it. The request keeps `Host: pay.example`.
+     - A Pages Function cannot do this. Cloudflare ignores its override, so its fetch loops back to Pages.
+     - Cloudflare also ignores the override when the hostname is in another zone, or does not exist.
 
      The server's route for the domain needs a certificate for `pay.example`. Use a Cloudflare Origin CA certificate with the zone's SSL mode at "Full (strict)". A Let's Encrypt HTTP-01 challenge cannot reach the server while the domain's traffic goes to Pages.
 
-     arkade-os/wallet serves arkade.money this way; see its `docs/lnurl-domain.md`.
+     arkade.money is served this way, in front of the arkade-os/wallet Pages app.
 3. **Point wallets at the domain.** Use `arkadeLnurl({ baseUrl: "https://lnurl.example.com", domain: "pay.example" })`. `@arkade-os/lnurl-client` 0.9.2 and later build the domain's LNURLs on `https://pay.example`. Earlier versions built them on `baseUrl`, where the server looks the address up in the wrong domain.
 
 ## Check
@@ -57,3 +60,5 @@ The server builds each callback as `<protocol>://<domain>`, using the protocol o
 | `Unknown or disabled domain` | The domain is not registered or is disabled, or `Host` was rewritten on the way. |
 | `This LNURL is no longer active` from `/lnurl/<session id>` | The request reached the server under another `Host`. From a wallet, this is often a client older than 0.9.2. |
 | A callback that starts with `http://` | The hop in front of the server reported plain HTTP. Check `X-Forwarded-Proto` and `TRUST_PROXY`. |
+| Cloudflare `Error 1016 Origin DNS error`, or a bare `error code: 502` | Cloudflare ignored the override, so the request went back to the domain itself. Check the override hostname, character for character, and that a zone Worker serves the routes, not a Pages Function. |
+| `401` with `WWW-Authenticate: Basic realm="traefik"` | The proxy's route for the domain carries an authentication middleware, for example one meant for the admin. |
