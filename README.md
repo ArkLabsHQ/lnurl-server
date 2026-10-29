@@ -137,7 +137,7 @@ When `DB_PATH` is set, choose a private `TOKEN_ENCRYPTION_KEY` or explicitly set
 
 ## LN Address (LUD-16)
 
-When persistence is enabled the service can serve Lightning addresses (`user@domain.com`). Resolution is host-based: the `Host` header of the incoming request selects the domain. Multi-domain setups are supported by routing different hostnames to the same server instance.
+When persistence is enabled the service can serve Lightning addresses (`user@domain.com`). Resolution is host-based: the `Host` header of the incoming request selects the domain. Multi-domain setups are supported by routing different hostnames to the same server instance. [docs/domains.md](docs/domains.md) covers setting a domain up, including one that already serves a site.
 
 - **Online** — `/.well-known/lnurlp/:username` returns pay metadata and the callback triggers an invoice request to the wallet's live SSE session.
 - **Offline** — if the wallet's SSE session is not active the callback returns an LNURL error (`status: "ERROR"`).
