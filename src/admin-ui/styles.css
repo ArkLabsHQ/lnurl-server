@@ -228,6 +228,8 @@ dl.kv dd { margin: 0; overflow-wrap: anywhere; }
 .health-title { font-weight: 600; text-decoration: none; }
 .health-title:hover { text-decoration: underline; }
 .health-detail { margin: 2px 0 0; color: var(--ink-2); font-size: 13px; }
+/* After the base rule, not in the shell's media block, or the base rule wins on order. */
+@media (max-width: 820px) { .health li { grid-template-columns: 1fr; gap: 4px; } }
 
 /* Address detail panel */
 .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
