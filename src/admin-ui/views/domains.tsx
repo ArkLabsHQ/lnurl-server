@@ -65,7 +65,7 @@ type ServerLimits = { min: number; max: number } | undefined;
 const modeShort = (id: AllocationMode) => MODES.find((m) => m.id === id)?.short ?? id;
 
 export const NameRulesText = ({ rules }: { rules: NameRules }) => (
-  <>{rules.usernameMinLen}–{rules.usernameMaxLen} characters from <code>{rules.usernamePattern}</code></>
+  <>{rules.usernameMinLen}–{rules.usernameMaxLen} characters from <code className="nowrap">{rules.usernamePattern}</code></>
 );
 const amountText = (min: number | null, max: number | null): string =>
   min == null && max == null ? "Server limits" : `${min != null ? sats(min) : "server min"} to ${max != null ? sats(max) : "server max"}`;
