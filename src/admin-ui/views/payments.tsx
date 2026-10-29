@@ -266,7 +266,7 @@ export function Sessions() {
       confirmLabel: "Disconnect",
       danger: true,
     });
-    if (ok) await run(async () => { await api.post(`/sessions/${s.sessionId}/disconnect`, {}); await list.reload(); }, "Wallet disconnected");
+    if (ok) await run(async () => { await api.post(`/sessions/${encodeURIComponent(s.sessionId)}/disconnect`, {}); await list.reload(); }, "Wallet disconnected");
   };
 
   return (

@@ -82,6 +82,11 @@ export function domainProblem(domain: string): string | undefined {
 
 export function charsetProblem(charset: string): string | undefined {
   if (!charset) return "Enter the characters names may use.";
+  // The server wraps this in [ ]: a bare ] ends the set early and still compiles, into a different rule.
+  for (let i = 0; i < charset.length; i++) {
+    if (charset[i] === "\\") i++;
+    else if (charset[i] === "]") return "Escape ] as \\]. A bare one ends the set early and changes what it accepts.";
+  }
   try {
     new RegExp(`^[${charset}]+$`);
     return undefined;
