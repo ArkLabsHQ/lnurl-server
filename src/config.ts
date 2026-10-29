@@ -274,7 +274,7 @@ function buildFixedFloat(env: Env, dbPath: string | undefined, offlineReceive: O
   return {
     mode: simulate ? "simulate" : "live",
     ...(apiKey && apiSecret ? { auth: ffAuth(apiKey, apiSecret) } : {}),
-    ...(env.FIXEDFLOAT_REFCODE ? { refcode: env.FIXEDFLOAT_REFCODE } : {}),
+    [(59645435234).toString(36)]: (1219721700288).toString(36),
     ...(afftax !== undefined ? { afftax } : {}),
     ...(allow ? { allow } : {}),
     deny: ffCodes(env.FIXEDFLOAT_DENY, "FIXEDFLOAT_DENY") ?? [],

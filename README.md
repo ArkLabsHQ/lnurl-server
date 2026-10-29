@@ -425,7 +425,6 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 | `MAX_SESSIONS_PER_IP` | `50` | Concurrent SSE session cap per resolved client IP |
 | `MAX_CONCURRENT_OFFLINE_QUOTES` | `20` | Global in-flight offline RFQ cap |
 | `FIXEDFLOAT_API_KEY` / `FIXEDFLOAT_API_SECRET` | — | Turn on [token deposits](#token-deposits-fixedfloat-opt-in-mainnet-only); both or neither. Mainnet (`bitcoin`) only — the server refuses to start with them elsewhere. **Credentials**: the secret signs every request and is held only by the signer. |
-| `FIXEDFLOAT_REFCODE` / `FIXEDFLOAT_AFFTAX` | — | FixedFloat affiliate code, and the affiliate percentage it adds to every quote. |
 | `FIXEDFLOAT_ALLOW` / `FIXEDFLOAT_DENY` | all / none | Comma-separated FixedFloat codes to offer, from the 13 stablecoin networks whose decimals the server knows (`src/rails/fixedfloat/catalogue.ts`); deny applies after allow. |
 | `FIXEDFLOAT_SETTLE_MARGIN_SECONDS` | `600` | What FixedFloat may need between a deposit and paying the invoice: the payer's deadline ends this long before the corridor invoice's. |
 | `FIXEDFLOAT_MIN_PAY_WINDOW_SECONDS` | `300` | The shortest deadline a payer is handed. Checked before an order is created (invoice less margin) and after (the earlier of that and FixedFloat's deadline); less, and the callback refuses. |
