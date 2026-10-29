@@ -22,12 +22,14 @@ on:
     paths:
       - "packages/demo-wallet/**"
       - "packages/client/**"
+      - "src/admin-ui/**"
       - ".github/workflows/browser-e2e.yml"
   push:
     branches: [main]
     paths:
       - "packages/demo-wallet/**"
       - "packages/client/**"
+      - "src/admin-ui/**"
       - ".github/workflows/browser-e2e.yml"
   workflow_dispatch:
 

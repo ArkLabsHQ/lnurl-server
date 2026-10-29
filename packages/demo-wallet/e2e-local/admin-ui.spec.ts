@@ -39,9 +39,12 @@ let server: LnurlServerHandle;
 let wallet: Wallet;
 let identity: { arkadeAddress: string; boardingAddress: string; claimPublicKey: string };
 
-/** The tab strip, which shares its labels with per-row buttons further down. */
-const tab = (page: Page, label: string) => page.locator("nav").getByRole("button", { name: label, exact: true });
+/** The sidebar, which shares its labels with buttons further down. */
+const tab = (page: Page, label: string) =>
+  page.getByRole("navigation", { name: "Admin sections" }).getByRole("link", { name: label, exact: true });
 const rowWith = (page: Page, text: string | RegExp) => page.getByRole("row").filter({ hasText: text });
+const dialog = (page: Page) => page.getByRole("dialog");
+const search = (page: Page) => page.getByRole("searchbox", { name: "Search", exact: true });
 
 async function register(username: string, opts?: { boarding?: boolean; apiKey?: string }) {
   const token = randomBytes(32).toString("hex");
@@ -109,17 +112,17 @@ test("rails: unchecking one in the Addresses tab removes it from the payRequest"
 
   await page.goto(ADMIN_BASE);
   await tab(page, "Rails").click();
-  await expect(rowWith(page, "Arkade destination")).toContainText("ready");
-  await expect(rowWith(page, "Covenant destinations")).toContainText("not configured");
+  await expect(rowWith(page, "Arkade destination")).toContainText("Ready");
+  await expect(rowWith(page, "Covenant destinations")).toContainText("Not configured");
 
   await tab(page, "Addresses").click();
-  await page.getByPlaceholder("search username…").fill(username);
-  await rowWith(page, username).getByRole("button", { name: "Rails" }).click();
-  const arkade = page.locator("label").filter({ hasText: "Arkade destination" }).getByRole("checkbox");
+  await search(page).fill(username);
+  await rowWith(page, username).getByRole("button", { name: "Manage" }).click();
+  const arkade = page.getByRole("checkbox", { name: "Arkade destination", exact: true });
   await expect(arkade).toBeChecked();
   // The operator view has to agree with the payRequest above, which advertises
   // onchain because this address registered a boarding address.
-  await expect(page.locator("label").filter({ hasText: "Onchain boarding" })).toContainText("serving");
+  await expect(page.locator("label").filter({ hasText: "Onchain boarding" })).toContainText("Serving");
 
   // click, not uncheck: the box is controlled by a round trip to the server, so
   // it holds its old state until that lands and `uncheck` asserts too early.
@@ -150,21 +153,27 @@ test("addresses and settlements link both ways, scoped by address id", async ({ 
   await expect(rowWith(page, `${other}@127.0.0.1`)).toBeVisible();
 
   await tab(page, "Addresses").click();
-  await page.getByPlaceholder("search username…").fill(mine);
-  await rowWith(page, mine).getByRole("button", { name: "Payments" }).click();
+  await search(page).fill(mine);
+  await rowWith(page, mine).getByRole("link", { name: "Payments" }).click();
 
-  await expect(page.getByText(`Filtered to ${mine}@127.0.0.1`)).toBeVisible();
+  const addressFilter = page.getByRole("combobox", { name: "Address", exact: true });
+  await expect(addressFilter).toHaveValue(`${mine}@127.0.0.1`);
   await expect(rowWith(page, `${mine}@127.0.0.1`)).toHaveCount(1);
   await expect(rowWith(page, `${other}@127.0.0.1`)).toHaveCount(0);
   expect(scoped.some((u) => /addressId=\d+/.test(u))).toBe(true);
 
-  await page.getByRole("button", { name: "show all" }).click();
+  await page.getByRole("button", { name: "Show all" }).click();
   await expect(rowWith(page, `${other}@127.0.0.1`)).toBeVisible();
 
   // The Address column is the way back in: it re-scopes to the row it names.
   await rowWith(page, `${other}@127.0.0.1`).getByRole("link", { name: `${other}@127.0.0.1` }).click();
-  await expect(page.getByText(`Filtered to ${other}@127.0.0.1`)).toBeVisible();
+  await expect(addressFilter).toHaveValue(`${other}@127.0.0.1`);
   await expect(rowWith(page, `${mine}@127.0.0.1`)).toHaveCount(0);
+
+  // Typing a whole address into the filter scopes to it as well.
+  await addressFilter.fill(`${mine}@127.0.0.1`);
+  await expect(rowWith(page, `${other}@127.0.0.1`)).toHaveCount(0);
+  await expect(rowWith(page, `${mine}@127.0.0.1`)).toHaveCount(1);
 });
 
 test("blacklist: a name blocked in the UI is refused at registration", async ({ page }) => {
@@ -172,15 +181,16 @@ test("blacklist: a name blocked in the UI is refused at registration", async ({ 
 
   await page.goto(ADMIN_BASE);
   await tab(page, "Blacklist").click();
-  await page.getByPlaceholder("username").fill(blocked);
-  await page.getByPlaceholder("reason (optional)").fill("e2e");
-  await page.getByRole("button", { name: "+ Block" }).click();
-  await expect(rowWith(page, blocked)).toContainText("global");
+  await page.getByRole("button", { name: "Block a username" }).first().click();
+  await dialog(page).getByRole("combobox", { name: "Username" }).fill(blocked);
+  await dialog(page).getByRole("textbox", { name: "Reason" }).fill("e2e");
+  await dialog(page).getByRole("button", { name: "Block", exact: true }).click();
+  await expect(rowWith(page, blocked)).toContainText("All domains");
 
   const refused = await register(blocked).catch((e: unknown) => e);
   expect(refused).toMatchObject({ code: "blacklisted", httpStatus: 409 });
 
-  await rowWith(page, blocked).getByRole("button", { name: "Remove" }).click();
+  await rowWith(page, blocked).getByRole("button", { name: "Unblock" }).click();
   await expect(rowWith(page, blocked)).toHaveCount(0);
   await register(blocked);
   expect((await payRequestOf(blocked)).tag).toBe("payRequest");
@@ -194,18 +204,19 @@ test("domains: disabling one in the editor takes its addresses off the air", asy
   await page.goto(ADMIN_BASE);
   await tab(page, "Domains").click();
   const row = rowWith(page, "127.0.0.1");
+  const enabled = dialog(page).getByRole("checkbox", { name: "Enabled", exact: true });
   await row.getByRole("button", { name: "Edit" }).click();
-  const enabled = page.locator("tr", { hasText: "Allocation modes" }).getByRole("checkbox").nth(5);
   await enabled.uncheck();
-  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await dialog(page).getByRole("button", { name: "Save changes" }).click();
 
-  await expect(row).toContainText("no");
+  await expect(row).toContainText("Disabled");
   await expect.poll(async () => (await payRequestOf(username)).reason)
     .toBe("Unknown or disabled domain");
 
   await row.getByRole("button", { name: "Edit" }).click();
-  await page.locator("tr", { hasText: "Allocation modes" }).getByRole("checkbox").nth(5).check();
-  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await enabled.check();
+  await dialog(page).getByRole("button", { name: "Save changes" }).click();
+  await expect(row).toContainText("Enabled");
   await expect.poll(async () => (await payRequestOf(username)).tag).toBe("payRequest");
 });
 
@@ -217,33 +228,36 @@ test("settings: an override moves the advertised bounds without a restart", asyn
   await page.goto(ADMIN_BASE);
   await tab(page, "Settings").click();
   const row = rowWith(page, "Max sendable");
-  await row.getByRole("textbox").fill("777000");
+  await row.getByRole("spinbutton").fill("777000");
   await row.getByRole("button", { name: "Save" }).click();
-  await expect(row).toContainText("(override)");
+  await expect(row).toContainText("Overridden");
 
   // The pair is an intersection, so a value below every rail's own cap is the
   // one the payRequest must then quote exactly.
   await expect.poll(async () => (await payRequestOf(username)).maxSendable).toBe(777_000);
 
   await row.getByRole("button", { name: "Reset" }).click();
-  await expect(row).not.toContainText("(override)");
+  await expect(row).not.toContainText("Overridden");
   await expect.poll(async () => (await payRequestOf(username)).maxSendable).toBe(before.maxSendable);
 });
 
 test("api keys: requiring one gates registration, and revoking it closes the door", async ({ page }) => {
   await page.goto(ADMIN_BASE);
-  await tab(page, "API Keys").click();
-  await page.getByPlaceholder("label").fill("e2e-key");
-  await page.getByRole("button", { name: "+ Create key" }).click();
-  const key = (await page.locator("p", { hasText: "Key (copy now)" }).locator("code").innerText()).trim();
+  await tab(page, "API keys").click();
+  await page.getByRole("button", { name: "New key" }).first().click();
+  await dialog(page).getByRole("textbox", { name: "Label" }).fill("e2e-key");
+  await dialog(page).getByRole("button", { name: "Create key" }).click();
+  const key = await dialog(page).getByRole("textbox", { name: "API key" }).inputValue();
   expect(key.length).toBeGreaterThan(16);
+  await dialog(page).getByRole("button", { name: "Done" }).click();
 
   await tab(page, "Domains").click();
   const domain = rowWith(page, "127.0.0.1");
+  const requireKey = dialog(page).getByRole("checkbox", { name: "Require API key" });
   await domain.getByRole("button", { name: "Edit" }).click();
-  await page.locator("tr", { hasText: "Allocation modes" }).getByRole("checkbox").nth(4).check();
-  await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(domain).toContainText("yes");
+  await requireKey.check();
+  await dialog(page).getByRole("button", { name: "Save changes" }).click();
+  await expect(domain).toContainText("Key required");
 
   const refused = await register(name("ak")).catch((e: unknown) => e);
   expect(refused).toMatchObject({ httpStatus: 401 });
@@ -252,17 +266,18 @@ test("api keys: requiring one gates registration, and revoking it closes the doo
   await register(accepted, { apiKey: key });
   expect((await payRequestOf(accepted)).tag).toBe("payRequest");
 
-  await tab(page, "API Keys").click();
+  await tab(page, "API keys").click();
   await rowWith(page, "e2e-key").getByRole("button", { name: "Revoke" }).click();
-  await expect(rowWith(page, "e2e-key")).toContainText("revoked");
+  await dialog(page).getByRole("button", { name: "Revoke key" }).click();
+  await expect(rowWith(page, "e2e-key")).toContainText("Revoked");
   const afterRevoke = await register(name("ak"), { apiKey: key }).catch((e: unknown) => e);
   expect(afterRevoke).toMatchObject({ httpStatus: 401 });
 
   await tab(page, "Domains").click();
   await domain.getByRole("button", { name: "Edit" }).click();
-  await page.locator("tr", { hasText: "Allocation modes" }).getByRole("checkbox").nth(4).uncheck();
-  await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(domain).toContainText("no");
+  await requireKey.uncheck();
+  await dialog(page).getByRole("button", { name: "Save changes" }).click();
+  await expect(domain).not.toContainText("Key required");
 });
 
 // Support's view of "the user says they were paid and nothing shows it". The
@@ -276,19 +291,20 @@ test("reconcile: the address panel and the sweep both report what the indexer ho
 
   await page.goto(ADMIN_BASE);
   await tab(page, "Addresses").click();
-  await page.getByPlaceholder("search username…").fill(mine);
-  await rowWith(page, mine).getByRole("button", { name: "Reconcile" }).click();
+  await search(page).fill(mine);
+  await rowWith(page, mine).getByRole("button", { name: "Manage" }).click();
+  await page.getByRole("button", { name: "Check arrivals" }).click();
 
   // Either outcome is a pass: what must not happen is a spinner that never
   // resolves or an error, both of which mean the route is not reachable.
   await expect(
-    page.getByText(/No arrivals at this address|no record|Recorded/).first(),
+    page.getByText(/No arrivals at this address|No record|Recorded/).first(),
   ).toBeVisible({ timeout: 60_000 });
 
   // The batch sweep answers the same question across every address at once.
   await tab(page, "Settlements").click();
   await page.getByRole("button", { name: "Check for unrecorded payments" }).click();
   await expect(
-    page.getByText(/is accounted for|have no settlement record/).first(),
+    page.getByText(/is accounted for|no settlement record/).first(),
   ).toBeVisible({ timeout: 60_000 });
 });
