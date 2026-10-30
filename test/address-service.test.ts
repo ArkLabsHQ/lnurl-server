@@ -201,6 +201,19 @@ describe("claim codes", () => {
     }
   });
 
+  it("redeems every kind of claim code for a wallet already at its address limit", () => {
+    const capped = repos.domains.create({ domain: "capped.example", allocationModes: ["random", "admin"], maxPerSession: 1 });
+    svc.register({ domain: capped, token: TOKEN });
+    expect(() => svc.register({ domain: capped, token: TOKEN })).toThrow(expect.objectContaining({ code: "limit_reached" }));
+    const claims = [
+      { claimCode: svc.reserve(capped, "alone").claimCode },
+      { username: "named", claimCode: svc.reserve(capped, "named").claimCode },
+      { username: "free", claimCode: svc.issueClaimCode(capped).claimCode },
+    ];
+    for (const claim of claims) expect(svc.register({ domain: capped, token: TOKEN, ...claim }).created).toBe(true);
+    expect(() => svc.register({ domain: capped, token: TOKEN })).toThrow(expect.objectContaining({ code: "limit_reached" }));
+  });
+
   it("names a nameless receiver with a reserved name's code alone, or a free code and a name", () => {
     const { address: reserved, claimCode: reservedCode } = svc.reserve(codes, "held");
     const first = svc.registerNameless({ domain: codes, token: TOKEN }).address;

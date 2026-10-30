@@ -32,7 +32,6 @@ export class AddressService {
       const existing = this.repos.addresses.getByDomainAndUsername(domain.id, username);
       if (existing && existing.status === "reserved") {
         this.assertReservationCode(domain, existing, p.claimCode);
-        this.enforceMax(domain, sessionId);
         this.repos.addresses.bind(existing.id, { sessionId, encryptedToken: encryptToken(token, this.key) });
         return this.result(domain, username, true);
       }
@@ -44,7 +43,7 @@ export class AddressService {
       }
       if (existing) throw new ProvisioningError("taken", "username already taken");
       const code = this.freeNameCode(domain, username, p.claimCode);
-      this.enforceMax(domain, sessionId);
+      if (!code) this.enforceMax(domain, sessionId);
       this.repos.transaction(() => {
         const address = this.repos.addresses.create({ domainId: domain.id, username, status: "active", sessionId, encryptedToken: encryptToken(token, this.key) });
         if (code) this.spend(code, address.id);
@@ -54,7 +53,6 @@ export class AddressService {
 
     if (p.claimCode) {
       const reserved = this.reservationFor(domain, p.claimCode);
-      this.enforceMax(domain, sessionId);
       this.repos.addresses.bind(reserved.id, { sessionId, encryptedToken: encryptToken(token, this.key) });
       return this.result(domain, reserved.username, true);
     }
@@ -252,6 +250,7 @@ export class AddressService {
     if (!this.repos.claimCodes.redeem(code.id, addressId)) throw new ProvisioningError("invalid_claim", "claim code already used");
   }
 
+  /** Caps what a wallet takes for itself. A claim code is the operator's grant, so redeeming one is never capped. */
   private enforceMax(domain: DomainRow, sessionId: string): void {
     if (domain.maxPerSession != null && this.repos.addresses.countActiveBySessionId(sessionId) >= domain.maxPerSession) {
       throw new ProvisioningError("limit_reached", "address limit reached for this wallet");

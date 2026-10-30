@@ -158,7 +158,7 @@ A `claimCode` that matches nothing, or was already spent, is refused with `inval
 Constraints enforced per domain:
 - **`allocationModes`** — which of `"self"`, `"random"`, `"admin"`, `"session"` the domain permits. `"session"` allows a receiver with no lightning address, reachable at `/lnurl/<sessionId>`.
 - **`requireApiKey`** — if true, requests must include a valid `X-API-Key` header.
-- **`max_per_session`** — cap on active addresses per wallet session.
+- **`max_per_session`** — cap on the active addresses a wallet takes for itself. Redeeming a claim code is never refused for it.
 - **`username_min_len` / `username_max_len` / `username_pattern`** — username validation rules.
 - **Blacklist** — per-domain and global username blacklist enforced at registration time.
 - **Registration rate limit** — per-IP limit controlled by `REGISTRATION_RATE_LIMIT` (requests/min per IP).
