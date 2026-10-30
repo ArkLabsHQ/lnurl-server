@@ -158,7 +158,7 @@ A `claimCode` that matches nothing, or was already spent, is refused with `inval
 Constraints enforced per domain:
 - **`allocationModes`** — which of `"self"`, `"random"`, `"admin"`, `"session"` the domain permits. `"session"` allows a receiver with no lightning address, reachable at `/lnurl/<sessionId>`.
 - **`requireApiKey`** — if true, requests must include a valid `X-API-Key` header.
-- **`max_per_session`** — cap on active addresses per wallet session.
+- **`max_per_session`** — cap on the active addresses a wallet takes for itself. Redeeming a claim code is never refused for it.
 - **`username_min_len` / `username_max_len` / `username_pattern`** — username validation rules.
 - **Blacklist** — per-domain and global username blacklist enforced at registration time.
 - **Registration rate limit** — per-IP limit controlled by `REGISTRATION_RATE_LIMIT` (requests/min per IP).
@@ -355,9 +355,11 @@ The Docker image binds to `0.0.0.0` so isolation happens at the container/proxy 
 | GET | `/admin/api/addresses` | List addresses newest first, one page at a time: `{ addresses, nextCursor }` (filter: `domainId`, `status`, `q`; `limit` defaults to 200, at most 1000; pass `nextCursor` back as `cursor`, absent on the last page) |
 | GET | `/admin/api/addresses/count` | Count every address: `{ count }` |
 | POST | `/admin/api/addresses` | Reserve or mint an address |
+| POST | `/admin/api/addresses/:id/claim-code` | Reissue a reserved address's claim code, shown once; the old code stops working (409 once claimed) |
 | GET | `/admin/api/claim-codes` | List free-name claim codes, never the codes themselves (filter: `domainId`) |
 | POST | `/admin/api/claim-codes` | Issue a free-name claim code for `{ domain }`, shown once |
 | DELETE | `/admin/api/claim-codes/:id` | Revoke an unspent claim code; a spent one is kept as the record of what it claimed (409) |
+| POST | `/admin/api/claim-codes/:id/reissue` | Reissue an unspent claim code, shown once; the old code stops working (409 once spent) |
 | PATCH | `/admin/api/addresses/:id` | Update address status (`active`/`revoked`) |
 | DELETE | `/admin/api/addresses/:id` | Delete address |
 | GET | `/admin/api/api-keys` | List API keys |
@@ -384,6 +386,8 @@ The admin port also serves a React SPA at `/` (the `lnurl-admin` UI).
 - **Reserve** — creates a `reserved` address with a one-time `claimCode`. Share the code with the wallet owner; the wallet sends it in a `POST /lnurl/address` request, alone or with the username, to claim and activate the address.
 - **Free-name claim code** — `POST /admin/api/claim-codes` issues a one-time code that reserves no name. Its holder sends it with any available username, which works on a domain without `"self"` mode too.
 - **Mint** — creates an `active` address pre-bound to a `secret` (the wallet token). The wallet can immediately use the address without claiming.
+
+A holder who lost a code gets a reissued one: the reservation or free-name code keeps its place, the new code is shown once, and the old one stops working.
 
 ## Configuration
 

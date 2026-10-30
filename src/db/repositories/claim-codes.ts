@@ -60,4 +60,13 @@ export class ClaimCodesRepo {
     if (this.db.prepare("DELETE FROM claim_codes WHERE id = ? AND redeemed_at IS NULL").run(id).changes === 1) return "revoked";
     return this.db.prepare("SELECT 1 FROM claim_codes WHERE id = ?").get(id) ? "spent" : "missing";
   }
+
+  /** Gives an unspent code a new hash, so the lost one stops working. `created_at` moves too: it dates the live code. */
+  reissue(id: number, codeHash: Buffer): "reissued" | "spent" | "missing" {
+    const swapped = this.db
+      .prepare("UPDATE claim_codes SET code_hash = ?, created_at = ? WHERE id = ? AND redeemed_at IS NULL")
+      .run(codeHash, Date.now(), id).changes === 1;
+    if (swapped) return "reissued";
+    return this.db.prepare("SELECT 1 FROM claim_codes WHERE id = ?").get(id) ? "spent" : "missing";
+  }
 }

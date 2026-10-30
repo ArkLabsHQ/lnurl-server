@@ -199,4 +199,11 @@ export class AddressesRepo {
       )
       .run(opts.sessionId, opts.encryptedToken.ciphertext, opts.encryptedToken.iv, opts.encryptedToken.tag, Date.now(), id);
   }
+
+  /** False unless the row is still a reservation: a claimed address has no code left to replace. */
+  setReservationCode(id: number, codeHash: Buffer): boolean {
+    return this.db
+      .prepare("UPDATE addresses SET claim_code_hash = ?, updated_at = ? WHERE id = ? AND status = 'reserved'")
+      .run(codeHash, Date.now(), id).changes === 1;
+  }
 }

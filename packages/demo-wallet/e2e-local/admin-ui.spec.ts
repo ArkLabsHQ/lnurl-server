@@ -280,6 +280,32 @@ test("api keys: requiring one gates registration, and revoking it closes the doo
   await expect(domain).not.toContainText("Key required");
 });
 
+test("claim codes: a reissued code claims the reserved name, and the lost one is refused", async ({ page }) => {
+  const username = name("rs");
+  await page.goto(ADMIN_BASE);
+  await tab(page, "Addresses").click();
+  await page.getByRole("button", { name: "New address" }).click();
+  await dialog(page).getByRole("radio", { name: "Reserve a name" }).check();
+  await dialog(page).getByRole("button", { name: "Next" }).click();
+  await dialog(page).getByRole("textbox", { name: "Username" }).fill(username);
+  await dialog(page).getByRole("button", { name: "Reserve name" }).click();
+  const lost = await dialog(page).getByRole("textbox", { name: "Claim code" }).inputValue();
+  await dialog(page).getByRole("button", { name: "Done" }).click();
+
+  await search(page).fill(username);
+  await rowWith(page, username).getByRole("button", { name: "Manage" }).click();
+  await page.getByRole("button", { name: "Reissue code" }).click();
+  await dialog(page).getByRole("button", { name: "Reissue code" }).click();
+  const fresh = await dialog(page).getByRole("textbox", { name: "Claim code" }).inputValue();
+  await dialog(page).getByRole("button", { name: "Done" }).click();
+
+  const owner = createLnurlClient({ baseUrl: server.base });
+  const refused = await owner.registerAddress({ token: randomBytes(32).toString("hex"), claimCode: lost }).catch((e: unknown) => e);
+  expect(refused).toMatchObject({ code: "invalid_claim", httpStatus: 401 });
+  const claimed = await owner.registerAddress({ token: randomBytes(32).toString("hex"), claimCode: fresh });
+  expect(claimed.username).toBe(username);
+});
+
 // Support's view of "the user says they were paid and nothing shows it". The
 // arrivals here are all attributed, because the watcher is running — the value
 // under test is that the check reaches the indexer and reports honestly, not

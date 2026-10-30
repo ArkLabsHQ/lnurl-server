@@ -30,6 +30,10 @@ export function adminClaimCodeRoutes(deps: AdminDeps): Router {
     if (outcome === "spent") throw new Conflict("a spent claim code stays as the record of the address it claimed");
     res.json({ ok: true });
   });
+  r.post("/claim-codes/:id/reissue", (req, res) => {
+    const id = idParam(req.params.id);
+    res.json({ id, claimCode: addressService.reissueClaimCode(id) });
+  });
 
   return r;
 }

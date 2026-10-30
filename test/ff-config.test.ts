@@ -83,9 +83,9 @@ describe("FixedFloat config", () => {
     expect(cfg.settleMarginSeconds + cfg.minPayWindowSeconds).toBeLessThan(1_800);
   });
 
-  it("reads allow, deny, refcode and afftax, refusing a code the asset table lacks", () => {
-    const cfg = loadConfig({ ...LIVE, FIXEDFLOAT_ALLOW: "usdtarbitrum, USDTSOL", FIXEDFLOAT_DENY: "USDTSOL", FIXEDFLOAT_REFCODE: "ref", FIXEDFLOAT_AFFTAX: "0.5" }).fixedFloat!;
-    expect(cfg).toMatchObject({ allow: ["USDTARBITRUM", "USDTSOL"], deny: ["USDTSOL"], refcode: "ref", afftax: 0.5 });
+  it("reads allow, deny and afftax, refusing a code the asset table lacks", () => {
+    const cfg = loadConfig({ ...LIVE, FIXEDFLOAT_ALLOW: "usdtarbitrum, USDTSOL", FIXEDFLOAT_DENY: "USDTSOL", FIXEDFLOAT_AFFTAX: "0.5" }).fixedFloat!;
+    expect(cfg).toMatchObject({ allow: ["USDTARBITRUM", "USDTSOL"], deny: ["USDTSOL"], afftax: 0.5 });
     expect(() => loadConfig({ ...LIVE, FIXEDFLOAT_ALLOW: "USDTBSC" })).toThrow(/USDTBSC/);
     expect(() => loadConfig({ ...LIVE, FIXEDFLOAT_AFFTAX: "-1" })).toThrow(/FIXEDFLOAT_AFFTAX/);
   });

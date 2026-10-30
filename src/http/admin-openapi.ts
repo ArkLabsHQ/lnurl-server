@@ -332,6 +332,22 @@ export const adminOpenApiSpec = {
       },
       delete: { summary: "Delete an address", tags: ["Addresses"], parameters: [idParam], responses: { ...OK } },
     },
+    "/addresses/{id}/claim-code": {
+      post: {
+        summary: "Reissue a reserved address's claim code",
+        description: "For an owner who lost the code. The old code stops working.",
+        tags: ["Addresses"],
+        parameters: [idParam],
+        responses: {
+          "200": {
+            description: "The new `claimCode`, shown once",
+            content: { "application/json": { schema: { type: "object", properties: { id: { type: "integer" }, claimCode: { type: "string" } } } } },
+          },
+          ...errorResponse("404", "Address not found"),
+          ...errorResponse("409", "The address is not reserved"),
+        },
+      },
+    },
     "/claim-codes": {
       get: {
         summary: "List free-name claim codes",
@@ -382,6 +398,22 @@ export const adminOpenApiSpec = {
         parameters: [idParam],
         responses: {
           ...OK,
+          ...errorResponse("404", "Claim code not found"),
+          ...errorResponse("409", "The claim code was already spent"),
+        },
+      },
+    },
+    "/claim-codes/{id}/reissue": {
+      post: {
+        summary: "Reissue an unspent free-name claim code",
+        description: "For a holder who lost the code. The old code stops working.",
+        tags: ["Addresses"],
+        parameters: [idParam],
+        responses: {
+          "200": {
+            description: "The new `claimCode`, shown once",
+            content: { "application/json": { schema: { type: "object", properties: { id: { type: "integer" }, claimCode: { type: "string" } } } } },
+          },
           ...errorResponse("404", "Claim code not found"),
           ...errorResponse("409", "The claim code was already spent"),
         },
