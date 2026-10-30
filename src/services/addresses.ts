@@ -123,6 +123,23 @@ export class AddressService {
     return { code: this.repos.claimCodes.create(domain.id, hashSecret(claimCode)), claimCode };
   }
 
+  /** A fresh code for a reservation whose code was lost. The old one stops working. */
+  reissueReservation(id: number): string {
+    const claimCode = randomBytes(16).toString("hex");
+    if (this.repos.addresses.setReservationCode(id, hashSecret(claimCode))) return claimCode;
+    if (!this.repos.addresses.getById(id)) throw new ProvisioningError("not_found", "address not found");
+    throw new ProvisioningError("taken", "only a reserved address has a claim code to reissue");
+  }
+
+  /** The same for a free-name code nobody has spent. */
+  reissueClaimCode(id: number): string {
+    const claimCode = randomBytes(16).toString("hex");
+    const outcome = this.repos.claimCodes.reissue(id, hashSecret(claimCode));
+    if (outcome === "missing") throw new ProvisioningError("not_found", "claim code not found");
+    if (outcome === "spent") throw new ProvisioningError("taken", "a spent claim code can't be reissued");
+    return claimCode;
+  }
+
   mint(domain: DomainRow, username: string): { address: AddressRow; secret: string } {
     const u = username.toLowerCase();
     if (this.repos.addresses.getByDomainAndUsername(domain.id, u)) throw new ProvisioningError("taken", "username already taken");

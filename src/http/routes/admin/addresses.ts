@@ -57,6 +57,10 @@ export function adminAddressRoutes(deps: AdminDeps): Router {
       res.status(201).json({ id: address.id, username: address.username, domain: domain.domain, status: address.status, claimCode });
     }
   });
+  r.post("/addresses/:id/claim-code", (req, res) => {
+    const id = idParam(req.params.id);
+    res.json({ id, claimCode: addressService.reissueReservation(id) });
+  });
   r.patch("/addresses/:id", (req, res) => {
     const status = (req.body ?? {}).status as AddressStatus | undefined;
     if (status !== "active" && status !== "revoked") throw new BadRequest("status must be active or revoked");

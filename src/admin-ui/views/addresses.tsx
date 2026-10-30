@@ -158,6 +158,7 @@ function AddressDetail({ address, onChanged }: { address: Address; onChanged: ()
   const { run, busy } = useAction();
   const confirm = useConfirm();
   const [arrivals, setArrivals] = useState<ReconcileRow | Error | "checking">();
+  const [code, setCode] = useState<string>();
   const name = nameOf(address);
 
   const setRail = (railId: string, label: string, on: boolean) => run(async () => {
@@ -184,6 +185,15 @@ function AddressDetail({ address, onChanged }: { address: Address; onChanged: ()
     })) return;
     await run(async () => { await api.patch(`/addresses/${address.id}`, { status: next }); await onChanged(); },
       next === "revoked" ? `${name} revoked` : `${name} reactivated`);
+  };
+
+  const reissue = async () => {
+    if (!await confirm({
+      title: `Reissue the code for ${name}?`,
+      body: <p>The current code stops working. Share the new one with its owner.</p>,
+      confirmLabel: "Reissue code",
+    })) return;
+    await run(async () => setCode((await api.post<{ claimCode: string }>(`/addresses/${address.id}/claim-code`, {})).claimCode));
   };
 
   const remove = async () => {
@@ -251,7 +261,10 @@ function AddressDetail({ address, onChanged }: { address: Address; onChanged: ()
             <h3>Status</h3>
             {/* Not for a reservation: the server would happily mark it active, with no wallet and a dead code. */}
             {address.status === "reserved" ? (
-              <p>Reserved until its owner claims it with the code. Delete it to release the name; the code then stops working.</p>
+              <>
+                <p>Reserved until its owner claims it with the code. If they lost it, reissue it: the old code stops working.</p>
+                <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void reissue()}>Reissue code</button>
+              </>
             ) : address.status === "revoked" ? (
               <>
                 <p>Revoked: payers get an error. Reactivate it to accept payments again.</p>
@@ -263,10 +276,15 @@ function AddressDetail({ address, onChanged }: { address: Address; onChanged: ()
                 <button type="button" className="btn btn-sm btn-danger" disabled={busy} onClick={() => void setStatus("revoked")}>Revoke</button>
               </>
             )}
-            {address.status !== "reserved" && <p className="mt">Delete to remove it and free the name.</p>}
+            <p className="mt">{address.status === "reserved" ? "Delete it to release the name; the code then stops working." : "Delete to remove it and free the name."}</p>
             <button type="button" className="btn btn-sm btn-danger" disabled={busy} onClick={() => void remove()}>Delete</button>
           </section>
         </div>
+        {code && (
+          <SecretDialog title="Claim code reissued" label="Claim code" secret={code} onClose={() => setCode(undefined)}>
+            <p><strong>{name}</strong> stays reserved. Share this code with its owner; the old one no longer works.</p>
+          </SecretDialog>
+        )}
       </td>
     </tr>
   );
@@ -414,14 +432,27 @@ function ClaimCodes({ domains, version }: { domains: Domain[]; version: number }
   const list = useLoad(() => api.get<{ claimCodes: ClaimCode[] }>(`/claim-codes${query({ domainId })}`).then((r) => r.claimCodes), [domainId, version]);
   const confirm = useConfirm();
   const { run, busy } = useAction();
+  const [reissued, setReissued] = useState<{ domain: string | null; claimCode: string }>();
   const revoke = async (c: ClaimCode) => {
     if (!await confirm({
       title: "Revoke this claim code?",
-      body: <p>Whoever holds it can no longer register with it. Codes can't be shown again, so issue a new one if they still need an address.</p>,
+      body: <p>Whoever holds it can no longer register with it. If they lost it and still need an address, reissue it instead.</p>,
       confirmLabel: "Revoke code",
       danger: true,
     })) return;
     await run(async () => { await api.del(`/claim-codes/${c.id}`); await list.reload(); }, "Claim code revoked");
+  };
+  const reissue = async (c: ClaimCode) => {
+    if (!await confirm({
+      title: "Reissue this claim code?",
+      body: <p>The current code stops working. Give the new one to whoever should register with it.</p>,
+      confirmLabel: "Reissue code",
+    })) return;
+    await run(async () => {
+      const r = await api.post<{ claimCode: string }>(`/claim-codes/${c.id}/reissue`, {});
+      setReissued({ domain: c.domain, claimCode: r.claimCode });
+      await list.reload();
+    });
   };
   const rows = list.data ?? [];
   return (
@@ -435,7 +466,7 @@ function ClaimCodes({ domains, version }: { domains: Domain[]; version: number }
             </select>
           )}
         </Field>
-        <span className="toolbar-note">Codes for any free name. A reserved name's code belongs to its address instead.</span>
+        <span className="toolbar-note">Codes for any free name. A reserved name's code belongs to its address instead: reissue it there.</span>
       </div>
       {list.error && <LoadError error={list.error} retry={list.reload} />}
       {list.loading ? <Loading what="claim codes" /> : !list.data ? null : rows.length === 0 ? (
@@ -458,13 +489,23 @@ function ClaimCodes({ domains, version }: { domains: Domain[]; version: number }
                     ) : <Badge tone="info" title="Nobody has registered with it yet">Unused</Badge>}
                   </td>
                   <td className="actions">
-                    {!c.redeemedAt && <button type="button" className="btn btn-sm btn-danger" disabled={busy} onClick={() => void revoke(c)}>Revoke</button>}
+                    {!c.redeemedAt && (
+                      <>
+                        <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void reissue(c)}>Reissue</button>
+                        <button type="button" className="btn btn-sm btn-danger" disabled={busy} onClick={() => void revoke(c)}>Revoke</button>
+                      </>
+                    )}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      )}
+      {reissued && (
+        <SecretDialog title="Claim code reissued" label="Claim code" secret={reissued.claimCode} onClose={() => setReissued(undefined)}>
+          <p>Give this code to the person who should get an address on <strong>{reissued.domain}</strong>. The old one no longer works.</p>
+        </SecretDialog>
       )}
     </>
   );

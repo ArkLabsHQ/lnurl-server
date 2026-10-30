@@ -214,6 +214,23 @@ describe("claim codes", () => {
     expect(() => svc.register({ domain: capped, token: TOKEN })).toThrow(expect.objectContaining({ code: "limit_reached" }));
   });
 
+  it("reissues a lost code: the old one claims nothing, the new one claims, and a used one has nothing to reissue", () => {
+    const { address, claimCode: lostReserved } = svc.reserve(codes, "held");
+    const { code, claimCode: lostFree } = svc.issueClaimCode(codes);
+    const reserved = svc.reissueReservation(address.id);
+    const free = svc.reissueClaimCode(code.id);
+
+    expect(() => svc.register({ domain: codes, token: TOKEN, claimCode: lostReserved }))
+      .toThrow(expect.objectContaining({ code: "invalid_claim" }));
+    expect(() => svc.register({ domain: codes, username: "picked", token: TOKEN, claimCode: lostFree }))
+      .toThrow(expect.objectContaining({ code: "invalid_claim" }));
+    expect(svc.register({ domain: codes, token: TOKEN, claimCode: reserved }).lightningAddress).toBe("held@codes.example");
+    expect(svc.register({ domain: codes, username: "picked", token: TOKEN, claimCode: free }).lightningAddress).toBe("picked@codes.example");
+
+    expect(() => svc.reissueReservation(address.id)).toThrow(expect.objectContaining({ code: "taken" }));
+    expect(() => svc.reissueClaimCode(code.id)).toThrow(expect.objectContaining({ code: "taken" }));
+  });
+
   it("names a nameless receiver with a reserved name's code alone, or a free code and a name", () => {
     const { address: reserved, claimCode: reservedCode } = svc.reserve(codes, "held");
     const first = svc.registerNameless({ domain: codes, token: TOKEN }).address;

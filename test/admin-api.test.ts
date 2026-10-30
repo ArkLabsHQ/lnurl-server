@@ -166,6 +166,25 @@ describe("admin API", () => {
     expect((await request(app).post("/admin/api/claim-codes").send({ domain: "unknown.com" })).status).toBe(404);
   });
 
+  it("reissues a reservation's code and an unspent free code, and refuses anything already claimed", async () => {
+    await request(app).post("/admin/api/domains").send({ domain: "domain.com", allocationModes: ["admin"] });
+    const reserved = await request(app).post("/admin/api/addresses").send({ domain: "domain.com", username: "vip", mode: "reserve" });
+    const minted = await request(app).post("/admin/api/addresses").send({ domain: "domain.com", username: "given", mode: "mint" });
+    const free = await request(app).post("/admin/api/claim-codes").send({ domain: "domain.com" });
+
+    const fresh = { claimCode: expect.stringMatching(/^[0-9a-f]{32}$/) };
+    const again = await request(app).post(`/admin/api/addresses/${reserved.body.id}/claim-code`);
+    expect([again.status, again.body]).toEqual([200, { id: reserved.body.id, ...fresh }]);
+    const freeAgain = await request(app).post(`/admin/api/claim-codes/${free.body.id}/reissue`);
+    expect([freeAgain.status, freeAgain.body]).toEqual([200, { id: free.body.id, ...fresh }]);
+
+    expect((await request(app).post(`/admin/api/addresses/${minted.body.id}/claim-code`)).status).toBe(409);
+    expect((await request(app).post("/admin/api/addresses/9999/claim-code")).status).toBe(404);
+    repos.claimCodes.redeem(free.body.id, minted.body.id);
+    expect((await request(app).post(`/admin/api/claim-codes/${free.body.id}/reissue`)).status).toBe(409);
+    expect((await request(app).post("/admin/api/claim-codes/9999/reissue")).status).toBe(404);
+  });
+
   it("creates an API key (raw shown once) and lists without the raw", async () => {
     const created = await request(app).post("/admin/api/api-keys").send({ label: "ci" });
     expect(created.body.key).toMatch(/^[0-9a-f]{64}$/);
