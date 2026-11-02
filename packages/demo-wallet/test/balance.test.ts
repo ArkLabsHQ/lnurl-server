@@ -4,7 +4,7 @@ import { balanceView } from "../src/balance.js";
 
 const balance = (over: Partial<WalletBalance>): WalletBalance => ({
   boarding: { confirmed: 0, unconfirmed: 0, total: 0 },
-  settled: 0, preconfirmed: 0, available: 0, gated: 0, intentLocked: 0,
+  settled: 0, preconfirmed: 0, available: 0, contractLocked: 0, pendingSettlement: 0,
   recoverable: 0, total: 0,
   ...over,
 } as WalletBalance);
@@ -19,16 +19,16 @@ describe("balanceView", () => {
   });
 
   it("says what is settling when an offboard has locked the whole balance", () => {
-    expect(balanceView(balance({ available: 0, settled: 985_377, intentLocked: 985_377 })))
+    expect(balanceView(balance({ available: 0, settled: 985_377, pendingSettlement: 985_377 })))
       .toEqual({ sats: 0, settling: 985_377 });
   });
 
   it("reports a partial lock alongside what is still spendable", () => {
-    expect(balanceView(balance({ available: 3_000, intentLocked: 12_000 })))
+    expect(balanceView(balance({ available: 3_000, pendingSettlement: 12_000 })))
       .toEqual({ sats: 3_000, settling: 12_000 });
   });
 
   it("stays quiet when the wallet reports nothing in flight", () => {
-    expect(balanceView(balance({ available: 500, intentLocked: 0 }))).toEqual({ sats: 500 });
+    expect(balanceView(balance({ available: 500, pendingSettlement: 0 }))).toEqual({ sats: 500 });
   });
 });

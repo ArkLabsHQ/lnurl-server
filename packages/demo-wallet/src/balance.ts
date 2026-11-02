@@ -7,11 +7,11 @@ export interface BalanceView {
 }
 
 /** Inert as wired: the SDK reads intent locks from `config.storage.intentRepository`,
- *  which gets no IndexedDB default and this wallet does not pass one, so `intentLocked`
+ *  which gets no IndexedDB default and this wallet does not pass one, so `pendingSettlement`
  *  is always 0 and `settling` never renders. Confirmed against a funded offboard. */
 export function balanceView(balance: WalletBalance | null): BalanceView {
   if (!balance) return { sats: null };
-  const settling = balance.intentLocked;
+  const settling = balance.pendingSettlement;
   return typeof settling === "number" && settling > 0
     ? { sats: balance.available, settling }
     : { sats: balance.available };

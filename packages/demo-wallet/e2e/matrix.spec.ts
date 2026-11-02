@@ -207,7 +207,7 @@ test("pays a lightning address's onchain option by offboarding to its boarding a
     const bBefore = await balanceOf(b.page);
 
     // The generic onchain rail, which offboards VTXOs to a Bitcoin address.
-    // Nothing asserts the settling indicator: `intentLocked` is always 0 here.
+    // Nothing asserts the settling indicator: `pendingSettlement` is always 0 here.
     await pay(a.page, boarding, ONCHAIN, "onchain", "A->B onchain");
 
     // Arrival is the whole point and the slowest part: the offboard has to
