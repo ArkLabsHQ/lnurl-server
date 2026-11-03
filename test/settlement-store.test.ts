@@ -136,6 +136,107 @@ describe.each(clocked)("%s active covenant window", (_name, make) => {
   });
 });
 
+describe.each(clocked)("%s late-sweep tail", (_name, make) => {
+  const WATCH = 86_400_000;
+  const TAIL = WATCH * 4;
+  const PAGE = { limit: 100 };
+  const lapsed = (s: SettlementStore, hash: string, script: string) =>
+    s.create({ paymentHash: hash, pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: script });
+  const scripts = (s: SettlementStore, tailMs = TAIL, opts = PAGE) =>
+    s.listLapsedCovenantScripts(tailMs, opts).map((r) => r.covenantScript);
+
+  it("picks up an unpaid destination the moment the attribution window closes", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    lapsed(s, "unpaid", "0014aa");
+    // Still attributable, so the ordinary sweep scope owns it, not this one.
+    expect(scripts(s)).toEqual([]);
+
+    t = 1000 + WATCH;
+    expect(s.listActiveCovenantScripts()).toEqual([]);
+    expect(scripts(s)).toEqual(["0014aa"]);
+  });
+
+  it("drops it once the tail runs out", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    lapsed(s, "unpaid", "0014aa");
+
+    // Half-open, like the active window: out at created + watch + tail exactly.
+    t = 1000 + WATCH + TAIL - 1;
+    expect(scripts(s)).toEqual(["0014aa"]);
+    t += 1;
+    expect(scripts(s)).toEqual([]);
+  });
+
+  it("never reports a settled or already-swept destination, which the active scope owns", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    lapsed(s, "settled", "0014bb");
+    lapsed(s, "swept", "0014cc");
+    s.markObserved("settled", "tx-in");
+    s.markPaidOut("swept", "sweep-tx");
+
+    t = 1000 + WATCH;
+    expect(scripts(s)).toEqual([]);
+  });
+
+  it("reports nothing at all with the tail disabled", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    lapsed(s, "unpaid", "0014aa");
+
+    t = 1000 + WATCH;
+    expect(scripts(s, 0)).toEqual([]);
+  });
+
+  it("returns at most one page however long the tail is, in (createdAt, script) order", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    for (let i = 0; i < 25; i++) {
+      t = 1000 + i;
+      lapsed(s, `h-${i}`, `0014${i.toString(16).padStart(4, "0")}`);
+    }
+
+    t = 1000 + WATCH + 100;
+    const page = s.listLapsedCovenantScripts(TAIL, { limit: 10 });
+    expect(page).toHaveLength(10);
+    expect(page.map((r) => r.covenantScript)).toEqual(
+      Array.from({ length: 10 }, (_, i) => `0014${i.toString(16).padStart(4, "0")}`),
+    );
+    expect(page[0]).toMatchObject({ createdAt: 1000 });
+  });
+
+  it("resumes after a cursor and ends with a short page", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    for (let i = 0; i < 12; i++) {
+      t = 1000 + i;
+      lapsed(s, `h-${i}`, `0014${i.toString(16).padStart(4, "0")}`);
+    }
+
+    t = 1000 + WATCH + 100;
+    const first = s.listLapsedCovenantScripts(TAIL, { limit: 10 });
+    const second = s.listLapsedCovenantScripts(TAIL, { limit: 10, after: first[first.length - 1]! });
+    expect(second.map((r) => r.covenantScript)).toEqual(["0014000a", "0014000b"]);
+
+    // Every row seen exactly once across the two pages.
+    expect(new Set([...first, ...second].map((r) => r.covenantScript)).size).toBe(12);
+  });
+
+  it("tie-breaks a shared createdAt by script, so no row is skipped or repeated", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    for (const script of ["0014cc", "0014aa", "0014bb"]) lapsed(s, `h-${script}`, script);
+
+    t = 1000 + WATCH;
+    const first = s.listLapsedCovenantScripts(TAIL, { limit: 2 });
+    expect(first.map((r) => r.covenantScript)).toEqual(["0014aa", "0014bb"]);
+    const second = s.listLapsedCovenantScripts(TAIL, { limit: 2, after: first[1]! });
+    expect(second.map((r) => r.covenantScript)).toEqual(["0014cc"]);
+  });
+});
+
 it("MemorySettlementStore's periodic sweep keeps a destination still owed a sweep", () => {
   let t = 1000;
   const s = new MemorySettlementStore(5000, () => t, 5000);

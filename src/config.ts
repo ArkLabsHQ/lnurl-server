@@ -88,6 +88,9 @@ export interface AppConfig {
   /** How long a handed-out destination stays watched. Separate from verifyTtlMs
    *  because a hold invoice expires and a destination does not. */
   destinationWatchMs: number;
+  /** How long past `destinationWatchMs` a never-paid covenant destination is still
+   *  swept if it turns out funded; 0 disables. @see workers/covenant-late-sweep.ts */
+  destinationLateSweepMs: number;
   dbPath?: string;
   adminPort: number;
   adminBind: string;
@@ -199,6 +202,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
     invoiceTimeoutMs: integer(env, "INVOICE_TIMEOUT_MS", 30_000, { min: 1 }),
     verifyTtlMs: integer(env, "VERIFY_TTL_MS", 86_400_000, { min: 1 }),
     destinationWatchMs: integer(env, "DESTINATION_WATCH_MS", 604_800_000, { min: 1 }),
+    destinationLateSweepMs: integer(env, "DESTINATION_LATE_SWEEP_MS", 2_592_000_000, { min: 0 }),
     dbPath,
     adminPort,
     adminBind: env.ADMIN_BIND || "127.0.0.1",

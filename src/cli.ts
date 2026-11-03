@@ -251,12 +251,21 @@ async function main(): Promise<void> {
       });
       // Built before the watcher so its trigger can be handed over: the event that
       // settles a covenant payment is the same event that makes it sweepable.
-      const sweeper = startCovenantSweeper(
-        createCovenantSweeper({ contracts, arkServerUrl: off.arkServerUrl!, emulatorUrl: off.emulatorUrl!, settlements, renewer }),
-        15_000,
-      );
+      const covenantSweeper = createCovenantSweeper({ contracts, arkServerUrl: off.arkServerUrl!, emulatorUrl: off.emulatorUrl!, settlements, renewer });
+      const sweeper = startCovenantSweeper(covenantSweeper, 15_000);
       runtime.addStop(sweeper.stop);
       runtime.addStop(startCovenantWatcher(settlements, contracts, off.pollIntervalMs, sweeper.trigger));
+      // Its own slow budgeted loop: the backlog is every destination never paid.
+      if (config.destinationLateSweepMs && config.destinationLateSweepMs > 0) {
+        const { startCovenantLateSweep } = await import("./workers/covenant-late-sweep.js");
+        runtime.addStop(startCovenantLateSweep({
+          settlements,
+          indexer: new RestIndexerProvider(off.arkServerUrl!),
+          sweeper: covenantSweeper,
+          tailMs: config.destinationLateSweepMs,
+        }).stop);
+        console.log(`covenant late sweep: enabled (tail=${config.destinationLateSweepMs}ms past DESTINATION_WATCH_MS)`);
+      }
       console.log(`covenant destinations: enabled (emulator=${off.emulatorUrl}, recovery=${off.covenantRecoveryDelaySeconds ?? arkUnilateralExitDelay}s)`);
     }
     // Both rails leak a watched script per payment request, and either can be on

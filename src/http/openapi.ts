@@ -904,9 +904,11 @@ export const openApiSpec = {
                           description:
                             "Unix seconds after which this server stops attributing payments to this quote. A BOLT11 " +
                             "carries its own expiry and an address carries none, so without this the payer cannot know " +
-                            "one exists. NOT a deadline on the money: past it a payment still reaches the destination, " +
-                            "and on the covenant rail the sweeper still moves it — what lapses is the record, so verify " +
-                            "answers Expired and the payment leaves no trace in the address's history. Absent on rails " +
+                            "one exists. NOT a deadline on the money: past it a payment still reaches the destination " +
+                            "— what lapses is the record, so verify answers Expired and the payment leaves no trace in " +
+                            "the address's history. On the covenant rail the sweep outlives it too, but only for the " +
+                            "bounded tail DESTINATION_LATE_SWEEP_MS adds; past that nothing here moves the funds and " +
+                            "only the payee's own wallet can. Absent on rails " +
                             "nothing here watches, such as onchain boarding and registered methods, and on token options, whose deadline is " +
                             "paymentQuote.expiresAt.",
                         },

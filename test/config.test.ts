@@ -71,6 +71,12 @@ describe("loadConfig", () => {
     expect(loadConfig({ ...base, VERIFY_TTL_MS: "1000" }).verifyTtlMs).toBe(1000);
   });
 
+  it("reads DESTINATION_LATE_SWEEP_MS with a 30d default, 0 disabling it", () => {
+    expect(loadConfig({ ...base }).destinationLateSweepMs).toBe(2_592_000_000);
+    expect(loadConfig({ ...base, DESTINATION_LATE_SWEEP_MS: "0" }).destinationLateSweepMs).toBe(0);
+    expect(() => loadConfig({ ...base, DESTINATION_LATE_SWEEP_MS: "-1" })).toThrow(/DESTINATION_LATE_SWEEP_MS/);
+  });
+
   it("reads OFFLINE_POLL_INTERVAL_MS with the 15s default", () => {
     expect(loadConfig({ ...base }).offlineReceive.pollIntervalMs).toBe(15_000);
     expect(loadConfig({ ...base, OFFLINE_POLL_INTERVAL_MS: "3000" }).offlineReceive.pollIntervalMs).toBe(3000);

@@ -22,7 +22,11 @@ type ContractScope = NonNullable<Parameters<IContractManager["getContracts"]>[0]
  *  Scripts alone, the primary key: `type = ?` beside three or more made SQLite read
  *  every covenant ever issued. {@link resolveCovenants} checks the type instead. */
 export function activeCovenantFilters(store: SettlementStore): ContractScope[] {
-  const scripts = store.listActiveCovenantScripts();
+  return covenantFiltersFor(store.listActiveCovenantScripts());
+}
+
+/** The same chunking for a caller that already has the scripts — the late sweep. */
+export function covenantFiltersFor(scripts: readonly string[]): ContractScope[] {
   const filters: ContractScope[] = [];
   for (let i = 0; i < scripts.length; i += SCOPE_CHUNK) {
     filters.push({ script: scripts.slice(i, i + SCOPE_CHUNK) });
