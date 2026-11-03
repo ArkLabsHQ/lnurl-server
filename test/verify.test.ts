@@ -106,6 +106,22 @@ describe("LUD-21 verify — emission", () => {
     } finally { session.abort(); }
   });
 
+  it("records the invoice's own deadline beside it", async () => {
+    const store = new MemorySettlementStore(86_400_000);
+    const own = await startServer({ settlements: store } as unknown as ServerDeps);
+    const session = await openSession(own.baseUrl);
+    try {
+      const hash = createHash("sha256").update(Buffer.from("22".repeat(32), "hex")).digest("hex");
+      const evt = nextSseEvent(session.response);
+      const payer = jsonRequest(`${own.baseUrl}/lnurl/${session.sessionId}/callback?amount=50000`);
+      await evt;
+      await jsonRequest(`${own.baseUrl}/lnurl/session/${session.sessionId}/invoice`, "POST", { pr: buildInvoice(hash) }, session.token);
+      await payer;
+      // buildInvoice stamps timestamp 0 and no `x` tag, so BOLT11's default 3600 s applies.
+      expect(store.listRecent(1)[0]!.expiresAt).toBe(3_600_000);
+    } finally { session.abort(); await own.close(); }
+  });
+
   it("omits verify (but still returns pr) when the bolt11 can't be decoded", async () => {
     const session = await openSession(ctx.baseUrl);
     try {

@@ -415,6 +415,13 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_offline_swaps_created ON offline_swaps(created_at);
     `,
   },
+  {
+    version: 31,
+    // The deadline the payer was given, so Expired can come before the server's window does.
+    up: (db) => {
+      if (!hasColumn(db, "settlements", "expires_at")) db.exec("ALTER TABLE settlements ADD COLUMN expires_at INTEGER;");
+    },
+  },
 ];
 
 export const LATEST_MIGRATION = Math.max(...MIGRATIONS.map((m) => m.version));

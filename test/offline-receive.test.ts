@@ -38,10 +38,12 @@ class FakeCreator implements OfflineSwapCreator {
   created: OfflineSwapParams[] = [];
   settledIds = new Set<string>();
   release = vi.fn(async (_swapId: string) => {});
+  invoiceExpiresAt?: number;
   constructor(private hashHex: string) {}
   async create(params: OfflineSwapParams): Promise<OfflineSwapResult> {
     this.created.push(params);
     return {
+      ...(this.invoiceExpiresAt === undefined ? {} : { invoiceExpiresAt: this.invoiceExpiresAt }),
       swapId: "swap-1",
       invoice: buildInvoice(this.hashHex, params.amountSide === "to" ? params.amountSat + 1 : undefined),
       preimage: "11".repeat(32),
@@ -151,6 +153,19 @@ describe("offline receive", () => {
     // verify is registered but not yet settled (poller hasn't run)
     const v = await req(`${ctx.baseUrl}/lnurl/verify/${hash}`, "GET", "domain.com");
     expect(v.body).toMatchObject({ status: "OK", settled: false, preimage: null });
+    // No stated pay deadline, so the invoice's own: timestamp 0 plus BOLT11's default 3600 s.
+    expect(settlements.listRecent(1)[0]!.expiresAt).toBe(3_600_000);
+  });
+
+  it("records the solver's pay deadline when it states one", async () => {
+    const hash = "9b" + "00".repeat(31);
+    const creator = new FakeCreator(hash);
+    creator.invoiceExpiresAt = 2_000_000_000;
+    const store = new MemorySettlementStore(60_000);
+    repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
+    ctx = await start(repos, creator, store);
+    await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=50000`, "GET", "domain.com");
+    expect(store.get(hash)?.expiresAt).toBe(2_000_000_000_000);
   });
 
   it("advertises receiveAmountAllowed only where an offline swap can serve", async () => {

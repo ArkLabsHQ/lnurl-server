@@ -141,6 +141,7 @@ describe("FixedFloat callback", () => {
     expect(res.body).not.toHaveProperty("expiresAt");
     const ffDeadline = [...ff.orders.values()][0]!.time.expiration as number;
     expect(Date.parse(res.body.paymentQuote.expiresAt) / 1000).toBe(Math.min(ffDeadline, invoiceDeadline - 600));
+    expect(settlements.listRecent(1)[0]!.expiresAt).toBe(Date.parse(res.body.paymentQuote.expiresAt));
   });
 
   it("echoes the requested paymentOption id", async () => {

@@ -269,6 +269,28 @@ describe("DbSettlementStore", () => {
       db.close();
     });
 
+    it("expires an unsettled record at the payer's deadline, still inside the server's window", () => {
+      let t = 1000;
+      const db = openDb(":memory:");
+      runMigrations(db);
+      const s = kind === "memory" ? new MemorySettlementStore(5000, () => t, 20_000) : new DbSettlementStore(db, 5000, () => t, 20_000);
+      s.create({ paymentHash: "ln", pr: "lnbc1", sessionId: "sess", expiresAt: 3000 });
+      t = 1001;
+      s.create({ paymentHash: "paid", pr: "lnbc1", sessionId: "sess", expiresAt: 3000 });
+      s.markSettled("paid", "beef");
+      const hashes = (opts: Parameters<typeof s.listRecent>[1]) => s.listRecent(10, opts).map((r) => r.paymentHash);
+
+      t = 2999;
+      expect(hashes({ settled: false, expired: false })).toEqual(["ln"]);
+      t = 3000;
+      expect(hashes({ expired: true })).toEqual(["ln"]);
+      expect(hashes({ settled: false, expired: false })).toEqual([]);
+      expect(s.listRecent(10).map((r) => [r.paymentHash, r.expiresAt, s.isExpired(r)])).toEqual([["paid", 3000, false], ["ln", 3000, true]]);
+      // Only the label moves: workers and verify keep the record until the server's own window ends.
+      expect(s.get("ln")).toBeDefined();
+      db.close();
+    });
+
     it("still holds an expired record that nothing owns, so a repeat read gets the same answer", () => {
       let t = 1000;
       const db = openDb(":memory:");

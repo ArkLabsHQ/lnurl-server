@@ -98,7 +98,7 @@ export function Settlements({ query: q }: { query: URLSearchParams }) {
                     {s.settled
                       ? <Badge tone="ok" title={s.settledAt ? `Settled ${when(s.settledAt)}` : undefined}>Settled</Badge>
                       : s.expired
-                        ? <Badge tone="off" title="Past its window: nothing polls or watches it any more, and a later payment is not recorded">Expired</Badge>
+                        ? <Badge tone="off" title="Past the deadline the payer was given, or the window this server watches it for">Expired</Badge>
                         : <Badge tone="info" title="Waiting for the payer">Pending</Badge>}
                     {s.settledAt && <span className="sub">{ago(s.settledAt)}</span>}
                     {s.hasPreimage && <span className="sub" title="The server holds this payment's preimage, so LUD-21 verify can prove it">preimage held</span>}
