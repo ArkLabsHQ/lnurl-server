@@ -39,15 +39,17 @@ import type { SettlementStore } from "../settlement-store.js";
 import { COVENANT_V3, SWEEP_LEAF, covenantVtxoScript } from "../covenant/destination.js";
 import { reconcileCovenantForwarding } from "../covenant/forwarding.js";
 import { startCatchUpLoop } from "./catch-up-loop.js";
-import { activeCovenantFilters, resolveCovenants, scopeShortfall, scopeSize } from "./covenant-retirement.js";
+import { activeCovenantFilters, covenantFiltersFor, resolveCovenants, scopeShortfall, scopeSize } from "./covenant-retirement.js";
 
 interface EmulatorSubmit {
   submitTx(arkTx: string, checkpointTxs: string[]): Promise<{ signedArkTx: string; signedCheckpointTxs: string[] }>;
 }
 
 export interface CovenantSweeper {
-  /** One pass over funded destinations. Returns how many moved. */
-  sweep(): Promise<number>;
+  /** One pass over funded destinations. Returns how many moved. `scripts`, when given,
+   *  replaces the active scope with exactly those — for the late sweep, whose lapsed
+   *  destinations are outside it by definition. An empty array sweeps nothing. */
+  sweep(scripts?: readonly string[]): Promise<number>;
 }
 
 /** Record the sweep from the spend, not the emulator's reply: only a settling output
@@ -124,14 +126,16 @@ export function createCovenantSweeper(opts: {
   };
 
   return {
-    async sweep() {
+    async sweep(scripts?: readonly string[]) {
       let moved = 0;
       // Scoped to what is still owed a sweep: getContractsWithVtxos force-syncs all
       // it enumerates. Read off the records, not the watch state the SDK demotes the
       // moment one is funded — exactly when the sweep has not run yet.
-      const scopes = opts.settlements
-        ? activeCovenantFilters(opts.settlements)
-        : [{ type: COVENANT_CONTRACT_TYPE }];
+      const scopes = scripts
+        ? covenantFiltersFor(scripts)
+        : opts.settlements
+          ? activeCovenantFilters(opts.settlements)
+          : [{ type: COVENANT_CONTRACT_TYPE }];
       let asked = 0;
       let found = 0;
       for (const scope of scopes) {

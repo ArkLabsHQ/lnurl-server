@@ -30,6 +30,7 @@ import { covenantDestinationHandler, COVENANT_CONTRACT_TYPE } from "../../src/co
 import { sqliteContractStores } from "../../src/contract-store.js";
 import { loadConfig } from "../../src/config.js";
 import { createCovenantSweeper, startCovenantSweeper } from "../../src/workers/covenant-sweeper.js";
+import { lateCovenantSweep } from "../../src/workers/covenant-late-sweep.js";
 import { startCovenantWatcher } from "../../src/workers/covenant-watcher.js";
 import { ensureStack, pollUntil, mine, faucet, nodeSqliteStorage, ARKD_URL, COVCLAIMD_URL } from "./support/regtest.js";
 
@@ -282,6 +283,52 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
         RAIL_TIMEOUT_MS,
         3000,
       );
+    },
+    RAIL_TIMEOUT_MS * 2,
+  );
+
+  // Must stay LAST in this file: it stops the shared watcher and sweeper, so that the
+  // only thing able to move the money is the late sweep under test.
+  it(
+    "sweeps a destination paid after its attribution window, leaving the record lapsed",
+    async () => {
+      stopWatcher();
+      sweeper.stop();
+
+      const cb = await req(`${baseUrl}/.well-known/lnurlp/alice/callback?amount=${AMOUNT_SATS * 1000}&paymentOption=arkade`);
+      const destination = String(cb.body.paymentDestination);
+      const verifyUrl = String(cb.body.verify);
+      const covenantScript = hex.encode(ArkAddress.decode(destination).pkScript);
+
+      const txid = await payer.send({ address: destination, amount: AMOUNT_SATS });
+      expect(txid).toMatch(/^[0-9a-f]{64}$/);
+
+      // A 1 ms watch window over the same table is this test's clock.
+      const lapsedView = new DbSettlementStore(db, 3_600_000, undefined, 1);
+      expect(lapsedView.listLapsedCovenantScripts(3_600_000)).toContain(covenantScript);
+      expect(lapsedView.listActiveCovenantScripts()).not.toContain(covenantScript);
+
+      const indexer = new RestIndexerProvider(ARKD_URL);
+      const staticScript = hex.encode(ArkAddress.decode(receiver.arkadeAddress).pkScript);
+      const before = (await indexer.getVtxos({ scripts: [staticScript], spendableOnly: true })).vtxos.length;
+
+      const lateSweeper = createCovenantSweeper({
+        contracts, arkServerUrl: ARKD_URL, emulatorUrl: EMULATOR_URL, settlements: lapsedView,
+      });
+      await pollUntil(
+        "late sweep moves the lapsed deposit",
+        async () => {
+          await lateCovenantSweep({ settlements: lapsedView, indexer, sweeper: lateSweeper, tailMs: 3_600_000 });
+          const { vtxos } = await indexer.getVtxos({ scripts: [staticScript], spendableOnly: true });
+          return vtxos.length > before && vtxos.some((v) => v.value === AMOUNT_SATS);
+        },
+        RAIL_TIMEOUT_MS,
+        3000,
+      );
+
+      // Attribution is untouched: the money moved, the ledger did not.
+      expect((await req(verifyUrl)).body.settled).toBe(false);
+      expect(settlements.findByCovenantScript(covenantScript)).toMatchObject({ settled: false, payoutReference: null });
     },
     RAIL_TIMEOUT_MS * 2,
   );

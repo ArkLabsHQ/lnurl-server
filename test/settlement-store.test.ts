@@ -136,6 +136,58 @@ describe.each(clocked)("%s active covenant window", (_name, make) => {
   });
 });
 
+describe.each(clocked)("%s late-sweep tail", (_name, make) => {
+  const WATCH = 86_400_000;
+  const TAIL = WATCH * 4;
+  const lapsed = (s: SettlementStore, hash: string, script: string) =>
+    s.create({ paymentHash: hash, pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: script });
+
+  it("picks up an unpaid destination the moment the attribution window closes", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    lapsed(s, "unpaid", "0014aa");
+    // Still attributable, so the ordinary sweep scope owns it and this one must not.
+    expect(s.listLapsedCovenantScripts(TAIL)).toEqual([]);
+
+    t = 1000 + WATCH;
+    expect(s.listActiveCovenantScripts()).toEqual([]);
+    expect(s.listLapsedCovenantScripts(TAIL)).toEqual(["0014aa"]);
+  });
+
+  it("drops it once the tail runs out", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    lapsed(s, "unpaid", "0014aa");
+
+    // Half-open, like the active window: out at created + watch + tail exactly.
+    t = 1000 + WATCH + TAIL - 1;
+    expect(s.listLapsedCovenantScripts(TAIL)).toEqual(["0014aa"]);
+    t += 1;
+    expect(s.listLapsedCovenantScripts(TAIL)).toEqual([]);
+  });
+
+  it("never reports a settled or already-swept destination, which the active scope owns", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    lapsed(s, "settled", "0014bb");
+    lapsed(s, "swept", "0014cc");
+    s.markObserved("settled", "tx-in");
+    s.markPaidOut("swept", "sweep-tx");
+
+    t = 1000 + WATCH;
+    expect(s.listLapsedCovenantScripts(TAIL)).toEqual([]);
+  });
+
+  it("reports nothing at all with the tail disabled", () => {
+    let t = 1000;
+    const s = make(() => t, WATCH);
+    lapsed(s, "unpaid", "0014aa");
+
+    t = 1000 + WATCH;
+    expect(s.listLapsedCovenantScripts(0)).toEqual([]);
+  });
+});
+
 it("MemorySettlementStore's periodic sweep keeps a destination still owed a sweep", () => {
   let t = 1000;
   const s = new MemorySettlementStore(5000, () => t, 5000);

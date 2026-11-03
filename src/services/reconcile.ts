@@ -16,10 +16,11 @@ export type ReconcileRow = Record<string, unknown> & { addressId: number };
  *
  * A destination record stops being watched after DESTINATION_WATCH_MS, so a
  * payment arriving later is never attributed: `verify` answers "Expired" and
- * the address history stays blank. The money is not lost — a static Arkade
- * address is the user's own, and a covenant destination is still swept to it,
- * because the sweeper reads the contract manager rather than the settlement
- * store. Only the record lapses, and nothing else here can answer "did it land".
+ * the address history stays blank. A static Arkade address is the user's own,
+ * so the money is theirs either way. A covenant destination is swept to it for
+ * the further DESTINATION_LATE_SWEEP_MS src/workers/covenant-late-sweep.ts
+ * keeps looking, and past that tail only the payee's own wallet can move it.
+ * Only the record lapses, and nothing else here can answer "did it land".
  *
  * Read-only by design. Re-attributing a lapsed payment at an address shared by
  * every payment to it would be guesswork; this exists to inform a human.

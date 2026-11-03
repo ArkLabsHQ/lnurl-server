@@ -45,9 +45,11 @@ export interface LnurlPayDestinationResponse {
    * without this the payer cannot know one exists.
    *
    * It is not a deadline on the money: past it a payment still reaches the
-   * destination, and on the covenant rail the sweeper still moves it. What
-   * lapses is this server's record of it — `verify` answers Expired and the
-   * payment leaves no trace in the address's history.
+   * destination. What lapses is this server's record of it — `verify` answers
+   * Expired and the payment leaves no trace in the address's history. On the
+   * covenant rail the sweep also outlives it, but only for the bounded tail
+   * `DESTINATION_LATE_SWEEP_MS` adds; past that nothing here moves the funds
+   * and only the payee's own wallet can.
    *
    * Absent on rails nothing here watches, where there is no such window.
    */

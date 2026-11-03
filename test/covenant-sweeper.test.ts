@@ -147,6 +147,20 @@ describe("createCovenantSweeper", () => {
     await realSweeper({ funding, vtxos: [coin], settlements }).sweep();
     expect(settlements.get("h")!.payoutReference).toBeNull();
   });
+  // A payoutReference on an unsettled record is terminal, and would read as a payment
+  // nobody attributed.
+  it("sweeps a lapsed, never-paid destination without crediting its record", async () => {
+    let t = 1000;
+    const funding = fundingTx(2000);
+    const settlements = new MemorySettlementStore(3_600_000, () => t, 3_600_000);
+    recorded(settlements);
+    t += 3_600_000 * 2;
+    const sweeper = realSweeper({ funding, vtxos: [vtxo(funding.txid)], settlements });
+
+    expect(await sweeper.sweep(["5120aa"])).toBe(1);
+    expect(settlements.findByCovenantScript("5120aa")).toMatchObject({ settled: false, payoutReference: null });
+  });
+
   it("asks the manager only for covenant destinations", async () => {
     const { manager, getContractsWithVtxos } = managerWith([]);
 
@@ -193,6 +207,26 @@ describe("createCovenantSweeper", () => {
     const { manager, getContractsWithVtxos } = managerWith([{ script: "5120aa", vtxos: [vtxo("tx-a")] }]);
 
     await sweeperWith(manager, new MemorySettlementStore(3_600_000)).sweep();
+
+    expect(getContractsWithVtxos).not.toHaveBeenCalled();
+  });
+
+  it("sweeps an explicitly named script the active scope excludes", async () => {
+    const { manager, getContractsWithVtxos, getSpendablePaths } = managerWith([{ script: "5120aa", vtxos: [vtxo("tx-a")] }]);
+    const settlements = new MemorySettlementStore(3_600_000);
+
+    await sweeperWith(manager, settlements).sweep(["5120aa"]);
+
+    expect(getContractsWithVtxos).toHaveBeenCalledWith({ script: ["5120aa"] });
+    expect(getSpendablePaths).toHaveBeenCalled();
+  });
+
+  it("queries nothing for an empty explicit set, rather than falling back to the scope", async () => {
+    const { manager, getContractsWithVtxos } = managerWith([{ script: "5120aa", vtxos: [vtxo("tx-a")] }]);
+    const settlements = new MemorySettlementStore(3_600_000);
+    settlements.create({ paymentHash: "live", pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000, covenantScript: "5120aa" });
+
+    await sweeperWith(manager, settlements).sweep([]);
 
     expect(getContractsWithVtxos).not.toHaveBeenCalled();
   });

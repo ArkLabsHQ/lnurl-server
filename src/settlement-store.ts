@@ -111,8 +111,13 @@ export interface SettlementStore {
   /** Covenant destinations still owed work, read by the sweeper, the catch-up and
    *  retirement: unswept, and either settled or still inside the attribution window.
    *  Settled outlives the window because money that arrived must always be swept; unpaid
-   *  does not, since sweeping past it moves funds `verify` still reports as unpaid. */
+   *  does not, since sweeping past it moves funds `verify` still reports as unpaid —
+   *  {@link listLapsedCovenantScripts} is where those go for a bounded tail. */
   listActiveCovenantScripts(): string[];
+  /** The tail past {@link listActiveCovenantScripts}: never-paid covenant destinations
+   *  created in `(now - watch - tailMs, now - watch]`, for the late sweep. Disjoint from
+   *  the active set, so a script is one worker's or the other's, never both. */
+  listLapsedCovenantScripts(tailMs: number): string[];
   /** Fetch a record, or undefined if unknown or expired. */
   get(paymentHash: string): SettlementRecord | undefined;
   /** Unsettled offline swaps (have a swapId) for the settlement poller. */
@@ -316,6 +321,17 @@ export class MemorySettlementStore implements SettlementStore {
     for (const r of this.map.values()) {
       if (!r.covenantScript || r.payoutReference) continue;
       if (r.settled || r.createdAt > horizon) out.push(r.covenantScript);
+    }
+    return out;
+  }
+
+  listLapsedCovenantScripts(tailMs: number): string[] {
+    if (tailMs <= 0) return [];
+    const horizon = this.now() - this.destinationWatchMs;
+    const out: string[] = [];
+    for (const r of this.map.values()) {
+      if (!r.covenantScript || r.payoutReference || r.settled) continue;
+      if (r.createdAt <= horizon && r.createdAt > horizon - tailMs) out.push(r.covenantScript);
     }
     return out;
   }
@@ -580,6 +596,20 @@ export class DbSettlementStore implements SettlementStore {
       .prepare(`${scoped} AND settled = 0 AND created_at > ?`)
       .all(this.now() - this.destinationWatchMs) as unknown as { covenant_script: string }[];
     return [...settled, ...open].map((r) => r.covenant_script);
+  }
+
+  listLapsedCovenantScripts(tailMs: number): string[] {
+    if (tailMs <= 0) return [];
+    // `settled = 0` spelled as idx_settlements_active_covenants has it, so the range
+    // rides that index rather than scanning every covenant ever issued.
+    const horizon = this.now() - this.destinationWatchMs;
+    const rows = this.db
+      .prepare(
+        "SELECT covenant_script FROM settlements WHERE covenant_script IS NOT NULL AND payout_reference IS NULL" +
+          " AND settled = 0 AND created_at > ? AND created_at <= ?",
+      )
+      .all(horizon - tailMs, horizon) as unknown as { covenant_script: string }[];
+    return rows.map((r) => r.covenant_script);
   }
 
   isReferenceUsed(reference: string, destinationScript?: string): boolean {
