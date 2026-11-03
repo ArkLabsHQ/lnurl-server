@@ -151,8 +151,8 @@ describe("settlements.address_id", () => {
     db.close();
   });
 
-  // Nothing owns a session-only record, so the TTL still reclaims it.
-  it("still drops an unattributed record once it expires", () => {
+  // Expiry hides a record from verify; a GET never erases one.
+  it("keeps an unattributed record on file after it expires", () => {
     const db = openDb(":memory:");
     runMigrations(db);
     let clock = 1_000;
@@ -163,7 +163,7 @@ describe("settlements.address_id", () => {
     expect(store.get("eph")).toBeUndefined();
 
     const rows = db.prepare("SELECT payment_hash FROM settlements WHERE payment_hash = ?").all("eph");
-    expect(rows).toHaveLength(0);
+    expect(rows).toHaveLength(1);
     db.close();
   });
   // A destination stays payable forever and the callback advertises no expiry,

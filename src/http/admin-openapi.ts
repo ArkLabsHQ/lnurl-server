@@ -476,7 +476,7 @@ export const adminOpenApiSpec = {
         description:
           "For when a user says they were paid and nothing here shows it. A destination record stops being " +
           "watched after DESTINATION_WATCH_MS, so a later payment is never attributed: verify answers " +
-          "\"not found\" and the address history stays blank. The money is not lost — a static Arkade address " +
+          "\"Expired\" and the address history stays blank. The money is not lost — a static Arkade address " +
           "is the user's own, and a covenant destination is still swept to it, because the sweeper reads the " +
           "contract manager rather than the settlement store. Only the record lapses. Read-only: re-attributing " +
           "a lapsed payment at an address shared by every payment to it would be guesswork.",

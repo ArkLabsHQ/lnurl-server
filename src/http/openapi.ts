@@ -296,7 +296,8 @@ export const openApiSpec = {
           "Payer polls this to learn whether the invoice settled. Public and unauthed — " +
           "the payment hash is not secret. For lightning, `preimage` is revealed once " +
           "`settled` is true. For a LUD-XX non-`pr` option (e.g. arkade), it reports the " +
-          "`paymentOption`, `paymentDestination`, and `paymentReference` instead.",
+          "`paymentOption`, `paymentDestination`, and `paymentReference` instead. An unsettled record past " +
+          "its window answers status ERROR with reason `Expired`; a hash this server never issued, `Not found`.",
         tags: ["LNURL-pay"],
         parameters: [
           { name: "paymentHash", in: "path", required: true, schema: { type: "string" }, description: "bolt11 payment hash (hex), or an opaque verify id for non-`pr` options" },
@@ -904,7 +905,7 @@ export const openApiSpec = {
                             "carries its own expiry and an address carries none, so without this the payer cannot know " +
                             "one exists. NOT a deadline on the money: past it a payment still reaches the destination, " +
                             "and on the covenant rail the sweeper still moves it — what lapses is the record, so verify " +
-                            "stops answering and the payment leaves no trace in the address's history. Absent on rails " +
+                            "answers Expired and the payment leaves no trace in the address's history. Absent on rails " +
                             "nothing here watches, such as onchain boarding and registered methods, and on token options, whose deadline is " +
                             "paymentQuote.expiresAt.",
                         },

@@ -268,6 +268,25 @@ describe("DbSettlementStore", () => {
       expect(hashes({ settled: true })).toEqual(["done"]);
       db.close();
     });
+
+    it("still holds an expired record that nothing owns, so a repeat read gets the same answer", () => {
+      let t = 1000;
+      const db = openDb(":memory:");
+      runMigrations(db);
+      const s = kind === "memory" ? new MemorySettlementStore(5000, () => t, 20_000) : new DbSettlementStore(db, 5000, () => t, 20_000);
+      s.create({ paymentHash: "eph", pr: "lnbc1", sessionId: "sess" });
+      s.create({ paymentHash: "done", pr: "lnbc1", sessionId: "sess" });
+      s.markSettled("done", "beef");
+      expect(s.lapsed("eph")).toBe(false);
+
+      t = 1000 + 5000;
+      expect(s.get("eph")).toBeUndefined();
+      expect(s.lapsed("eph")).toBe(true);
+      expect(s.lapsed("eph")).toBe(true);
+      expect(s.lapsed("done")).toBe(false);
+      expect(s.lapsed("never-issued")).toBe(false);
+      db.close();
+    });
   });
 
   it("serves the plain pending list from the index that holds only unsettled rows", () => {

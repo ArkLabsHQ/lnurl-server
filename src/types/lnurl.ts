@@ -46,7 +46,7 @@ export interface LnurlPayDestinationResponse {
    *
    * It is not a deadline on the money: past it a payment still reaches the
    * destination, and on the covenant rail the sweeper still moves it. What
-   * lapses is this server's record of it — `verify` stops answering and the
+   * lapses is this server's record of it — `verify` answers Expired and the
    * payment leaves no trace in the address's history.
    *
    * Absent on rails nothing here watches, where there is no such window.

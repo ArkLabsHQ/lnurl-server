@@ -15,7 +15,7 @@ export type ReconcileRow = Record<string, unknown> & { addressId: number };
  * service recorded. For when a user says they were paid and nothing shows it.
  *
  * A destination record stops being watched after DESTINATION_WATCH_MS, so a
- * payment arriving later is never attributed: `verify` answers "not found" and
+ * payment arriving later is never attributed: `verify` answers "Expired" and
  * the address history stays blank. The money is not lost — a static Arkade
  * address is the user's own, and a covenant destination is still swept to it,
  * because the sweeper reads the contract manager rather than the settlement

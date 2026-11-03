@@ -53,6 +53,12 @@ describe("pollVerify", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it("treats an Expired ERROR body as terminal and keeps its reason", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ status: "ERROR", reason: "Expired" }));
+    await expect(pollVerify("https://x/v/h", { intervalMs: 1 }, fetchImpl as never)).rejects.toMatchObject({ reason: "Expired" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("parses the destination shape", async () => {
     const fetchImpl = async () => jsonResponse({ status: "OK", settled: true, paymentOption: "arkade", paymentDestination: "ark1xyz", paymentReference: "txid123" });
     const r = await pollVerify("https://x/v/id", { intervalMs: 1 }, fetchImpl as never);

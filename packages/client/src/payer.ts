@@ -253,7 +253,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  * `verify` is optional on a callback response (the server omits it when the
  * BOLT11 payment hash will not decode), so there is no polling without a URL
  * and an empty one is rejected. A `{ status: "ERROR" }` body at HTTP 200 is
- * terminal, not a retry: unknown payment hashes report `Not found` that way.
+ * terminal, not a retry: unknown payment hashes report `Not found` that way, lapsed ones `Expired`.
  * Every snapshot, settled or not, goes to `onUpdate`; an overrun throws
  * `LnurlTimeoutError` with the last snapshot attached.
  *
