@@ -634,7 +634,7 @@ export const adminOpenApiSpec = {
         tags: ["Settlements"],
         parameters: [
           { name: "settled", in: "query", required: false, schema: { type: "string", enum: ["true", "false"] }, description: "Filter by settlement state" },
-          { name: "expired", in: "query", required: false, schema: { type: "string", enum: ["true", "false"] }, description: "Only unsettled records: past (true) or still inside (false) their window, so beside settled=true nothing matches. A bolt11 invoice lives VERIFY_TTL_MS, a destination DESTINATION_WATCH_MS" },
+          { name: "expired", in: "query", required: false, schema: { type: "string", enum: ["true", "false"] }, description: "Only unsettled records: past (true) or not past (false) the deadline the payer was given or the window the server honours them, so beside settled=true nothing matches. The window is VERIFY_TTL_MS for a bolt11 invoice, DESTINATION_WATCH_MS for a destination" },
           { name: "option", in: "query", required: false, schema: { type: "string" }, description: "Filter by payment option (e.g. lightning, arkade)" },
           { name: "limit", in: "query", required: false, schema: { type: "integer", default: 200, maximum: 1000 }, description: "Max records (newest first)" },
         ],
@@ -645,7 +645,7 @@ export const adminOpenApiSpec = {
               paymentHash: { type: "string", description: "Verify key (opaque id for destination rails)" },
               sessionId: { type: "string" },
               settled: { type: "boolean" },
-              expired: { type: "boolean", description: "Unsettled and past its window: nothing polls or watches it, and a payment now is not recorded" },
+              expired: { type: "boolean", description: "Unsettled and past the deadline the payer was given (a bolt11's expiry, a token quote's) or the window the server honours it" },
               swapId: { type: "string", nullable: true, description: "RFQ id for offline corridor swaps" },
               paymentOption: { type: "string" },
               paymentDestination: { type: "string", nullable: true },

@@ -52,6 +52,8 @@ export interface SettlementRecord {
   settledAt: number | null;
   /** The last write to the record: the owner's payments sync pages on it. */
   updatedAt: number;
+  /** Unix ms the payer was told to pay by (a BOLT11's expiry, a token quote's), when the rail states one. */
+  expiresAt: number | null;
 }
 
 /** A pending offline-receive swap awaiting solver settlement, for the poller. */
@@ -90,6 +92,7 @@ export interface NewSettlement {
   covenantScript?: string;
   quote?: QuotedAmount;
   addressId?: number;
+  expiresAt?: number;
 }
 
 export interface SettlementStore {
@@ -129,12 +132,12 @@ export interface SettlementStore {
   isReferenceUsed(reference: string, destinationScript?: string): boolean;
   /** Newest-first audit view for the admin API (no TTL filter — history, not polling).
    *  Filters are pushed into the query so a filtered page isn't silently truncated.
-   *  `expired` narrows to unsettled records past (true) or inside (false) their window. */
+   *  `expired` narrows to unsettled records that are (true) or are not (false) `isExpired`. */
   listRecent(limit: number, opts?: { settled?: boolean; option?: string; expired?: boolean }): SettlementRecord[];
-  /** Unsettled and past the window the server honours it: nothing polls or watches it, and a
-   *  payment arriving now is not recorded. `get` hides the same records from verify. */
+  /** Unsettled, and past the deadline the payer was given or the window the server honours it.
+   *  A label only: `get` keeps a record until its window ends, so workers and verify still see it. */
   isExpired(r: SettlementRecord): boolean;
-  /** A record still on file that `isExpired` calls expired: `get` hides it, and verify says Expired, not Not found. */
+  /** A record still on file that `isExpired` calls expired. Verify asks only once `get` has missed. */
   lapsed(paymentHash: string): boolean;
   listByAddress(addressId: number, limit: number, opts?: { since?: number }): SettlementRecord[];
 }
@@ -161,6 +164,9 @@ const UNSETTLED = "settled < 1";
 /** A bolt11 invoice is dead at the verify TTL; a destination stays payable until the watch window closes. */
 const lifetimeOf = (option: string | null | undefined, ttlMs: number, watchMs: number): number =>
   option && option !== "lightning" ? watchMs : ttlMs;
+
+const expiredAt = (r: SettlementRecord, now: number, ttlMs: number, watchMs: number): boolean =>
+  !r.settled && (now - r.createdAt >= lifetimeOf(r.paymentOption, ttlMs, watchMs) || (r.expiresAt !== null && now >= r.expiresAt));
 
 /** In-memory store used in library / no-DB mode. Expiry hides on read; an
  *  opportunistic sweep on create keeps the map bounded under create-only traffic. */
@@ -196,6 +202,7 @@ export class MemorySettlementStore implements SettlementStore {
       createdAt: at,
       settledAt: null,
       updatedAt: at,
+      expiresAt: rec.expiresAt ?? null,
     });
   }
 
@@ -343,7 +350,7 @@ export class MemorySettlementStore implements SettlementStore {
   }
 
   isExpired(r: SettlementRecord): boolean {
-    return !r.settled && this.now() - r.createdAt >= lifetimeOf(r.paymentOption, this.ttlMs, this.destinationWatchMs);
+    return expiredAt(r, this.now(), this.ttlMs, this.destinationWatchMs);
   }
 
   lapsed(paymentHash: string): boolean {
@@ -378,6 +385,7 @@ interface SettlementRow {
   created_at: number;
   settled_at: number | null;
   updated_at: number | null;
+  expires_at: number | null;
 }
 
 /** SQLite-backed store (migration 003). Survives restart and outlives the SSE
@@ -395,7 +403,7 @@ export class DbSettlementStore implements SettlementStore {
     const at = this.now();
     const info = this.db
       .prepare(
-        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, covenant_script, quote_json, address_id, created_at, settled_at, updated_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, covenant_script, quote_json, address_id, created_at, settled_at, updated_at, expires_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
       )
       .run(
         rec.paymentHash,
@@ -411,6 +419,7 @@ export class DbSettlementStore implements SettlementStore {
         rec.addressId ?? null,
         at,
         at,
+        rec.expiresAt ?? null,
       );
     // A paymentHash collision on the offline path would leave `verify` polling the
     // OLD record while the payer got the NEW invoice — cryptographically negligible,
@@ -472,6 +481,7 @@ export class DbSettlementStore implements SettlementStore {
       settledAt: row.settled_at ?? null,
       // NULL on a row an older build wrote after migration 16 ran.
       updatedAt: row.updated_at ?? row.created_at,
+      expiresAt: row.expires_at ?? null,
     };
   }
 
@@ -601,13 +611,13 @@ export class DbSettlementStore implements SettlementStore {
       const cut = "CASE WHEN payment_option IS NULL OR payment_option = 'lightning' THEN ? ELSE ? END";
       if (opts.settled !== false) where.push(UNSETTLED);
       if (opts.expired) {
-        where.push(`created_at <= ${cut}`);
+        where.push(`(created_at <= ${cut} OR expires_at <= ?)`);
+        params.push(ttlCut, watchCut, at);
       } else {
         // The loosest window as a plain range, so the walk ends at the oldest record that can still be live.
-        where.push("created_at > ?", `created_at > ${cut}`);
-        params.push(Math.min(ttlCut, watchCut));
+        where.push("created_at > ?", `created_at > ${cut}`, "(expires_at IS NULL OR expires_at > ?)");
+        params.push(Math.min(ttlCut, watchCut), ttlCut, watchCut, at);
       }
-      params.push(ttlCut, watchCut);
     }
     if (opts?.option !== undefined) {
       where.push("payment_option = ?");
@@ -620,7 +630,7 @@ export class DbSettlementStore implements SettlementStore {
   }
 
   isExpired(r: SettlementRecord): boolean {
-    return !r.settled && this.now() - r.createdAt >= lifetimeOf(r.paymentOption, this.ttlMs, this.destinationWatchMs);
+    return expiredAt(r, this.now(), this.ttlMs, this.destinationWatchMs);
   }
 
   lapsed(paymentHash: string): boolean {

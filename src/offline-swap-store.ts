@@ -16,6 +16,8 @@ export interface AcceptedOfflineSwap {
    *  reached a LUD-16 address — so omitting it here is what would leave the
    *  one rail the receiver cannot witness unattributable. */
   addressId?: number;
+  /** Unix ms the payer must pay by. */
+  expiresAt?: number;
   recovery: OfflineSwapRecoveryV1;
 }
 
@@ -93,8 +95,8 @@ export class OfflineSwapStore {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.prepare(
-        "INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, amount_msat, quote_json, address_id, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?, 'lightning', ?, ?, ?, ?, ?)",
-      ).run(record.paymentHash, record.pr, record.sessionId, record.preimage, record.recovery.rfqId, record.amountMsat, record.quote ? JSON.stringify(record.quote) : null, record.addressId ?? null, createdAt, createdAt);
+        "INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, amount_msat, quote_json, address_id, created_at, updated_at, expires_at) VALUES (?, ?, ?, 0, ?, ?, 'lightning', ?, ?, ?, ?, ?, ?)",
+      ).run(record.paymentHash, record.pr, record.sessionId, record.preimage, record.recovery.rfqId, record.amountMsat, record.quote ? JSON.stringify(record.quote) : null, record.addressId ?? null, createdAt, createdAt, record.expiresAt ?? null);
       insertOfflineSwap(this.db, record.paymentHash, record.recovery, createdAt);
       this.db.exec("COMMIT");
     } catch (error) {

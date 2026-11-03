@@ -688,7 +688,8 @@ export const openApiSpec = {
           "inclusive, so the boundary row is re-fetched and deduped on paymentHash. " +
           "A payment that settles or records its payout later is listed again after that change. " +
           "A payment the payer denominated in a LUD-XX unit carries `quote: { amount, unit, decimals }` " +
-          "(amount in the unit's smallest denomination) beside its `amountMsat`; otherwise `quote` is null.",
+          "(amount in the unit's smallest denomination) beside its `amountMsat`; otherwise `quote` is null. " +
+          "`expiresAt` is the deadline the payer was given, in Unix ms, when the rail states one; otherwise null.",
         tags: ["LN Address"],
         security: [{ bearerAuth: [] }],
         parameters: [

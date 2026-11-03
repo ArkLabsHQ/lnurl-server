@@ -35,6 +35,15 @@ export function destinationUri(paymentOption: string, destination: string, amoun
     : BIP21.create({ ark: destination, amount });
 }
 
+/** A BOLT11's own deadline in Unix ms, or undefined for one this cannot read. */
+function invoiceDeadline(pr: string): number | undefined {
+  try {
+    return invoiceFactsFromBolt11(pr).expiresAt * 1000;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Ask the wallet behind a live session for a bolt11 and record it for LUD-21 verify. */
 export async function requestSessionInvoice(args: {
   sessions: SessionManager;
@@ -67,7 +76,8 @@ export async function requestSessionInvoice(args: {
     // LUD-21: record the invoice and hand the payer a verify URL. If the bolt11 can't be
     // decoded we can't key a record, so we omit verify but still return the pr.
     const paymentHash = paymentHashFromBolt11(pr);
-    if (paymentHash) store.create({ paymentHash, pr, sessionId, amountMsat, addressId, ...(quoted ? { quote: quoted } : {}) });
+    const expiresAt = invoiceDeadline(pr);
+    if (paymentHash) store.create({ paymentHash, pr, sessionId, amountMsat, addressId, ...(quoted ? { quote: quoted } : {}), ...(expiresAt === undefined ? {} : { expiresAt }) });
     return {
       pr,
       routes: [],
@@ -125,9 +135,10 @@ export async function createOfflineSwapInvoice(args: {
       requested: msat(receiveAmountMsat), payment: msat(payerMsat), receive: msat(receiveAmountMsat),
       fees: [{ name: "solver", amount: msat(payerMsat - receiveAmountMsat) }],
     };
+    const expiresAt = swap.invoiceExpiresAt === undefined ? invoiceDeadline(swap.invoice) : swap.invoiceExpiresAt * 1000;
     const accepted = {
       paymentHash: swap.preimageHash, pr: swap.invoice, sessionId: `offline:${addressId}`, preimage: swap.preimage,
-      amountMsat: payerMsat, addressId, ...(quoted ? { quote: quoted } : {}),
+      amountMsat: payerMsat, addressId, ...(quoted ? { quote: quoted } : {}), ...(expiresAt === undefined ? {} : { expiresAt }),
     };
     // With DB_PATH, OfflineSwapStore is the single atomic persistence boundary:
     // it writes both settlement and restart recovery rows in one transaction.
@@ -233,7 +244,7 @@ export async function createFixedFloatDestination(args: {
 
     ff.orders.createAccepted({
       paymentHash: swap.preimageHash, pr: swap.invoice, sessionId: `offline:${addressId}`, preimage: swap.preimage, amountMsat, addressId,
-      paymentOption: id, recovery: swap.recovery,
+      paymentOption: id, expiresAt: Math.min(order.expiresAt, payBy) * 1000, recovery: swap.recovery,
       order: {
         id: order.id, token: order.token, ffCode: rail.ffCode, asset: rail.asset, unit: rail.unit, depositAddress: order.from.address,
         depositAmount: quote.payment.amount, invoiceAmountSat: toSat, status: order.status, expiresAt: order.expiresAt,
