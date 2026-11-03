@@ -10,14 +10,16 @@ const SCOPED_LIMIT = 1000;
 const SWEEP_MAX = 200; // RECONCILE_MAX in src/services/reconcile.ts
 
 export function Settlements({ query: q }: { query: URLSearchParams }) {
-  const filters = { settled: q.get("settled") ?? "", option: q.get("option") ?? "", address: q.get("address") ?? "", name: q.get("name") ?? "" };
+  const filters = { settled: q.get("settled") ?? "", expired: q.get("expired") ?? "", option: q.get("option") ?? "", address: q.get("address") ?? "", name: q.get("name") ?? "" };
   const setFilters = (patch: Partial<typeof filters>) => navigate("/settlements", { ...filters, ...patch });
   // One address's records come back oldest-updated first (SettlementStore.listByAddress), so take the
   // route's maximum and sort them like the unscoped list.
   const scopedLimit = filters.address ? SCOPED_LIMIT : undefined;
+  // Pending is the records still inside their window; Expired is the rest of the unsettled ones.
+  const expired = filters.settled === "false" ? filters.expired || "false" : "";
   const list = useLoad(
-    () => api.get<SettlementRow[]>(`/settlements${query({ settled: filters.settled, option: filters.option, addressId: filters.address, limit: scopedLimit })}`),
-    [filters.settled, filters.option, filters.address],
+    () => api.get<SettlementRow[]>(`/settlements${query({ settled: filters.settled, expired, option: filters.option, addressId: filters.address, limit: scopedLimit })}`),
+    [filters.settled, expired, filters.option, filters.address],
     5000,
   );
   // Only solver discovery knows the network; without it a destination stays copyable but unlinked.
@@ -38,9 +40,11 @@ export function Settlements({ query: q }: { query: URLSearchParams }) {
       <div className="toolbar">
         <Field label="Status">
           {(p) => (
-            <select {...p} value={filters.settled} onChange={(e) => setFilters({ settled: e.target.value })}>
+            <select {...p} value={expired === "true" ? "expired" : filters.settled}
+              onChange={(e) => setFilters(e.target.value === "expired" ? { settled: "false", expired: "true" } : { settled: e.target.value, expired: "" })}>
               <option value="">All</option>
               <option value="false">Pending</option>
+              <option value="expired">Expired</option>
               <option value="true">Settled</option>
             </select>
           )}
@@ -93,7 +97,9 @@ export function Settlements({ query: q }: { query: URLSearchParams }) {
                   <td>
                     {s.settled
                       ? <Badge tone="ok" title={s.settledAt ? `Settled ${when(s.settledAt)}` : undefined}>Settled</Badge>
-                      : <Badge tone="info" title="Waiting for the payer">Pending</Badge>}
+                      : s.expired
+                        ? <Badge tone="off" title="Past its window: nothing polls or watches it any more, and a later payment is not recorded">Expired</Badge>
+                        : <Badge tone="info" title="Waiting for the payer">Pending</Badge>}
                     {s.settledAt && <span className="sub">{ago(s.settledAt)}</span>}
                     {s.hasPreimage && <span className="sub" title="The server holds this payment's preimage, so LUD-21 verify can prove it">preimage held</span>}
                   </td>

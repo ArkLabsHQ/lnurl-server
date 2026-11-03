@@ -369,7 +369,7 @@ The Docker image binds to `0.0.0.0` so isolation happens at the container/proxy 
 | POST | `/admin/api/blacklist` | Add blacklist entry |
 | DELETE | `/admin/api/blacklist/:id` | Remove blacklist entry |
 | GET | `/admin/api/sessions` | List active session IDs |
-| GET | `/admin/api/settlements` | List settlement records (filter: `settled`, `option`, `limit`) — preimages/pr never exposed |
+| GET | `/admin/api/settlements` | List settlement records (filter: `settled`, `expired`, `option`, `limit`) — preimages/pr never exposed |
 | GET/POST | `/admin/api/solver-cards` | List or paste a manual solver card |
 | PUT/PATCH/DELETE | `/admin/api/solver-cards/:id` | Replace, enable/disable, or delete a card |
 | GET | `/admin/api/discovery` | Inspect active candidates, sources, cache use, and warnings |

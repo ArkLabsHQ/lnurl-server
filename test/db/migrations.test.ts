@@ -308,6 +308,15 @@ describe("runMigrations", () => {
     db.close();
   });
 
+  it("migration 30 tolerates an index an operator already built by hand", () => {
+    const db = openDb(":memory:");
+    runMigrations(db, { upToVersion: 29 });
+    db.exec("CREATE INDEX idx_offline_swaps_created ON offline_swaps(created_at)");
+    runMigrations(db);
+    expect(db.prepare("SELECT version FROM schema_migrations WHERE version = 30").get()).toEqual({ version: 30 });
+    db.close();
+  });
+
   it("migration versions are unique and strictly increasing", () => {
     const versions = MIGRATIONS.map((m) => m.version);
     expect(versions).toEqual([...new Set(versions)].sort((a, b) => a - b));

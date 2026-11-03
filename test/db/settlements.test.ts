@@ -235,6 +235,77 @@ describe("DbSettlementStore", () => {
     db.close();
   });
 
+  describe.each(["memory", "sqlite"] as const)("expired records (%s store)", (kind) => {
+    it("splits unsettled records by their own rail's window and never expires a settled one", () => {
+      let t = 1000;
+      const db = openDb(":memory:");
+      runMigrations(db);
+      const s = kind === "memory" ? new MemorySettlementStore(5000, () => t, 20_000) : new DbSettlementStore(db, 5000, () => t, 20_000);
+      s.create({ paymentHash: "ln", pr: "lnbc1", sessionId: "sess" });
+      t = 1001;
+      s.create({ paymentHash: "ark", pr: "", sessionId: "sess", paymentOption: "arkade", paymentDestination: "ark1x", amountMsat: 1000 });
+      t = 1002;
+      s.create({ paymentHash: "done", pr: "lnbc1", sessionId: "sess" });
+      s.markSettled("done", "beef");
+      const hashes = (opts: Parameters<typeof s.listRecent>[1]) => s.listRecent(10, opts).map((r) => r.paymentHash);
+      const expired = () => s.listRecent(10).map((r) => [r.paymentHash, s.isExpired(r)]);
+
+      t = 1000 + 5000 - 1;
+      expect(hashes({ expired: true })).toEqual([]);
+      expect(hashes({ settled: false, expired: false })).toEqual(["ark", "ln"]);
+
+      t = 1000 + 5000;
+      expect(hashes({ expired: true })).toEqual(["ln"]);
+      expect(hashes({ settled: false, expired: false })).toEqual(["ark"]);
+      expect(hashes({ settled: false, expired: false, option: "arkade" })).toEqual(["ark"]);
+      expect(hashes({ settled: false, expired: false, option: "lightning" })).toEqual([]);
+      expect(hashes({ settled: false, expired: true, option: "lightning" })).toEqual(["ln"]);
+      expect(expired()).toEqual([["done", false], ["ark", false], ["ln", true]]);
+
+      t = 1001 + 20_000;
+      expect(hashes({ expired: true })).toEqual(["ark", "ln"]);
+      expect(hashes({ settled: false, expired: false })).toEqual([]);
+      expect(hashes({ settled: true })).toEqual(["done"]);
+      db.close();
+    });
+
+    it("still holds an expired record that nothing owns, so a repeat read gets the same answer", () => {
+      let t = 1000;
+      const db = openDb(":memory:");
+      runMigrations(db);
+      const s = kind === "memory" ? new MemorySettlementStore(5000, () => t, 20_000) : new DbSettlementStore(db, 5000, () => t, 20_000);
+      s.create({ paymentHash: "eph", pr: "lnbc1", sessionId: "sess" });
+      s.create({ paymentHash: "done", pr: "lnbc1", sessionId: "sess" });
+      s.markSettled("done", "beef");
+      expect(s.lapsed("eph")).toBe(false);
+
+      t = 1000 + 5000;
+      expect(s.get("eph")).toBeUndefined();
+      expect(s.lapsed("eph")).toBe(true);
+      expect(s.lapsed("eph")).toBe(true);
+      expect(s.lapsed("done")).toBe(false);
+      expect(s.lapsed("never-issued")).toBe(false);
+      db.close();
+    });
+  });
+
+  it("serves the plain pending list from the index that holds only unsettled rows", () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    const prepare = db.prepare.bind(db);
+    const seen: string[] = [];
+    db.prepare = (sql: string) => (seen.push(sql), prepare(sql));
+    try {
+      new DbSettlementStore(db, 60_000).listRecent(200, { settled: false });
+    } finally {
+      db.prepare = prepare;
+    }
+    expect(seen).toHaveLength(1);
+    const plan = (db.prepare(`EXPLAIN QUERY PLAN ${seen[0]}`).all() as { detail: string }[]).map((r) => r.detail).join(" | ");
+    expect(plan).toContain("idx_settlements_unsettled_created");
+    db.close();
+  });
+
   // Each was once a table scan on a path run every worker pass. Planned from the SQL
   // the call prepares, since a pasted copy can drift from it unnoticed.
   type Stores = { settlements: DbSettlementStore; swaps: OfflineSwapStore };
@@ -245,6 +316,8 @@ describe("DbSettlementStore", () => {
     ["the same read without a recovery store", (s) => s.settlements.listPendingSwaps(), "idx_settlements_pending_swaps_created"],
     ["the active-lockup scope retirement reads", (s) => s.swaps.listActiveLockupScripts(), "idx_settlements_pending_swaps_created"],
     ["the pending-destination read the watched-script resync makes every second", (s) => s.settlements.listPendingDestinations(), "idx_settlements_pending_static_destinations"],
+    ["the live pending list the admin page and dashboard poll", (s) => s.settlements.listRecent(200, { settled: false, expired: false }), "idx_settlements_unsettled_created"],
+    ["the missed-payout read every poller pass makes", (s) => s.swaps.listUnrecordedPayouts(), "idx_offline_swaps_created"],
   ])("%s", (_name, call, index) => {
     it(`is served by ${index}`, () => {
       const db = openDb(":memory:");

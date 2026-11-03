@@ -306,6 +306,29 @@ describe("admin API", () => {
     const res = await request(app).get("/admin/api/settlements?settled=false&limit=3");
     expect(res.body.map((r: { paymentHash: string }) => r.paymentHash)).toEqual(["p1", "p0"]);
   });
+
+  it("flags unsettled records past their window and filters on it", async () => {
+    const domainId = repos.domains.create({ domain: "expiry.com", allocationModes: ["self"] }).id;
+    const a = repos.addresses.create({ domainId, username: "alice", status: "active", sessionId: "sess-a" });
+    for (const paymentHash of ["old", "live"]) settlements.create({ paymentHash, pr: "lnbc1", sessionId: "sess-a", addressId: a.id });
+    db.prepare("UPDATE settlements SET created_at = ? WHERE payment_hash = 'old'").run(Date.now() - 2 * 86_400_000);
+    const hashes = async (query: string) =>
+      (await request(app).get(`/admin/api/settlements${query}`)).body.map((r: { paymentHash: string }) => r.paymentHash);
+
+    const all = await request(app).get("/admin/api/settlements");
+    expect(all.body.map((r: { paymentHash: string; expired: boolean }) => [r.paymentHash, r.expired])).toEqual([["live", false], ["old", true]]);
+    expect(await hashes("?settled=false")).toEqual(["live", "old"]);
+    expect(await hashes("?settled=false&expired=false")).toEqual(["live"]);
+    expect(await hashes("?settled=false&expired=true")).toEqual(["old"]);
+    expect(await hashes(`?addressId=${a.id}&settled=false&expired=true`)).toEqual(["old"]);
+
+    settlements.create({ paymentHash: "done", pr: "lnbc1", sessionId: "sess-a", addressId: a.id });
+    settlements.markSettled("done", "beef");
+    expect(await hashes("?settled=true")).toEqual(["done"]);
+    for (const query of ["?settled=true&expired=true", "?settled=true&expired=false", `?addressId=${a.id}&settled=true&expired=true`]) {
+      expect(await hashes(query)).toEqual([]);
+    }
+  });
 });
 
 describe("admin address list", () => {

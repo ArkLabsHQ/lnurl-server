@@ -19,8 +19,9 @@ export function lnurlPayRoutes({ config, sessions, store, settings, logger, quot
   // Public + unauthed (payment_hash is not secret). Registered before /lnurl/:id.
   r.get("/lnurl/verify/:paymentHash", (req, res) => {
     if (!verifyLimiter.allow(req.ip ?? "unknown")) throw new LnurlError("Too many requests", 429);
-    const rec = store.get(req.params.paymentHash.toLowerCase());
-    if (!rec) throw new LnurlError("Not found");
+    const hash = req.params.paymentHash.toLowerCase();
+    const rec = store.get(hash);
+    if (!rec) throw new LnurlError(store.lapsed(hash) ? "Expired" : "Not found");
     // LUD-XX: non-`pr` options report the destination + a method-specific reference
     // (e.g. a txid, once observed) instead of a preimage/bolt11.
     if (rec.paymentOption !== "lightning") {

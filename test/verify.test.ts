@@ -223,16 +223,28 @@ describe("verify conformance", () => {
     expect(after.body.preimage).toBe("cd".repeat(32));
   });
 
-  // Past the verify TTL the record is gone, and LUD-21 has no "expired": an
-  // unknown hash and a lapsed one are the same answer to the payer.
-  it("stops answering for a lightning record past the verify TTL", async () => {
+  // LUD-21 has no "expired" state, but `reason` is free text: a lapsed record says
+  // so, and only a hash this server never issued is "Not found".
+  it("answers Expired, on every poll, for a lightning record past the verify TTL", async () => {
     let clock = 1_000_000;
     const store = new MemorySettlementStore(60_000, () => clock);
     store.create({ paymentHash: HASH, pr: "lnbc1", sessionId: "s" });
     const { baseUrl } = await withStore(store);
     expect((await jsonRequest(`${baseUrl}/lnurl/verify/${HASH}`)).body.status).toBe("OK");
     clock += 60_001;
-    expect((await jsonRequest(`${baseUrl}/lnurl/verify/${HASH}`)).body.status).toBe("ERROR");
+    for (let i = 0; i < 2; i++) {
+      expect((await jsonRequest(`${baseUrl}/lnurl/verify/${HASH}`)).body).toEqual({ status: "ERROR", reason: "Expired" });
+    }
+    expect((await jsonRequest(`${baseUrl}/lnurl/verify/${"ef".repeat(32)}`)).body).toEqual({ status: "ERROR", reason: "Not found" });
+  });
+
+  it("answers Expired for a destination record once its own window closes", async () => {
+    let clock = 1_000_000;
+    const store = new MemorySettlementStore(60_000, () => clock, 120_000);
+    store.create({ paymentHash: HASH, pr: "", sessionId: "s", paymentOption: "arkade", paymentDestination: "tark1dest", amountMsat: 1_000_000 });
+    const { baseUrl } = await withStore(store);
+    clock += 120_000;
+    expect((await jsonRequest(`${baseUrl}/lnurl/verify/${HASH}`)).body).toEqual({ status: "ERROR", reason: "Expired" });
   });
 
   // The destination rails outlive it: the address stays payable and nothing

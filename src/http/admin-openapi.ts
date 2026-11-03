@@ -476,7 +476,7 @@ export const adminOpenApiSpec = {
         description:
           "For when a user says they were paid and nothing here shows it. A destination record stops being " +
           "watched after DESTINATION_WATCH_MS, so a later payment is never attributed: verify answers " +
-          "\"not found\" and the address history stays blank. The money is not lost — a static Arkade address " +
+          "\"Expired\" and the address history stays blank. The money is not lost — a static Arkade address " +
           "is the user's own, and a covenant destination is still swept to it, because the sweeper reads the " +
           "contract manager rather than the settlement store. Only the record lapses. Read-only: re-attributing " +
           "a lapsed payment at an address shared by every payment to it would be guesswork.",
@@ -634,6 +634,7 @@ export const adminOpenApiSpec = {
         tags: ["Settlements"],
         parameters: [
           { name: "settled", in: "query", required: false, schema: { type: "string", enum: ["true", "false"] }, description: "Filter by settlement state" },
+          { name: "expired", in: "query", required: false, schema: { type: "string", enum: ["true", "false"] }, description: "Only unsettled records: past (true) or still inside (false) their window, so beside settled=true nothing matches. A bolt11 invoice lives VERIFY_TTL_MS, a destination DESTINATION_WATCH_MS" },
           { name: "option", in: "query", required: false, schema: { type: "string" }, description: "Filter by payment option (e.g. lightning, arkade)" },
           { name: "limit", in: "query", required: false, schema: { type: "integer", default: 200, maximum: 1000 }, description: "Max records (newest first)" },
         ],
@@ -644,6 +645,7 @@ export const adminOpenApiSpec = {
               paymentHash: { type: "string", description: "Verify key (opaque id for destination rails)" },
               sessionId: { type: "string" },
               settled: { type: "boolean" },
+              expired: { type: "boolean", description: "Unsettled and past its window: nothing polls or watches it, and a payment now is not recorded" },
               swapId: { type: "string", nullable: true, description: "RFQ id for offline corridor swaps" },
               paymentOption: { type: "string" },
               paymentDestination: { type: "string", nullable: true },
