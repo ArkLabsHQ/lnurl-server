@@ -634,7 +634,7 @@ export const adminOpenApiSpec = {
         tags: ["Settlements"],
         parameters: [
           { name: "settled", in: "query", required: false, schema: { type: "string", enum: ["true", "false"] }, description: "Filter by settlement state" },
-          { name: "expired", in: "query", required: false, schema: { type: "string", enum: ["true", "false"] }, description: "Only unsettled records: past (true) or still inside (false) their window. A bolt11 invoice lives VERIFY_TTL_MS, a destination DESTINATION_WATCH_MS" },
+          { name: "expired", in: "query", required: false, schema: { type: "string", enum: ["true", "false"] }, description: "Only unsettled records: past (true) or still inside (false) their window, so beside settled=true nothing matches. A bolt11 invoice lives VERIFY_TTL_MS, a destination DESTINATION_WATCH_MS" },
           { name: "option", in: "query", required: false, schema: { type: "string" }, description: "Filter by payment option (e.g. lightning, arkade)" },
           { name: "limit", in: "query", required: false, schema: { type: "integer", default: 200, maximum: 1000 }, description: "Max records (newest first)" },
         ],

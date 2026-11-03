@@ -321,6 +321,13 @@ describe("admin API", () => {
     expect(await hashes("?settled=false&expired=false")).toEqual(["live"]);
     expect(await hashes("?settled=false&expired=true")).toEqual(["old"]);
     expect(await hashes(`?addressId=${a.id}&settled=false&expired=true`)).toEqual(["old"]);
+
+    settlements.create({ paymentHash: "done", pr: "lnbc1", sessionId: "sess-a", addressId: a.id });
+    settlements.markSettled("done", "beef");
+    expect(await hashes("?settled=true")).toEqual(["done"]);
+    for (const query of ["?settled=true&expired=true", "?settled=true&expired=false", `?addressId=${a.id}&settled=true&expired=true`]) {
+      expect(await hashes(query)).toEqual([]);
+    }
   });
 });
 
