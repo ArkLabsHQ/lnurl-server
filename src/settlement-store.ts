@@ -128,8 +128,12 @@ export interface SettlementStore {
   /** Whether a reference already settled a record, optionally scoped to an output script. */
   isReferenceUsed(reference: string, destinationScript?: string): boolean;
   /** Newest-first audit view for the admin API (no TTL filter — history, not polling).
-   *  Filters are pushed into the query so a filtered page isn't silently truncated. */
-  listRecent(limit: number, opts?: { settled?: boolean; option?: string }): SettlementRecord[];
+   *  Filters are pushed into the query so a filtered page isn't silently truncated.
+   *  `expired` narrows to unsettled records past (true) or inside (false) their window. */
+  listRecent(limit: number, opts?: { settled?: boolean; option?: string; expired?: boolean }): SettlementRecord[];
+  /** Unsettled and past the window the server honours it: nothing polls or watches it, and a
+   *  payment arriving now is not recorded. `get` hides the same records from verify. */
+  isExpired(r: SettlementRecord): boolean;
   listByAddress(addressId: number, limit: number, opts?: { since?: number }): SettlementRecord[];
 }
 
@@ -147,6 +151,14 @@ function quoteOf(raw: string | null): QuotedAmount | null {
 
 /** Money arrived at its covenant and no sweep is recorded: expiry must never reclaim it. */
 const owesSweep = (r: SettlementRecord): boolean => Boolean(r.covenantScript && r.settled && !r.payoutReference);
+
+/** The planner matches a partial index by spelling, so this is written as idx_settlements_unsettled_created is, and
+ *  as a literal (a bound `?` reads as a scan in EXPLAIN). The worker reads say `= 0`, so they keep their own indexes. */
+const UNSETTLED = "settled < 1";
+
+/** A bolt11 invoice is dead at the verify TTL; a destination stays payable until the watch window closes. */
+const lifetimeOf = (option: string | null | undefined, ttlMs: number, watchMs: number): number =>
+  option && option !== "lightning" ? watchMs : ttlMs;
 
 /** In-memory store used in library / no-DB mode. Lazy expiry on read plus an
  *  opportunistic sweep so the map can't grow unbounded under create-only traffic. */
@@ -198,7 +210,7 @@ export class MemorySettlementStore implements SettlementStore {
   get(paymentHash: string): SettlementRecord | undefined {
     const r = this.map.get(paymentHash);
     if (!r) return undefined;
-    const lifetime = r.paymentOption && r.paymentOption !== "lightning" ? this.destinationWatchMs : this.ttlMs;
+    const lifetime = lifetimeOf(r.paymentOption, this.ttlMs, this.destinationWatchMs);
     if (this.now() - r.createdAt >= lifetime) {
       // Same rules as the DB store: a destination outlives the verify TTL, and
       // an address's history outlives both.
@@ -326,11 +338,16 @@ export class MemorySettlementStore implements SettlementStore {
       .slice(0, limit);
   }
 
-  listRecent(limit: number, opts?: { settled?: boolean; option?: string }): SettlementRecord[] {
+  listRecent(limit: number, opts?: { settled?: boolean; option?: string; expired?: boolean }): SettlementRecord[] {
     return [...this.map.values()]
       .filter((r) => (opts?.settled === undefined || r.settled === opts.settled) && (opts?.option === undefined || r.paymentOption === opts.option))
+      .filter((r) => opts?.expired === undefined || (!r.settled && this.isExpired(r) === opts.expired))
       .sort((a, b) => b.createdAt - a.createdAt)
       .slice(0, limit);
+  }
+
+  isExpired(r: SettlementRecord): boolean {
+    return !r.settled && this.now() - r.createdAt >= lifetimeOf(r.paymentOption, this.ttlMs, this.destinationWatchMs);
   }
 
   private sweep(): void {
@@ -428,8 +445,7 @@ export class DbSettlementStore implements SettlementStore {
     // A bolt11 invoice is dead at the verify TTL; a destination is live until
     // the watch window closes, and telling a payer "unknown" about a payment
     // the watcher would still settle is the wrong answer.
-    const lifetime =
-      row.payment_option && row.payment_option !== "lightning" ? this.destinationWatchMs : this.ttlMs;
+    const lifetime = lifetimeOf(row.payment_option, this.ttlMs, this.destinationWatchMs);
     if (this.now() - row.created_at >= lifetime) {
       // Expiry hides a record from verify, but only an unattributed one is
       // reclaimed. A row carrying an address_id is that owner's history and the
@@ -584,12 +600,24 @@ export class DbSettlementStore implements SettlementStore {
     return Boolean(this.db.prepare("SELECT 1 FROM settlements WHERE payment_reference = ? LIMIT 1").get(reference));
   }
 
-  listRecent(limit: number, opts?: { settled?: boolean; option?: string }): SettlementRecord[] {
+  listRecent(limit: number, opts?: { settled?: boolean; option?: string; expired?: boolean }): SettlementRecord[] {
     const where: string[] = [];
     const params: (string | number)[] = [];
-    if (opts?.settled !== undefined) {
-      where.push("settled = ?");
-      params.push(opts.settled ? 1 : 0);
+    if (opts?.settled !== undefined) where.push(opts.settled ? "settled = 1" : UNSETTLED);
+    if (opts?.expired !== undefined) {
+      const at = this.now();
+      const ttlCut = at - this.ttlMs;
+      const watchCut = at - this.destinationWatchMs;
+      const cut = "CASE WHEN payment_option IS NULL OR payment_option = 'lightning' THEN ? ELSE ? END";
+      if (opts.settled !== false) where.push(UNSETTLED);
+      if (opts.expired) {
+        where.push(`created_at <= ${cut}`);
+      } else {
+        // The loosest window as a plain range, so the walk ends at the oldest record that can still be live.
+        where.push("created_at > ?", `created_at > ${cut}`);
+        params.push(Math.min(ttlCut, watchCut));
+      }
+      params.push(ttlCut, watchCut);
     }
     if (opts?.option !== undefined) {
       where.push("payment_option = ?");
@@ -599,6 +627,10 @@ export class DbSettlementStore implements SettlementStore {
       .prepare(`SELECT * FROM settlements${where.length ? " WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC LIMIT ?`)
       .all(...params, limit) as unknown as SettlementRow[];
     return rows.map((row) => this.toRecord(row));
+  }
+
+  isExpired(r: SettlementRecord): boolean {
+    return !r.settled && this.now() - r.createdAt >= lifetimeOf(r.paymentOption, this.ttlMs, this.destinationWatchMs);
   }
 
   listByAddress(addressId: number, limit: number, opts?: { since?: number }): SettlementRecord[] {

@@ -12,6 +12,7 @@ export function adminSettlementRoutes({ repos, settlements, fixedFloat }: AdminD
     const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 1000) : 200;
     const settled = req.query.settled as string | undefined;
     const option = req.query.option as string | undefined;
+    const expired = req.query.expired === "true" ? true : req.query.expired === "false" ? false : undefined;
     // Filters are pushed into the store query — filtering after the limit would
     // silently truncate (a pending record older than the window must still surface).
     // Scoped to one address when asked: the store filters by address id, so a
@@ -23,9 +24,11 @@ export function adminSettlementRoutes({ repos, settlements, fixedFloat }: AdminD
       ? settlements.listByAddress(addressId, limit)
           .filter((x) => (settled === undefined ? true : x.settled === (settled === "true")))
           .filter((x) => (option ? x.paymentOption === option : true))
+          .filter((x) => (expired === undefined ? true : !x.settled && settlements.isExpired(x) === expired))
       : settlements.listRecent(limit, {
           ...(settled === "true" || settled === "false" ? { settled: settled === "true" } : {}),
           ...(option ? { option } : {}),
+          ...(expired === undefined ? {} : { expired }),
         });
     // Resolved per page rather than joined in the store: the rows are already
     // capped at `limit`, and an address can be revoked out from under a record
@@ -51,6 +54,7 @@ export function adminSettlementRoutes({ repos, settlements, fixedFloat }: AdminD
         sessionId: x.sessionId,
         address: addressFor(x.addressId),
         settled: x.settled,
+        expired: settlements.isExpired(x),
         swapId: x.swapId,
         paymentOption: x.paymentOption,
         paymentDestination: x.paymentDestination,

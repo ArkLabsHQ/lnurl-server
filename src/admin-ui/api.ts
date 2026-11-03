@@ -92,6 +92,7 @@ export interface SettlementRow {
   paymentHash: string;
   sessionId: string;
   settled: boolean;
+  expired: boolean;
   swapId: string | null;
   paymentOption: string;
   paymentDestination: string | null;

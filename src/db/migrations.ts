@@ -405,6 +405,16 @@ export const MIGRATIONS: Migration[] = [
     // column beats a table: mirrors disabled_rails (migration 10).
     up: `ALTER TABLE addresses ADD COLUMN payment_methods TEXT NOT NULL DEFAULT '[]';`,
   },
+  {
+    version: 30,
+    // The admin pending list walked every settlement whenever a page never filled, and the missed-payout
+    // read walked every offline swap. `settled < 1`, not `= 0`: the planner matches predicates by spelling,
+    // and with `= 0` it would offer this index to the worker reads and prefer it to their narrower ones.
+    up: `
+      CREATE INDEX IF NOT EXISTS idx_settlements_unsettled_created ON settlements(created_at) WHERE settled < 1;
+      CREATE INDEX IF NOT EXISTS idx_offline_swaps_created ON offline_swaps(created_at);
+    `,
+  },
 ];
 
 export const LATEST_MIGRATION = Math.max(...MIGRATIONS.map((m) => m.version));

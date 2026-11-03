@@ -23,7 +23,7 @@ export function Dashboard() {
   const rails = useLoad(() => api.get<{ rails: ServerRail[] }>("/rails").then((r) => r.rails), []);
   const discovery = useLoad(() => api.get<DiscoveryView>("/discovery"), []);
   const quotes = useLoad(() => api.get<QuoteUnitRow[]>("/quote-units"), []);
-  const pending = useLoad(() => api.get<SettlementRow[]>(`/settlements?settled=false&limit=${PENDING_CAP}`), [], 10_000);
+  const pending = useLoad(() => api.get<SettlementRow[]>(`/settlements?settled=false&expired=false&limit=${PENDING_CAP}`), [], 10_000);
 
   const rows: Row[] = [
     row("Domains", domains.data?.length === 0 ? "#/domains?new=1" : "#/domains", domains, (list) => {
@@ -62,11 +62,11 @@ export function Dashboard() {
         : { tone: "ok", state: "Live", detail: `${listText(units.map((u) => u.code))} priced live.` };
     }, "Payment quotes are not configured."),
     row("Pending payments", "#/settlements?settled=false", pending, (list) => {
-      if (!list.length) return { tone: "ok", state: "None", detail: "Every payment request has settled." };
+      if (!list.length) return { tone: "ok", state: "None", detail: "No payment is waiting on a payer." };
       // At the cap the list is only the newest pending ones, so its oldest would be a lie.
-      if (list.length >= PENDING_CAP) return { tone: "info", state: `${num(PENDING_CAP)}+ pending`, detail: "A request stays pending until it is paid." };
+      if (list.length >= PENDING_CAP) return { tone: "info", state: `${num(PENDING_CAP)}+ pending`, detail: "A request stays pending until it is paid or expires." };
       const oldest = Math.min(...list.map((s) => s.createdAt));
-      return { tone: "info", state: `${num(list.length)} pending`, detail: `Oldest started ${ago(oldest)}. A request stays pending until it is paid.` };
+      return { tone: "info", state: `${num(list.length)} pending`, detail: `Oldest started ${ago(oldest)}. A request stays pending until it is paid or expires.` };
     }, "No settlement store is configured."),
   ];
 
