@@ -89,8 +89,7 @@ export interface AppConfig {
    *  because a hold invoice expires and a destination does not. */
   destinationWatchMs: number;
   /** How long past `destinationWatchMs` a never-paid covenant destination is still
-   *  checked for a late payment and swept; 0 disables. Money only — attribution
-   *  still ends at `destinationWatchMs`. @see workers/covenant-late-sweep.ts */
+   *  swept if it turns out funded; 0 disables. @see workers/covenant-late-sweep.ts */
   destinationLateSweepMs: number;
   dbPath?: string;
   adminPort: number;

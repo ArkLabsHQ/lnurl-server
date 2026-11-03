@@ -44,15 +44,30 @@ describe("lateCovenantSweep", () => {
     expect(asked(getVtxos).flat()).toEqual(scripts.slice(4, 8));
   });
 
+  // node:sqlite is synchronous, so an unbounded tail read blocks the whole loop.
+  it("reads at most a budget of rows however long the tail is", async () => {
+    const { store, advance } = lapsedStore(500);
+    advance();
+    const { indexer, sweeper } = fakes();
+    const read = vi.spyOn(store, "listLapsedCovenantScripts");
+
+    await lateCovenantSweep({ settlements: store, indexer, sweeper, tailMs: TAIL, cursor: {}, budget: 16 });
+
+    expect(read).toHaveBeenCalledExactlyOnceWith(TAIL, { limit: 16 });
+    expect(read.mock.results[0]!.value).toHaveLength(16);
+  });
+
   it("wraps to the start once it has been through the backlog", async () => {
     const { store, scripts, advance } = lapsedStore(5);
     advance();
     const { indexer, sweeper, getVtxos } = fakes();
     const cursor: LateSweepCursor = {};
 
+    // 5 rows, budget 4: page one full, page two short, which resets the cursor.
     for (let pass = 0; pass < 2; pass++) {
       await lateCovenantSweep({ settlements: store, indexer, sweeper, tailMs: TAIL, cursor, budget: 4 });
     }
+    expect(cursor.after).toBeUndefined();
     getVtxos.mockClear();
     await lateCovenantSweep({ settlements: store, indexer, sweeper, tailMs: TAIL, cursor, budget: 4 });
 

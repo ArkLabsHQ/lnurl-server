@@ -255,8 +255,7 @@ async function main(): Promise<void> {
       const sweeper = startCovenantSweeper(covenantSweeper, 15_000);
       runtime.addStop(sweeper.stop);
       runtime.addStop(startCovenantWatcher(settlements, contracts, off.pollIntervalMs, sweeper.trigger));
-      // The tail behind the attribution window. Its own slow loop, budgeted and
-      // cursored, because its backlog is every destination ever issued and never paid.
+      // Its own slow budgeted loop: the backlog is every destination never paid.
       if (config.destinationLateSweepMs && config.destinationLateSweepMs > 0) {
         const { startCovenantLateSweep } = await import("./workers/covenant-late-sweep.js");
         runtime.addStop(startCovenantLateSweep({

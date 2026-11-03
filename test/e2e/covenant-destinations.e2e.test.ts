@@ -287,8 +287,8 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
     RAIL_TIMEOUT_MS * 2,
   );
 
-  // Must stay LAST in this file: it stops the shared watcher and sweeper, so that the
-  // only thing able to move the money is the late sweep under test.
+  // Must stay LAST: it stops the shared watcher and sweeper, so the only thing that
+  // can move this money is the late sweep under test.
   it(
     "sweeps a destination paid after its attribution window, leaving the record lapsed",
     async () => {
@@ -305,7 +305,8 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
 
       // A 1 ms watch window over the same table is this test's clock.
       const lapsedView = new DbSettlementStore(db, 3_600_000, undefined, 1);
-      expect(lapsedView.listLapsedCovenantScripts(3_600_000)).toContain(covenantScript);
+      const tail = lapsedView.listLapsedCovenantScripts(3_600_000, { limit: 256 });
+      expect(tail.map((r) => r.covenantScript)).toContain(covenantScript);
       expect(lapsedView.listActiveCovenantScripts()).not.toContain(covenantScript);
 
       const indexer = new RestIndexerProvider(ARKD_URL);

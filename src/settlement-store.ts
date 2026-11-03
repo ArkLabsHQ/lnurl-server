@@ -77,6 +77,13 @@ export interface PendingDestination {
   covenantScript: string | null;
 }
 
+/** A lapsed covenant destination, and the next page's keyset: `covenantScript` is
+ *  uniquely indexed, so the pair is a total order. */
+export interface LapsedCovenant {
+  covenantScript: string;
+  createdAt: number;
+}
+
 /** What `create` accepts. Covenant fields arrive together or not at all. */
 export interface NewSettlement {
   paymentHash: string;
@@ -114,10 +121,11 @@ export interface SettlementStore {
    *  does not, since sweeping past it moves funds `verify` still reports as unpaid —
    *  {@link listLapsedCovenantScripts} is where those go for a bounded tail. */
   listActiveCovenantScripts(): string[];
-  /** The tail past {@link listActiveCovenantScripts}: never-paid covenant destinations
-   *  created in `(now - watch - tailMs, now - watch]`, for the late sweep. Disjoint from
-   *  the active set, so a script is one worker's or the other's, never both. */
-  listLapsedCovenantScripts(tailMs: number): string[];
+  /** One page of the tail past {@link listActiveCovenantScripts}: never-paid covenant
+   *  destinations created in `(now - watch - tailMs, now - watch]`, ordered by
+   *  `(createdAt, covenantScript)` and bounded by `limit` in the query itself. Disjoint
+   *  from the active set. Pass the last row back as `after` for the next page. */
+  listLapsedCovenantScripts(tailMs: number, opts: { limit: number; after?: LapsedCovenant }): LapsedCovenant[];
   /** Fetch a record, or undefined if unknown or expired. */
   get(paymentHash: string): SettlementRecord | undefined;
   /** Unsettled offline swaps (have a swapId) for the settlement poller. */
@@ -325,15 +333,21 @@ export class MemorySettlementStore implements SettlementStore {
     return out;
   }
 
-  listLapsedCovenantScripts(tailMs: number): string[] {
-    if (tailMs <= 0) return [];
+  listLapsedCovenantScripts(tailMs: number, opts: { limit: number; after?: LapsedCovenant }): LapsedCovenant[] {
+    if (tailMs <= 0 || opts.limit <= 0) return [];
     const horizon = this.now() - this.destinationWatchMs;
-    const out: string[] = [];
+    const out: LapsedCovenant[] = [];
     for (const r of this.map.values()) {
       if (!r.covenantScript || r.payoutReference || r.settled) continue;
-      if (r.createdAt <= horizon && r.createdAt > horizon - tailMs) out.push(r.covenantScript);
+      if (r.createdAt > horizon || r.createdAt <= horizon - tailMs) continue;
+      out.push({ covenantScript: r.covenantScript, createdAt: r.createdAt });
     }
-    return out;
+    const after = opts.after;
+    return out
+      .sort((a, b) => a.createdAt - b.createdAt || (a.covenantScript < b.covenantScript ? -1 : 1))
+      .filter((r) => after === undefined || r.createdAt > after.createdAt ||
+        (r.createdAt === after.createdAt && r.covenantScript > after.covenantScript))
+      .slice(0, opts.limit);
   }
 
   isReferenceUsed(reference: string, destinationScript?: string): boolean {
@@ -598,18 +612,29 @@ export class DbSettlementStore implements SettlementStore {
     return [...settled, ...open].map((r) => r.covenant_script);
   }
 
-  listLapsedCovenantScripts(tailMs: number): string[] {
-    if (tailMs <= 0) return [];
-    // `settled = 0` spelled as idx_settlements_active_covenants has it, so the range
-    // rides that index rather than scanning every covenant ever issued.
+  listLapsedCovenantScripts(tailMs: number, opts: { limit: number; after?: LapsedCovenant }): LapsedCovenant[] {
+    if (tailMs <= 0 || opts.limit <= 0) return [];
+    // `settled = 0` spelled as idx_settlements_active_covenants has it, LIMIT in the
+    // query (the whole tail blocked the loop 216 ms at 200k rows), and the cursor
+    // REPLACING the window's lower bound so it stays the single seek term on created_at
+    // — as a row value it read as a filter and re-walked the range, 73 ms a page 100k in.
     const horizon = this.now() - this.destinationWatchMs;
+    const after = opts.after;
     const rows = this.db
       .prepare(
-        "SELECT covenant_script FROM settlements WHERE covenant_script IS NOT NULL AND payout_reference IS NULL" +
-          " AND settled = 0 AND created_at > ? AND created_at <= ?",
+        "SELECT covenant_script, created_at FROM settlements WHERE covenant_script IS NOT NULL" +
+          " AND payout_reference IS NULL AND settled = 0" +
+          (after
+            ? " AND created_at >= ? AND created_at <= ? AND (created_at > ? OR covenant_script > ?)"
+            : " AND created_at > ? AND created_at <= ?") +
+          " ORDER BY created_at, covenant_script LIMIT ?",
       )
-      .all(horizon - tailMs, horizon) as unknown as { covenant_script: string }[];
-    return rows.map((r) => r.covenant_script);
+      .all(
+        ...(after
+          ? [after.createdAt, horizon, after.createdAt, after.covenantScript, opts.limit]
+          : [horizon - tailMs, horizon, opts.limit]),
+      ) as unknown as { covenant_script: string; created_at: number }[];
+    return rows.map((r) => ({ covenantScript: r.covenant_script, createdAt: r.created_at }));
   }
 
   isReferenceUsed(reference: string, destinationScript?: string): boolean {

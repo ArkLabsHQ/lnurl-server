@@ -46,9 +46,8 @@ interface EmulatorSubmit {
 }
 
 export interface CovenantSweeper {
-  /** One pass over funded destinations. Returns how many moved. `scripts`, when given,
-   *  replaces the active scope with exactly those — for the late sweep, whose lapsed
-   *  destinations are outside it by definition. An empty array sweeps nothing. */
+  /** One pass over funded destinations. Returns how many moved. `scripts` replaces the
+   *  active scope with exactly those, for the late sweep; an empty array sweeps nothing. */
   sweep(scripts?: readonly string[]): Promise<number>;
 }
 
