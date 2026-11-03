@@ -257,6 +257,9 @@ describe("DbSettlementStore", () => {
       t = 1000 + 5000;
       expect(hashes({ expired: true })).toEqual(["ln"]);
       expect(hashes({ settled: false, expired: false })).toEqual(["ark"]);
+      expect(hashes({ settled: false, expired: false, option: "arkade" })).toEqual(["ark"]);
+      expect(hashes({ settled: false, expired: false, option: "lightning" })).toEqual([]);
+      expect(hashes({ settled: false, expired: true, option: "lightning" })).toEqual(["ln"]);
       expect(expired()).toEqual([["done", false], ["ark", false], ["ln", true]]);
 
       t = 1001 + 20_000;
