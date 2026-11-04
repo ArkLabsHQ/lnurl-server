@@ -93,8 +93,9 @@ export interface OfflineSwapCreator {
   /** Present only under OFFLINE_SELF_CLAIM. @see SelfClaimer */
   selfClaim?(swapId: string, preimage: string, recovery?: OfflineSwapRecoveryV1): Promise<SelfClaimOutcome>;
   /** This lockup's payout to the covenant's receiver, or undefined while no spend proves one.
-   *  Available in every mode, covclaimd's claim included. @see observeLockupPayout */
-  observePayout?(swapId: string, recovery?: OfflineSwapRecoveryV1): Promise<string | undefined>;
+   *  Required, not a capability like {@link selfClaim}: settlement rests on nothing else, so a
+   *  creator lacking it could settle no swap at all. @see observeLockupPayout */
+  observePayout(swapId: string, recovery?: OfflineSwapRecoveryV1): Promise<string | undefined>;
   /** Close and forget one terminal swap's pinned transport. */
   release?(swapId: string): Promise<void>;
   /** Close transports whose swaps are no longer in durable pending storage. */
@@ -238,9 +239,9 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
     return (await transport.status(swapId))?.state;
   };
 
-  /** The lockup rebuilt from its persisted recovery row — no emulator, no network, so operator
-   *  key rotation cannot break it. The address check is what makes the rebuild trustworthy: a
-   *  caller reads the payout script off this, so a row rebuilding to another lockup is refused. */
+  /** The lockup rebuilt from its persisted recovery row — no emulator or network, so operator
+   *  key rotation cannot break it. Callers read the payout script off this, so the address
+   *  check is what makes it trustworthy: a row rebuilding to another lockup is refused. */
   const restoreLockup = (swapId: string, recovery: OfflineSwapRecoveryV1): ReturnType<typeof deserializeSelfClaim> => {
     if (recovery.rfqId !== swapId) throw new Error("offline swap recovery RFQ id mismatch");
     const restored = deserializeSelfClaim(JSON.stringify({

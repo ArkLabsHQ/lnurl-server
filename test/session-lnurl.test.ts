@@ -32,6 +32,7 @@ class FakeCreator implements OfflineSwapCreator {
     };
   }
   async isSettled(): Promise<boolean> { return false; }
+  async observePayout(): Promise<string | undefined> { return undefined; }
 }
 
 let db: Db; let repos: Repositories; let svc: AddressService; let settlements: MemorySettlementStore;

@@ -231,8 +231,7 @@ describe("LUD-XX verifyBatch — one-shot snapshot", () => {
     expect(results[upperBolt]).toMatchObject({ status: "OK", settled: false, pr: "lnbc1known" });
   });
 
-  // Parity with the single-invoice route is the contract, and that covers what it withholds.
-  it("withholds a solver-mediated swap's preimage until its payout is observed", async () => {
+  it("withholds a solver-mediated swap's preimage until its payout is observed, as verify does", async () => {
     const hash = "a1".repeat(32);
     const store = new MemorySettlementStore(86_400_000);
     store.create({ paymentHash: hash, pr: "lnbc1swap", sessionId: "offline:1", preimage: "cd".repeat(32), swapId: "swap-1" });

@@ -125,7 +125,7 @@ describe("payRequest units", () => {
     const domainId = repos.domains.create({ domain: "domain.com", allocationModes: ["self"] }).id;
     const address = repos.addresses.create({ domainId, username: "alice", status: "active", sessionId: "s-alice" });
     repos.addresses.setOfflineReceive(address.id, IDENTITY.arkadeAddress, IDENTITY.claimPublicKey);
-    const creator = { create: async () => { throw new Error("unused"); }, isSettled: async () => false } as OfflineSwapCreator;
+    const creator = { create: async () => { throw new Error("unused"); }, isSettled: async () => false, observePayout: async () => undefined } as OfflineSwapCreator;
     const server = http.createServer(createServer(
       { port: 0, baseUrl: "http://domain.com", minSendable: 1_000, maxSendable: 100_000_000 },
       { repos, addressService: new AddressService(repos, randomBytes(32)), offlineSwapCreator: creator,

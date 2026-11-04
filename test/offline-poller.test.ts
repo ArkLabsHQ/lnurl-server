@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { DbSettlementStore, MemorySettlementStore } from "../src/settlement-store.js";
+import { DbSettlementStore, MemorySettlementStore, revealedPreimage } from "../src/settlement-store.js";
 import { settleOfflineSwaps, startOfflineSettlementPoller } from "../src/workers/offline-poller.js";
 import type { OfflineSwapCreator } from "../src/services/offline-swaps.js";
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
@@ -190,6 +190,7 @@ describe("settleOfflineSwaps", () => {
     const creator: OfflineSwapCreator = {
       create: async () => { throw new Error("not used"); },
       isSettled: async () => { throw new Error("solver down"); },
+      observePayout: async () => undefined,
     };
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
@@ -255,6 +256,7 @@ describe("startOfflineSettlementPoller", () => {
         await new Promise<void>((resolve) => gates.push(resolve));
         return false;
       },
+      observePayout: async () => undefined,
     };
     return { creator, gates, release: () => gates.splice(0).forEach((g) => g()) };
   };
@@ -487,6 +489,25 @@ describe("startOfflineSettlementPoller", () => {
     recovered.markSettled("aa".repeat(32), "bb".repeat(32));
     return { db, settlements, recovered };
   };
+
+  // Nothing else records these rows' payout, so a covclaimd upgrade withheld P forever.
+  it("backfills a legacy settled row's payout with no self-claimer, so its preimage is revealed", async () => {
+    const { db, settlements, recovered } = settledWithoutPayout();
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    const hash = "aa".repeat(32);
+    expect(revealedPreimage(settlements.get(hash)!)).toBeNull();
+    const observePayout = vi.fn(async () => "ark-tx-covclaimd");
+
+    const poller = startOfflineSettlementPoller(settlements, { ...creatorReporting([]), observePayout }, 15_000, recovered);
+    try {
+      await vi.waitFor(() => expect(settlements.get(hash)?.payoutReference).toBe("ark-tx-covclaimd"));
+      expect(revealedPreimage(settlements.get(hash)!)).toBe("bb".repeat(32));
+      expect(observePayout).toHaveBeenCalledWith("22".repeat(32), expect.objectContaining({ rfqId: "22".repeat(32) }));
+    } finally {
+      poller.stop();
+      db.close();
+    }
+  });
 
   it("records the payout of a settled swap its claim never reported", async () => {
     const { db, settlements, recovered } = settledWithoutPayout();

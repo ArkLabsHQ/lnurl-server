@@ -171,8 +171,7 @@ function quoteOf(raw: string | null): QuotedAmount | null {
 const owesSweep = (r: SettlementRecord): boolean => Boolean(r.covenantScript && r.settled && !r.payoutReference);
 
 /** The preimage public `verify`/`verifyBatch` may publish — proof the receive arrived. A swap
- *  needs an observed payout behind it, since P is what pays the solver reporting it settled; a
- *  row an older build settled gets one from the backfill. @see workers/offline-poller.ts */
+ *  needs an observed payout behind it: P is what pays the solver reporting it settled. */
 export const revealedPreimage = (r: SettlementRecord): string | null =>
   r.settled && (r.swapId === null || r.payoutReference !== null) ? r.preimage : null;
 

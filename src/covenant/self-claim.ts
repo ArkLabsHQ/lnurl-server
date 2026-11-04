@@ -135,8 +135,7 @@ async function observedPayout(
 }
 
 /** The lockup's whole history, spent included — where a claim that landed is visible. Needs no
- *  emulator and no key, so the poller reads it even with no self-claimer: covclaimd spends the
- *  same leaf to the same covenant-pinned receiver, and the spend proves it whoever pushed it. */
+ *  emulator and no key, so covclaimd's claim of the same leaf is as observable as our own. */
 export async function observeLockupPayout(
   script: InstanceType<typeof VHTLC.ScriptV2>,
   indexer: IndexerProvider,

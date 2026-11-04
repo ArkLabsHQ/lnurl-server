@@ -16,6 +16,7 @@ const CLAIMPK = "02" + "ab".repeat(32);
 const fakeSwapCreator: OfflineSwapCreator = {
   create: async () => ({ swapId: "swap-1", invoice: "lnbc1offline", preimage: "ab".repeat(32), preimageHash: "cd".repeat(32), lockupAddress: ARK, recovery: { version: 1, solverName: "fake", solverPubkey: "11".repeat(32), relays: [], rfqId: "swap-1", lockupAddress: ARK, expectedAmount: 50, script: {} } }),
   isSettled: async () => false,
+  observePayout: async () => undefined,
 };
 
 function start(repos: Repositories, extra?: Record<string, unknown>) {

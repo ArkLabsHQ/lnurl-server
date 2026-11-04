@@ -64,6 +64,9 @@ class FakeCreator implements OfflineSwapCreator {
   async isSettled(swapId: string): Promise<boolean> {
     return this.settledIds.has(swapId);
   }
+  async observePayout(swapId: string): Promise<string | undefined> {
+    return this.settledIds.has(swapId) ? `ark-tx-${swapId}` : undefined;
+  }
 }
 
 function start(repos: Repositories, creator?: OfflineSwapCreator, settlements?: SettlementStore, offlineSwaps?: OfflineSwapStore) {
@@ -373,6 +376,7 @@ describe("offline receive", () => {
     const creator: OfflineSwapCreator = {
       create: async () => { throw new Error("all solver candidates failed: acme: nostr relay refused"); },
       isSettled: async () => false,
+      observePayout: async () => undefined,
     };
     repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
     ctx = await start(repos, creator, new MemorySettlementStore(60_000));
@@ -388,6 +392,7 @@ describe("offline receive", () => {
     const creator: OfflineSwapCreator = {
       create: async () => { throw new RailRefusedError("no solver card supports a 50 sat lightning receive"); },
       isSettled: async () => false,
+      observePayout: async () => undefined,
     };
     repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
     ctx = await start(repos, creator, new MemorySettlementStore(60_000));
