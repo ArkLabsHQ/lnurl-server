@@ -134,6 +134,16 @@ async function observedPayout(
   return arkTxid;
 }
 
+/** The lockup's whole history, spent included — where a claim that landed is visible. Needs no
+ *  emulator and no key, so covclaimd's claim of the same leaf is as observable as our own. */
+export async function observeLockupPayout(
+  script: InstanceType<typeof VHTLC.ScriptV2>,
+  indexer: IndexerProvider,
+): Promise<string | undefined> {
+  const { vtxos } = await indexer.getVtxos({ scripts: [hex.encode(script.pkScript)] });
+  return observedPayout(script.options.nonInteractiveParameters?.receiverPkScript, vtxos, indexer);
+}
+
 export function createSelfClaimer(opts: {
   arkServerUrl: string;
   emulatorUrl: string;
@@ -162,9 +172,7 @@ export function createSelfClaimer(opts: {
       const deadline = reg.script.options.refundLocktime;
       const lockupScript = hex.encode(reg.script.pkScript);
       const payTo = reg.script.options.nonInteractiveParameters?.receiverPkScript;
-      // The lockup's whole history, spent included — where a claim that landed is visible.
-      const landedPayout = async (): Promise<string | undefined> =>
-        observedPayout(payTo, (await indexer.getVtxos({ scripts: [lockupScript] })).vtxos, indexer);
+      const landedPayout = (): Promise<string | undefined> => observeLockupPayout(reg.script, indexer);
       if (deadline >= BigInt(LOCKTIME_THRESHOLD) && BigInt(Math.floor(Date.now() / 1000)) >= deadline) {
         const { vtxos: ever } = await indexer.getVtxos({ scripts: [lockupScript] });
         // A claim that landed before the deadline still paid the user, however late we see it.

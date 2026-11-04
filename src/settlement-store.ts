@@ -170,6 +170,11 @@ function quoteOf(raw: string | null): QuotedAmount | null {
 /** Money arrived at its covenant and no sweep is recorded: expiry must never reclaim it. */
 const owesSweep = (r: SettlementRecord): boolean => Boolean(r.covenantScript && r.settled && !r.payoutReference);
 
+/** The preimage public `verify`/`verifyBatch` may publish — proof the receive arrived. A swap
+ *  needs an observed payout behind it: P is what pays the solver reporting it settled. */
+export const revealedPreimage = (r: SettlementRecord): string | null =>
+  r.settled && (r.swapId === null || r.payoutReference !== null) ? r.preimage : null;
+
 /** The planner matches a partial index by spelling, so this is written as idx_settlements_unsettled_created is, and
  *  as a literal (a bound `?` reads as a scan in EXPLAIN). The worker reads say `= 0`, so they keep their own indexes. */
 const UNSETTLED = "settled < 1";

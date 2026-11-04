@@ -216,6 +216,7 @@ describe("funding event to claim", () => {
         return { state: "claimed", arkTxid: "ark-tx-1" };
       },
       isSettled: async () => funded,
+      observePayout: async () => undefined,
     };
 
     const poller = startOfflineSettlementPoller(settlements, creator, 3_600_000, swaps);

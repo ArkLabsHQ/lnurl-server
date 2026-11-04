@@ -22,6 +22,23 @@ async function solverState(creator: OfflineSwapCreator, p: Pending): Promise<str
   return (await creator.isSettled(p.swapId, p.recovery)) ? "settled" : undefined;
 }
 
+/** This lockup's payout to the receiver, recorded. A failed read is not "no payout". */
+async function recordPayout(store: SettlementStore, creator: OfflineSwapCreator, p: Pending, logger: Logger, swapRef: string): Promise<boolean> {
+  let arkTxid: string | undefined;
+  try {
+    arkTxid = await creator.observePayout(p.swapId, p.recovery);
+  } catch (error) {
+    logger.warn("offline_swap_payout_observe_failed", { swapRef, error });
+    return false;
+  }
+  if (!arkTxid) return false;
+  // Quiet on the expected retry (an earlier pass got there first); loud when the row is gone.
+  if (!store.markPaidOut(p.paymentHash, arkTxid) && !store.get(p.paymentHash)?.payoutReference) {
+    logger.warn("offline_swap_payout_unrecorded", { swapRef, arkTxid });
+  }
+  return true;
+}
+
 async function settleOne(store: SettlementStore, creator: OfflineSwapCreator, p: Pending, recovered: OfflineSwapStore | undefined, logger: Logger, hooks: SettlementHooks, expired: Set<string>, closed: Set<string>): Promise<boolean> {
   // The logger redacts 64-char hex, which is exactly what a swap id is.
   const swapRef = p.swapId.slice(0, 12);
@@ -48,6 +65,14 @@ async function settleOne(store: SettlementStore, creator: OfflineSwapCreator, p:
   try {
     const state = claimed ? "settled" : await solverState(creator, p);
     if (state === "settled") {
+      // The solver is the counterparty P pays, so its word would settle the swap and reveal P
+      // as proof of a receive that never arrived. Only a payout read off the chain is evidence
+      // — whoever pushed the claim. The expired cache is dropped so a late one is still found.
+      if (!claimed && !(await recordPayout(store, creator, p, logger, swapRef))) {
+        expired.delete(p.swapId);
+        logger.warn("offline_swap_settled_without_payout", { swapRef });
+        return false;
+      }
       const settled = (recovered ?? store).markSettled(p.paymentHash, p.preimage);
       await creator.release?.(p.swapId);
       if (settled) await hooks.onSettled?.(p.paymentHash).catch((error) => logger.warn("offline_swap_settled_hook_failed", { swapRef, error }));
@@ -64,12 +89,12 @@ async function settleOne(store: SettlementStore, creator: OfflineSwapCreator, p:
   return false;
 }
 
-/** A claim whose reply was lost settles the swap with no payout reference, and the pending
- *  read never returns to a settled row. One attempt each: the spend that proves a payout is
- *  visible the moment it lands. Goes through the claim path rather than a read-only lookup,
- *  so a settled row whose lockup is still spendable is claimed — money the user is owed. */
+/** A claim whose reply was lost settles the swap with no payout reference, and the pending read
+ *  never returns to a settled row. One attempt each: a landed payout is visible at once. Prefers
+ *  the claim path, so a settled row whose lockup is still spendable is claimed — money the user
+ *  is owed. Every mode runs it: it is also the upgrade path for a row settled by an older build,
+ *  whose preimage `revealedPreimage` withholds until a payout is recorded. */
 async function recordMissedPayouts(store: SettlementStore, creator: OfflineSwapCreator, recovered: OfflineSwapStore, logger: Logger, asked: Set<string>): Promise<void> {
-  if (!creator.selfClaim) return;
   const rows = recovered.listUnrecordedPayouts();
   const live = new Set(rows.map((row) => row.paymentHash));
   for (const paymentHash of asked) if (!live.has(paymentHash)) asked.delete(paymentHash);
@@ -77,10 +102,16 @@ async function recordMissedPayouts(store: SettlementStore, creator: OfflineSwapC
     if (asked.has(row.paymentHash)) continue;
     const swapRef = row.recovery.rfqId.slice(0, 12);
     try {
-      const outcome = await creator.selfClaim(row.recovery.rfqId, row.preimage, row.recovery);
+      let arkTxid: string | undefined;
+      if (creator.selfClaim) {
+        const outcome = await creator.selfClaim(row.recovery.rfqId, row.preimage, row.recovery);
+        if (outcome.state === "claimed") arkTxid = outcome.arkTxid;
+      } else {
+        arkTxid = await creator.observePayout(row.recovery.rfqId, row.recovery);
+      }
       asked.add(row.paymentHash);
-      if (outcome.state === "claimed" && store.markPaidOut(row.paymentHash, outcome.arkTxid)) {
-        logger.info("offline_swap_payout_recorded", { swapRef, arkTxid: outcome.arkTxid });
+      if (arkTxid !== undefined && store.markPaidOut(row.paymentHash, arkTxid)) {
+        logger.info("offline_swap_payout_recorded", { swapRef, arkTxid });
       }
     } catch (error) {
       logger.warn("offline_swap_payout_lookup_failed", { swapRef, error });

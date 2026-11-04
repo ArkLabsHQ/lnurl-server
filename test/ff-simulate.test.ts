@@ -102,6 +102,7 @@ describe("simulated token provider", () => {
     repos.addresses.setOfflineReceive(address.id, IDENTITY.arkadeAddress, IDENTITY.claimPublicKey);
     const creator: OfflineSwapCreator = {
       isSettled: async () => false,
+      observePayout: async () => undefined,
       create: async (p) => {
         const hash = createHash("sha256").update(String(p.amountSat)).digest("hex");
         return { swapId: "rfq-sim", invoice: buildInvoice(hash, { amountHrp: `${p.amountSat * 10}n` }), preimage: "11".repeat(32), preimageHash: hash,

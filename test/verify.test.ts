@@ -239,6 +239,18 @@ describe("verify conformance", () => {
     expect(after.body.preimage).toBe("cd".repeat(32));
   });
 
+  // Backstop for a row an older build settled on the solver's word, before the backfill reaches it.
+  it("withholds a solver-mediated swap's preimage until its payout is observed", async () => {
+    const store = new MemorySettlementStore(86_400_000);
+    store.create({ paymentHash: HASH, pr: "lnbc1", sessionId: "offline:1", preimage: "cd".repeat(32), swapId: "swap-1" });
+    const { baseUrl } = await withStore(store);
+    store.markSettled(HASH, "cd".repeat(32));
+
+    expect((await jsonRequest(`${baseUrl}/lnurl/verify/${HASH}`)).body).toMatchObject({ settled: true, preimage: null });
+    store.markPaidOut(HASH, "ark-tx-1");
+    expect((await jsonRequest(`${baseUrl}/lnurl/verify/${HASH}`)).body.preimage).toBe("cd".repeat(32));
+  });
+
   // LUD-21 has no "expired" state, but `reason` is free text: a lapsed record says
   // so, and only a hash this server never issued is "Not found".
   it("answers Expired, on every poll, for a lightning record past the verify TTL", async () => {

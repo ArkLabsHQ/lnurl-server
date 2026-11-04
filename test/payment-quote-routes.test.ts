@@ -33,6 +33,7 @@ let lastCreate: OfflineSwapParams | undefined;
 const fakeCreator: OfflineSwapCreator = {
   create: async (p) => { lastCreate = p; return { swapId: "swap-1", invoice: "lnbc1quoted", preimage: "ab".repeat(32), preimageHash: "cd".repeat(32), lockupAddress: "ark1lockup", recovery: { version: 1, solverName: "fake", solverPubkey: "11".repeat(32), relays: [], rfqId: "swap-1", lockupAddress: "ark1lockup", expectedAmount: p.amountSat, script: {} } }; },
   isSettled: async () => false,
+  observePayout: async () => undefined,
 };
 
 function start(deps: ServerDeps) {

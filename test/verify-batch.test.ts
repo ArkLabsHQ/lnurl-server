@@ -231,6 +231,24 @@ describe("LUD-XX verifyBatch — one-shot snapshot", () => {
     expect(results[upperBolt]).toMatchObject({ status: "OK", settled: false, pr: "lnbc1known" });
   });
 
+  it("withholds a solver-mediated swap's preimage until its payout is observed, as verify does", async () => {
+    const hash = "a1".repeat(32);
+    const store = new MemorySettlementStore(86_400_000);
+    store.create({ paymentHash: hash, pr: "lnbc1swap", sessionId: "offline:1", preimage: "cd".repeat(32), swapId: "swap-1" });
+    store.markSettled(hash, "cd".repeat(32));
+    const swap = await startServer({ settlements: store } as unknown as ServerDeps);
+    const url = verifyUrl(swap.baseUrl, hash);
+    try {
+      const unproven = await jsonRequest(`${swap.baseUrl}/lnurl/verifyBatch?verify=${encodeURIComponent(url)}`);
+      expect((unproven.body.results as Record<string, unknown>)[url]).toMatchObject({ status: "OK", settled: true, preimage: null, pr: "lnbc1swap" });
+      store.markPaidOut(hash, "ark-tx-1");
+      const proven = await jsonRequest(`${swap.baseUrl}/lnurl/verifyBatch?verify=${encodeURIComponent(url)}`);
+      expect((proven.body.results as Record<string, Record<string, unknown>>)[url]!.preimage).toBe("cd".repeat(32));
+    } finally {
+      await swap.close();
+    }
+  });
+
   it("answers an oversized set with 414, the status clients split on", async () => {
     const res = await jsonRequest(`${ctx.baseUrl}/lnurl/verifyBatch?${"verify=a&".repeat(251)}`);
     expect(res.status).toBe(414);

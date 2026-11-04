@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { DbSettlementStore, MemorySettlementStore } from "../src/settlement-store.js";
+import { DbSettlementStore, MemorySettlementStore, revealedPreimage } from "../src/settlement-store.js";
 import { settleOfflineSwaps, startOfflineSettlementPoller } from "../src/workers/offline-poller.js";
 import type { OfflineSwapCreator } from "../src/services/offline-swaps.js";
 import { OfflineSwapStore } from "../src/offline-swap-store.js";
@@ -10,8 +10,13 @@ function creatorReporting(settledIds: string[]): OfflineSwapCreator {
   return {
     create: async () => { throw new Error("not used"); },
     isSettled: async (swapId: string) => settledIds.includes(swapId),
+    // A solver settles because the lockup was claimed, so an honest one leaves a payout to read.
+    observePayout: async (swapId: string) => (settledIds.includes(swapId) ? `ark-tx-${swapId}` : undefined),
   };
 }
+
+const lyingAbout = (settledIds: string[]): OfflineSwapCreator =>
+  ({ ...creatorReporting(settledIds), observePayout: async () => undefined });
 
 describe("settleOfflineSwaps", () => {
   // Unconditional, unlike a restore after the assertions: one failed expect
@@ -77,24 +82,65 @@ describe("settleOfflineSwaps", () => {
     const creator = { ...creatorReporting(["swap-1"]), selfClaim: async () => ({ state: "skipped" as const, reason: "unfunded" as const }) };
     const isSettled = vi.spyOn(creator, "isSettled");
 
-    expect(await settleOfflineSwaps(store, creator)).toBe(1);
+    await settleOfflineSwaps(store, creator);
     expect(isSettled).toHaveBeenCalledOnce();
   });
 
-  it("still checks status when the claim throws, so a broken claim path cannot wedge a swap", async () => {
+  it("refuses a solver's settled report when its own claim observed no payout", async () => {
+    const store = new MemorySettlementStore(60_000);
+    store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const creator = { ...lyingAbout(["swap-1"]), selfClaim: async () => ({ state: "skipped" as const, reason: "unfunded" as const }) };
+
+    expect(await settleOfflineSwaps(store, creator)).toBe(0);
+    expect(store.get("aa")).toMatchObject({ settled: false, payoutReference: null });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_settled_without_payout"'));
+  });
+
+  it("settles a covclaimd-claimed swap from the observed payout, and not before", async () => {
+    const store = new MemorySettlementStore(60_000);
+    store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let payout: string | undefined;
+    const creator: OfflineSwapCreator = { ...creatorReporting(["swap-1"]), observePayout: async () => payout };
+
+    expect(await settleOfflineSwaps(store, creator)).toBe(0);
+    expect(store.get("aa")).toMatchObject({ settled: false, payoutReference: null });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_settled_without_payout"'));
+
+    payout = "ark-tx-covclaimd";
+    expect(await settleOfflineSwaps(store, creator)).toBe(1);
+    expect(store.get("aa")).toMatchObject({ settled: true, preimage: "beef", payoutReference: "ark-tx-covclaimd" });
+  });
+
+  it("leaves a swap pending when the payout read fails, rather than reading it as no payout", async () => {
+    const store = new MemorySettlementStore(60_000);
+    store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(await settleOfflineSwaps(store, {
+      ...creatorReporting(["swap-1"]),
+      observePayout: async () => { throw new Error("indexer down"); },
+    })).toBe(0);
+    expect(store.get("aa")!.settled).toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_payout_observe_failed"'));
+  });
+
+  it("refuses the same report when the claim threw, rather than taking the solver's word for it", async () => {
     const store = new MemorySettlementStore(60_000);
     store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const n = await settleOfflineSwaps(store, {
-      ...creatorReporting(["swap-1"]),
+      ...lyingAbout(["swap-1"]),
       selfClaim: async () => { throw new Error("arkd down"); },
     });
 
-    expect(n).toBe(1);
-    expect(store.get("aa")!.settled).toBe(true);
+    expect(n).toBe(0);
+    expect(store.get("aa")!.settled).toBe(false);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_self_claim_failed"'));
   });
+
 
   it("warns rather than revealing the preimage for an underfunded lockup", async () => {
     const store = new MemorySettlementStore(60_000);
@@ -144,6 +190,7 @@ describe("settleOfflineSwaps", () => {
     const creator: OfflineSwapCreator = {
       create: async () => { throw new Error("not used"); },
       isSettled: async () => { throw new Error("solver down"); },
+      observePayout: async () => undefined,
     };
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
@@ -166,7 +213,7 @@ describe("settleOfflineSwaps", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining(`"swapRef":"${swapId.slice(0, 12)}"`));
   });
 
-  it("drives status and self-claim from a persisted recovery row", async () => {
+  it("drives status, self-claim and the payout read from a persisted recovery row", async () => {
     const db = openDb(":memory:");
     runMigrations(db);
     const settlements = new DbSettlementStore(db, 60_000, () => 1_001);
@@ -175,17 +222,20 @@ describe("settleOfflineSwaps", () => {
       paymentHash: "aa".repeat(32), pr: "lnbc1", sessionId: "offline:1", preimage: "bb".repeat(32), amountMsat: 5_000_000,
       recovery: { version: 1, solverName: "primary", solverPubkey: "11".repeat(32), relays: ["wss://relay.example"], rfqId: "22".repeat(32), lockupAddress: "tark1", expectedAmount: 4_999, script: { sender: "33".repeat(32) } },
     });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
     const seen: unknown[] = [];
     const creator: OfflineSwapCreator = {
       create: async () => { throw new Error("not used"); },
       selfClaim: async (_swapId, _preimage, recovery) => { seen.push(recovery); return { state: "skipped", reason: "unfunded" }; },
       isSettled: async (_swapId, recovery) => { seen.push(recovery); return true; },
+      observePayout: async (_swapId, recovery) => { seen.push(recovery); return undefined; },
     };
 
-    expect(await settleOfflineSwaps(settlements, creator, recovered)).toBe(1);
-    expect(seen).toHaveLength(2);
-    expect(seen[0]).toMatchObject({ solverPubkey: "11".repeat(32), relays: ["wss://relay.example"] });
-    expect(settlements.get("aa".repeat(32))?.settled).toBe(true);
+    await settleOfflineSwaps(settlements, creator, recovered);
+
+    expect(seen).toHaveLength(3);
+    for (const recovery of seen) expect(recovery).toMatchObject({ solverPubkey: "11".repeat(32), relays: ["wss://relay.example"] });
+    expect(settlements.get("aa".repeat(32))?.settled).toBe(false);
     db.close();
   });
 });
@@ -206,6 +256,7 @@ describe("startOfflineSettlementPoller", () => {
         await new Promise<void>((resolve) => gates.push(resolve));
         return false;
       },
+      observePayout: async () => undefined,
     };
     return { creator, gates, release: () => gates.splice(0).forEach((g) => g()) };
   };
@@ -247,6 +298,7 @@ describe("startOfflineSettlementPoller", () => {
         if (swapId === "swap-1") { entered(); await first; return false; }
         return true;
       },
+      observePayout: async (swapId) => `ark-tx-${swapId}`,
     };
 
     const poller = startOfflineSettlementPoller(store, creator, 15_000);
@@ -332,7 +384,7 @@ describe("startOfflineSettlementPoller", () => {
 
   it("settles from the solver's state when the creator reports one", async () => {
     const store = pendingStore();
-    const creator: OfflineSwapCreator = { ...creatorReporting([]), status: async () => "settled" };
+    const creator: OfflineSwapCreator = { ...creatorReporting([]), status: async () => "settled", observePayout: async () => "ark-tx-1" };
 
     const poller = startOfflineSettlementPoller(store, creator, 15_000);
     await vi.waitFor(() => expect(store.get("aa")!.settled).toBe(true));
@@ -386,6 +438,29 @@ describe("startOfflineSettlementPoller", () => {
     }
   });
 
+  it("re-arms the claim on an expired swap the solver calls settled, so a late payout is still found", async () => {
+    const store = pendingStore();
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const selfClaim = vi.fn<NonNullable<OfflineSwapCreator["selfClaim"]>>()
+      .mockResolvedValueOnce({ state: "skipped", reason: "expired", funded: true })
+      .mockResolvedValue({ state: "claimed", arkTxid: "ark-tx-late" });
+    const creator: OfflineSwapCreator = { ...lyingAbout(["swap-1"]), selfClaim };
+
+    const poller = startOfflineSettlementPoller(store, creator, 15_000);
+    try {
+      await vi.waitFor(() => expect(selfClaim).toHaveBeenCalledOnce());
+      poller.trigger("swap-1");
+      await vi.waitFor(() => expect(store.get("aa")).toMatchObject({ settled: true, payoutReference: "ark-tx-late" }));
+    } finally {
+      poller.stop();
+      error.mockRestore();
+      info.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
   it("keeps asking about a swap the solver reports stuck", async () => {
     const store = pendingStore();
     const status = vi.fn(async () => "stuck");
@@ -414,6 +489,25 @@ describe("startOfflineSettlementPoller", () => {
     recovered.markSettled("aa".repeat(32), "bb".repeat(32));
     return { db, settlements, recovered };
   };
+
+  // Nothing else records these rows' payout, so a covclaimd upgrade withheld P forever.
+  it("backfills a legacy settled row's payout with no self-claimer, so its preimage is revealed", async () => {
+    const { db, settlements, recovered } = settledWithoutPayout();
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    const hash = "aa".repeat(32);
+    expect(revealedPreimage(settlements.get(hash)!)).toBeNull();
+    const observePayout = vi.fn(async () => "ark-tx-covclaimd");
+
+    const poller = startOfflineSettlementPoller(settlements, { ...creatorReporting([]), observePayout }, 15_000, recovered);
+    try {
+      await vi.waitFor(() => expect(settlements.get(hash)?.payoutReference).toBe("ark-tx-covclaimd"));
+      expect(revealedPreimage(settlements.get(hash)!)).toBe("bb".repeat(32));
+      expect(observePayout).toHaveBeenCalledWith("22".repeat(32), expect.objectContaining({ rfqId: "22".repeat(32) }));
+    } finally {
+      poller.stop();
+      db.close();
+    }
+  });
 
   it("records the payout of a settled swap its claim never reported", async () => {
     const { db, settlements, recovered } = settledWithoutPayout();

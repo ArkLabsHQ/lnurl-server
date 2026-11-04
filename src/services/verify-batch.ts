@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { Logger } from "../logger.js";
-import type { SettlementStore, SettlementRecord } from "../settlement-store.js";
+import { revealedPreimage, type SettlementStore, type SettlementRecord } from "../settlement-store.js";
 
 export const BATCH_PATH = "/lnurl/verifyBatch";
 
@@ -75,7 +75,7 @@ function itemShape(rec: SettlementRecord): VerifyBatchItem {
       paymentReference: rec.paymentReference,
     };
   }
-  return { status: "OK", settled: rec.settled, preimage: rec.settled ? rec.preimage : null, pr: rec.pr };
+  return { status: "OK", settled: rec.settled, preimage: revealedPreimage(rec), pr: rec.pr };
 }
 
 const UNKNOWN: { status: "ERROR"; reason: "unknown verify url" } = { status: "ERROR", reason: "unknown verify url" };

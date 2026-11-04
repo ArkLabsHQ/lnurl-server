@@ -804,6 +804,7 @@ describe("token rail contract", () => {
     await rates.refresh();
     const corridor: OfflineSwapCreator = {
       isSettled: async () => false,
+      observePayout: async () => undefined,
       create: async (p) => {
         const preimage = randomBytes(32).toString("hex");
         const hash = createHash("sha256").update(Buffer.from(preimage, "hex")).digest("hex");

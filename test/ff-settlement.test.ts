@@ -27,6 +27,7 @@ const servers: http.Server[] = [];
 const corridor = (opts: { settled?: boolean; claimTxid?: string } = {}): OfflineSwapCreator => ({
   create: async () => { throw new Error("unused"); },
   isSettled: async () => opts.settled ?? true,
+  observePayout: async () => ((opts.settled ?? true) ? "ark-tx-corridor" : undefined),
   ...(opts.claimTxid ? { selfClaim: async () => ({ state: "claimed" as const, arkTxid: opts.claimTxid! }) } : {}),
 });
 

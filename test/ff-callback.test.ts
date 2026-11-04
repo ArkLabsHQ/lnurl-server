@@ -40,6 +40,7 @@ class FakeCorridor implements OfflineSwapCreator {
     };
   }
   async isSettled(): Promise<boolean> { return false; }
+  async observePayout(): Promise<string | undefined> { return undefined; }
 }
 
 let db: Db; let repos: Repositories; let ff: FakeFf; let corridor: FakeCorridor; let budget: FfBudget;
