@@ -9,12 +9,13 @@ import {
   CSVMultisigTapscript,
   Extension,
   PrevArkTxField,
+  RestIndexerProvider,
   Transaction,
   getArkPsbtFields,
   scriptFromTapLeafScript,
   toXOnly,
 } from "@arkade-os/sdk";
-import { createSelfClaimer } from "../src/covenant/self-claim.js";
+import { createSelfClaimer, observeLockupPayout } from "../src/covenant/self-claim.js";
 import { lightningReceiveContract, unilateralClaimDelay } from "@arkade-os/swap/protocol";
 
 // Against a fake Arkade operator + emulator over real HTTP, repo style. The fake
@@ -425,5 +426,30 @@ describe("createSelfClaimer", () => {
       state: "claimed",
       arkTxid: Transaction.fromPSBT(base64.decode(submitted[0].arkTx)).id,
     });
+  });
+});
+
+// What the poller reads in a covclaimd-only deployment: no registration, no emulator, no key.
+describe("observeLockupPayout", () => {
+  const indexer = () => new RestIndexerProvider(ark.baseUrl);
+
+  it("reports a payout pushed by someone else, keyed off the spend", async () => {
+    const r = registered({ swapId: "swap-covclaimd", expectedAmount: 4_900 });
+    const spendId = alreadySpent(r, 4_900, { script: PAYOUT_PKSCRIPT, amount: 4_900n });
+
+    expect(await observeLockupPayout(r.script, indexer())).toBe(spendId);
+  });
+
+  it("reports nothing for a spend paying anywhere but the covenant's receiver", async () => {
+    const r = registered({ swapId: "swap-refunded", expectedAmount: 4_900 });
+    alreadySpent(r, 4_900, { script: ELSEWHERE_PKSCRIPT, amount: 4_900n });
+
+    expect(await observeLockupPayout(r.script, indexer())).toBeUndefined();
+  });
+
+  it("reports nothing for a lockup the solver funded and nobody has claimed", async () => {
+    const r = funded({ swapId: "swap-open", expectedAmount: 4_900, valueSat: 4_900 });
+
+    expect(await observeLockupPayout(r.script, indexer())).toBeUndefined();
   });
 });

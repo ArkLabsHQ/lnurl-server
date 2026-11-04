@@ -18,7 +18,7 @@
 
 import { hex } from "@scure/base";
 import { sideLimits } from "@arkade-os/solver-discovery";
-import { ArkAddress, RestArkProvider, VHTLCV2ContractHandler, getNetwork, toXOnly, type NetworkName } from "@arkade-os/sdk";
+import { ArkAddress, RestArkProvider, RestIndexerProvider, VHTLCV2ContractHandler, getNetwork, toXOnly, type NetworkName } from "@arkade-os/sdk";
 import {
   deriveLightningReceive,
   lightningReceiveRequest,
@@ -37,7 +37,7 @@ import { MalformedRecordError, RailRefusedError, SolverQuoteError, UpstreamError
 import { checkedPreimage, randomEntropy, type EntropyProvider } from "../covenant/entropy.js";
 import { createLogger, type Logger } from "../logger.js";
 import type { DiscoveryService, SolverCandidate } from "./solver-discovery.js";
-import type { SelfClaimer, SelfClaimOutcome } from "../covenant/self-claim.js";
+import { observeLockupPayout, type SelfClaimer, type SelfClaimOutcome } from "../covenant/self-claim.js";
 import { deserializeSelfClaim } from "../covenant/self-claim-codec.js";
 
 export interface OfflineSwapParams {
@@ -92,6 +92,9 @@ export interface OfflineSwapCreator {
   status?(swapId: string, recovery?: OfflineSwapRecoveryV1): Promise<string | undefined>;
   /** Present only under OFFLINE_SELF_CLAIM. @see SelfClaimer */
   selfClaim?(swapId: string, preimage: string, recovery?: OfflineSwapRecoveryV1): Promise<SelfClaimOutcome>;
+  /** This lockup's payout to the covenant's receiver, or undefined while no spend proves one.
+   *  Available in every mode, covclaimd's claim included. @see observeLockupPayout */
+  observePayout?(swapId: string, recovery?: OfflineSwapRecoveryV1): Promise<string | undefined>;
   /** Close and forget one terminal swap's pinned transport. */
   release?(swapId: string): Promise<void>;
   /** Close transports whose swaps are no longer in durable pending storage. */
@@ -213,6 +216,7 @@ async function fetchEmulatorKey(emulatorUrl: string): Promise<Uint8Array> {
  */
 export async function createOfflineSwapCoordinator(settings: IntentSwapSettings): Promise<OfflineSwapCreator> {
   const arkProvider = new RestArkProvider(settings.arkServerUrl);
+  const indexer = new RestIndexerProvider(settings.arkServerUrl);
   const logger = settings.logger ?? createLogger();
   const pinned = new Map<string, RfqTransport>();
   const transportFor: (candidate: Pick<SolverCandidate, "name" | "discoveryPubkey" | "relays">) => RfqTransport = settings.transportFactory ?? ((candidate) =>
@@ -232,6 +236,23 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
     }
     if (!transport) throw new Error(`no pinned solver transport for swap ${swapId}`);
     return (await transport.status(swapId))?.state;
+  };
+
+  /** The lockup rebuilt from its persisted recovery row — no emulator, no network, so operator
+   *  key rotation cannot break it. The address check is what makes the rebuild trustworthy: a
+   *  caller reads the payout script off this, so a row rebuilding to another lockup is refused. */
+  const restoreLockup = (swapId: string, recovery: OfflineSwapRecoveryV1): ReturnType<typeof deserializeSelfClaim> => {
+    if (recovery.rfqId !== swapId) throw new Error("offline swap recovery RFQ id mismatch");
+    const restored = deserializeSelfClaim(JSON.stringify({
+      version: recovery.version,
+      expectedAmount: recovery.expectedAmount,
+      params: recovery.script,
+    }));
+    const hrp = ArkAddress.decode(recovery.lockupAddress).hrp;
+    if (restored.script.address(hrp, restored.script.options.server).encode() !== recovery.lockupAddress) {
+      throw new Error("offline swap recovery lockup address mismatch");
+    }
+    return restored;
   };
 
   let cached: { at: number; ctx: Promise<CorridorContext> } | null = null;
@@ -389,20 +410,17 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
       return (await status(swapId, recovery)) === "settled";
     },
 
+    // Throws rather than answering "no payout" when the lockup cannot be rebuilt: conflating
+    // the two would wedge a swap silently.
+    observePayout: async (swapId, recovery) => {
+      if (!recovery) throw new Error(`no recovery row to rebuild the lockup for swap ${swapId}`);
+      return observeLockupPayout(restoreLockup(swapId, recovery).script, indexer);
+    },
+
     ...(settings.selfClaimer
       ? { selfClaim: async (swapId: string, preimage: string, recovery?: OfflineSwapRecoveryV1) => {
           if (recovery) {
-            if (recovery.rfqId !== swapId) throw new Error("offline swap recovery RFQ id mismatch");
-            const restored = deserializeSelfClaim(JSON.stringify({
-              version: recovery.version,
-              expectedAmount: recovery.expectedAmount,
-              params: recovery.script,
-            }));
-            // Recovery must remain valid across operator key rotation. The server
-            // key and network are persisted covenant data, not live dependencies.
-            const hrp = ArkAddress.decode(recovery.lockupAddress).hrp;
-            const address = restored.script.address(hrp, restored.script.options.server).encode();
-            if (address !== recovery.lockupAddress) throw new Error("offline swap recovery lockup address mismatch");
+            const restored = restoreLockup(swapId, recovery);
             settings.selfClaimer!.register({ swapId, script: restored.script, expectedAmount: restored.expectedAmount });
           }
           return settings.selfClaimer!.claim(swapId, preimage);

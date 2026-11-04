@@ -10,8 +10,13 @@ function creatorReporting(settledIds: string[]): OfflineSwapCreator {
   return {
     create: async () => { throw new Error("not used"); },
     isSettled: async (swapId: string) => settledIds.includes(swapId),
+    // A solver settles because the lockup was claimed, so an honest one leaves a payout to read.
+    observePayout: async (swapId: string) => (settledIds.includes(swapId) ? `ark-tx-${swapId}` : undefined),
   };
 }
+
+const lyingAbout = (settledIds: string[]): OfflineSwapCreator =>
+  ({ ...creatorReporting(settledIds), observePayout: async () => undefined });
 
 describe("settleOfflineSwaps", () => {
   // Unconditional, unlike a restore after the assertions: one failed expect
@@ -85,11 +90,40 @@ describe("settleOfflineSwaps", () => {
     const store = new MemorySettlementStore(60_000);
     store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const creator = { ...creatorReporting(["swap-1"]), selfClaim: async () => ({ state: "skipped" as const, reason: "unfunded" as const }) };
+    const creator = { ...lyingAbout(["swap-1"]), selfClaim: async () => ({ state: "skipped" as const, reason: "unfunded" as const }) };
 
     expect(await settleOfflineSwaps(store, creator)).toBe(0);
     expect(store.get("aa")).toMatchObject({ settled: false, payoutReference: null });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_settled_without_payout"'));
+  });
+
+  it("settles a covclaimd-claimed swap from the observed payout, and not before", async () => {
+    const store = new MemorySettlementStore(60_000);
+    store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let payout: string | undefined;
+    const creator: OfflineSwapCreator = { ...creatorReporting(["swap-1"]), observePayout: async () => payout };
+
+    expect(await settleOfflineSwaps(store, creator)).toBe(0);
+    expect(store.get("aa")).toMatchObject({ settled: false, payoutReference: null });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_settled_without_payout"'));
+
+    payout = "ark-tx-covclaimd";
+    expect(await settleOfflineSwaps(store, creator)).toBe(1);
+    expect(store.get("aa")).toMatchObject({ settled: true, preimage: "beef", payoutReference: "ark-tx-covclaimd" });
+  });
+
+  it("leaves a swap pending when the payout read fails, rather than reading it as no payout", async () => {
+    const store = new MemorySettlementStore(60_000);
+    store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(await settleOfflineSwaps(store, {
+      ...creatorReporting(["swap-1"]),
+      observePayout: async () => { throw new Error("indexer down"); },
+    })).toBe(0);
+    expect(store.get("aa")!.settled).toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_payout_observe_failed"'));
   });
 
   it("refuses the same report when the claim threw, rather than taking the solver's word for it", async () => {
@@ -98,7 +132,7 @@ describe("settleOfflineSwaps", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const n = await settleOfflineSwaps(store, {
-      ...creatorReporting(["swap-1"]),
+      ...lyingAbout(["swap-1"]),
       selfClaim: async () => { throw new Error("arkd down"); },
     });
 
@@ -178,7 +212,7 @@ describe("settleOfflineSwaps", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining(`"swapRef":"${swapId.slice(0, 12)}"`));
   });
 
-  it("drives status and self-claim from a persisted recovery row", async () => {
+  it("drives status, self-claim and the payout read from a persisted recovery row", async () => {
     const db = openDb(":memory:");
     runMigrations(db);
     const settlements = new DbSettlementStore(db, 60_000, () => 1_001);
@@ -193,11 +227,12 @@ describe("settleOfflineSwaps", () => {
       create: async () => { throw new Error("not used"); },
       selfClaim: async (_swapId, _preimage, recovery) => { seen.push(recovery); return { state: "skipped", reason: "unfunded" }; },
       isSettled: async (_swapId, recovery) => { seen.push(recovery); return true; },
+      observePayout: async (_swapId, recovery) => { seen.push(recovery); return undefined; },
     };
 
     await settleOfflineSwaps(settlements, creator, recovered);
 
-    expect(seen).toHaveLength(2);
+    expect(seen).toHaveLength(3);
     for (const recovery of seen) expect(recovery).toMatchObject({ solverPubkey: "11".repeat(32), relays: ["wss://relay.example"] });
     expect(settlements.get("aa".repeat(32))?.settled).toBe(false);
     db.close();
@@ -261,6 +296,7 @@ describe("startOfflineSettlementPoller", () => {
         if (swapId === "swap-1") { entered(); await first; return false; }
         return true;
       },
+      observePayout: async (swapId) => `ark-tx-${swapId}`,
     };
 
     const poller = startOfflineSettlementPoller(store, creator, 15_000);
@@ -346,7 +382,7 @@ describe("startOfflineSettlementPoller", () => {
 
   it("settles from the solver's state when the creator reports one", async () => {
     const store = pendingStore();
-    const creator: OfflineSwapCreator = { ...creatorReporting([]), status: async () => "settled" };
+    const creator: OfflineSwapCreator = { ...creatorReporting([]), status: async () => "settled", observePayout: async () => "ark-tx-1" };
 
     const poller = startOfflineSettlementPoller(store, creator, 15_000);
     await vi.waitFor(() => expect(store.get("aa")!.settled).toBe(true));
@@ -408,7 +444,7 @@ describe("startOfflineSettlementPoller", () => {
     const selfClaim = vi.fn<NonNullable<OfflineSwapCreator["selfClaim"]>>()
       .mockResolvedValueOnce({ state: "skipped", reason: "expired", funded: true })
       .mockResolvedValue({ state: "claimed", arkTxid: "ark-tx-late" });
-    const creator: OfflineSwapCreator = { ...creatorReporting(["swap-1"]), selfClaim };
+    const creator: OfflineSwapCreator = { ...lyingAbout(["swap-1"]), selfClaim };
 
     const poller = startOfflineSettlementPoller(store, creator, 15_000);
     try {

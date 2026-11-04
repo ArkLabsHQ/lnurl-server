@@ -22,6 +22,20 @@ async function solverState(creator: OfflineSwapCreator, p: Pending): Promise<str
   return (await creator.isSettled(p.swapId, p.recovery)) ? "settled" : undefined;
 }
 
+/** This lockup's payout to the receiver, recorded. A failed read is not "no payout". */
+async function recordPayout(store: SettlementStore, creator: OfflineSwapCreator, p: Pending, logger: Logger, swapRef: string): Promise<boolean> {
+  let arkTxid: string | undefined;
+  try {
+    arkTxid = await creator.observePayout?.(p.swapId, p.recovery);
+  } catch (error) {
+    logger.warn("offline_swap_payout_observe_failed", { swapRef, error });
+    return false;
+  }
+  if (!arkTxid) return false;
+  store.markPaidOut(p.paymentHash, arkTxid);
+  return true;
+}
+
 async function settleOne(store: SettlementStore, creator: OfflineSwapCreator, p: Pending, recovered: OfflineSwapStore | undefined, logger: Logger, hooks: SettlementHooks, expired: Set<string>, closed: Set<string>): Promise<boolean> {
   // The logger redacts 64-char hex, which is exactly what a swap id is.
   const swapRef = p.swapId.slice(0, 12);
@@ -48,10 +62,10 @@ async function settleOne(store: SettlementStore, creator: OfflineSwapCreator, p:
   try {
     const state = claimed ? "settled" : await solverState(creator, p);
     if (state === "settled") {
-      // The solver is the counterparty P pays, so its word would settle the swap and reveal
-      // P as proof of a receive that never arrived. Where this server claims, its own payout
-      // is the evidence; the expired cache is dropped so a late claim is still found.
-      if (!claimed && creator.selfClaim) {
+      // The solver is the counterparty P pays, so its word would settle the swap and reveal P
+      // as proof of a receive that never arrived. Only a payout read off the chain is evidence
+      // — whoever pushed the claim. The expired cache is dropped so a late one is still found.
+      if (!claimed && !(await recordPayout(store, creator, p, logger, swapRef))) {
         expired.delete(p.swapId);
         logger.warn("offline_swap_settled_without_payout", { swapRef });
         return false;

@@ -239,7 +239,7 @@ describe("verify conformance", () => {
     expect(after.body.preimage).toBe("cd".repeat(32));
   });
 
-  // A covclaimd-only rail settles from solver status: its word may set `settled`, never the proof.
+  // Backstop for a row an older build settled on the solver's word, before the backfill reaches it.
   it("withholds a solver-mediated swap's preimage until its payout is observed", async () => {
     const store = new MemorySettlementStore(86_400_000);
     store.create({ paymentHash: HASH, pr: "lnbc1", sessionId: "offline:1", preimage: "cd".repeat(32), swapId: "swap-1" });
