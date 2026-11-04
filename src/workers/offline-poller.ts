@@ -48,6 +48,14 @@ async function settleOne(store: SettlementStore, creator: OfflineSwapCreator, p:
   try {
     const state = claimed ? "settled" : await solverState(creator, p);
     if (state === "settled") {
+      // The solver is the counterparty P pays, so its word would settle the swap and reveal
+      // P as proof of a receive that never arrived. Where this server claims, its own payout
+      // is the evidence; the expired cache is dropped so a late claim is still found.
+      if (!claimed && creator.selfClaim) {
+        expired.delete(p.swapId);
+        logger.warn("offline_swap_settled_without_payout", { swapRef });
+        return false;
+      }
       const settled = (recovered ?? store).markSettled(p.paymentHash, p.preimage);
       await creator.release?.(p.swapId);
       if (settled) await hooks.onSettled?.(p.paymentHash).catch((error) => logger.warn("offline_swap_settled_hook_failed", { swapRef, error }));

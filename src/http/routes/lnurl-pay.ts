@@ -8,6 +8,7 @@ import type { ServerContext } from "../server-context.js";
 import { BATCH_PATH, createVerifyBatch } from "../../services/verify-batch.js";
 import { verifyBatchRoutes } from "./verify-batch.js";
 import { applyQuote, type PaymentQuote, type QuotedAmount } from "../../quote-provider.js";
+import { revealedPreimage } from "../../settlement-store.js";
 
 /** LUD-06 pay flow for an interactive session's LNURL, plus LUD-21 verify and LUD-XX verifyBatch. */
 export function lnurlPayRoutes({ config, sessions, store, settings, logger, quoteProvider }: ServerContext): Router {
@@ -38,7 +39,7 @@ export function lnurlPayRoutes({ config, sessions, store, settings, logger, quot
       });
       return;
     }
-    res.json({ status: "OK", settled: rec.settled, preimage: rec.settled ? rec.preimage : null, pr: rec.pr, verifyBatch: `${settings.baseUrl()}${BATCH_PATH}` });
+    res.json({ status: "OK", settled: rec.settled, preimage: revealedPreimage(rec), pr: rec.pr, verifyBatch: `${settings.baseUrl()}${BATCH_PATH}` });
   });
 
   // Shares the verify route's limiter; before /lnurl/:id, which would take the literal path.
