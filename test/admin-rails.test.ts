@@ -25,7 +25,7 @@ beforeEach(() => {
     PORT: "3000",
     BASE_URL: "http://localhost:3000",
     ARK_SERVER_URL: "https://ark.invalid",
-    COVCLAIMD_URL: "https://cov.invalid",
+    OFFLINE_EMULATOR_URL: "https://emulator.invalid",
     SOLVER_REGISTRY_URLS: "https://registry.invalid",
   });
   const settings = new SettingsService(repos.settings, {

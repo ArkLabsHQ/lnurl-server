@@ -213,7 +213,7 @@ export function describeServerRails(caps: ServerRailCaps): ServerRailState[] {
     },
   ];
   if (!caps.offlineSwapCreator) {
-    states[1].reason = "offline receive is not configured (needs ARK_SERVER_URL plus COVCLAIMD_URL or OFFLINE_SELF_CLAIM)";
+    states[1].reason = "offline receive is not configured (needs ARK_SERVER_URL and OFFLINE_EMULATOR_URL)";
   } else if (!caps.discoveryReady) {
     states[1].reason = "offline receive unavailable: " + discoveryReason;
   }

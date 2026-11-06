@@ -23,7 +23,7 @@ import { pollUntil } from "./e2e/support/regtest.js";
 const KEY = "ff-test-key-0123456789";
 const SECRET = "ff-test-secret-9876543210";
 const BASE = { PORT: "3000", BASE_URL: "http://localhost:3000" };
-const OFFLINE = { ...BASE, ARK_SERVER_URL: "https://ark.invalid", COVCLAIMD_URL: "https://cov.invalid", SOLVER_REGISTRY_URLS: "https://registry.invalid" };
+const OFFLINE = { ...BASE, ARK_SERVER_URL: "https://ark.invalid", OFFLINE_EMULATOR_URL: "https://emulator.invalid", SOLVER_REGISTRY_URLS: "https://registry.invalid" };
 const PERSISTED = { ...OFFLINE, DB_PATH: "/data/lnurl.db", ALLOW_INSECURE_TOKEN_STORAGE: "1" };
 const LIVE = { ...PERSISTED, FIXEDFLOAT_API_KEY: KEY, FIXEDFLOAT_API_SECRET: SECRET };
 

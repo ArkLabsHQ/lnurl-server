@@ -59,7 +59,7 @@ describe("deriveCovenantDestination", () => {
     expect(d.script).not.toBe(`5120${staticKey}`);
   });
 
-  it("keeps the taptree decodable, since the sweep and covclaimd both need it", () => {
+  it("keeps the taptree decodable, since the sweep needs it", () => {
     const d = derive(new Uint8Array(32).fill(7));
     const decoded = VtxoScript.decode(d.tapTree);
 
@@ -103,7 +103,7 @@ describe("createCovenantDestinationProvider", () => {
   const provider = (recoveryDelaySeconds: number) =>
     createCovenantDestinationProvider({
       arkServerUrl: "https://ark.example",
-      covclaimdUrl: "https://cc.example",
+      emulatorUrl: "https://emulator.example",
       recoveryDelaySeconds,
     });
 
@@ -113,8 +113,8 @@ describe("createCovenantDestinationProvider", () => {
   it("commits the sweep leaf to whatever the entropy provider returned", async () => {
     const preimage = new Uint8Array(32).fill(0x2b);
     const stub = async (url: string | URL): Promise<Response> => {
-      const body = String(url).includes("covclaimd-pubkey")
-        ? { emulator_pub_key: hex.encode(emulatorPubkey) }
+      const body = String(url).includes("emulator.example")
+        ? { signerPubkey: hex.encode(emulatorPubkey) }
         : { signerPubkey: hex.encode(secp256k1.getPublicKey(new Uint8Array(32).fill(3), true)) };
       return { ok: true, json: async () => body } as Response;
     };
@@ -123,7 +123,7 @@ describe("createCovenantDestinationProvider", () => {
     try {
       const derived = await createCovenantDestinationProvider({
         arkServerUrl: "https://ark.example",
-        covclaimdUrl: "https://cc.example",
+        emulatorUrl: "https://emulator.example",
         recoveryDelaySeconds: 86_528,
         entropy: { preimage: () => preimage },
       }).derive({ arkadeAddress: staticAddress, claimPublicKey: hex.encode(secp256k1.getPublicKey(new Uint8Array(32).fill(4), true)) });
@@ -160,7 +160,7 @@ describe("createCovenantDestinationProvider", () => {
     const against = (recoveryDelaySeconds: number) =>
       createCovenantDestinationProvider({
         arkServerUrl: "https://ark.example",
-        covclaimdUrl: "https://cc.example",
+        emulatorUrl: "https://emulator.example",
         recoveryDelaySeconds,
         unilateralExitDelay: 2048,
       });
@@ -183,7 +183,7 @@ describe("createCovenantDestinationProvider", () => {
     })).toThrow(/positive multiple of 512/);
   });
 
-  it("accepts an emulator URL in place of covclaimd", () => {
+  it("accepts an emulator URL", () => {
     expect(() =>
       createCovenantDestinationProvider({
         arkServerUrl: "https://ark.example",
@@ -191,12 +191,6 @@ describe("createCovenantDestinationProvider", () => {
         recoveryDelaySeconds: 86_528,
       }),
     ).not.toThrow();
-    expect(() =>
-      createCovenantDestinationProvider({
-        arkServerUrl: "https://ark.example",
-        recoveryDelaySeconds: 86_528,
-      } as never),
-    ).toThrow(/covclaimdUrl or emulatorUrl/);
   });
 });
 

@@ -5,9 +5,8 @@
  * persistence and recovery wiring with a test-only HTTP RFQ adapter to quote a
  * `lightning:BTC->arkade:BTC` swap with the regtest intent-solver; the stack's
  * counterparty LND pays the hold invoice for real; the solver funds a VHTLC
- * pinned to the user's registered Arkade address; covclaimd decrypts OUR sealed
- * claim packet (the published sealClaimPacket) and claims; the solver settles the
- * HTLC; the server's settlement poller flips LUD-21 verify via the solver's RFQ status.
+ * pinned to the user's registered Arkade address; this server pushes the
+ * covenant claim leaf itself; the solver settles the HTLC; the server's settlement poller flips LUD-21 verify via the solver's RFQ status.
  *
  * Assertions that no fake can make: the payer's own node reports SUCCEEDED with the
  * preimage; `verify` reveals that same preimage; and the VTXO landed on the user's
@@ -25,10 +24,10 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { hex, base64 } from "@scure/base";
+import { hex } from "@scure/base";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
-import { MnemonicIdentity, Wallet, RestArkProvider, RestIndexerProvider, ArkAddress, Extension, Transaction } from "@arkade-os/sdk";
+import { MnemonicIdentity, Wallet, RestArkProvider, RestIndexerProvider, ArkAddress } from "@arkade-os/sdk";
 import { deriveSessionId } from "../../src/session-token.js";
 import { createServer } from "../../src/http/server.js";
 import { openDb, type Db } from "../../src/db/connection.js";
@@ -53,15 +52,11 @@ import {
   mine,
   nodeSqliteStorage,
   ARKD_URL,
-  COVCLAIMD_URL,
   EMULATOR_URL,
   SOLVER_HTTP_TEST_URL,
-  startCovclaimd,
-  stopCovclaimd,
 } from "./support/regtest.js";
 
 const AMOUNT_SATS = 5000;
-const CLAIM_PACKET_TYPE = 0x04;
 const SETUP_TIMEOUT_MS = 30 * 60_000; // first boot pulls ~20 images + builds the solver
 const SWAP_TIMEOUT_MS = 12 * 60_000;
 
@@ -97,11 +92,7 @@ async function awaitPayerSuccess(paymentHash: string): Promise<NonNullable<Await
   return payment!;
 }
 
-// Under `stamped` no reveal is sent, so a settle proves the tx-stream ingress.
-describe.each([
-  { label: "self-claim", stamp: false, selfClaim: true },
-  { label: "stamped covclaimd", stamp: true, selfClaim: false },
-])("e2e: offline receive via the intents corridor ($label)", ({ stamp, selfClaim }) => {
+describe("e2e: offline receive via the intents corridor (self-claim)", () => {
   let db: Db | undefined;
   let server: http.Server | undefined;
   let baseUrl: string;
@@ -111,10 +102,9 @@ describe.each([
   let receiver: { arkadeAddress: string; claimPublicKey: string };
   const token = randomBytes(32).toString("hex");
   const encryptionKey = randomBytes(32);
-  const stateDir = mkdtempSync(join(tmpdir(), `lnurl-server-e2e-${stamp ? "stamped" : "reveal"}-`));
+  const stateDir = mkdtempSync(join(tmpdir(), "lnurl-server-e2e-reveal-"));
   const dbPath = join(stateDir, "lnurl-server.sqlite");
   let payer: { stop: () => void } | undefined;
-  let covclaimdStopped = false;
   let selfClaimed = false;
 
   async function startLocal(): Promise<void> {
@@ -126,7 +116,7 @@ describe.each([
     settlements = new DbSettlementStore(db, 3_600_000);
     const offlineSwaps = new OfflineSwapStore(db, 3_600_000);
     const card = solverCard("registry", 30, "regtest");
-    const realSelfClaimer = selfClaim ? createSelfClaimer({ arkServerUrl: ARKD_URL, emulatorUrl: EMULATOR_URL }) : undefined;
+    const realSelfClaimer = createSelfClaimer({ arkServerUrl: ARKD_URL, emulatorUrl: EMULATOR_URL });
     creator = await createOfflineSwapCoordinator({
       discovery: { selectLightningReceive: () => [{
         name: card.name,
@@ -137,17 +127,16 @@ describe.each([
         sourceType: "local",
       }] },
       transportFactory: () => httpTransport(SOLVER_HTTP_TEST_URL),
-      covclaimdUrl: COVCLAIMD_URL,
+      emulatorUrl: EMULATOR_URL,
       arkServerUrl: ARKD_URL,
-      stampClaimPacket: stamp,
-      ...(realSelfClaimer ? { selfClaimer: {
+      selfClaimer: {
         register: (registration) => realSelfClaimer.register(registration),
         claim: async (swapId, preimage) => {
           const outcome = await realSelfClaimer.claim(swapId, preimage);
           if (outcome.state === "claimed") selfClaimed = true;
           return outcome;
         },
-      } } : {}),
+      },
     });
     const defaults = { baseUrl: "", minSendable: 1000, maxSendable: 100_000_000_000, invoiceTimeoutMs: 30_000, registrationRateLimitPerMin: 1000 };
     const app = createServer(
@@ -210,11 +199,10 @@ describe.each([
   afterAll(async () => {
     payer?.stop();
     await stopLocal();
-    if (covclaimdStopped) await startCovclaimd();
     rmSync(stateDir, { recursive: true, force: true });
   });
 
-  it("pays an offline LN address end to end: corridor swap, covclaimd claim, verify flip", async () => {
+  it("pays an offline LN address end to end: corridor swap, self-claim, verify flip", async () => {
     // A payer hits the offline address's callback — the server quotes the corridor.
     const cb = await req(`${baseUrl}/.well-known/lnurlp/alice/callback?amount=${AMOUNT_SATS * 1000}`, "GET");
     expect(cb.body.status).not.toBe("ERROR");
@@ -230,10 +218,6 @@ describe.each([
     // Restart after invoice acceptance but before payment. The next process must
     // reconstruct the pinned solver and covenant claim entirely from SQLite.
     await stopLocal();
-    if (selfClaim) {
-      await stopCovclaimd();
-      covclaimdStopped = true;
-    }
     await startLocal();
     verifyUrl = `${baseUrl}/lnurl/verify/${paymentHash}`;
     expect(settlements.get(paymentHash)).toMatchObject({ swapId, settled: false });
@@ -244,7 +228,7 @@ describe.each([
 
     // The settlement store holds the swap's rfq id — the raw solver status tells
     // us when the lockup is funded; its batch needs one on-chain confirmation
-    // before covclaimd's claim can be co-signed, so mine when it lands (and then
+    // before the claim can be co-signed, so mine when it lands (and then
     // slowly, so the claim's own batch confirms too). Bounded: the HTLC's CLTV
     // budget (54 blocks) is never approached.
     console.log(`[test] rfq ${swapId} — payment hash ${paymentHash}`);
@@ -252,7 +236,6 @@ describe.each([
     let blocksMined = 0;
     let lastMine = 0;
     let settled: Record<string, unknown> = {};
-    let lockupAddress = "";
     let swapState: string | undefined;
     let swapStateChangedAt = 0;
     await pollUntil(
@@ -261,8 +244,7 @@ describe.each([
         if (swapId) {
           const raw = (await fetch(`${SOLVER_HTTP_TEST_URL}/v1/rfq/${swapId}`)
             .then((r) => (r.ok ? r.json() : null))
-            .catch(() => null)) as { state?: string; profile?: { lockup_address?: string } } | null;
-          lockupAddress ||= String(raw?.profile?.lockup_address ?? "");
+            .catch(() => null)) as { state?: string } | null;
           // Wire vocabulary, not the solver's internal one: wire `filling` is internal
           // `funded` (lockup broadcast). Wire `funded` is internal `armed` — invoice
           // merely held, nothing on chain to confirm — and there is no wire `claimed`.
@@ -304,7 +286,7 @@ describe.each([
     const payment = await awaitPayerSuccess(paymentHash);
     expect(payment.payment_preimage).toBe(preimage);
     expect(Number(payment.value_sat)).toBe(AMOUNT_SATS);
-    expect(selfClaimed).toBe(selfClaim);
+    expect(selfClaimed).toBe(true);
 
     // And the covenant did its one job: the sats landed on the user's Arkade address.
     const script = hex.encode(ArkAddress.decode(receiver.arkadeAddress).pkScript);
@@ -313,22 +295,6 @@ describe.each([
     const received = vtxos.reduce((sum, v) => sum + v.value, 0);
     expect(received).toBeGreaterThan(0);
     expect(received).toBeLessThanOrEqual(AMOUNT_SATS);
-
-    // Without this a discriminator regression still settles, via the reveal.
-    expect(lockupAddress).not.toBe("");
-    const lockupScript = hex.encode(ArkAddress.decode(lockupAddress).pkScript);
-    const lockup = await indexer.getVtxos({ scripts: [lockupScript] });
-    const fundingTxid = lockup.vtxos[0]?.txid;
-    expect(fundingTxid).toBeTruthy();
-    const { txs } = await indexer.getVirtualTxs([fundingTxid!]);
-    const funding = Transaction.fromPSBT(base64.decode(txs[0]!));
-    let packet: Uint8Array | undefined;
-    try {
-      packet = Extension.fromTx(funding).getPacketByType(CLAIM_PACKET_TYPE)?.serialize();
-    } catch {
-      packet = undefined; // no extension output at all — an unstamped funding
-    }
-    expect(Boolean(packet)).toBe(stamp);
   }, SWAP_TIMEOUT_MS);
 });
 
@@ -348,7 +314,6 @@ describe("e2e: nameless offline receive via the intents corridor (self-claim)", 
   const dbPath = join(stateDir, "lnurl-server.sqlite");
   let payer: { stop: () => void } | undefined;
   let selfClaimed = false;
-  let covclaimdStopped = false;
   let sessionId = "";
 
   async function startLocal(): Promise<void> {
@@ -375,9 +340,8 @@ describe("e2e: nameless offline receive via the intents corridor (self-claim)", 
         sourceType: "local",
       }] },
       transportFactory: () => httpTransport(SOLVER_HTTP_TEST_URL),
-      covclaimdUrl: COVCLAIMD_URL,
+      emulatorUrl: EMULATOR_URL,
       arkServerUrl: ARKD_URL,
-      stampClaimPacket: false,
       selfClaimer: {
         register: (registration) => realSelfClaimer.register(registration),
         claim: async (swapId, preimage) => {
@@ -446,7 +410,6 @@ describe("e2e: nameless offline receive via the intents corridor (self-claim)", 
   afterAll(async () => {
     payer?.stop();
     await stopLocal();
-    if (covclaimdStopped) await startCovclaimd();
     rmSync(stateDir, { recursive: true, force: true });
   });
 
@@ -464,10 +427,7 @@ describe("e2e: nameless offline receive via the intents corridor (self-claim)", 
     if (!swapId) throw new Error(`no settlement record / swap id for ${paymentHash} — the callback should have created one`);
 
     // Restart to prove the nameless row and its swap survive a process bounce.
-    // covclaimd would otherwise race the self-claim this case asserts, as in the self-claim case above.
     await stopLocal();
-    await stopCovclaimd();
-    covclaimdStopped = true;
     await startLocal();
     verifyUrl = `${baseUrl}/lnurl/verify/${paymentHash}`;
     expect(settlements.get(paymentHash)).toMatchObject({ swapId, settled: false });
