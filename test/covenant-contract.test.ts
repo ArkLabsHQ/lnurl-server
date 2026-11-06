@@ -164,7 +164,7 @@ describe("createCovenantDestinationProvider registration", () => {
         res.end(JSON.stringify({ signerPubkey: hex.encode(secp256k1.getPublicKey(new Uint8Array(32).fill(3), true)) }));
         return;
       }
-      res.end(JSON.stringify({ emulator_pub_key: hex.encode(params.emulatorPubkey) }));
+      res.end(JSON.stringify({ signerPubkey: hex.encode(params.emulatorPubkey) }));
     });
     await new Promise<void>((r) => {
       server.listen(0, "127.0.0.1", r);
@@ -180,7 +180,7 @@ describe("createCovenantDestinationProvider registration", () => {
     const created: CreateContractParams[] = [];
     const provider = createCovenantDestinationProvider({
       arkServerUrl: baseUrl,
-      covclaimdUrl: baseUrl,
+      emulatorUrl: `${baseUrl}/emulator`,
       recoveryDelaySeconds: 4096,
       contracts: { createContract: async (c: CreateContractParams) => created.push(c) } as unknown as IContractManager,
     });
@@ -204,7 +204,7 @@ describe("createCovenantDestinationProvider registration", () => {
   it("refuses to hand out an address it could not register", async () => {
     const provider = createCovenantDestinationProvider({
       arkServerUrl: baseUrl,
-      covclaimdUrl: baseUrl,
+      emulatorUrl: `${baseUrl}/emulator`,
       recoveryDelaySeconds: 4096,
       contracts: {
         createContract: async () => {

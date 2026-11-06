@@ -122,8 +122,8 @@ async function recordMissedPayouts(store: SettlementStore, creator: OfflineSwapC
 /** One settlement pass: mark any pending offline swap settled once the solver reports
  *  its invoice settled. The server already holds the preimage, so `verify` can then
  *  reveal it. Returns how many swaps were newly settled. A transient status-check
- *  failure leaves the swap pending for the next pass. Under OFFLINE_SELF_CLAIM the
- *  pass first tries to claim the lockup itself; that is what makes the solver settle. */
+ *  failure leaves the swap pending for the next pass. The pass first tries to claim
+ *  the lockup itself; that is what makes the solver settle. */
 export async function settleOfflineSwaps(
   store: SettlementStore,
   creator: OfflineSwapCreator,

@@ -20,7 +20,7 @@ import { BTCPAY_CHAINS } from "./fixtures/btcpay-chains.js";
 import { pollUntil } from "./e2e/support/regtest.js";
 
 const SIMULATE = {
-  PORT: "3000", BASE_URL: "http://localhost:3000", ARK_SERVER_URL: "https://ark.invalid", COVCLAIMD_URL: "https://cov.invalid",
+  PORT: "3000", BASE_URL: "http://localhost:3000", ARK_SERVER_URL: "https://ark.invalid", OFFLINE_EMULATOR_URL: "https://emulator.invalid",
   SOLVER_REGISTRY_URLS: "https://registry.invalid", DB_PATH: "/data/lnurl.db", ALLOW_INSECURE_TOKEN_STORAGE: "1", FIXEDFLOAT_SIMULATE: "true",
 };
 const quiet = createLogger({ info: () => {}, warn: () => {}, error: () => {} });

@@ -310,7 +310,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     resolved satisfies { kind: "lightning" };
 
     // Offline receive: no live SSE session for this address, but it opted in with an
-    // Arkade identity, so the server quotes a corridor swap paying it (covclaimd claims it).
+    // Arkade identity, so the server quotes a corridor swap paying it (this server claims it).
     // The corridor never touches the session, so a sessionless address is served too.
     if (creator && address.arkadeAddress && address.claimPublicKey &&
         (receiveAmountMsat !== undefined || !address.sessionId || !sessions.isActive(address.sessionId))) {

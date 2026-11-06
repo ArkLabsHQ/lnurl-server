@@ -106,7 +106,7 @@ describe("startLockupWatcher", () => {
     db.close();
   });
 
-  it("settles on covclaimd's claim of a still-pending lockup, then re-asks", () => {
+  it("settles on a claim of a still-pending lockup, then re-asks", () => {
     vi.useFakeTimers();
     const lockup = address();
     const { db, swaps } = storeWith([lockup]);

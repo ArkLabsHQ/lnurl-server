@@ -80,7 +80,7 @@ describe("httpErrorHandler", () => {
   });
 
   it("hides a server-side domain error, even one carrying an upstream's 4xx", async () => {
-    for (const err of [new MalformedRecordError("invalid offline swap relays"), new UpstreamError("covclaimd", 404)]) {
+    for (const err of [new MalformedRecordError("invalid offline swap relays"), new UpstreamError("emulator", 404)]) {
       const res = await request(appThrowingRest(err)).post("/");
       expect(res.status).toBe(err instanceof UpstreamError ? 502 : 500);
       expect(res.body).toEqual({ error: "Internal server error" });

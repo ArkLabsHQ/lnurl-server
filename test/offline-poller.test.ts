@@ -97,7 +97,7 @@ describe("settleOfflineSwaps", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_settled_without_payout"'));
   });
 
-  it("settles a covclaimd-claimed swap from the observed payout, and not before", async () => {
+  it("settles an already-claimed swap from the observed payout, and not before", async () => {
     const store = new MemorySettlementStore(60_000);
     store.create({ paymentHash: "aa", pr: "lnbc1", sessionId: "offline:1", preimage: "beef", swapId: "swap-1" });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -108,9 +108,9 @@ describe("settleOfflineSwaps", () => {
     expect(store.get("aa")).toMatchObject({ settled: false, payoutReference: null });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('"event":"offline_swap_settled_without_payout"'));
 
-    payout = "ark-tx-covclaimd";
+    payout = "ark-tx-observed";
     expect(await settleOfflineSwaps(store, creator)).toBe(1);
-    expect(store.get("aa")).toMatchObject({ settled: true, preimage: "beef", payoutReference: "ark-tx-covclaimd" });
+    expect(store.get("aa")).toMatchObject({ settled: true, preimage: "beef", payoutReference: "ark-tx-observed" });
   });
 
   it("leaves a swap pending when the payout read fails, rather than reading it as no payout", async () => {
@@ -490,17 +490,17 @@ describe("startOfflineSettlementPoller", () => {
     return { db, settlements, recovered };
   };
 
-  // Nothing else records these rows' payout, so a covclaimd upgrade withheld P forever.
+  // Nothing else records these rows' payout, so an unrecorded payout withheld P forever.
   it("backfills a legacy settled row's payout with no self-claimer, so its preimage is revealed", async () => {
     const { db, settlements, recovered } = settledWithoutPayout();
     vi.spyOn(console, "info").mockImplementation(() => {});
     const hash = "aa".repeat(32);
     expect(revealedPreimage(settlements.get(hash)!)).toBeNull();
-    const observePayout = vi.fn(async () => "ark-tx-covclaimd");
+    const observePayout = vi.fn(async () => "ark-tx-observed");
 
     const poller = startOfflineSettlementPoller(settlements, { ...creatorReporting([]), observePayout }, 15_000, recovered);
     try {
-      await vi.waitFor(() => expect(settlements.get(hash)?.payoutReference).toBe("ark-tx-covclaimd"));
+      await vi.waitFor(() => expect(settlements.get(hash)?.payoutReference).toBe("ark-tx-observed"));
       expect(revealedPreimage(settlements.get(hash)!)).toBe("bb".repeat(32));
       expect(observePayout).toHaveBeenCalledWith("22".repeat(32), expect.objectContaining({ rfqId: "22".repeat(32) }));
     } finally {

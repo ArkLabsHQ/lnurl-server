@@ -7,9 +7,8 @@
  *   pnpm tsx scripts/probe-solver.ts [solverPubkey] [relay] [arkServerUrl]
  *
  * Defaults target the mutinynet registry's ln-solver-mutinynet card.
- * covclaimd's pubkey endpoint is faked locally: the claim packet is a blind field in
- * the quote path, but the emulator key must be the network's real pin or the covenant
- * derivation won't match the solver's.
+ * The emulator's info endpoint is faked locally: the emulator key must be the network's
+ * real pin or the covenant derivation won't match the solver's.
  */
 import http from "node:http";
 import { hex } from "@scure/base";
@@ -21,31 +20,30 @@ import type { SolverCandidate } from "../src/services/solver-discovery.js";
 const solverPubkey = process.argv[2] ?? "3f831510a6d7678d0c90d7d6fbc4057720517e2e30681ef4c87cc57aaf57e8d5";
 const relay = process.argv[3] ?? "wss://nostr.arkade.sh";
 const arkServerUrl = process.argv[4] ?? "https://mutinynet.arkade.sh";
-// With COVCLAIMD_URL set, the real daemon's keys are used (full three-party check:
-// solver, covclaimd, operator). Otherwise a local fake serves the pinned emulator key.
-const realCovclaimdUrl = process.env.COVCLAIMD_URL;
+// With OFFLINE_EMULATOR_URL set, the real emulator's key is used (full three-party check:
+// solver, emulator, operator). Otherwise a local fake serves the pinned emulator key.
+const realEmulatorUrl = process.env.OFFLINE_EMULATOR_URL;
 
-const dummyCovclaimdKey = hex.encode(secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true));
 const emulatorKey = resolveEmulatorPubkey(getNetwork("mutinynet"));
 
-const covclaimd = http.createServer((req, res) => {
+const emulator = http.createServer((req, res) => {
   res.setHeader("content-type", "application/json");
-  if (req.url === "/v1/preimage/covclaimd-pubkey") {
-    res.end(JSON.stringify({ covclaimd_pub_key: dummyCovclaimdKey, emulator_pub_key: emulatorKey }));
+  if (req.url === "/v1/info") {
+    res.end(JSON.stringify({ signerPubkey: emulatorKey }));
   } else {
     res.statusCode = 404;
     res.end("{}");
   }
 });
 
-// With a real daemon configured, don't bind the local fake at all.
-if (!realCovclaimdUrl) await new Promise<void>((r) => covclaimd.listen(0, "127.0.0.1", r));
-const covclaimdUrl = realCovclaimdUrl ?? `http://127.0.0.1:${(covclaimd.address() as { port: number }).port}`;
+// With a real emulator configured, don't bind the local fake at all.
+if (!realEmulatorUrl) await new Promise<void>((r) => emulator.listen(0, "127.0.0.1", r));
+const emulatorUrl = realEmulatorUrl ?? `http://127.0.0.1:${(emulator.address() as { port: number }).port}`;
 
 console.log(`solver   ${solverPubkey}`);
 console.log(`relay    ${relay}`);
 console.log(`operator ${arkServerUrl}`);
-console.log(`covclaimd ${covclaimdUrl}${realCovclaimdUrl ? " (real daemon)" : " (local fake, pinned emulator key)"}`);
+console.log(`emulator ${emulatorUrl}${realEmulatorUrl ? " (real emulator)" : " (local fake, pinned emulator key)"}`);
 
 const candidate: SolverCandidate = {
   name: "manual-probe",
@@ -70,7 +68,7 @@ const candidate: SolverCandidate = {
 };
 const creator = await createOfflineSwapCoordinator({
   discovery: { selectLightningReceive: () => [candidate] },
-  covclaimdUrl,
+  emulatorUrl,
   arkServerUrl,
 });
 // Arkade address keys are x-only 32-byte keys, not raw scalars.
@@ -99,7 +97,7 @@ try {
   console.log("=> transport works if the error is a structured refusal (SwapRefusal); a timeout means unreachable.");
   process.exitCode = 1;
 } finally {
-  covclaimd.close();
+  emulator.close();
   // The Nostr pool's sockets would otherwise hold the event loop open.
   process.exit(process.exitCode ?? 0);
 }

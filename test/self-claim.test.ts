@@ -429,12 +429,12 @@ describe("createSelfClaimer", () => {
   });
 });
 
-// What the poller reads in a covclaimd-only deployment: no registration, no emulator, no key.
+// What the poller reads: no registration, no emulator, no key.
 describe("observeLockupPayout", () => {
   const indexer = () => new RestIndexerProvider(ark.baseUrl);
 
   it("reports a payout pushed by someone else, keyed off the spend", async () => {
-    const r = registered({ swapId: "swap-covclaimd", expectedAmount: 4_900 });
+    const r = registered({ swapId: "swap-observed", expectedAmount: 4_900 });
     const spendId = alreadySpent(r, 4_900, { script: PAYOUT_PKSCRIPT, amount: 4_900n });
 
     expect(await observeLockupPayout(r.script, indexer())).toBe(spendId);
