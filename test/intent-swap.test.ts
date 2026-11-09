@@ -2,7 +2,7 @@ import { invoiceFactsFromBolt11 } from "../src/bolt11.js";
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import http from "node:http";
 import { createHash } from "node:crypto";
-import { base64, hex } from "@scure/base";
+import { hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { ArkAddress, toXOnly } from "@arkade-os/sdk";
 import { createOfflineSwapCoordinator, type IntentSwapSettings, type OfflineSwapCreator } from "../src/services/offline-swaps.js";
@@ -11,12 +11,11 @@ import type { SolverCandidate } from "../src/services/solver-discovery.js";
 import { buildInvoice } from "./helpers/bolt11.js";
 import { solverCard } from "./fixtures/solver-cards.js";
 
-// Integration test of the real corridor creator against fake solver / covclaimd /
+// Integration test of the real corridor creator against fake solver / emulator /
 // operator services over real HTTP (repo style, no module mocks). The fake solver
 // derives the same covenant a real solver would, from the request's profile fields.
 
 const UNILATERAL_EXIT_DELAY = 86400;
-const covclaimdPub = hex.encode(secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true));
 const emulatorPub = hex.encode(secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true));
 const solverPub = hex.encode(secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true));
 const operatorPub = hex.encode(secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true));
@@ -129,7 +128,7 @@ async function startFakeSolver(): Promise<FakeSolver> {
   return Object.assign(fake, { baseUrl, requests, statuses, mode, close }) as FakeSolver;
 }
 
-let covclaimd: { baseUrl: string; close: () => Promise<void> };
+let emulator: { baseUrl: string; close: () => Promise<void> };
 let operator: { baseUrl: string; close: () => Promise<void> };
 let solver: FakeSolver;
 let creator: OfflineSwapCreator;
@@ -155,7 +154,7 @@ function candidate(name = "registry"): SolverCandidate {
 function swapSettings(overrides: Partial<IntentSwapSettings> = {}): IntentSwapSettings {
   return {
     discovery: { selectLightningReceive: () => [candidate()] },
-    covclaimdUrl: covclaimd.baseUrl,
+    emulatorUrl: emulator.baseUrl,
     arkServerUrl: operator.baseUrl,
     transportFactory: () => httpTransport(solver.baseUrl),
     ...overrides,
@@ -163,11 +162,11 @@ function swapSettings(overrides: Partial<IntentSwapSettings> = {}): IntentSwapSe
 }
 
 beforeAll(async () => {
-  [covclaimd, operator, solver] = await Promise.all([
+  [emulator, operator, solver] = await Promise.all([
     serve((req, res) => {
       res.setHeader("content-type", "application/json");
-      if (req.url === "/v1/preimage/covclaimd-pubkey") {
-        res.end(JSON.stringify({ covclaimd_pub_key: covclaimdPub, emulator_pub_key: emulatorPub }));
+      if (req.url === "/v1/info") {
+        res.end(JSON.stringify({ signerPubkey: emulatorPub }));
       } else {
         res.statusCode = 404;
         res.end("{}");
@@ -188,7 +187,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await Promise.all([covclaimd.close(), operator.close(), solver.close()]);
+  await Promise.all([emulator.close(), operator.close(), solver.close()]);
 });
 
 describe("createOfflineSwapCoordinator", () => {
@@ -211,7 +210,7 @@ describe("createOfflineSwapCoordinator", () => {
     }));
     const failover = await createOfflineSwapCoordinator({
       discovery: { selectLightningReceive: () => candidates },
-      covclaimdUrl: covclaimd.baseUrl,
+      emulatorUrl: emulator.baseUrl,
       arkServerUrl: operator.baseUrl,
       transportFactory: (candidate) => ({
         requestQuote: async (request) => {
@@ -245,9 +244,7 @@ describe("createOfflineSwapCoordinator", () => {
     expect(r.profile.payment_hash).toBe(swap.preimageHash);
     expect(r.profile.payout_address).toBe(RECEIVE);
     expect(r.profile.payout_pubkey).toBe(CLAIM_PUBKEY.slice(2));
-    expect(typeof r.profile.claim_packet).toBe("string");
-    // Default off: the bare 93-byte ciphertext an older solver forwards as-is.
-    expect(base64.decode(r.profile.claim_packet)).toHaveLength(93);
+    expect(r.profile.claim_packet).toBeUndefined();
     // The covenant derivation agrees with the solver's, so the quoted lockup passes.
     expect(swap.lockupAddress).toMatch(/^tark1/);
   });
@@ -266,51 +263,6 @@ describe("createOfflineSwapCoordinator", () => {
     } finally {
       solver.mode.invoiceExpirySeconds = undefined;
     }
-  });
-
-  it("omits the claim packet without covclaimd and derives the same lockup", async () => {
-    const emulator = await serve((req, res) => {
-      res.setHeader("content-type", "application/json");
-      if (req.url === "/v1/info") {
-        res.end(JSON.stringify({ signerPubkey: emulatorPub }));
-      } else {
-        res.statusCode = 404;
-        res.end("{}");
-      }
-    });
-    try {
-      const solo = await createOfflineSwapCoordinator({
-        discovery: { selectLightningReceive: () => [candidate()] },
-        arkServerUrl: operator.baseUrl,
-        emulatorUrl: emulator.baseUrl,
-        transportFactory: () => httpTransport(solver.baseUrl),
-      });
-      const swap = await solo.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
-
-      const r = solver.requests.at(-1)!;
-      expect(r.profile.claim_packet).toBeUndefined();
-      // Same covenant inputs as the covclaimd path, so the same address.
-      expect(swap.lockupAddress).toMatch(/^tark1/);
-      await solo.close?.();
-    } finally {
-      await emulator.close();
-    }
-  });
-
-  it("sends the stampable packet, naming our covclaimd, when asked to", async () => {
-    const stamping = await createOfflineSwapCoordinator(swapSettings({ stampClaimPacket: true }));
-    await stamping.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
-
-    const packet = base64.decode(solver.requests.at(-1)!.profile.claim_packet);
-    expect(packet.length).toBeGreaterThan(93);
-    expect(packet[0]).toBe(0x01);
-    const ciphertextLength = (packet[1]! << 8) | packet[2]!;
-    expect(ciphertextLength).toBe(93);
-    const pubkeyTlvAt = 3 + ciphertextLength;
-    expect(packet[pubkeyTlvAt]).toBe(0x03);
-    expect((packet[pubkeyTlvAt + 1]! << 8) | packet[pubkeyTlvAt + 2]!).toBe(33);
-    // Ends there: no 0x02, which the solver appends from the covenant it builds.
-    expect(packet).toHaveLength(pubkeyTlvAt + 3 + 33);
   });
 
   it("registers the lockup for self-claim without touching the quote's receiver role", async () => {
@@ -343,7 +295,6 @@ describe("createOfflineSwapCoordinator", () => {
     try {
       const restarted = await createOfflineSwapCoordinator(swapSettings({
         discovery: { selectLightningReceive: () => [] },
-        covclaimdUrl: "http://127.0.0.1:1",
         selfClaimer: { register, claim },
       }));
 

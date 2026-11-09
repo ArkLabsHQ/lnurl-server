@@ -2,14 +2,12 @@
 // (`lightning:BTC -> arkade:BTC`). When a wallet is offline, the server requests a
 // quote from an intent solver, verifies the solver's hold invoice against the swap's
 // own payment hash, and hands it to the payer as `pr`. The server generates the
-// preimage P. With COVCLAIMD_URL set it seals P to covclaimd inside the RFQ request;
-// the solver then funds a VHTLC whose covenant can only pay the user's registered
-// Arkade address (`enforcePayTo`), and covclaimd claims it once the payer pays — so
-// the server holds no user keys or funds. With OFFLINE_SELF_CLAIM (no COVCLAIMD_URL)
-// the RFQ omits the claim packet — optional on the wire, the solver funds anyway —
-// and this server pushes the covenant leaf itself once the payer pays. Knowing P
-// lets the server settle nothing itself: the covenant-constrained claim pays only
-// the user, which is why a preimage may sit in the settlements table pre-settlement.
+// preimage P. The solver funds a VHTLC whose covenant can only pay the user's
+// registered Arkade address (`enforcePayTo`), and this server pushes the covenant
+// claim leaf itself once the payer pays — so it holds no user keys or funds. The
+// RFQ carries no claim packet. Knowing P lets the server settle nothing itself:
+// the covenant-constrained claim pays only the user, which is why a preimage may
+// sit in the settlements table pre-settlement.
 //
 // The corridor client is the published `@arkade-os/swap` package;
 // `ReverseSwapCreator` from the Boltz era is replaced by `OfflineSwapCreator`, same
@@ -24,7 +22,6 @@ import {
   lightningReceiveRequest,
   paymentHashOf,
   registerLockupContract,
-  sealClaimPacket,
   unilateralClaimDelay,
   verifyReceiveInvoice,
   type LockupContractWriter,
@@ -90,7 +87,7 @@ export interface OfflineSwapCreator {
   isSettled(swapId: string, recovery?: OfflineSwapRecoveryV1): Promise<boolean>;
   /** The solver's own state for the swap, undefined while unknown. Read in place of `isSettled` when present. */
   status?(swapId: string, recovery?: OfflineSwapRecoveryV1): Promise<string | undefined>;
-  /** Present only under OFFLINE_SELF_CLAIM. @see SelfClaimer */
+  /** Present when the creator pushes the covenant claim leaf. @see SelfClaimer */
   selfClaim?(swapId: string, preimage: string, recovery?: OfflineSwapRecoveryV1): Promise<SelfClaimOutcome>;
   /** This lockup's payout to the covenant's receiver, or undefined while no spend proves one.
    *  Required, not a capability like {@link selfClaim}: settlement rests on nothing else, so a
@@ -108,18 +105,11 @@ export interface IntentSwapSettings {
   discovery: Pick<DiscoveryService, "selectLightningReceive">;
   /** 32-byte hex Nostr identity for the transport; ephemeral per boot when unset. */
   nostrSecretKey?: string;
-  /** covclaimd base URL — its pubkey endpoint keys the sealed claim packet.
-   *  Optional with OFFLINE_SELF_CLAIM: omitted, the RFQ carries no claim packet
-   *  and the solver waits for this server's own claim. */
-  covclaimdUrl?: string;
-  /** Emulator base URL — the covenant's emulator key when no covclaimd is
-   *  configured. Ignored when covclaimdUrl is set (its key stays authoritative). */
-  emulatorUrl?: string;
+  /** Emulator base URL — the source of the covenant's emulator key. */
+  emulatorUrl: string;
   /** Arkade operator URL — signer key, exit delay and network come from its getInfo. */
   arkServerUrl: string;
-  /** Send the packet the solver stamps, not the ciphertext it reveals. @see OfflineReceiveConfig */
-  stampClaimPacket?: boolean;
-  /** Set under OFFLINE_SELF_CLAIM: pushes each lockup's covenant claim leaf. */
+  /** Pushes each lockup's covenant claim leaf. */
   selfClaimer?: SelfClaimer;
   /** Contract store each lockup is registered in, so src/workers/lockup-watcher.ts hears its
    *  funding as an event instead of the poller finding it a tick later. */
@@ -133,9 +123,6 @@ export interface IntentSwapSettings {
 /** Operator + claim facts a swap derivation needs. Refetched on a TTL so an
  *  operator/emulator rekey is picked up without a restart. */
 interface CorridorContext {
-  /** 33-byte compressed, for ECIES sealing. Absent in self-claim mode: the RFQ
-   *  omits the claim packet and no sealing happens. */
-  covclaimdPubkey?: Uint8Array;
   emulatorPubkey: Uint8Array; // x-only — the covenant's emulator co-signer
   serverPubkey: Uint8Array; // x-only operator signer key
   claimDelay: number;
@@ -180,24 +167,12 @@ function compressedKey(v: unknown, name: string): Uint8Array {
   return hex.decode(v.toLowerCase());
 }
 
-/** Same ceiling as src/covenant/self-claim.ts's pairing probe. Unbounded, a hung covclaimd
- *  parks every quote waiting on the corridor context, and those hold the
- *  MAX_CONCURRENT_OFFLINE_QUOTES slots with them. */
+/** Ceiling on each key fetch. Unbounded, a hung emulator parks every quote waiting on the
+ *  corridor context, and those hold the MAX_CONCURRENT_OFFLINE_QUOTES slots with them. */
 const KEY_FETCH_TIMEOUT_MS = 5_000;
 
-async function fetchCovclaimdKeys(covclaimdUrl: string): Promise<{ covclaimdPubkey: Uint8Array; emulatorPubkey: Uint8Array }> {
-  const res = await fetch(`${covclaimdUrl}/v1/preimage/covclaimd-pubkey`, { signal: AbortSignal.timeout(KEY_FETCH_TIMEOUT_MS) });
-  if (!res.ok) throw new UpstreamError("covclaimd pubkey endpoint", res.status);
-  const body = (await res.json()) as { covclaimd_pub_key?: unknown; emulator_pub_key?: unknown };
-  return {
-    covclaimdPubkey: compressedKey(body.covclaimd_pub_key, "covclaimd_pub_key"),
-    emulatorPubkey: compressedKey(body.emulator_pub_key, "emulator_pub_key"),
-  };
-}
-
 /** Emulator key straight from the emulator: x-only or compressed hex, as served
- *  by `GET /v1/info`. Used only when no covclaimd is configured — otherwise the
- *  covclaimd-reported key stays authoritative so the covenant matches the solver. */
+ *  by `GET /v1/info`. */
 async function fetchEmulatorKey(emulatorUrl: string): Promise<Uint8Array> {
   const res = await fetch(`${emulatorUrl}/v1/info`, { signal: AbortSignal.timeout(KEY_FETCH_TIMEOUT_MS) });
   if (!res.ok) throw new UpstreamError("emulator info endpoint", res.status);
@@ -212,7 +187,7 @@ async function fetchEmulatorKey(emulatorUrl: string): Promise<Uint8Array> {
 /**
  * Real creator over the published RFQ corridor client (`@arkade-os/swap`).
  * Unit tests use fake transports; the funded E2E exercises a real solver,
- * covclaimd, and operator through a test-only HTTP RFQ adapter. Nostr transport
+ * emulator, and operator through a test-only HTTP RFQ adapter. Nostr transport
  * remains part of the deployment canary on the target network.
  */
 export async function createOfflineSwapCoordinator(settings: IntentSwapSettings): Promise<OfflineSwapCreator> {
@@ -262,20 +237,6 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
     if (!cached || now - cached.at > CONTEXT_TTL_MS) {
       const ctx = (async (): Promise<CorridorContext> => {
         const infoP = arkProvider.getInfo();
-        if (settings.covclaimdUrl) {
-          const [keys, info] = await Promise.all([fetchCovclaimdKeys(settings.covclaimdUrl), infoP]);
-          const network = getNetwork(info.network as NetworkName);
-          return {
-            covclaimdPubkey: keys.covclaimdPubkey,
-            emulatorPubkey: toXOnly(keys.emulatorPubkey, "emulator signer key"),
-            serverPubkey: toXOnly(hex.decode(info.signerPubkey), "ark signer key"),
-            claimDelay: unilateralClaimDelay(Number(info.unilateralExitDelay)),
-            hrp: network.hrp,
-          };
-        }
-        if (!settings.emulatorUrl) {
-          throw new Error("offline receive requires COVCLAIMD_URL or (OFFLINE_SELF_CLAIM with OFFLINE_EMULATOR_URL)");
-        }
         const [emulatorKey, info] = await Promise.all([fetchEmulatorKey(settings.emulatorUrl), infoP]);
         const network = getNetwork(info.network as NetworkName);
         return {
@@ -323,23 +284,11 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
           const preimage = checkedPreimage(settings.entropy ?? randomEntropy);
           const paymentHash = paymentHashOf(preimage);
           const rfqId = hex.encode(crypto.getRandomValues(new Uint8Array(32)));
-          // Self-claim mode sends no packet: claim_packet is optional on the wire
-          // and the solver funds anyway, waiting for our own covenant claim.
-          let claimPacket: string | undefined;
-          if (ctx.covclaimdPubkey) {
-            const sealed = await sealClaimPacket({ preimage, covclaimdPubkey: ctx.covclaimdPubkey });
-            claimPacket = settings.stampClaimPacket
-              ? sealed.packet
-              : sealed.ciphertext;
-          } else if (settings.stampClaimPacket) {
-            throw new Error("OFFLINE_STAMP_CLAIM_PACKET=true requires COVCLAIMD_URL (there is no packet to stamp without one)");
-          }
           const quote = await transport.requestQuote(lightningReceiveRequest({
             rfqId,
             paymentHash,
             payoutAddress: params.receiveAddress,
             payoutPubkey,
-            claimPacket,
             amount: params.amountSat,
             amountSide,
           }));

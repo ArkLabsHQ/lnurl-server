@@ -3,7 +3,7 @@
  * emulator keys; funds nothing. Failure is silent in production: derivation throws,
  * `server.ts` falls back to the static address, and the flag reads as on while every
  * payer gets the shared one.
- *   pnpm tsx scripts/probe-covenant.ts [arkServerUrl] [covclaimdUrl]
+ *   pnpm tsx scripts/probe-covenant.ts [arkServerUrl] [emulatorUrl]
  */
 import { hex } from "@scure/base";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
@@ -12,7 +12,7 @@ import { deriveCovenantDestination, toXOnly } from "../src/covenant/destination.
 import { loadConfig } from "../src/config.js";
 
 const arkServerUrl = process.argv[2] ?? "https://mutinynet.arkade.sh";
-const covclaimdUrl = process.argv[3] ?? process.env.COVCLAIMD_URL;
+const emulatorUrl = process.argv[3] ?? process.env.OFFLINE_EMULATOR_URL;
 const network = (process.env.ARK_NETWORK ?? "mutinynet") as Parameters<typeof getNetwork>[0];
 
 const getJson = async (url: string): Promise<Record<string, unknown>> => {
@@ -27,17 +27,16 @@ const info = await getJson(`${arkServerUrl}/v1/info`);
 // confusing error instead of "signerPubkey was not a 32- or 33-byte key".
 const serverPubkey = toXOnly(hex.decode(String(info.signerPubkey)));
 
-const emulatorHex = covclaimdUrl
-  ? String((await getJson(`${covclaimdUrl}/v1/preimage/covclaimd-pubkey`)).emulator_pub_key)
+const emulatorHex = emulatorUrl
+  ? String((await getJson(`${emulatorUrl}/v1/info`)).signerPubkey)
   : String(resolveEmulatorPubkey(getNetwork(network)));
 
 // The delay the deployment would run with, not a chosen one: that is the failure.
 const recoveryDelaySeconds = loadConfig({
   ...process.env,
-  COVCLAIMD_URL: covclaimdUrl ?? "https://covclaimd.invalid",
   ARK_SERVER_URL: arkServerUrl,
   OFFLINE_COVENANT_DESTINATIONS: "true",
-  OFFLINE_EMULATOR_URL: process.env.OFFLINE_EMULATOR_URL ?? "https://emulator.invalid",
+  OFFLINE_EMULATOR_URL: emulatorUrl ?? "https://emulator.invalid",
 }).offlineReceive.covenantRecoveryDelaySeconds ?? Number(info.unilateralExitDelay);
 
 const userPubkey = secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true).subarray(1);
@@ -46,7 +45,7 @@ const staticAddress = new VtxoScript([
 ]).address("tark", serverPubkey).encode();
 
 console.log(`operator   ${arkServerUrl}  signer ${String(info.signerPubkey)}`);
-console.log(`emulator   ${emulatorHex}  (${covclaimdUrl ? `from ${covclaimdUrl}` : `pinned for ${network}`})`);
+console.log(`emulator   ${emulatorHex}  (${emulatorUrl ? `from ${emulatorUrl}` : `pinned for ${network}`})`);
 console.log(`delay      ${recoveryDelaySeconds}s  (multiple of 512: ${recoveryDelaySeconds % 512 === 0})`);
 
 const first = deriveCovenantDestination({

@@ -134,21 +134,17 @@ export interface CovenantDestinationProvider {
 }
 
 const CONTEXT_TTL_MS = 5 * 60_000;
-/** Matches the pairing probe in src/covenant/self-claim.ts: long enough for a healthy
- *  round trip, short enough that a dead dependency fails rather than parks. */
+/** Long enough for a healthy round trip, short enough that a dead dependency fails rather than parks. */
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
 
 /**
  * Reads the operator and emulator keys the covenant commits to, refetched on a TTL
- * so a rekey is picked up without a restart. With COVCLAIMD_URL set the emulator
- * key comes from covclaimd — it must be the one whose covenants the network
- * already accepts. Without it (self-claim / arkade-rail-only mode) the key comes
- * straight from OFFLINE_EMULATOR_URL, which is then the emulator that must sweep.
+ * so a rekey is picked up without a restart. The emulator key comes straight from
+ * OFFLINE_EMULATOR_URL, which is the emulator that must sweep.
  */
 export function createCovenantDestinationProvider(opts: {
   arkServerUrl: string;
-  covclaimdUrl?: string;
-  emulatorUrl?: string;
+  emulatorUrl: string;
   recoveryDelaySeconds?: number;
   /** arkd's advertised value: it refuses every spend, the sweep included, of a script whose shortest exit is below it. */
   unilateralExitDelay?: number;
@@ -180,9 +176,6 @@ export function createCovenantDestinationProvider(opts: {
   }
   const now = opts.now ?? (() => Date.now());
   let cached: { at: number; ctx: Promise<{ serverPubkey: Uint8Array; emulatorPubkey: Uint8Array }> } | undefined;
-  if (!opts.covclaimdUrl && !opts.emulatorUrl) {
-    throw new Error("covenant destinations require covclaimdUrl or emulatorUrl (the covenant commits to the emulator key)");
-  }
 
   // A 4xx body parses into an envelope with the field missing, so the decode error
   // hides the status that caused it.
@@ -199,9 +192,7 @@ export function createCovenantDestinationProvider(opts: {
     if (cached && now() - cached.at < CONTEXT_TTL_MS) return cached.ctx;
     const ctx = (async () => {
       const infoP = getJson<{ signerPubkey: string }>(`${opts.arkServerUrl}/v1/info`);
-      const emulatorP = opts.covclaimdUrl
-        ? getJson<{ emulator_pub_key: string }>(`${opts.covclaimdUrl}/v1/preimage/covclaimd-pubkey`).then((keys) => keys.emulator_pub_key)
-        : getJson<{ signerPubkey: string }>(`${opts.emulatorUrl}/v1/info`).then((info) => info.signerPubkey);
+      const emulatorP = getJson<{ signerPubkey: string }>(`${opts.emulatorUrl}/v1/info`).then((info) => info.signerPubkey);
       const [info, emulatorKey] = await Promise.all([infoP, emulatorP]);
       return {
         serverPubkey: toXOnly(hex.decode(info.signerPubkey)),

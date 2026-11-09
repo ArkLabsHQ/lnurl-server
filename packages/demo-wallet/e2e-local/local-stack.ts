@@ -97,8 +97,6 @@ export async function startLnurlServer(opts: LnurlServerOptions): Promise<LnurlS
         // The stack's solver runs `serve`; its card's relay is a fiction here.
         SOLVER_RFQ_HTTP_URL: SOLVER_HTTP_TEST_URL,
         ARK_SERVER_URL: ARKD_URL,
-        // No COVCLAIMD_URL: the server pushes the covenant's own claim leaf.
-        OFFLINE_SELF_CLAIM: "true",
         OFFLINE_EMULATOR_URL: EMULATOR_URL,
         OFFLINE_POLL_INTERVAL_MS: "2000",
         REGISTRATION_RATE_LIMIT: "1000",

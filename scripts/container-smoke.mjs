@@ -19,7 +19,6 @@ let containerId;
 const dependency = createServer((req, res) => {
   res.setHeader("content-type", "application/json");
   if (req.url === "/v1/info") res.end(JSON.stringify({ network: "regtest", signerPubkey: key, unilateralExitDelay: "86400" }));
-  else if (req.url === "/v1/preimage/covclaimd-pubkey") res.end(JSON.stringify({ covclaimd_pub_key: key, emulator_pub_key: key }));
   else { res.statusCode = 404; res.end("{}"); }
 });
 await new Promise((resolve) => dependency.listen(0, "0.0.0.0", resolve));
@@ -54,7 +53,7 @@ try {
     "-e", "BASE_URL=http://localhost:3000",
     "-e", "SOLVER_CARDS_FILE=/run/solver-cards.json",
     "-e", `ARK_SERVER_URL=http://host.docker.internal:${dependencyPort}`,
-    "-e", `COVCLAIMD_URL=http://host.docker.internal:${dependencyPort}`,
+    "-e", `OFFLINE_EMULATOR_URL=http://host.docker.internal:${dependencyPort}`,
     image,
   ]);
   containerId = run.stdout.trim();

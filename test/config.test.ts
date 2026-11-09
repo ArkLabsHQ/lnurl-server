@@ -91,39 +91,54 @@ describe("loadConfig", () => {
       ...base,
       SOLVER_REGISTRY_URLS: "https://one.example/mutinynet.json, https://two.example/mutinynet.json",
       SOLVER_CARDS_FILE: "/run/config/solvers.json",
-      COVCLAIMD_URL: "https://covclaimd.example:7071",
+      OFFLINE_EMULATOR_URL: "https://emulator.example",
       ARK_SERVER_URL: "https://mutinynet.arkade.sh",
     });
     expect(on.offlineReceive).toEqual({
       enabled: true,
-      stampClaimPacket: false,
-      selfClaim: false,
       covenantDestinations: false,
       covenantRecoveryDelaySeconds: undefined,
       pollIntervalMs: 15_000,
       registryUrls: ["https://one.example/mutinynet.json", "https://two.example/mutinynet.json"],
       cardsFile: "/run/config/solvers.json",
-      covclaimdUrl: "https://covclaimd.example:7071",
+      emulatorUrl: "https://emulator.example",
       arkServerUrl: "https://mutinynet.arkade.sh",
     });
-    // Opt-in, exact string only: an older solver strands a stamped packet.
-    expect(loadConfig({
-      ...base,
-      SOLVER_CARDS_FILE: "/cards.json",
-      COVCLAIMD_URL: "https://covclaimd.example",
-      ARK_SERVER_URL: "https://ark.example",
-      OFFLINE_STAMP_CLAIM_PACKET: "true",
-    }).offlineReceive.stampClaimPacket).toBe(true);
-    expect(loadConfig({ ...base, OFFLINE_STAMP_CLAIM_PACKET: "1" }).offlineReceive.stampClaimPacket).toBe(false);
 
     expect(() => loadConfig({ ...base, SOLVER_CARDS_FILE: "/cards.json" })).toThrow(/ARK_SERVER_URL/);
+  });
+
+  it("refuses offline receive without the emulator, naming it", () => {
+    const withArk = { ...base, ARK_SERVER_URL: "https://ark.example" };
+    expect(() => loadConfig({ ...withArk, SOLVER_CARDS_FILE: "/cards.json" })).toThrow(/OFFLINE_EMULATOR_URL/);
+    expect(() => loadConfig({ ...withArk, SOLVER_REGISTRY_URLS: "https://r.example/m.json" })).toThrow(/OFFLINE_EMULATOR_URL/);
+    expect(() => loadConfig({ ...withArk, NOSTR_SECRET_KEY: "a".repeat(64) })).toThrow(/OFFLINE_EMULATOR_URL/);
+    expect(() => loadConfig({ ...withArk, SOLVER_RFQ_HTTP_URL: "http://localhost:8787" })).toThrow(/OFFLINE_EMULATOR_URL/);
+  });
+
+  it.each(["COVCLAIMD_URL", "OFFLINE_STAMP_CLAIM_PACKET"])("rejects removed %s", (name) => {
+    expect(() => loadConfig({ ...base, [name]: "true" })).toThrow(new RegExp(`${name}.*removed`, "i"));
+  });
+
+  it("accepts OFFLINE_SELF_CLAIM=true and refuses turning self-claim off", () => {
+    expect(() => loadConfig({ ...base, OFFLINE_SELF_CLAIM: "true" })).not.toThrow();
+    expect(() => loadConfig({ ...base, OFFLINE_SELF_CLAIM: "false" })).toThrow(/OFFLINE_SELF_CLAIM/);
+  });
+
+  it("enables offline receive from ARK_SERVER_URL and OFFLINE_EMULATOR_URL, cards coming from the registry or admin DB", () => {
+    const config = loadConfig({
+      ...base,
+      ARK_SERVER_URL: "https://ark.example",
+      OFFLINE_EMULATOR_URL: "https://emulator.example",
+    });
+    expect(config.offlineReceive).toMatchObject({ enabled: true, registryUrls: undefined, emulatorUrl: "https://emulator.example" });
   });
 
   it("routes RFQs over HTTP only when told to, and only to a real URL", () => {
     const offline = {
       ...base,
       SOLVER_CARDS_FILE: "/cards.json",
-      COVCLAIMD_URL: "https://covclaimd.example",
+      OFFLINE_EMULATOR_URL: "https://emulator.example",
       ARK_SERVER_URL: "https://ark.example",
     };
     expect(loadConfig(offline).offlineReceive.rfqHttpUrl).toBeUndefined();
@@ -132,62 +147,6 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...offline, SOLVER_RFQ_HTTP_URL: "localhost:8787" })).toThrow(/SOLVER_RFQ_HTTP_URL/);
     // On its own it is still an offline-receive setting, so the usual wiring is demanded.
     expect(() => loadConfig({ ...base, SOLVER_RFQ_HTTP_URL: "http://localhost:8787" })).toThrow(/ARK_SERVER_URL/);
-  });
-
-  it("allows persisted admin cards alongside the default registry", () => {
-    const config = loadConfig({
-      ...base,
-      DB_PATH: "/data/lnurl.sqlite",
-      ALLOW_INSECURE_TOKEN_STORAGE: "1",
-      COVCLAIMD_URL: "https://covclaimd.example",
-      ARK_SERVER_URL: "https://ark.example",
-    });
-    expect(config.offlineReceive).toMatchObject({ enabled: true, registryUrls: undefined });
-  });
-
-  it("leaves omitted registry URLs undefined so discovery follows the network default", () => {
-    const config = loadConfig({
-      ...base,
-      COVCLAIMD_URL: "https://covclaimd.example",
-      ARK_SERVER_URL: "https://ark.example",
-    });
-
-    expect(config.offlineReceive).toMatchObject({ enabled: true, registryUrls: undefined });
-  });
-
-  it("allows self-claim without COVCLAIMD_URL, omitting the claim packet", () => {
-    const config = loadConfig({
-      ...base,
-      SOLVER_CARDS_FILE: "/cards.json",
-      ARK_SERVER_URL: "https://ark.example",
-      OFFLINE_SELF_CLAIM: "true",
-      OFFLINE_EMULATOR_URL: "https://emulator.example",
-    });
-    expect(config.offlineReceive).toMatchObject({
-      enabled: true,
-      selfClaim: true,
-      emulatorUrl: "https://emulator.example",
-      arkServerUrl: "https://ark.example",
-    });
-    expect(config.offlineReceive).not.toHaveProperty("covclaimdUrl");
-
-    // ...but stamping still names a covclaimd, so it still needs one.
-    expect(() => loadConfig({
-      ...base,
-      SOLVER_CARDS_FILE: "/cards.json",
-      ARK_SERVER_URL: "https://ark.example",
-      OFFLINE_SELF_CLAIM: "true",
-      OFFLINE_EMULATOR_URL: "https://emulator.example",
-      OFFLINE_STAMP_CLAIM_PACKET: "true",
-    })).toThrow(/COVCLAIMD_URL/);
-
-    // ...and the operator URL is never optional: nothing derives without it.
-    expect(() => loadConfig({
-      ...base,
-      SOLVER_CARDS_FILE: "/cards.json",
-      OFFLINE_SELF_CLAIM: "true",
-      OFFLINE_EMULATOR_URL: "https://emulator.example",
-    })).toThrow(/ARK_SERVER_URL/);
   });
 
   it.each(["SOLVER_URL", "SOLVER_PUBKEY", "NOSTR_RELAYS", "SOLVER_REGISTRY_URL"])(
@@ -209,41 +168,17 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...base, [name]: value })).toThrow(name);
   });
 
-  it("reads the self-claim flag and its emulator URL, and fails loudly without one", () => {
-    const on = loadConfig({
-      ...base,
-      SOLVER_CARDS_FILE: "/cards.json",
-      COVCLAIMD_URL: "https://covclaimd.example",
-      ARK_SERVER_URL: "https://ark.example",
-      OFFLINE_SELF_CLAIM: "true",
-      OFFLINE_EMULATOR_URL: "https://emulator.example",
-    });
-    expect(on.offlineReceive.selfClaim).toBe(true);
-    expect(on.offlineReceive.emulatorUrl).toBe("https://emulator.example");
-    // No key: the covenant leaf is signed by the operator and the emulator.
-    expect(on.offlineReceive).not.toHaveProperty("selfClaimKey");
-
-    // Opt-in, exact string only — same discipline as the stamp flag.
-    expect(loadConfig({ ...base }).offlineReceive.selfClaim).toBe(false);
-    expect(loadConfig({
-      ...base,
-      SOLVER_CARDS_FILE: "/cards.json",
-      COVCLAIMD_URL: "https://covclaimd.example",
-      ARK_SERVER_URL: "https://ark.example",
-      OFFLINE_SELF_CLAIM: "1",
-    }).offlineReceive.selfClaim).toBe(false);
-
-    expect(() => loadConfig({ ...base, OFFLINE_SELF_CLAIM: "true" })).toThrow(/OFFLINE_EMULATOR_URL/);
+  it("rejects a malformed emulator URL", () => {
     expect(() => loadConfig({ ...base, OFFLINE_EMULATOR_URL: "emulator.example" })).toThrow(/http\(s\)/);
   });
 
   it("rejects malformed registry and dependency URLs", () => {
     expect(() => loadConfig({ ...base, SOLVER_REGISTRY_URLS: "ftp://registry.example" })).toThrow(/SOLVER_REGISTRY_URLS/);
-    expect(() => loadConfig({ ...base, COVCLAIMD_URL: "covclaimd.example" })).toThrow(/COVCLAIMD_URL/);
+    expect(() => loadConfig({ ...base, ARK_SERVER_URL: "ark.example" })).toThrow(/ARK_SERVER_URL/);
   });
 
   it("reads the covenant-destination flag, and refuses a config nothing could sweep", () => {
-    const withUrls = { ...base, COVCLAIMD_URL: "https://cc.example", ARK_SERVER_URL: "https://ark.example" };
+    const withUrls = { ...base, ARK_SERVER_URL: "https://ark.example" };
     const on = loadConfig({
       ...withUrls,
       DB_PATH: "/data/x.db",
@@ -261,8 +196,7 @@ describe("loadConfig", () => {
     ).toBe(false);
 
     // A payer must never be handed an address nothing can sweep, so the
-    // emulator and the operator key are required up front. Covclaimd is not:
-    // the arkade rail never touches it.
+    // emulator and the operator key are required up front.
     expect(() => loadConfig({ ...withUrls, OFFLINE_COVENANT_DESTINATIONS: "true" })).toThrow(/OFFLINE_EMULATOR_URL/);
     expect(() =>
       loadConfig({ ...base, OFFLINE_COVENANT_DESTINATIONS: "true", OFFLINE_EMULATOR_URL: "https://emulator.example" }),
@@ -294,7 +228,6 @@ describe("loadConfig", () => {
   it("rejects a non-positive covenant recovery delay rather than building an unspendable leaf", () => {
     const withFlag = (v: string) => ({
       ...base,
-      COVCLAIMD_URL: "https://cc.example",
       ARK_SERVER_URL: "https://ark.example",
       DB_PATH: "/data/x.db",
       ALLOW_INSECURE_TOKEN_STORAGE: "1",
@@ -318,7 +251,6 @@ describe("loadConfig", () => {
   it.each([undefined, ""])("defers an unset recovery delay (%s) to arkd info", (recoveryDelay) => {
     const cfg = loadConfig({
       ...base,
-      COVCLAIMD_URL: "https://cc.example",
       ARK_SERVER_URL: "https://ark.example",
       DB_PATH: "/data/x.db",
       ALLOW_INSECURE_TOKEN_STORAGE: "1",
@@ -331,52 +263,11 @@ describe("loadConfig", () => {
 
 });
 
-describe("self-claim is the default where it can run", () => {
+describe("offline receive config", () => {
   const base = { NODE_ENV: "test", DB_PATH: "unused-test.sqlite", ALLOW_INSECURE_TOKEN_STORAGE: "1" } as Record<string, string>;
-  const swapRail = {
-    ...base,
-    SOLVER_CARDS_FILE: "/cards.json",
-    ARK_SERVER_URL: "https://ark.example",
-    OFFLINE_EMULATOR_URL: "https://emulator.example",
-  };
 
-  // covclaimd is not this service's claimer: the server generates the preimage,
-  // so it can push the covenant leaf itself. A deployment able to do that should
-  // not be waiting on a third party to decide whether a receive settles.
-  it("claims for itself when an emulator is configured", () => {
-    expect(loadConfig(swapRail).offlineReceive.selfClaim).toBe(true);
-  });
-
-  it("no longer forces COVCLAIMD_URL to make the offline rail legal", () => {
-    const off = loadConfig(swapRail).offlineReceive;
-    expect(off.enabled).toBe(true);
-    expect(off.covclaimdUrl).toBeUndefined();
-  });
-
-  // The deliberate covclaimd-only deployment. No emulator either: opting out of
-  // self-claim leaves nothing else on this rail using one, and a URL nothing
-  // consumes is already refused elsewhere.
-  it("still takes an explicit opt-out", () => {
-    const off = loadConfig({
-      ...base,
-      SOLVER_CARDS_FILE: "/cards.json",
-      ARK_SERVER_URL: "https://ark.example",
-      COVCLAIMD_URL: "https://cc.example",
-      OFFLINE_SELF_CLAIM: "false",
-    }).offlineReceive;
-    expect(off.selfClaim).toBe(false);
-    expect(off.enabled).toBe(true);
-  });
-
-  // The emulator co-signs the leaf, so asking without one is a misconfiguration
-  // rather than something to quietly downgrade.
-  it("still refuses an explicit opt-in with no emulator", () => {
-    expect(() => loadConfig({ ...base, SOLVER_CARDS_FILE: "/cards.json", ARK_SERVER_URL: "https://ark.example", OFFLINE_SELF_CLAIM: "true" }))
-      .toThrow(/requires OFFLINE_EMULATOR_URL/);
-  });
-
-  // The regression this default used to cause: an emulator is also the covenant
-  // rail's co-signer, so it cannot on its own mean "serve lightning swaps too".
+  // An emulator is also the covenant rail's co-signer, so it cannot on its own
+  // mean "serve lightning swaps too" for a covenant-only deployment.
   it("does not switch the offline swap rail on for a covenant-only deployment", () => {
     const off = loadConfig({
       ...base,
@@ -388,7 +279,7 @@ describe("self-claim is the default where it can run", () => {
     expect(off.enabled).toBe(false);
   });
 
-  it("stays off where there is no emulator to co-sign with", () => {
-    expect(loadConfig({ ...base }).offlineReceive.selfClaim).toBe(false);
+  it("stays off with no offline settings", () => {
+    expect(loadConfig({ ...base }).offlineReceive.enabled).toBe(false);
   });
 });

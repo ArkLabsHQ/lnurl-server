@@ -39,13 +39,11 @@ const hostPort = (composeVar: string, fallback: number): number => {
 };
 
 export const ARKD_PORT = hostPort("ARKD_PORT", 7070);
-export const COVCLAIMD_PORT = hostPort("COVCLAIMD_HTTP_PORT", 7271);
 export const EMULATOR_PORT = hostPort("EMULATOR_PORT", 7073);
 export const SOLVER_HTTP_TEST_PORT = hostPort("INTENT_SOLVER_PORT", 8787);
 export const ESPLORA_PORT = hostPort("MEMPOOL_WEB_PORT", 3000);
 
 export const ARKD_URL = process.env.E2E_ARKD_URL ?? `http://localhost:${ARKD_PORT}`;
-export const COVCLAIMD_URL = process.env.E2E_COVCLAIMD_URL ?? `http://localhost:${COVCLAIMD_PORT}`;
 export const EMULATOR_URL = process.env.E2E_EMULATOR_URL ?? `http://localhost:${EMULATOR_PORT}`;
 export const SOLVER_HTTP_TEST_URL = process.env.E2E_SOLVER_HTTP_TEST_URL ?? `http://localhost:${SOLVER_HTTP_TEST_PORT}`;
 export const ESPLORA_URL = process.env.E2E_ESPLORA_URL ?? `http://localhost:${ESPLORA_PORT}/api`;
@@ -61,9 +59,6 @@ export const INTENT_SOLVER_COMMIT = "4daa6c9bc3765282d51f67a871d037583f09368d";
 // quotes omit `profile.refund_without_receiver_delay` and every send is refused
 // client-side. Matches the pin in arkade-regtest's .env.defaults.
 const INTENT_SOLVER_IMAGE = process.env.E2E_INTENT_SOLVER_IMAGE ?? "ghcr.io/arkade-os/intent-solver:0.3.2";
-// rc.5 attaches PrevArkTx to claims — the fix for the emulator >= v0.0.7 rejection
-// (arkade-os/covclaimd#10). Emulator follows the stack's own default.
-const COVCLAIMD_IMAGE = process.env.E2E_COVCLAIMD_IMAGE ?? "ghcr.io/arkade-os/covclaimd:v0.0.1-rc.5";
 const INTENT_SOLVER_REPO = "https://github.com/arkade-os/intent-solver";
 const BUILD_CACHE = join(HERE, "..", "..", "..", ".e2e-cache");
 
@@ -76,7 +71,6 @@ const STACK_ENV = {
   ARKD_BOARDING_EXIT_DELAY: "2048",
   ARKD_CHECKPOINT_EXIT_DELAY: "1536",
   INTENT_SOLVER_IMAGE,
-  COVCLAIMD_IMAGE,
   INTENT_SOLVER_MNEMONIC: SOLVER_MNEMONIC, // the compose file interpolates it, and .env.defaults is regtest.mjs-only
   AUTOMINE_INTERVAL: "0", // deterministic: mine only explicitly
   // Nothing here talks to the price feed, but its default 8088 is a popular
@@ -124,7 +118,7 @@ export async function pollUntil(
 export async function stackIsUp(): Promise<boolean> {
   const checks = await Promise.all([
     httpOk(`${ARKD_URL}/v1/info`),
-    httpOk(`${COVCLAIMD_URL}/v1/preimage/covclaimd-pubkey`),
+    httpOk(`${EMULATOR_URL}/v1/info`),
     httpOk(`${SOLVER_HTTP_TEST_URL}/healthz`),
     (async () => {
       try {
@@ -177,7 +171,6 @@ export async function ensureIntentSolverImage(log: (s: string) => void = console
 
 const REQUIRED_PORTS: ReadonlyArray<[port: number, ourContainer: string]> = [
   [ARKD_PORT, "arkd"],
-  [COVCLAIMD_PORT, "covclaimd"],
   [EMULATOR_PORT, "emulator"],
   [SOLVER_HTTP_TEST_PORT, "intent-solver"],
   [ESPLORA_PORT, "mempool_web"],
@@ -212,7 +205,7 @@ export async function assertPortsAvailable(): Promise<void> {
   if (conflicts.length > 0) {
     throw new Error(
       `regtest stack cannot bind its host ports:\n  ${conflicts.join("\n  ")}\n` +
-        "Stop the holder, or remap with ARKD_PORT / COVCLAIMD_HTTP_PORT / EMULATOR_PORT / INTENT_SOLVER_PORT / MEMPOOL_WEB_PORT.",
+        "Stop the holder, or remap with ARKD_PORT / EMULATOR_PORT / INTENT_SOLVER_PORT / MEMPOOL_WEB_PORT.",
     );
   }
 }
@@ -287,9 +280,8 @@ export async function ensureStack(log: (s: string) => void = console.log): Promi
     1_200_000,
     5000,
   );
-  await pollUntil("covclaimd", () => httpOk(`${COVCLAIMD_URL}/v1/preimage/covclaimd-pubkey`), 120_000);
   if (!(await arkTimelocksMatch())) throw new Error("arkd did not apply the required regtest timelocks");
-  // The stack's intent-solver lacks COVCLAIMD_URL in its env map; the overlay adds it.
+  // The overlay exposes the solver's admin console for the failure dump.
   await applySolverOverlay();
   // The LN channel between the payer and the solver's node must be usable before any
   // HTLC routes; stackIsUp answers before the stack's lightning setup finishes opening it.
@@ -379,15 +371,6 @@ const compose = (args: string[], profile = "intent-solver") =>
     { cwd: REGTEST_DIR, env: STACK_ENV, timeout: 120_000 },
   );
 
-export async function stopCovclaimd(): Promise<void> {
-  await compose(["stop", "covclaimd"]);
-}
-
-export async function startCovclaimd(): Promise<void> {
-  await compose(["start", "covclaimd"]);
-  await pollUntil("covclaimd", () => httpOk(`${COVCLAIMD_URL}/v1/preimage/covclaimd-pubkey`), 120_000);
-}
-
 /** The payer↔solver LN channel must be announced/usable before any HTLC routes;
  *  stackIsUp answers before the stack's lightning setup finishes opening it, so poll
  *  (mining each pass — a fresh chain's funding tx needs the blocks). */
@@ -408,14 +391,14 @@ async function waitForLnChannel(): Promise<void> {
   }
 }
 
-/** Recreate intent-solver with the e2e overlay applied (carries COVCLAIMD_URL). */
+/** Recreate intent-solver with the e2e overlay applied (carries the admin console settings). */
 export async function applySolverOverlay(): Promise<void> {
   const imageId = (await run("docker", ["image", "inspect", INTENT_SOLVER_IMAGE, "--format", "{{.Id}}"])).stdout.trim();
   const current = await run("docker", ["inspect", "intent-solver", "--format", "{{.Image}} {{json .Config.Env}}"]).then(
     (r) => r.stdout,
     () => "",
   );
-  if (current.includes(imageId) && current.includes("COVCLAIMD_URL=")) return; // already applied
+  if (current.includes(imageId) && current.includes("ADMIN_PORT=")) return; // already applied
   await compose(["up", "-d", "--force-recreate", "--no-deps", "intent-solver"]);
   await pollUntil("intent-solver", () => httpOk(`${SOLVER_HTTP_TEST_URL}/healthz`), 180_000);
 }

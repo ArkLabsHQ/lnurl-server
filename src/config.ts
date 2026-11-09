@@ -33,40 +33,14 @@ export interface FixedFloatConfig {
   maxOpenOrders: number;
 }
 
-/** Server-orchestrated offline receive over the Arkade intents corridor. */
-export interface OfflineReceiveConfig {
-  enabled: boolean;
+interface OfflineReceiveCommon {
   registryUrls?: string[];
   cardsFile?: string;
   nostrSecretKey?: string;
-  covclaimdUrl?: string;
-  arkServerUrl?: string;
   /** Put RFQs to the solver's HTTP ingress instead of the nostr relay its card
    *  advertises. A solver listens on one or the other, never both: the regtest
    *  stack's runs `serve`, so over nostr it looks unreachable, not misaddressed. */
   rfqHttpUrl?: string;
-  /**
-   * Send the claim packet for the solver to stamp into the funding tx, rather
-   * than the bare ciphertext it reveals to its own covclaimd.
-   *
-   * Off by default because it is not safe against a solver that predates
-   * arkade-os/intent-solver#47: that one forwards the packet as a ciphertext,
-   * covclaimd cannot decrypt it, and the swap funds and refunds. Turning it on
-   * is a statement about the solver being quoted, so it cannot be inferred here.
-   */
-  stampClaimPacket: boolean;
-  /** Push each lockup's covenant claim leaf ourselves instead of waiting for
-   *  covclaimd to do it. Needs no key: the leaf is signed by the operator and the
-   *  emulator, and gated on the preimage this server already holds. With
-   *  {@link emulatorUrl} set, COVCLAIMD_URL may be omitted: the RFQ omits the
-   *  claim packet and the solver waits for this claim. */
-  selfClaim: boolean;
-  /** Emulator base URL backing {@link selfClaim} — it co-signs the covenant leaf. */
-  emulatorUrl?: string;
-  /** Give each arkade-rail payment its own covenant address instead of the user's
-   *  static one, so concurrent payments are told apart by script rather than by
-   *  amount and arrival window. Needs {@link emulatorUrl} for the sweep. */
-  covenantDestinations: boolean;
   /** CSV delay override, seconds; unset uses arkd's unilateral exit delay. */
   covenantRecoveryDelaySeconds?: number;
   covenantRenewalMnemonic?: string;
@@ -75,6 +49,29 @@ export interface OfflineReceiveConfig {
    *  dropped subscription and the solver status check the RFQ transport cannot push. */
   pollIntervalMs: number;
 }
+
+type OfflineEndpoints = {
+  arkServerUrl: string;
+  /** Emulator base URL — it co-signs the covenant claim leaf and the covenant rail's sweep. */
+  emulatorUrl: string;
+};
+
+/** Server-orchestrated offline receive over the Arkade intents corridor. */
+export type OfflineReceiveConfig =
+  | (OfflineReceiveCommon & OfflineEndpoints & {
+    enabled: true;
+    covenantDestinations: boolean;
+  })
+  | (OfflineReceiveCommon & OfflineEndpoints & {
+    enabled: false;
+    covenantDestinations: true;
+  })
+  | (OfflineReceiveCommon & {
+    enabled: false;
+    covenantDestinations: false;
+    arkServerUrl?: string;
+    emulatorUrl?: string;
+  });
 
 export interface AppConfig {
   port: number;
@@ -115,6 +112,7 @@ export interface AppConfig {
 type Env = Record<string, string | undefined>;
 
 const REMOVED_SOLVER_CONFIG = ["SOLVER_URL", "SOLVER_PUBKEY", "NOSTR_RELAYS", "SOLVER_REGISTRY_URL"] as const;
+const REMOVED_CLAIM_CONFIG = ["COVCLAIMD_URL", "OFFLINE_STAMP_CLAIM_PACKET"] as const;
 
 function integer(env: Env, name: string, fallback: number, opts: { min: number; max?: number }): number {
   const raw = env[name];
@@ -148,6 +146,13 @@ function csvHttpUrls(raw: string | undefined, name: string): string[] {
 function rejectRemovedSolverConfig(env: Env): void {
   for (const name of REMOVED_SOLVER_CONFIG) {
     if (env[name] !== undefined) throw new ConfigError(`${name} has been removed; configure solver cards instead`);
+  }
+  for (const name of REMOVED_CLAIM_CONFIG) {
+    if (env[name] !== undefined) throw new ConfigError(`${name} has been removed; offline receive always claims itself through OFFLINE_EMULATOR_URL`);
+  }
+  // `true` is what offline receive always does; `false` would claim nothing.
+  if (env.OFFLINE_SELF_CLAIM !== undefined && env.OFFLINE_SELF_CLAIM !== "true") {
+    throw new ConfigError("OFFLINE_SELF_CLAIM can only be true: offline receive always claims itself through OFFLINE_EMULATOR_URL");
   }
 }
 
@@ -269,7 +274,7 @@ function buildFixedFloat(env: Env, dbPath: string | undefined, offlineReceive: O
     throw new ConfigError("token deposits need a file-backed DB_PATH: an order lost on restart is a payer's support case nobody can resolve");
   }
   if (!offlineReceive.enabled) {
-    throw new ConfigError("token deposits pay out over offline receive, which is not configured (ARK_SERVER_URL, solver cards, and COVCLAIMD_URL or OFFLINE_SELF_CLAIM)");
+    throw new ConfigError("token deposits pay out over offline receive, which is not configured (ARK_SERVER_URL, OFFLINE_EMULATOR_URL, and solver cards)");
   }
   const afftaxRaw = env.FIXEDFLOAT_AFFTAX;
   const afftax = afftaxRaw === undefined || afftaxRaw === "" ? undefined : Number(afftaxRaw);
@@ -317,55 +322,33 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   if (nostrSecretKey && !/^[0-9a-f]{64}$/i.test(nostrSecretKey)) {
     throw new ConfigError("NOSTR_SECRET_KEY must be 64-char hex");
   }
-  const covclaimdUrl = env.COVCLAIMD_URL ? httpUrl(env.COVCLAIMD_URL, "COVCLAIMD_URL") : undefined;
   const arkServerUrl = env.ARK_SERVER_URL ? httpUrl(env.ARK_SERVER_URL, "ARK_SERVER_URL") : undefined;
   const rfqHttpUrl = env.SOLVER_RFQ_HTTP_URL ? httpUrl(env.SOLVER_RFQ_HTTP_URL, "SOLVER_RFQ_HTTP_URL") : undefined;
   const hasCards = (registryUrls?.length ?? 0) > 0 || cardsFile !== undefined;
   const emulatorUrl = env.OFFLINE_EMULATOR_URL ? httpUrl(env.OFFLINE_EMULATOR_URL, "OFFLINE_EMULATOR_URL") : undefined;
-  // On wherever it can run. This server generates the swap preimage, so it can
-  // push the covenant's claim leaf itself — no key of its own, and the covenant
-  // pins the payout to the user. Deferring to covclaimd instead makes a third
-  // party the single point of failure for every receive, and it cannot claim
-  // this covenant today, so a covclaimd-only deployment claims nothing at all.
-  // "false" still opts out; anything else is not a vote.
-  const selfClaim = env.OFFLINE_SELF_CLAIM === undefined ? Boolean(emulatorUrl) : env.OFFLINE_SELF_CLAIM === "true";
-  const stampClaimPacket = env.OFFLINE_STAMP_CLAIM_PACKET === "true";
   const covenantDestinations = env.OFFLINE_COVENANT_DESTINATIONS === "true";
   const covenantRenewalMnemonic = env.OFFLINE_COVENANT_RENEWAL_MNEMONIC?.trim();
   if (covenantRenewalMnemonic && !covenantDestinations) {
     throw new ConfigError("OFFLINE_COVENANT_RENEWAL_MNEMONIC requires OFFLINE_COVENANT_DESTINATIONS=true");
   }
-  if (selfClaim && !emulatorUrl) {
-    throw new ConfigError("OFFLINE_SELF_CLAIM=true requires OFFLINE_EMULATOR_URL (the emulator co-signs the covenant claim)");
-  }
-  if (emulatorUrl && !selfClaim && !covenantDestinations) {
-    throw new ConfigError("OFFLINE_EMULATOR_URL requires OFFLINE_SELF_CLAIM=true or OFFLINE_COVENANT_DESTINATIONS=true");
-  }
-  const anyOfflineSetting = hasCards || covclaimdUrl || arkServerUrl || nostrSecretKey || selfClaim || emulatorUrl || stampClaimPacket || covenantDestinations || rfqHttpUrl;
-  // The claim packet is optional on the wire (solver funds without covclaimd and
-  // waits for the client's own claim): with OFFLINE_SELF_CLAIM the server holds
-  // P and pushes the covenant leaf itself, so no covclaimd is needed.
-  const selfClaimMode = selfClaim && emulatorUrl;
-  // Configuration that only makes sense for the solver-mediated lightning rail.
-  // OFFLINE_EMULATOR_URL is deliberately absent: it serves the covenant rail too.
+  const anyOfflineSetting = hasCards || arkServerUrl || nostrSecretKey || emulatorUrl || covenantDestinations || rfqHttpUrl;
+  // The solver-mediated lightning rail. An emulator alone means it unless the
+  // covenant rail claimed the emulator: cards may then come from the admin database.
   const offlineSwapRequested =
-    hasCards || Boolean(covclaimdUrl) || Boolean(rfqHttpUrl) || Boolean(nostrSecretKey) || env.OFFLINE_SELF_CLAIM === "true";
-  if (stampClaimPacket && !covclaimdUrl) {
-    throw new ConfigError("OFFLINE_STAMP_CLAIM_PACKET=true requires COVCLAIMD_URL (there is no packet to stamp without one)");
-  }
+    hasCards || Boolean(rfqHttpUrl) || Boolean(nostrSecretKey) || (Boolean(emulatorUrl) && !covenantDestinations);
   if (anyOfflineSetting && !arkServerUrl) {
-    throw new ConfigError("offline receive requires ARK_SERVER_URL; cards may come from env, file, or the admin database (COVCLAIMD_URL may be omitted with OFFLINE_SELF_CLAIM=true + OFFLINE_EMULATOR_URL)");
+    throw new ConfigError("offline receive requires ARK_SERVER_URL; cards may come from env, file, or the admin database");
   }
-  if ((hasCards || nostrSecretKey || stampClaimPacket) && !covclaimdUrl && !selfClaimMode) {
-    throw new ConfigError("offline receive requires COVCLAIMD_URL (or OFFLINE_SELF_CLAIM=true with OFFLINE_EMULATOR_URL to run without covclaimd); cards may come from env, file, or the admin database");
+  if ((hasCards || nostrSecretKey || rfqHttpUrl) && !emulatorUrl) {
+    throw new ConfigError("offline receive requires OFFLINE_EMULATOR_URL (the emulator co-signs the covenant claim); cards may come from env, file, or the admin database");
   }
-  // Same reasoning as selfClaim: a payer must never be handed an address nothing
-  // can sweep, and by then their money is already at it.
+  // A payer must never be handed an address nothing can sweep, and by then
+  // their money is already at it.
   if (covenantDestinations && !emulatorUrl) {
     throw new ConfigError("OFFLINE_COVENANT_DESTINATIONS=true requires OFFLINE_EMULATOR_URL (the emulator co-signs the sweep)");
   }
   if (covenantDestinations && !(arkServerUrl && emulatorUrl)) {
-    throw new ConfigError("OFFLINE_COVENANT_DESTINATIONS=true requires ARK_SERVER_URL and OFFLINE_EMULATOR_URL (the covenant commits to their keys; COVCLAIMD_URL is only needed alongside the lightning offline swap)");
+    throw new ConfigError("OFFLINE_COVENANT_DESTINATIONS=true requires ARK_SERVER_URL and OFFLINE_EMULATOR_URL (the covenant commits to their keys)");
   }
   const recoveryRaw = env.OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS;
   // 512-second granularity, and 24h is not a multiple of it. Rejected here rather
@@ -382,26 +365,20 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
       `OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS must be a multiple of 512 (BIP68 encodes seconds in 512s units); got ${covenantRecoveryDelaySeconds}, nearest is ${near}`,
     );
   }
-  return {
-    // Two separate questions, previously one. A claimer must exist — but an
-    // emulator is also the covenant rail's co-signer, so it cannot by itself
-    // mean "serve lightning swaps too", or turning self-claim on by default
-    // would switch this rail on for a covenant-only deployment.
-    enabled: Boolean(arkServerUrl && (covclaimdUrl || (selfClaim && emulatorUrl)) && offlineSwapRequested),
+  const common = {
     registryUrls,
-    stampClaimPacket,
-    selfClaim,
-    covenantDestinations,
     covenantRecoveryDelaySeconds,
     ...(covenantRenewalMnemonic ? { covenantRenewalMnemonic } : {}),
     pollIntervalMs: integer(env, "OFFLINE_POLL_INTERVAL_MS", 15_000, { min: 1 }),
-    ...(emulatorUrl ? { emulatorUrl } : {}),
     ...(cardsFile ? { cardsFile } : {}),
     ...(nostrSecretKey ? { nostrSecretKey } : {}),
-    ...(covclaimdUrl ? { covclaimdUrl } : {}),
-    ...(arkServerUrl ? { arkServerUrl } : {}),
     ...(rfqHttpUrl ? { rfqHttpUrl } : {}),
   };
+  if (!arkServerUrl || !emulatorUrl) return { ...common, enabled: false, covenantDestinations: false };
+  const endpoints = { arkServerUrl, emulatorUrl };
+  if (offlineSwapRequested) return { ...common, ...endpoints, enabled: true, covenantDestinations };
+  if (covenantDestinations) return { ...common, ...endpoints, enabled: false, covenantDestinations: true };
+  return { ...common, ...endpoints, enabled: false, covenantDestinations: false };
 }
 
 function parseTrustProxy(raw: string | undefined): number | boolean {

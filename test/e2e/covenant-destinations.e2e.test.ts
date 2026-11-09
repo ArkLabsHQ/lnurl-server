@@ -32,7 +32,7 @@ import { loadConfig } from "../../src/config.js";
 import { createCovenantSweeper, startCovenantSweeper } from "../../src/workers/covenant-sweeper.js";
 import { lateCovenantSweep } from "../../src/workers/covenant-late-sweep.js";
 import { startCovenantWatcher } from "../../src/workers/covenant-watcher.js";
-import { ensureStack, pollUntil, mine, faucet, nodeSqliteStorage, ARKD_URL, COVCLAIMD_URL } from "./support/regtest.js";
+import { ensureStack, pollUntil, mine, faucet, nodeSqliteStorage, ARKD_URL } from "./support/regtest.js";
 
 const AMOUNT_SATS = 3000;
 const EMULATOR_URL = process.env.E2E_EMULATOR_URL ?? "http://localhost:7073";
@@ -133,7 +133,6 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
       NODE_ENV: "test",
       DB_PATH: "unused-e2e.sqlite",
       ALLOW_INSECURE_TOKEN_STORAGE: "1",
-      COVCLAIMD_URL,
       ARK_SERVER_URL: ARKD_URL,
       OFFLINE_COVENANT_DESTINATIONS: "true",
       OFFLINE_EMULATOR_URL: EMULATOR_URL,
@@ -147,7 +146,7 @@ describe("e2e: arkade rail, per-payment covenant destinations", () => {
     });
     const covenantDestinations = createCovenantDestinationProvider({
       arkServerUrl: ARKD_URL,
-      covclaimdUrl: COVCLAIMD_URL,
+      emulatorUrl: EMULATOR_URL,
       recoveryDelaySeconds,
       unilateralExitDelay: Number(info.unilateralExitDelay),
       contracts,
