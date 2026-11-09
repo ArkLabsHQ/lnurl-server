@@ -4,12 +4,8 @@ import { VERSION } from "./version.js";
 import { SessionManager } from "./services/sessions.js";
 import type { Db } from "./db/connection.js";
 import { pathToFileURL } from "node:url";
-import { ConfigError, UpstreamError } from "./errors.js";
-
-/** Ceiling on the dependency probes boot makes. Generous next to the in-request
- *  timeouts: a cold arkd is slower than a warm one, and failing here refuses to
- *  start rather than serving a degraded rail. */
-const BOOT_PROBE_TIMEOUT_MS = 15_000;
+import { ConfigError } from "./errors.js";
+import { probeBootEndpoint } from "./boot-probe.js";
 
 /** Open + migrate + bootstrap the DB when configured; null in in-memory mode. */
 export async function initPersistence(opts: {
@@ -86,6 +82,10 @@ async function main(): Promise<void> {
     });
     const settlements = new DbSettlementStore(db, config.verifyTtlMs, undefined, config.destinationWatchMs);
     const off = config.offlineReceive;
+    if (off.emulatorUrl) {
+      const response = await probeBootEndpoint(`${off.emulatorUrl}/v1/info`, "emulator info endpoint");
+      await response.body?.cancel();
+    }
     // One manager for both rails: the covenant rail spends through it, the swap rail
     // registers each lockup in it so funding arrives as an event.
     let contracts: import("@arkade-os/sdk").IContractManager | undefined;
@@ -114,7 +114,7 @@ async function main(): Promise<void> {
       const stores = await sqliteContractStores(db);
       try {
         contracts = await ContractManager.create({
-          indexerProvider: new RestIndexerProvider(off.arkServerUrl!),
+          indexerProvider: new RestIndexerProvider(off.arkServerUrl),
           ...stores,
         });
         runtime.addTransport({ close: () => contracts!.dispose() });
@@ -138,8 +138,7 @@ async function main(): Promise<void> {
     if (off.arkServerUrl) {
       // Bounded: an unreachable arkd that accepts the connection and never answers
       // would otherwise hang boot forever, with no listener and nothing in the log.
-      const infoResponse = await fetch(`${off.arkServerUrl}/v1/info`, { signal: AbortSignal.timeout(BOOT_PROBE_TIMEOUT_MS) });
-      if (!infoResponse.ok) throw new UpstreamError("Arkade info endpoint", infoResponse.status);
+      const infoResponse = await probeBootEndpoint(`${off.arkServerUrl}/v1/info`, "Arkade info endpoint");
       const arkInfo = await infoResponse.json() as { network?: unknown; dust?: unknown; unilateralExitDelay?: unknown };
       arkNetwork = arkInfo.network;
       const { isNetwork } = await import("@arkade-os/solver-discovery");
@@ -174,15 +173,15 @@ async function main(): Promise<void> {
       if (!discovery.status().ready) logger.warn("offline_receive_unavailable", { reason: discovery.status().reason });
       offlineSwaps = new OfflineSwapStore(db, config.verifyTtlMs);
       const { createSelfClaimer } = await import("./covenant/self-claim.js");
-      const selfClaimer = createSelfClaimer({ arkServerUrl: off.arkServerUrl!, emulatorUrl: off.emulatorUrl!, logger });
+      const selfClaimer = createSelfClaimer({ arkServerUrl: off.arkServerUrl, emulatorUrl: off.emulatorUrl, logger });
       console.log(`offline self-claim: enabled (emulator=${off.emulatorUrl})`);
       const { httpTransport } = await import("@arkade-os/swap/protocol");
       offlineSwapCreator = await createOfflineSwapCoordinator({
         discovery,
         nostrSecretKey: off.nostrSecretKey,
         ...(off.rfqHttpUrl ? { transportFactory: () => httpTransport(off.rfqHttpUrl!) } : {}),
-        emulatorUrl: off.emulatorUrl!,
-        arkServerUrl: off.arkServerUrl!,
+        emulatorUrl: off.emulatorUrl,
+        arkServerUrl: off.arkServerUrl,
         selfClaimer,
         ...(contracts ? { contracts } : {}),
         logger,
@@ -205,8 +204,8 @@ async function main(): Promise<void> {
     if (off.covenantDestinations && contracts) {
       const { createCovenantDestinationProvider } = await import("./covenant/destination.js");
       covenantDestinations = createCovenantDestinationProvider({
-        arkServerUrl: off.arkServerUrl!,
-        emulatorUrl: off.emulatorUrl!,
+        arkServerUrl: off.arkServerUrl,
+        emulatorUrl: off.emulatorUrl,
         recoveryDelaySeconds: off.covenantRecoveryDelaySeconds,
         ...(arkUnilateralExitDelay ? { unilateralExitDelay: arkUnilateralExitDelay } : {}),
         contracts,
@@ -218,7 +217,7 @@ async function main(): Promise<void> {
       const { createCovenantRenewer } = await import("./covenant/renewal.js");
       const { RestArkProvider, RestIndexerProvider, RestEmulatorProvider, networkFromArkadeInfo, Wallet, MnemonicIdentity,
         InMemoryWalletRepository, InMemoryContractRepository } = await import("@arkade-os/sdk");
-      const renewalArk = new RestArkProvider(off.arkServerUrl!);
+      const renewalArk = new RestArkProvider(off.arkServerUrl);
       const renewalNetwork = networkFromArkadeInfo(await renewalArk.getInfo());
       const renewalAbort = new AbortController();
       runtime.addStop(() => renewalAbort.abort(new Error("server shutdown")));
@@ -233,12 +232,12 @@ async function main(): Promise<void> {
         console.log(`covenant renewal fee payer: ${await feePayer.getAddress()}`);
       }
       const renewer = createCovenantRenewer({
-        arkProvider: renewalArk, indexer: new RestIndexerProvider(off.arkServerUrl!),
-        emulator: new RestEmulatorProvider(off.emulatorUrl!), network: renewalNetwork, feePayer, signal: renewalAbort.signal,
+        arkProvider: renewalArk, indexer: new RestIndexerProvider(off.arkServerUrl),
+        emulator: new RestEmulatorProvider(off.emulatorUrl), network: renewalNetwork, feePayer, signal: renewalAbort.signal,
       });
       // Built before the watcher so its trigger can be handed over: the event that
       // settles a covenant payment is the same event that makes it sweepable.
-      const covenantSweeper = createCovenantSweeper({ contracts, arkServerUrl: off.arkServerUrl!, emulatorUrl: off.emulatorUrl!, settlements, renewer });
+      const covenantSweeper = createCovenantSweeper({ contracts, arkServerUrl: off.arkServerUrl, emulatorUrl: off.emulatorUrl, settlements, renewer });
       const sweeper = startCovenantSweeper(covenantSweeper, 15_000);
       runtime.addStop(sweeper.stop);
       runtime.addStop(startCovenantWatcher(settlements, contracts, off.pollIntervalMs, sweeper.trigger));
@@ -247,7 +246,7 @@ async function main(): Promise<void> {
         const { startCovenantLateSweep } = await import("./workers/covenant-late-sweep.js");
         runtime.addStop(startCovenantLateSweep({
           settlements,
-          indexer: new RestIndexerProvider(off.arkServerUrl!),
+          indexer: new RestIndexerProvider(off.arkServerUrl),
           sweeper: covenantSweeper,
           tailMs: config.destinationLateSweepMs,
         }).stop);

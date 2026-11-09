@@ -33,23 +33,14 @@ export interface FixedFloatConfig {
   maxOpenOrders: number;
 }
 
-/** Server-orchestrated offline receive over the Arkade intents corridor. */
-export interface OfflineReceiveConfig {
-  enabled: boolean;
+interface OfflineReceiveCommon {
   registryUrls?: string[];
   cardsFile?: string;
   nostrSecretKey?: string;
-  arkServerUrl?: string;
   /** Put RFQs to the solver's HTTP ingress instead of the nostr relay its card
    *  advertises. A solver listens on one or the other, never both: the regtest
    *  stack's runs `serve`, so over nostr it looks unreachable, not misaddressed. */
   rfqHttpUrl?: string;
-  /** Emulator base URL — it co-signs the covenant claim leaf and the covenant rail's sweep. */
-  emulatorUrl?: string;
-  /** Give each arkade-rail payment its own covenant address instead of the user's
-   *  static one, so concurrent payments are told apart by script rather than by
-   *  amount and arrival window. Needs {@link emulatorUrl} for the sweep. */
-  covenantDestinations: boolean;
   /** CSV delay override, seconds; unset uses arkd's unilateral exit delay. */
   covenantRecoveryDelaySeconds?: number;
   covenantRenewalMnemonic?: string;
@@ -58,6 +49,29 @@ export interface OfflineReceiveConfig {
    *  dropped subscription and the solver status check the RFQ transport cannot push. */
   pollIntervalMs: number;
 }
+
+type OfflineEndpoints = {
+  arkServerUrl: string;
+  /** Emulator base URL — it co-signs the covenant claim leaf and the covenant rail's sweep. */
+  emulatorUrl: string;
+};
+
+/** Server-orchestrated offline receive over the Arkade intents corridor. */
+export type OfflineReceiveConfig =
+  | (OfflineReceiveCommon & OfflineEndpoints & {
+    enabled: true;
+    covenantDestinations: boolean;
+  })
+  | (OfflineReceiveCommon & OfflineEndpoints & {
+    enabled: false;
+    covenantDestinations: true;
+  })
+  | (OfflineReceiveCommon & {
+    enabled: false;
+    covenantDestinations: false;
+    arkServerUrl?: string;
+    emulatorUrl?: string;
+  });
 
 export interface AppConfig {
   port: number;
@@ -351,19 +365,20 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
       `OFFLINE_COVENANT_RECOVERY_DELAY_SECONDS must be a multiple of 512 (BIP68 encodes seconds in 512s units); got ${covenantRecoveryDelaySeconds}, nearest is ${near}`,
     );
   }
-  return {
-    enabled: Boolean(arkServerUrl && emulatorUrl && offlineSwapRequested),
+  const common = {
     registryUrls,
-    covenantDestinations,
     covenantRecoveryDelaySeconds,
     ...(covenantRenewalMnemonic ? { covenantRenewalMnemonic } : {}),
     pollIntervalMs: integer(env, "OFFLINE_POLL_INTERVAL_MS", 15_000, { min: 1 }),
-    ...(emulatorUrl ? { emulatorUrl } : {}),
     ...(cardsFile ? { cardsFile } : {}),
     ...(nostrSecretKey ? { nostrSecretKey } : {}),
-    ...(arkServerUrl ? { arkServerUrl } : {}),
     ...(rfqHttpUrl ? { rfqHttpUrl } : {}),
   };
+  if (!arkServerUrl || !emulatorUrl) return { ...common, enabled: false, covenantDestinations: false };
+  const endpoints = { arkServerUrl, emulatorUrl };
+  if (offlineSwapRequested) return { ...common, ...endpoints, enabled: true, covenantDestinations };
+  if (covenantDestinations) return { ...common, ...endpoints, enabled: false, covenantDestinations: true };
+  return { ...common, ...endpoints, enabled: false, covenantDestinations: false };
 }
 
 function parseTrustProxy(raw: string | undefined): number | boolean {
