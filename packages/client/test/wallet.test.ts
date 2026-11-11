@@ -773,6 +773,16 @@ describe("arkadePaymentRouter", () => {
 
     expect(options.map((o) => o.railId)).toEqual(["ark", "onchain"]);
   });
+
+  it("ranks swap's lightning and onchain-swap rails ahead of the onchain exit", async () => {
+    const rail = (id: string): PaymentRail => ({ id, match: () => true, quote: async () => ({ railId: id }) as unknown as RouteQuote });
+    const router = arkadePaymentRouter({ wallet: fakeWallet() })
+      .use(rail("onchain")).use(rail("onchain-swap")).use(rail("lightning"));
+
+    const options = await router.options({ raw: UNIFIED, amount: 5936 }, { priority: DEFAULT_RAIL_PRIORITY });
+
+    expect(options.map((o) => o.railId)).toEqual(["ark", "lightning", "onchain-swap", "onchain"]);
+  });
 });
 
 describe("arkadeLnurl against a server predating nameless receivers", () => {
