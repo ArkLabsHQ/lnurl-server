@@ -73,7 +73,7 @@ export interface LnurlRailDeps {
   client: LnurlClient;
   /** Pays the Arkade destination the callback returns — normally `arkRail()`. */
   arkade: PaymentRail;
-  /** Pays the BOLT11 the callback returns — normally `solverLightningRail(...)`.
+  /** Pays the BOLT11 the callback returns — normally `lightningRail(client)` from `@arkade-os/swap`.
    *  Omit it and no lightning rail is registered, rather than one that cannot pay. */
   lightning?: PaymentRail;
   comment?: string;
@@ -172,8 +172,8 @@ function makeRail(
       const quotedSat = inUnit ? Number(result.paymentQuote?.payment.amount) / 1000 : req.amount!;
       if (!Number.isSafeInteger(quotedSat)) throw new LnurlError(`${id}: the quote names no whole number of sats`);
 
-      // The invoice carries its own amount and solverLightningRail refuses a
-      // request that restates it differently, so only the destination branch
+      // The invoice carries its own amount and lightningRail refuses a request
+      // that restates it, even an equal one, so only the destination branch
       // passes one on.
       const delegated = result.kind === "bolt11"
         ? { raw: result.pr }

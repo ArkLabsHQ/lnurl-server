@@ -111,9 +111,10 @@ export interface ArkadeLnurl {
 }
 
 /** Ordered so the Arkade leg outranks the Lightning one for the same address:
- *  it delivers the full amount with no counterparty. */
+ *  it delivers the full amount with no counterparty. `solver-lightning` is swap's
+ *  deprecated v1 rail, still ranked for apps that register it. */
 export const DEFAULT_RAIL_PRIORITY = [
-  "lnurl-arkade", "ark", "ark-asset", "lnurl-lightning", "solver-lightning", "onchain",
+  "lnurl-arkade", "ark", "ark-asset", "lnurl-lightning", "lightning", "solver-lightning", "onchain-swap", "onchain",
 ];
 
 // Shared across facades in this realm: each screen builds its own, and their writes must not interleave.
