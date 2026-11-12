@@ -59,7 +59,7 @@ test("a browser wallet routes a BOLT11 over the solver's lightning corridor", as
   expect(registryCalls.length, "the browser never fetched the local registry").toBeGreaterThan(0);
   await expect(quote, "the solver rail offered no route for the invoice").toBeVisible({ timeout: 60_000 });
 
-  // Resolving a route never touches the solver; quoting is where `connect`
+  // Resolving a route never touches the solver; quoting is where `transportFor`
   // builds the transport, so only this puts an RFQ on the wire.
   await quote.click();
   const sendCard = page.locator("div").filter({ has: page.getByRole("heading", { name: "Send", exact: true }) }).last();
@@ -74,14 +74,14 @@ test("a browser wallet routes a BOLT11 over the solver's lightning corridor", as
       if (text && seen.at(-1) !== text) seen.push(text);
       return text;
     }, { timeout: 300_000, intervals: [1_000] })
-    .toMatch(/failed|^solver-lightning · sent$/);
+    .toMatch(/failed|^lightning · (sent|settled)$/);
   console.log(`TRIAGE solver calls: ${solverCalls.length ? solverCalls.slice(0, 2).join(", ") : "NONE"}`);
   console.log(`TRIAGE blocked: ${blocked.length ? blocked.join(", ") : "none"}`);
   console.log(`TRIAGE status: ${seen.join(" | ")}`);
 
   expect(solverCalls.length, "the browser never issued an RFQ to the solver").toBeGreaterThan(0);
   expect(blocked, "the solver request was blocked (CORS or transport)").toEqual([]);
-  expect(seen.at(-1), `the send was refused or failed: ${seen.join(" | ")}`).toBe("solver-lightning · sent");
+  expect(seen.at(-1), `the send was refused or failed: ${seen.join(" | ")}`).toMatch(/^lightning · (sent|settled)$/);
 
   // "sent" only means the lockup was funded; the payee's node settling the invoice is the payment.
   await expect
@@ -91,4 +91,5 @@ test("a browser wallet routes a BOLT11 over the solver's lightning corridor", as
       intervals: [3_000],
     })
     .toBe("SETTLED");
+  await expect(status, `the wallet never saw the payment complete (${seen.join(" | ")})`).toHaveText("lightning · settled", { timeout: 120_000 });
 });

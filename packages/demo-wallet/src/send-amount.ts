@@ -8,7 +8,7 @@ import { invoiceFactsFromBolt11 } from "../../../src/bolt11.js";
 export const sendAmountFor = (raw: string, current: number): number =>
   BIP21.amountSats(raw.trim()) || invoiceSats(raw.trim()) || current;
 
-function invoiceSats(raw: string): number {
+export function invoiceSats(raw: string): number {
   const invoice = invoiceTarget(raw);
   if (!invoice) return 0;
   try {
