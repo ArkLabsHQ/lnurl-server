@@ -33,12 +33,16 @@ test("a browser wallet routes a BOLT11 over the solver's lightning corridor", as
   const boardingAddress = await boardingAddressOf(stack.lnurlBase, username);
   await faucet(boardingAddress, "0.001");
   await mine(1);
+  // The SDK renews a regtest coin (expiry inside its 24 h threshold) as it lands, locking it for a batch.
+  let heldSince = 0;
   await expect
     .poll(async () => {
       await page.getByRole("button", { name: "Refresh" }).click();
-      return sats(await page.locator("div").filter({ hasText: /^\d+ sats$/ }).first().innerText());
-    }, { timeout: 240_000, intervals: [5_000] })
-    .toBeGreaterThan(0);
+      const held = sats(await page.locator("div").filter({ hasText: /^\d+ sats$/ }).first().innerText()) > 0;
+      heldSince = held ? heldSince || Date.now() : 0;
+      return held && Date.now() - heldSince >= 15_000;
+    }, { timeout: 300_000, intervals: [5_000] })
+    .toBe(true);
 
   // The solver pays from `lnd`, so an invoice there is a self-payment it refunds.
   const payee = PAYER_CONTAINER;
