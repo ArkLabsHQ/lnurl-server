@@ -1,11 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { MNEMONIC_KEY, USERNAME_KEY, LNURL_DOMAIN, NETWORK } from "../src/config.js";
+import { MNEMONIC_KEY, USERNAME_KEY, LNURL_DOMAIN } from "../src/config.js";
 
 // A full Lightning round trip paid from our own funds: one wallet asks the
 // server for an offline-receive hold invoice, the other pays that BOLT11 over
-// the solver-lightning rail, and we time how long settlement takes.
+// swap's lightning rail, and we time how long settlement takes.
 //
 // The invoice only settles once something claims the solver's lockup, so the
 // number this prints IS the claim latency. It is the measurement the 15s
@@ -41,17 +41,6 @@ async function newRecipient(page: Page): Promise<string> {
 test("pays an offline-receive invoice over Lightning and times the claim @funded", async ({ browser }) => {
   test.setTimeout(600_000);
 
-  // Guarded rather than assumed: the send corridor needs the network's x-only
-  // emulator key to select a market, and without it the helper reports no solver
-  // at all rather than a key problem.
-  const { discoverMarkets, solverLightningRendezvous } = await import("@arkade-os/swap/protocol");
-  const { defaultRegistryUrls } = await import("@arkade-os/solver-discovery");
-  const { getNetwork, resolveEmulatorPubkey, toXOnly } = await import("@arkade-os/sdk");
-  const { hex } = await import("@scure/base");
-  const markets = await discoverMarkets({ network: NETWORK, registryUrl: defaultRegistryUrls(NETWORK)[0] });
-  const emulator = toXOnly(hex.decode(resolveEmulatorPubkey(getNetwork(NETWORK))), "emulator");
-  test.skip(!solverLightningRendezvous(markets, SATS, emulator), "no solver offers an arkade->lightning send on this network");
-
   const recipientPage = await (await browser.newContext()).newPage();
   const recipient = await newRecipient(recipientPage);
 
@@ -67,19 +56,14 @@ test("pays an offline-receive invoice over Lightning and times the claim @funded
   await openFunded(payerPage);
   await payerPage.getByRole("button", { name: "Send" }).click();
   await payerPage.getByPlaceholder(/name@domain/).fill(cb.pr);
-  // The invoice fixes its own amount and solverLightningRail refuses a request
+  // The invoice fixes its own amount and the lightning rail refuses a request
   // that restates it differently, so the box has to agree with the BOLT11.
   await payerPage.locator('input[type="number"]').fill(String(SATS));
   await payerPage.getByRole("button", { name: "Find routes" }).click();
 
   // A bare BOLT11 is not an LNURL target, so the lnurl rails must not match it;
   // the solver corridor is what can pay it.
-  // KNOWN GAP: solverLightningRail reports match=true and available=true in
-  // Node with these exact deps and this exact amount, and the rendezvous
-  // resolves, but the rail does not surface in the browser build -- with no
-  // console error, no failed request and no stale bundle. Unproven why; the
-  // failure here is the record of it rather than a passing test that hides it.
-  await expect(payerPage.getByText("solver-lightning")).toBeVisible({ timeout: 60_000 });
+  await expect(payerPage.getByText("lightning", { exact: true }), "no lightning route for the invoice").toBeVisible({ timeout: 60_000 });
 
   payerPage.on("console", (m) => console.log(`[c.${m.type()}] ${m.text().slice(0, 240)}`));
   payerPage.on("pageerror", (e) => console.log(`[pageerror] ${e.message.slice(0, 240)}`));
@@ -91,7 +75,7 @@ test("pays an offline-receive invoice over Lightning and times the claim @funded
 
   // Whatever the send box ends up saying is the first thing worth knowing.
   await payerPage.waitForTimeout(45_000);
-  const status = await payerPage.locator("div").filter({ hasText: /^(sent|paid|payment failed|routing failed|solver-lightning)/ }).allInnerTexts();
+  const status = await payerPage.locator("div").filter({ hasText: /^(sent|paid|payment failed|routing failed|lightning)/ }).allInnerTexts();
   console.log("PAYER STATUS: " + JSON.stringify(status).slice(0, 400));
 
   let settledMs: number | undefined;

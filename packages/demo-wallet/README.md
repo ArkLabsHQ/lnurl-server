@@ -114,13 +114,16 @@ address. The policy is one array, `RAIL_PRIORITY`.
 
 An LNURL rail resolves the target, asks the callback for its `paymentOption`, and hands
 the result to the rail that already pays that kind of target: `lnurl-arkade` to
-`arkRail`, `lnurl-lightning` to the solver rail in `src/lightning.ts`.
+`arkRail`, `lnurl-lightning` to `@arkade-os/swap`'s `lightningRail` in `src/lightning.ts`.
 
-That solver rail picks its RFQ transport. The wrong one fails as an *empty market*,
-which looks just like "no solver serves this". A deployed solver listens on nostr; one
-running `serve` answers HTTP only. So `solverRfqHttpUrl`, when set, routes over HTTP;
-otherwise the nostr transport is loaded on demand, keeping `nostr-tools` out of the
-bundle.
+That rail runs through one swap client per wallet, which records each swap in IndexedDB
+before funding it, so a reload resumes one it left funded. A deployed solver is reached
+over the nostr relays on its card, and that transport proves who answered. The regtest
+stack's solver runs `serve` and answers HTTP only, so on regtest alone
+`solverRfqHttpUrl` routes over HTTP and the solver is trusted without that proof: the
+stack's card names a fixture key, so there is nothing to check. Any other network
+ignores the setting. The nostr transport is loaded on demand, keeping `nostr-tools` out
+of the main bundle.
 
 Options are quoted **on click**: a quote asks the callback for an invoice. **Pay** then
 sends the quote's `total` — amount plus fee — which the row shows before you commit.

@@ -1,13 +1,5 @@
 // Onchain arrivals are inert until `autoSettleBoarding` converts them, and that
 // runs only in a browser — so this is the one place the boarding path is real.
-//
-// The solver-lightning SEND rail is deliberately NOT asserted here: on regtest
-// the browser cannot discover the stack's solver at all. Discovery is registry
-// based (`defaultRegistryUrls("regtest")` is the public GitHub Pages index),
-// while the local solver's card exists only in the file the server reads via
-// SOLVER_CARDS_FILE. Routes come back empty before any transport is chosen, so a
-// send assertion here would fail for discovery reasons and say nothing about the
-// rail. Serving that card to the browser is what would unblock it.
 import { expect, test } from "@playwright/test";
 import { faucet, mine } from "../../../test/e2e/support/regtest.js";
 import { boardingAddressOf, readLocalStack, useLocalStack } from "./local-stack.js";

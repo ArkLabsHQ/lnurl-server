@@ -62,7 +62,7 @@ async function payRequestFor(username: string): Promise<Record<string, any>> {
   return res.json() as Promise<Record<string, any>>;
 }
 
-/** Stands in for arkRail / solverLightningRail, recording what it was handed. */
+/** Stands in for arkRail / lightningRail, recording what it was handed. */
 function fakeRail(id: string): PaymentRail & { seen: { raw: string; amount?: number }[] } {
   const seen: { raw: string; amount?: number }[] = [];
   return {
@@ -270,7 +270,7 @@ describe("routing through the rails", () => {
 
   function rails() {
     const arkade = fakeRail("ark");
-    const lightning = fakeRail("solver-lightning");
+    const lightning = fakeRail("lightning");
     const built = lnurlRails({ client: createLnurlClient({ fetchImpl: testFetch as never }), arkade, lightning });
     return { arkade, lightning, by: (id: string) => built.find((r) => r.id === id)! };
   }

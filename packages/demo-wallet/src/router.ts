@@ -7,5 +7,5 @@ import type { DemoWallet } from "./wallet.js";
 export const RAIL_PRIORITY = DEFAULT_RAIL_PRIORITY;
 
 export function createRouter(demo: DemoWallet): LnurlPaymentRouter {
-  return arkadePaymentRouter({ wallet: demo.wallet, lightning: createLightningRail() });
+  return arkadePaymentRouter({ wallet: demo.wallet, lightning: createLightningRail(demo.swaps) });
 }

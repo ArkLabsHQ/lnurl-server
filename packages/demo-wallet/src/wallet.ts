@@ -6,16 +6,28 @@ import {
   Wallet,
   type WalletBalance,
 } from "@arkade-os/sdk";
+import { IndexedDbAssetSwapRepository, type SwapClient } from "@arkade-os/swap";
 import { hex } from "@scure/base";
 import { generateMnemonic, validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { ARK_SERVER, browserStore, IS_MAINNET, MNEMONIC_KEY, STORE_OWNER_KEY, USERNAME_KEY, type KeyValueStore } from "./config.js";
+import { createSwaps } from "./lightning.js";
 
 export interface DemoWallet {
   identity: MnemonicIdentity;
   wallet: Wallet;
+  swaps: SwapClient;
   arkadeAddress: string;
   boardingAddress: string;
+}
+
+// The open wallet's; disposed before another opens or its data is cleared, so no drive outlives its identity.
+let openSwaps: SwapClient | undefined;
+
+async function closeSwaps(): Promise<void> {
+  const swaps = openSwaps;
+  openSwaps = undefined;
+  await swaps?.[Symbol.asyncDispose]();
 }
 
 export function loadMnemonic(): string | null {
@@ -63,14 +75,16 @@ export function restoreMnemonic(input: string, store: KeyValueStore = browserSto
 }
 
 /** Drops the SDK's cached chain data. Its IndexedDB is keyed by database name, not
- *  by identity, so a new key otherwise inherits the previous wallet's VTXOs and its
+ *  by identity, so a new key otherwise inherits the previous wallet's VTXOs, swaps and
  *  contracts — which it cannot sign (`MissingSigningDescriptorError`). */
 export async function clearWalletData(): Promise<void> {
+  await closeSwaps();
   // Absent under Node; a real browser failure still propagates.
   if (typeof indexedDB === "undefined") return;
   await Promise.all([
     new IndexedDBWalletRepository().clear(),
     new IndexedDBContractRepository().clear(),
+    new IndexedDbAssetSwapRepository().clear(),
   ]);
 }
 
@@ -93,13 +107,18 @@ export async function openWallet(mnemonic: string, store: KeyValueStore = browse
   const identity = MnemonicIdentity.fromMnemonic(mnemonic, { isMainnet: IS_MAINNET });
   // One identity's chain data at a time; cleared before the wallet opens.
   const owner = hex.encode(await identity.xOnlyPublicKey());
+  await closeSwaps();
   if (store.getItem(STORE_OWNER_KEY) !== owner) {
     await clearWalletData();
     store.setItem(STORE_OWNER_KEY, owner);
   }
   const wallet = await Wallet.create({ identity, arkProvider: new RestArkProvider(ARK_SERVER) });
+  const swaps = createSwaps(wallet);
+  openSwaps = swaps;
+  // The restore read: a reload resumes a swap the last session left funded.
+  void swaps.ready;
   const [offchain, boarding] = await wallet.getNewAddresses({ types: ["default", "boarding"] });
-  return { identity, wallet, arkadeAddress: offchain.address, boardingAddress: boarding.address };
+  return { identity, wallet, swaps, arkadeAddress: offchain.address, boardingAddress: boarding.address };
 }
 
 export function getBalance(wallet: Wallet): Promise<WalletBalance> {

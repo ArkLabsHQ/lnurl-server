@@ -5,11 +5,7 @@ import { invoiceFactsFromBolt11, paymentHashFromBolt11 } from "../src/bolt11.js"
 import { buildInvoice } from "./helpers/bolt11.js";
 
 describe("browser safety", () => {
-  // The demo wallet injects this decoder into solverLightningRail, which runs in
-  // a browser. `Buffer` is a Node global with no browser equivalent, and the
-  // rail's contract is that a decoder which throws drops the rail rather than
-  // taking the router down -- so a ReferenceError here surfaced as "no solver
-  // can pay this invoice", with no error anywhere to say otherwise.
+  // The demo wallet decodes with this in a browser (send-amount.ts), where a throw quietly drops the lightning rail.
   it("decodes with no Buffer in scope, as a browser has none", () => {
     const hash = createHash("sha256").update("browser").digest("hex");
     const invoice = buildInvoice(hash);
