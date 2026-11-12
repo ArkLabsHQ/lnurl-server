@@ -10,7 +10,7 @@ import { IndexedDbAssetSwapRepository, type SwapClient } from "@arkade-os/swap";
 import { hex } from "@scure/base";
 import { generateMnemonic, validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
-import { ARK_SERVER, browserStore, IS_MAINNET, MNEMONIC_KEY, STORE_OWNER_KEY, USERNAME_KEY, type KeyValueStore } from "./config.js";
+import { ARK_SERVER, browserStore, IS_MAINNET, MNEMONIC_KEY, NETWORK, STORE_OWNER_KEY, USERNAME_KEY, type KeyValueStore } from "./config.js";
 import { createSwaps } from "./lightning.js";
 
 export interface DemoWallet {
@@ -112,7 +112,12 @@ export async function openWallet(mnemonic: string, store: KeyValueStore = browse
     await clearWalletData();
     store.setItem(STORE_OWNER_KEY, owner);
   }
-  const wallet = await Wallet.create({ identity, arkProvider: new RestArkProvider(ARK_SERVER) });
+  const wallet = await Wallet.create({
+    identity,
+    arkProvider: new RestArkProvider(ARK_SERVER),
+    // A regtest coin lives under two hours, inside the SDK's renewal threshold, so it would be renewed as it lands.
+    ...(NETWORK === "regtest" ? { settlementConfig: { vtxoThreshold: 600 } } : {}),
+  });
   const swaps = createSwaps(wallet);
   openSwaps = swaps;
   // The restore read: a reload resumes a swap the last session left funded.
