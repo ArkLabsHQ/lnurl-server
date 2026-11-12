@@ -22,21 +22,22 @@ export function createSwaps(wallet: IWallet): SwapClient {
   });
 }
 
+const unrestated = (req: PaymentRequest): PaymentRequest => {
+  if (req.amount === undefined || req.amount !== invoiceSats(req.raw)) return req;
+  const { amount: _restated, ...rest } = req;
+  return rest;
+};
+
 /** v2 refuses an amount the invoice already states, even an equal one, and `available()` only peeks at loaded markets. */
 export function createLightningRail(client: SwapClient): PaymentRail {
   const rail = lightningRail(client);
-  const leg = (req: PaymentRequest): PaymentRequest => {
-    if (req.amount === undefined || req.amount !== invoiceSats(req.raw)) return req;
-    const { amount: _restated, ...rest } = req;
-    return rest;
-  };
   return {
     id: rail.id,
     match: (req, ctx) => rail.match(req, ctx),
     available: async (req, ctx) => {
       await client.markets();
-      return rail.available?.(leg(req), ctx) ?? true;
+      return rail.available?.(unrestated(req), ctx) ?? true;
     },
-    quote: (req, ctx) => rail.quote(leg(req), ctx),
+    quote: (req, ctx) => rail.quote(unrestated(req), ctx),
   };
 }

@@ -116,7 +116,7 @@ export async function openWallet(mnemonic: string, store: KeyValueStore = browse
   const swaps = createSwaps(wallet);
   openSwaps = swaps;
   // The restore read: a reload resumes a swap the last session left funded.
-  void swaps.ready;
+  swaps.ready.catch((e: unknown) => console.error("swap restore failed; swaps from an earlier session will not resume:", e));
   const [offchain, boarding] = await wallet.getNewAddresses({ types: ["default", "boarding"] });
   return { identity, wallet, swaps, arkadeAddress: offchain.address, boardingAddress: boarding.address };
 }
