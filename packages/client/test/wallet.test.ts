@@ -741,6 +741,7 @@ describe("Receiver.payRequest()", () => {
 
 describe("arkadePaymentRouter", () => {
   const INVOICE = "lntbs60020n1p4vt7d3pp5n7hcxe4650eatxe3ap4eqzjt8am6ldzzs0lzhm63yy6rfklptl8sdqqcqzpkxqrpc8sp5hrhtzvzwqq3qxcfuushmeqh0kw05ym3alhm3l73aeufcea42hh3q9qxpqysgqgks7jz3nm8l5lz4v9y7cwc682nza8j8j3q6k4ez6qg077utxy0hnh3k3gy3ek7ejn4kf55ljrwh2ytr2xvyx2y7aqldjclkjh5qklegqxtquau";
+  // An HRP with no amount digits after the network prefix is an amountless invoice.
   const AMOUNTLESS = bech32.encode("lntbs", new Array(111).fill(0), 2000);
   const ADDRESS = "bitcoin:tb1pgk4xl52hczpgz0fp429ccvdztvmhd5mthd7xxj8aq4nvstc7kzcql3fvdu";
   const UNIFIED = ADDRESS

@@ -26,8 +26,8 @@ export function arkadePaymentRouter(opts: {
   return router;
 }
 
-/** The invoice prices its own leg. Swap's rail refuses any amount restated beside it, so the invoice's
- *  own or the URI's `amount=` is dropped, and any other fails at quote: `available()` errors are swallowed. */
+/** The invoice prices its own leg and swap's rail refuses any amount beside it. The invoice's own or the URI's `amount=`
+ *  is dropped; any other is dropped for `available()` too, as the router swallows its errors, and fails at quote instead. */
 function invoicePricedLeg(rail: PaymentRail): PaymentRail {
   const leg = (req: PaymentRequest): { req: PaymentRequest; conflict?: number } => {
     const invoice = invoiceTarget(req.raw);
