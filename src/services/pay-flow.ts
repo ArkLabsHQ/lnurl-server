@@ -77,7 +77,7 @@ export async function requestSessionInvoice(args: {
     // decoded we can't key a record, so we omit verify but still return the pr.
     const paymentHash = paymentHashFromBolt11(pr);
     const expiresAt = invoiceDeadline(pr);
-    if (paymentHash) store.create({ paymentHash, pr, sessionId, amountMsat, addressId, ...(quoted ? { quote: quoted } : {}), ...(expiresAt === undefined ? {} : { expiresAt }) });
+    if (paymentHash) store.create({ paymentHash, pr, sessionId, amountMsat, addressId, ...(quoted ? { quote: quoted } : {}), ...(comment ? { comment } : {}), ...(expiresAt === undefined ? {} : { expiresAt }) });
     return {
       pr,
       routes: [],
@@ -113,12 +113,13 @@ export async function createOfflineSwapInvoice(args: {
   addressId: number;
   paymentQuote?: PaymentQuote;
   quoted?: QuotedAmount;
+  comment?: string;
   /** LUD-XX: echo the explicitly-selected lightning option on the pr response. */
   echoLightningOption?: boolean;
   logger: Logger;
   requestId: string;
 }): Promise<LnurlPayCallbackResponse> {
-  const { creator, store, offlineSwaps, baseUrl, amountMsat, receiveAmountMsat, minPayAmountMsat, receiveAddress, claimPublicKey, addressId, paymentQuote, quoted, echoLightningOption, logger, requestId } = args;
+  const { creator, store, offlineSwaps, baseUrl, amountMsat, receiveAmountMsat, minPayAmountMsat, receiveAddress, claimPublicKey, addressId, paymentQuote, quoted, comment, echoLightningOption, logger, requestId } = args;
   let swap: OfflineSwapResult | undefined;
   try {
     // Caller guarantees whole satoshis (rejected at the route otherwise).
@@ -138,7 +139,7 @@ export async function createOfflineSwapInvoice(args: {
     const expiresAt = swap.invoiceExpiresAt === undefined ? invoiceDeadline(swap.invoice) : swap.invoiceExpiresAt * 1000;
     const accepted = {
       paymentHash: swap.preimageHash, pr: swap.invoice, sessionId: `offline:${addressId}`, preimage: swap.preimage,
-      amountMsat: payerMsat, addressId, ...(quoted ? { quote: quoted } : {}), ...(expiresAt === undefined ? {} : { expiresAt }),
+      amountMsat: payerMsat, addressId, ...(quoted ? { quote: quoted } : {}), ...(comment ? { comment } : {}), ...(expiresAt === undefined ? {} : { expiresAt }),
     };
     // With DB_PATH, OfflineSwapStore is the single atomic persistence boundary:
     // it writes both settlement and restart recovery rows in one transaction.
@@ -186,13 +187,14 @@ export async function createFixedFloatDestination(args: {
   receiveAddress: string;
   claimPublicKey: string;
   addressId: number;
+  comment?: string;
   baseUrl: string;
   logger: Logger;
   requestId: string;
   /** Told when the provider cannot route the corridor invoice (FixedFloat's 304). */
   onUnroutable?: () => void;
 }): Promise<LnurlPayDestinationResponse> {
-  const { ff, rail, creator, amountMsat, receiveAddress, claimPublicKey, addressId, baseUrl, logger, requestId } = args;
+  const { ff, rail, creator, amountMsat, receiveAddress, claimPublicKey, addressId, comment, baseUrl, logger, requestId } = args;
   const id = rail.optionId;
   const toSat = amountMsat / 1000;
   const busy = () => {
@@ -244,7 +246,7 @@ export async function createFixedFloatDestination(args: {
 
     ff.orders.createAccepted({
       paymentHash: swap.preimageHash, pr: swap.invoice, sessionId: `offline:${addressId}`, preimage: swap.preimage, amountMsat, addressId,
-      paymentOption: id, expiresAt: Math.min(order.expiresAt, payBy) * 1000, recovery: swap.recovery,
+      ...(comment ? { comment } : {}), paymentOption: id, expiresAt: Math.min(order.expiresAt, payBy) * 1000, recovery: swap.recovery,
       order: {
         id: order.id, token: order.token, ffCode: rail.ffCode, asset: rail.asset, unit: rail.unit, depositAddress: order.from.address,
         depositAmount: quote.payment.amount, invoiceAmountSat: toSat, status: order.status, expiresAt: order.expiresAt,

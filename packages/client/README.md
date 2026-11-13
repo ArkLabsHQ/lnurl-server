@@ -335,7 +335,7 @@ These matter for correctness. `syncPayments` handles them all; you must handle t
 
 ### Activity resolvers
 
-`@arkade-os/lnurl-client/arkade` also exports `lnurlActivityResolver(payments)` and `sentActivityResolver(sends)`, `ActivityResolver`s that label an `ArkTransaction` with the LNURL payment or send it corresponds to. Each awaits its getter, sync or async, on every `prepare()`, so a database-backed receive store passes `() => repository.all()` as is and a sync written after construction still shows. `lnurlActivity(activity)` reads a tagged row back typed: `{ direction, address?, rail? }`, where `address` is the counterparty for a send and the receiving address for a receive. `LNURL_ACTIVITY_KIND` and `SENT_ACTIVITY_KIND` name the kinds the resolvers set.
+`@arkade-os/lnurl-client/arkade` also exports `lnurlActivityResolver(payments)` and `sentActivityResolver(sends)`, `ActivityResolver`s that label an `ArkTransaction` with the LNURL payment or send it corresponds to. Each awaits its getter, sync or async, on every `prepare()`, so a database-backed receive store passes `() => repository.all()` as is and a sync written after construction still shows. `lnurlActivity(activity)` reads a tagged row back typed: `{ direction, address?, rail?, comment? }`, where `address` is the counterparty for a send and the receiving address for a receive, and `comment` is the payer's LUD-12 comment on a receive. `LNURL_ACTIVITY_KIND` and `SENT_ACTIVITY_KIND` name the kinds the resolvers set.
 
 ### Shared persistence and send tracking
 

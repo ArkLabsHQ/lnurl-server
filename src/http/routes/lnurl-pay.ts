@@ -2,7 +2,7 @@ import { Router } from "express";
 import { RateLimiter } from "../../rate-limit.js";
 import type { LnurlPayMetadata } from "../../types/index.js";
 import { LnurlError } from "../errors.js";
-import { msatParam, strParam } from "../params.js";
+import { COMMENT_ALLOWED, commentParam, msatParam, strParam } from "../params.js";
 import { buildMetadata, requestSessionInvoice } from "../../services/pay-flow.js";
 import type { ServerContext } from "../server-context.js";
 import { BATCH_PATH, createVerifyBatch } from "../../services/verify-batch.js";
@@ -55,7 +55,7 @@ export function lnurlPayRoutes({ config, sessions, store, settings, logger, quot
       minSendable: settings.minSendable(),
       maxSendable: settings.maxSendable(),
       metadata: buildMetadata(),
-      commentAllowed: 140,
+      commentAllowed: COMMENT_ALLOWED,
       ...(units.length ? { units } : {}),
     } satisfies LnurlPayMetadata);
   });
@@ -64,7 +64,7 @@ export function lnurlPayRoutes({ config, sessions, store, settings, logger, quot
   r.get("/lnurl/:id/callback", async (req, res) => {
     const { id } = req.params;
     let amountMsat = msatParam(req.query.amount);
-    const comment = strParam(req.query.comment);
+    const comment = commentParam(req.query.comment);
     if (amountMsat === undefined) throw new LnurlError("Missing or invalid amount parameter");
     if (amountMsat <= 0) {
       throw new LnurlError(`Amount must be between ${settings.minSendable()} and ${settings.maxSendable()} millisats`);

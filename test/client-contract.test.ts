@@ -534,6 +534,17 @@ describe("unit quote contract", () => {
     expect(page.payments.map((p) => [p.amountMsat, p.quote])).toEqual([[7_693_000, { amount: "500", unit: "USD", decimals: 2 }]]);
   });
 
+  it("carries a payer's comment to the owner's history", async () => {
+    const payer = createLnurlClient();
+    const lnurl = bech32.encode("lnurl", bech32.toWords(new TextEncoder().encode(`${ctx.baseUrl}/.well-known/lnurlp/alice`)), 1023);
+    const payRequest = await payer.resolve(lnurl);
+    const reachable = { ...payRequest, callback: payRequest.callback.replace("127.0.0.1", new URL(ctx.baseUrl).host) };
+    await payer.requestInvoice(reachable, { amountSat: 1000, comment: "for lunch", paymentOption: "arkade" });
+
+    const page = await createLnurlClient({ baseUrl: ctx.baseUrl }).listPayments(TOKEN, "alice", { domain: "127.0.0.1" });
+    expect(page.payments.map((p) => p.comment)).toEqual(["for lunch"]);
+  });
+
   it("pays a session LNURL in USD with the invoice its wallet issued for the quote", async () => {
     const wallet = createLnurlClient({ baseUrl: ctx.baseUrl });
     const asked: number[] = [];

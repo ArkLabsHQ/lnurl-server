@@ -2,11 +2,23 @@ import type { Request } from "express";
 import type { Repositories } from "../db/repositories/index.js";
 import type { DomainRow } from "../types/index.js";
 import { domainFromHost } from "./origin.js";
-import { BadRequest } from "./errors.js";
+import { BadRequest, LnurlError } from "./errors.js";
 
 /** Express types query values as string | string[] | ...; an array (`?a=1&a=2`)
  *  is never meaningful for our params — take them only when they're a string. */
 export const strParam = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+
+/** LUD-12: what every payRequest advertises as `commentAllowed`, and every callback holds a payer to. */
+export const COMMENT_ALLOWED = 140;
+
+/** The payer's comment as the receiver will read it, or undefined for none. */
+export const commentParam = (v: unknown): string | undefined => {
+  const comment = strParam(v);
+  if (!comment) return undefined;
+  // Code points, not UTF-16 units: a wallet counting an emoji as one character must not be refused.
+  if ([...comment].length > COMMENT_ALLOWED) throw new LnurlError(`Comment must be at most ${COMMENT_ALLOWED} characters`);
+  return comment;
+};
 
 /** A row id from the path. `Number()` alone turns "abc" into NaN, which the driver then matches against nothing. */
 export const idParam = (raw: string): number => {

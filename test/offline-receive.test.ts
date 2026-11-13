@@ -171,6 +171,15 @@ describe("offline receive", () => {
     expect(store.get(hash)?.expiresAt).toBe(2_000_000_000_000);
   });
 
+  it("keeps the payer's comment for the owner's payments sync", async () => {
+    const hash = "9c" + "00".repeat(31);
+    repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
+    ctx = await start(repos, new FakeCreator(hash), new DbSettlementStore(db, 60_000), new OfflineSwapStore(db, 60_000));
+    await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=50000&comment=thanks%20for%20lunch`, "GET", "domain.com");
+    const res = await req(`${ctx.baseUrl}/lnurl/address/off/payments`, "GET", "domain.com", undefined, TOKEN);
+    expect(res.body.payments).toMatchObject([{ paymentHash: hash, comment: "thanks for lunch" }]);
+  });
+
   it("advertises receiveAmountAllowed only where an offline swap can serve", async () => {
     ctx = await start(repos, new FakeCreator("ca".repeat(32)), new MemorySettlementStore(60_000));
     const payRequest = async () => (await req(`${ctx.baseUrl}/.well-known/lnurlp/off`, "GET", "domain.com")).body;

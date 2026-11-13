@@ -48,6 +48,8 @@ export interface StoredPayment {
   covenantScript: string | null;
   /** What the payer asked to pay in a LUD-XX unit; absent when they paid in sats. */
   quote?: QuotedAmount;
+  /** The payer's LUD-12 comment; absent when they sent none. */
+  comment?: string;
 }
 
 /**
@@ -123,6 +125,7 @@ const toStored = (
     paymentOption: entry.kind === "destination" ? entry.paymentOption : null,
     covenantScript: entry.kind === "destination" ? entry.covenantScript : null,
     ...(entry.quote ? { quote: entry.quote } : {}),
+    ...(entry.comment ? { comment: entry.comment } : {}),
   };
 };
 

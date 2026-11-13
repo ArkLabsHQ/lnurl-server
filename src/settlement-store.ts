@@ -47,6 +47,8 @@ export interface SettlementRecord {
   covenantScript: string | null;
   /** What the payer asked to pay in a LUD-XX unit, when the callback was quoted. */
   quote: QuotedAmount | null;
+  /** The payer's LUD-12 comment, when they sent one. */
+  comment: string | null;
   addressId: number | null;
   createdAt: number;
   settledAt: number | null;
@@ -98,6 +100,7 @@ export interface NewSettlement {
   amountMsat?: number;
   covenantScript?: string;
   quote?: QuotedAmount;
+  comment?: string;
   addressId?: number;
   expiresAt?: number;
 }
@@ -216,6 +219,7 @@ export class MemorySettlementStore implements SettlementStore {
       amountMsat: rec.amountMsat ?? null,
       covenantScript: rec.covenantScript ?? null,
       quote: rec.quote ?? null,
+      comment: rec.comment ?? null,
       addressId: rec.addressId ?? null,
       createdAt: at,
       settledAt: null,
@@ -416,6 +420,7 @@ interface SettlementRow {
   amount_msat: number | null;
   covenant_script: string | null;
   quote_json: string | null;
+  comment: string | null;
   address_id: number | null;
   created_at: number;
   settled_at: number | null;
@@ -438,7 +443,7 @@ export class DbSettlementStore implements SettlementStore {
     const at = this.now();
     const info = this.db
       .prepare(
-        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, covenant_script, quote_json, address_id, created_at, settled_at, updated_at, expires_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, covenant_script, quote_json, comment, address_id, created_at, settled_at, updated_at, expires_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
       )
       .run(
         rec.paymentHash,
@@ -451,6 +456,7 @@ export class DbSettlementStore implements SettlementStore {
         rec.amountMsat ?? null,
         rec.covenantScript ?? null,
         rec.quote ? JSON.stringify(rec.quote) : null,
+        rec.comment ?? null,
         rec.addressId ?? null,
         at,
         at,
@@ -511,6 +517,7 @@ export class DbSettlementStore implements SettlementStore {
       amountMsat: row.amount_msat ?? null,
       covenantScript: row.covenant_script ?? null,
       quote: quoteOf(row.quote_json),
+      comment: row.comment ?? null,
       addressId: row.address_id ?? null,
       createdAt: row.created_at,
       settledAt: row.settled_at ?? null,

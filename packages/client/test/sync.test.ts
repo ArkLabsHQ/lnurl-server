@@ -111,6 +111,13 @@ describe("syncPayments", () => {
     expect(Object.fromEntries(store.all().map((r) => [r.identifier, r.quote]))).toEqual({ q: quote, plain: undefined });
   });
 
+  it("keeps the payer's comment on the stored record", async () => {
+    const listPayments = vi.fn<ListPayments["listPayments"]>().mockResolvedValue(makePage(targetA, [{ ...makeBolt11("c", 1000), comment: "gm" }, makeBolt11("plain", 1001)], 1001));
+    const store = createMemoryStore();
+    await syncPayments([targetA], { client: () => ({ listPayments }), store });
+    expect(Object.fromEntries(store.all().map((r) => [r.identifier, r.comment]))).toEqual({ c: "gm", plain: undefined });
+  });
+
   it("re-fetches the boundary row on resume without duplicating it", async () => {
     const entry = makeBolt11("hash-1", 1042);
     const listPayments = vi.fn<ListPayments["listPayments"]>(async (_token, _username, opts) =>

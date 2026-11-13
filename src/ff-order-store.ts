@@ -10,6 +10,7 @@ export interface AcceptedFfOrder {
   sessionId: string;
   preimage: string;
   amountMsat: number;
+  comment?: string;
   addressId?: number;
   paymentOption: string;
   /** Unix ms the payer must deposit by: the quote's deadline, not the order's (`order.expiresAt`, seconds). */
@@ -86,8 +87,8 @@ export class FfOrderStore {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.prepare(
-        "INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, address_id, created_at, updated_at, expires_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(record.paymentHash, record.pr, record.sessionId, record.preimage, record.recovery.rfqId, record.paymentOption, o.depositAddress, record.amountMsat, record.addressId ?? null, at, at, record.expiresAt ?? null);
+        "INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, comment, address_id, created_at, updated_at, expires_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(record.paymentHash, record.pr, record.sessionId, record.preimage, record.recovery.rfqId, record.paymentOption, o.depositAddress, record.amountMsat, record.comment ?? null, record.addressId ?? null, at, at, record.expiresAt ?? null);
       insertOfflineSwap(this.db, record.paymentHash, record.recovery, at);
       this.db.prepare(
         "INSERT INTO ff_orders (payment_hash, order_id, order_token, ff_code, asset, unit, deposit_address, deposit_amount, invoice_amount_sat, status, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",

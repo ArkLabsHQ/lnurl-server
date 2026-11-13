@@ -272,6 +272,8 @@ export interface Bolt11Activity {
   settledAt: number | null;
   /** What the payer asked to pay in a LUD-XX unit; absent when they paid in sats. */
   quote?: QuotedAmount;
+  /** The payer's LUD-12 comment; absent when they sent none. */
+  comment?: string;
 }
 /**
  * A destination-rail (e.g. arkade/covenant) payment to the address. The
@@ -304,4 +306,6 @@ export interface DestinationActivity {
   settledAt: number | null;
   /** What the payer asked to pay in a LUD-XX unit; absent when they paid in sats. */
   quote?: QuotedAmount;
+  /** The payer's LUD-12 comment; absent when they sent none. */
+  comment?: string;
 }

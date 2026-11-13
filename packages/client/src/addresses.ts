@@ -200,6 +200,8 @@ interface AddressPaymentRow {
   settledAt: number | null;
   /** Absent from a server older than the quote history. */
   quote?: QuotedAmount | null;
+  /** Absent from a server older than the comment history. */
+  comment?: string | null;
 }
 
 function toActivity(row: AddressPaymentRow): PaymentActivity {
@@ -218,6 +220,7 @@ function toActivity(row: AddressPaymentRow): PaymentActivity {
       createdAt: row.createdAt,
       settledAt: row.settledAt,
       ...(row.quote ? { quote: row.quote } : {}),
+      ...(row.comment ? { comment: row.comment } : {}),
     };
     return activity;
   }
@@ -234,6 +237,7 @@ function toActivity(row: AddressPaymentRow): PaymentActivity {
     createdAt: row.createdAt,
     settledAt: row.settledAt,
     ...(row.quote ? { quote: row.quote } : {}),
+    ...(row.comment ? { comment: row.comment } : {}),
   };
   return activity;
 }

@@ -196,4 +196,11 @@ describe("lnurlActivity", () => {
     expect(lnurlActivity(asActivity(s!))).toEqual({ direction: "sent", address: TARGET, rail: "lnurl-arkade" });
     expect(lnurlActivity({ id: "boarding:deadbeef" })).toBeUndefined();
   });
+
+  it("reads the payer's comment off a received row", async () => {
+    const resolver = lnurlActivityResolver(() => [payment({ payoutReference: "abc123", comment: "gm" })]);
+    await resolver.prepare?.();
+    const [r] = resolver.resolve(tx("abc123"))!;
+    expect(lnurlActivity(asActivity(r!))).toEqual({ direction: "received", address: ADDRESS, rail: "arkade", comment: "gm" });
+  });
 });
