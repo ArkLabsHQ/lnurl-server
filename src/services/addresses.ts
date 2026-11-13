@@ -282,7 +282,7 @@ export class AddressService {
       }
     }
     // Fall back to a word-combo with a short random hex suffix to break contention.
-    // The suffix keeps the name within the default 32-char max (longest combo is 12 chars + 5 = 17).
+    // test/usernames.test.ts holds the longest combo plus this suffix to the default 32-char max.
     for (let i = 0; i < MAX_RANDOM_ATTEMPTS; i++) {
       const u = `${randomUsername()}-${randomBytes(2).toString("hex")}`;
       if (validateUsername(u, domain) && !this.repos.blacklist.isBlocked(domain.id, u) && !this.repos.addresses.getByDomainAndUsername(domain.id, u)) {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateUsername, randomUsername } from "../src/usernames.js";
+import { ADJECTIVES, NOUNS, validateUsername, randomUsername } from "../src/usernames.js";
 
 const rules = { usernameMinLen: 1, usernameMaxLen: 32, usernamePattern: "a-z0-9._-" };
 
@@ -17,6 +17,22 @@ describe("validateUsername", () => {
 });
 
 describe("randomUsername", () => {
+  const words = [...ADJECTIVES, ...NOUNS];
+  const longest = (list: readonly string[]) => list.reduce((a, b) => (b.length > a.length ? b : a));
+
+  it("draws from distinct lowercase words", () => {
+    expect(words.filter((w) => !/^[a-z]+$/.test(w))).toEqual([]);
+    expect(words.filter((w, i) => words.indexOf(w) !== i)).toEqual([]);
+  });
+
+  it("offers tens of thousands of names", () => {
+    expect(ADJECTIVES.length * NOUNS.length).toBeGreaterThan(30_000);
+  });
+
+  it("keeps the longest name within the default rules even with its fallback suffix", () => {
+    expect(validateUsername(`${longest(ADJECTIVES)}-${longest(NOUNS)}-ffff`, rules)).toBe(true);
+  });
+
   it("produces an adjective-noun name that passes validation", () => {
     for (let i = 0; i < 20; i++) expect(validateUsername(randomUsername(), rules)).toBe(true);
   });
