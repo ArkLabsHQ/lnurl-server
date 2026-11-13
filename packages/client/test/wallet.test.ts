@@ -1,6 +1,6 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
-import { hex } from "@scure/base";
+import { bech32, hex } from "@scure/base";
 import { createDefaultPaymentRouter, invoiceTarget, type PaymentRail, type RouteQuote, type Wallet } from "@arkade-os/sdk";
 import { arkadeLnurl, arkadePaymentRouter, DEFAULT_RAIL_PRIORITY, encodeLnurl } from "../src/wallet.js";
 import { deriveSessionId } from "../src/token.js";
@@ -8,6 +8,7 @@ import { createLnurlClient, type LnurlClient } from "../src/index.js";
 import { LnurlError } from "../src/errors.js";
 import type { PaymentMethod } from "../src/addresses.js";
 import { PAY_REQUEST_TTL_MS } from "../src/rail.js";
+import { amountMsatOf } from "../src/bolt11.js";
 
 const PRIVATE_KEY = "22".repeat(32);
 const ARKADE_ADDRESS =
@@ -739,10 +740,26 @@ describe("Receiver.payRequest()", () => {
 });
 
 describe("arkadePaymentRouter", () => {
-  const UNIFIED = "bitcoin:tb1pgk4xl52hczpgz0fp429ccvdztvmhd5mthd7xxj8aq4nvstc7kzcql3fvdu"
+  const INVOICE = "lntbs60020n1p4vt7d3pp5n7hcxe4650eatxe3ap4eqzjt8am6ldzzs0lzhm63yy6rfklptl8sdqqcqzpkxqrpc8sp5hrhtzvzwqq3qxcfuushmeqh0kw05ym3alhm3l73aeufcea42hh3q9qxpqysgqgks7jz3nm8l5lz4v9y7cwc682nza8j8j3q6k4ez6qg077utxy0hnh3k3gy3ek7ejn4kf55ljrwh2ytr2xvyx2y7aqldjclkjh5qklegqxtquau";
+  // An HRP with no amount digits after the network prefix is an amountless invoice.
+  const AMOUNTLESS = bech32.encode("lntbs", new Array(111).fill(0), 2000);
+  const ADDRESS = "bitcoin:tb1pgk4xl52hczpgz0fp429ccvdztvmhd5mthd7xxj8aq4nvstc7kzcql3fvdu";
+  const UNIFIED = ADDRESS
     + "?ark=tark1qqcpq7yq3e8hhsx6ml3fud93m7827qggaurtzu3zwsr4a0qs0gf858t79qp09kwef5q27wqrep4teavv3j6fk2wpdd3674z306qy00sr5h9h6y"
-    + "&lightning=lntbs60020n1p4vt7d3pp5n7hcxe4650eatxe3ap4eqzjt8am6ldzzs0lzhm63yy6rfklptl8sdqqcqzpkxqrpc8sp5hrhtzvzwqq3qxcfuushmeqh0kw05ym3alhm3l73aeufcea42hh3q9qxpqysgqgks7jz3nm8l5lz4v9y7cwc682nza8j8j3q6k4ez6qg077utxy0hnh3k3gy3ek7ejn4kf55ljrwh2ytr2xvyx2y7aqldjclkjh5qklegqxtquau"
+    + `&lightning=${INVOICE}`
     + "&amount=0.00005936";
+
+  /** Like swap v2's lightningRail: any amount beside an invoice that states one is refused. */
+  const swapV2 = (): PaymentRail & { quoted: (number | undefined)[] } => {
+    const quoted: (number | undefined)[] = [];
+    return {
+      id: "lightning",
+      quoted,
+      match: (req) => invoiceTarget(req.raw) !== undefined,
+      available: (req) => req.amount === undefined || amountMsatOf(invoiceTarget(req.raw)!) === null,
+      quote: async (req) => { quoted.push(req.amount); return { railId: "lightning" } as unknown as RouteQuote; },
+    };
+  };
 
   const invoiceOnly = (): PaymentRail & { quoted: (number | undefined)[] } => {
     const quoted: (number | undefined)[] = [];
@@ -766,12 +783,37 @@ describe("arkadePaymentRouter", () => {
     expect(lightning.quoted).toEqual([undefined]);
   });
 
-  it("still drops the lightning leg for an amount the URI does not name", async () => {
-    const router = arkadePaymentRouter({ wallet: fakeWallet(), lightning: invoiceOnly() });
+  it("drops an amount that restates a bare invoice's own", async () => {
+    const lightning = swapV2();
+    const router = arkadePaymentRouter({ wallet: fakeWallet(), lightning });
+
+    const options = await router.options({ raw: INVOICE, amount: 6002 }, { priority: DEFAULT_RAIL_PRIORITY });
+    await options.find((o) => o.railId === "lightning")?.quote();
+
+    expect(options.map((o) => o.railId)).toEqual(["lightning"]);
+    expect(lightning.quoted).toEqual([undefined]);
+  });
+
+  it("offers the lightning leg but refuses at quote an amount neither the invoice nor the URI names", async () => {
+    const lightning = invoiceOnly();
+    const router = arkadePaymentRouter({ wallet: fakeWallet(), lightning });
 
     const options = await router.options({ raw: UNIFIED, amount: 7000 }, { priority: DEFAULT_RAIL_PRIORITY });
 
-    expect(options.map((o) => o.railId)).toEqual(["ark", "onchain"]);
+    expect(options.map((o) => o.railId)).toEqual(["ark", "solver-lightning", "onchain"]);
+    await expect(options.find((o) => o.railId === "solver-lightning")!.quote()).rejects.toThrow("the invoice is for 6002 sats, not 7000");
+    expect(lightning.quoted).toEqual([]);
+  });
+
+  it("keeps the amount beside an amountless invoice, which prices nothing", async () => {
+    const lightning = swapV2();
+    const router = arkadePaymentRouter({ wallet: fakeWallet(), lightning });
+
+    const raw = `${ADDRESS}?lightning=${AMOUNTLESS}&amount=0.00005936`;
+    const options = await router.options({ raw, amount: 5936 }, { priority: DEFAULT_RAIL_PRIORITY });
+    await options.find((o) => o.railId === "lightning")?.quote();
+
+    expect(lightning.quoted).toEqual([5936]);
   });
 
   it("ranks swap's lightning and onchain-swap rails ahead of the onchain exit", async () => {
