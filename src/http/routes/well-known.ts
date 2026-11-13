@@ -20,7 +20,7 @@ import { Strikes } from "../../rails/fixedfloat/client.js";
 import type { DerivedDestination } from "../../covenant/destination.js";
 import type { AddressRow, DomainRow, LnurlPayDestinationResponse, LnurlPayMetadata } from "../../types/index.js";
 import { LnurlError } from "../errors.js";
-import { domainFor, msatParam, originOf, strParam } from "../params.js";
+import { COMMENT_ALLOWED, commentParam, domainFor, msatParam, originOf, strParam } from "../params.js";
 import { buildMetadata, createFixedFloatDestination, createOfflineSwapInvoice, destinationUri, requestSessionInvoice } from "../../services/pay-flow.js";
 import type { ServerContext } from "../server-context.js";
 import { isNameless } from "../../services/addresses.js";
@@ -86,7 +86,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       minSendable: advertised.min,
       maxSendable: advertised.max,
       metadata: buildMetadata(isNameless(address) ? undefined : `${address.username}@${domain.domain}`),
-      commentAllowed: 140,
+      commentAllowed: COMMENT_ALLOWED,
       ...(options.length ? { paymentOptions: options } : {}),
       ...(units.length ? { units } : {}),
       ...(railStatesFor(railAddress, railCaps).get("offline-swap")?.available ? { receiveAmountAllowed: true } : {}),
@@ -94,7 +94,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
   };
 
   const offlineInvoice = async (req: Request, res: Response, domain: DomainRow, address: AddressRow, amountMsat: number,
-    options: Pick<Parameters<typeof createOfflineSwapInvoice>[0], "receiveAmountMsat" | "paymentQuote" | "quoted" | "echoLightningOption"> = {}) => {
+    options: Pick<Parameters<typeof createOfflineSwapInvoice>[0], "receiveAmountMsat" | "paymentQuote" | "quoted" | "comment" | "echoLightningOption"> = {}) => {
     if (!creator || !address.arkadeAddress || !address.claimPublicKey) throw new LnurlError("Offline receive is unavailable");
     const { railAddress, base } = envelope(domain, address);
     const railCaps = currentRailCaps();
@@ -132,7 +132,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     const { railAddress, base } = envelope(domain, address);
     const offlineReason = isNameless(address) ? "This LNURL is currently offline" : `${address.username}@${domain.domain} is currently offline`;
     const requested = msatParam(req.query.amount);
-    const comment = strParam(req.query.comment);
+    const comment = commentParam(req.query.comment);
     if (requested === undefined) throw new LnurlError("Missing or invalid amount parameter");
     let amountMsat = requested;
     const paymentOptionId = strParam(req.query.paymentOption);
@@ -208,7 +208,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       try {
         res.json(await createFixedFloatDestination({
           ff: fixedFloat, rail, creator, amountMsat, receiveAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey,
-          addressId: address.id, baseUrl: settings.baseUrl(), logger, requestId: res.locals.requestId as string,
+          addressId: address.id, comment, baseUrl: settings.baseUrl(), logger, requestId: res.locals.requestId as string,
           onUnroutable: () => unroutable.fail(receiver),
         }));
         unroutable.pass(receiver);
@@ -277,6 +277,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
         // at derivation owns the preimage, the taptree and the payout script.
         ...(derived ? { covenantScript: derived.script } : {}),
         ...(quoted ? { quote: quoted } : {}),
+        ...(comment ? { comment } : {}),
       });
       // Only the static rail: a covenant destination is watched as a contract.
       if (resolved.paymentOption === "arkade" && !derived) {
@@ -314,7 +315,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     // The corridor never touches the session, so a sessionless address is served too.
     if (creator && address.arkadeAddress && address.claimPublicKey &&
         (receiveAmountMsat !== undefined || !address.sessionId || !sessions.isActive(address.sessionId))) {
-      await offlineInvoice(req, res, domain, address, amountMsat, { receiveAmountMsat, paymentQuote, quoted, echoLightningOption: Boolean(paymentOptionId) });
+      await offlineInvoice(req, res, domain, address, amountMsat, { receiveAmountMsat, paymentQuote, quoted, comment, echoLightningOption: Boolean(paymentOptionId) });
       return;
     }
 

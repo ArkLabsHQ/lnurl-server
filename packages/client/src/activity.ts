@@ -119,6 +119,7 @@ export function lnurlActivityResolver(payments: () => StoredPayment[] | Promise<
           identifier: payment.identifier,
           verified: payment.settled,
           ...(payment.quote ? { requested: quotedLabel(payment.quote) } : {}),
+          ...(payment.comment ? { comment: payment.comment } : {}),
         },
       }];
     },
@@ -127,7 +128,7 @@ export function lnurlActivityResolver(payments: () => StoredPayment[] | Promise<
 
 /** What either resolver recorded on an activity row, typed: the counterparty for a send, our own address for a receive. */
 export function lnurlActivity(activity: { id: string; intent?: { metadata?: Record<string, unknown> } }):
-  { direction: "received" | "sent"; address?: string; rail?: string } | undefined {
+  { direction: "received" | "sent"; address?: string; rail?: string; comment?: string } | undefined {
   const sent = activity.id.startsWith(SENT_GROUP_PREFIX);
   if (!sent && !activity.id.startsWith(LNURL_GROUP_PREFIX)) return undefined;
   const meta = activity.intent?.metadata ?? {};
@@ -136,5 +137,6 @@ export function lnurlActivity(activity: { id: string; intent?: { metadata?: Reco
     direction: sent ? "sent" : "received",
     ...(typeof address === "string" ? { address } : {}),
     ...(typeof meta.rail === "string" ? { rail: meta.rail } : {}),
+    ...(typeof meta.comment === "string" ? { comment: meta.comment } : {}),
   };
 }

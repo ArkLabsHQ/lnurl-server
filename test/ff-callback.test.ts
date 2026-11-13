@@ -134,6 +134,12 @@ describe("FixedFloat callback", () => {
     expect(ff.calls.at(-1)?.body).toMatchObject({ type: "fixed", fromCcy: "USDTARBITRUM", toCcy: "BTCLN", direction: "to", amount: 0.0001, toAddress: settlements.get(hash)!.pr });
   });
 
+  it("keeps the payer's comment on the order's settlement", async () => {
+    const baseUrl = await start();
+    await callback(baseUrl, "amount=10000000&paymentOption=ff-usdtarbitrum&comment=gm");
+    expect(settlements.listRecent(1)[0]!.comment).toBe("gm");
+  });
+
   it("carries no top-level expiresAt; the quote's is the earlier of FixedFloat's and the invoice's less the margin", async () => {
     const baseUrl = await start();
     const invoiceDeadline = nowSec() + 1_800;

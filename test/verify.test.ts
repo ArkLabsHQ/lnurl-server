@@ -122,6 +122,21 @@ describe("LUD-21 verify — emission", () => {
     } finally { session.abort(); await own.close(); }
   });
 
+  it("records the payer's comment beside it", async () => {
+    const store = new MemorySettlementStore(86_400_000);
+    const own = await startServer({ settlements: store } as unknown as ServerDeps);
+    const session = await openSession(own.baseUrl);
+    try {
+      const hash = createHash("sha256").update(Buffer.from("33".repeat(32), "hex")).digest("hex");
+      const evt = nextSseEvent(session.response);
+      const payer = jsonRequest(`${own.baseUrl}/lnurl/${session.sessionId}/callback?amount=50000&comment=gm`);
+      await evt;
+      await jsonRequest(`${own.baseUrl}/lnurl/session/${session.sessionId}/invoice`, "POST", { pr: buildInvoice(hash) }, session.token);
+      await payer;
+      expect(store.get(hash)!.comment).toBe("gm");
+    } finally { session.abort(); await own.close(); }
+  });
+
   it("omits verify (but still returns pr) when the bolt11 can't be decoded", async () => {
     const session = await openSession(ctx.baseUrl);
     try {

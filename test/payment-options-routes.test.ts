@@ -97,6 +97,18 @@ describe("LUD-XX paymentOptions", () => {
     expect(meta.tag).toBe("payRequest");
   });
 
+  it("keeps a comment of up to 140 characters, counting an emoji as one, and refuses a longer one", async () => {
+    const settlements = new MemorySettlementStore(60_000);
+    await ctx.close();
+    ctx = await start(repos, settlements);
+    addr("alice", true);
+    const pay = (comment: string) =>
+      getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000&paymentOption=arkade&comment=${encodeURIComponent(comment)}`, "domain.com");
+    expect(await pay("🙂".repeat(141))).toMatchObject({ status: "ERROR", reason: "Comment must be at most 140 characters" });
+    expect(await pay("🙂".repeat(140))).toMatchObject({ status: "OK" });
+    expect(settlements.listRecent(10, { option: "arkade" }).map((r) => r.comment)).toEqual(["🙂".repeat(140)]);
+  });
+
   it("serves the arkade destination + a non-pr verify record", async () => {
     const settlements = new MemorySettlementStore(60_000);
     await ctx.close();

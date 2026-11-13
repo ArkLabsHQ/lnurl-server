@@ -295,7 +295,7 @@ describe("runMigrations", () => {
     db.prepare("INSERT INTO settlements (payment_hash, pr, session_id, settled, payment_option, created_at, updated_at) VALUES ('aa', 'lnbc1', 's', 1, 'lightning', 1000, 2000)").run();
     const before = db.prepare("SELECT * FROM settlements").all();
     runMigrations(db);
-    expect(db.prepare("SELECT * FROM settlements").all()).toEqual(before.map((row) => ({ ...row, covenant_outpoint: null, quote_json: null, expires_at: null })));
+    expect(db.prepare("SELECT * FROM settlements").all()).toEqual(before.map((row) => ({ ...row, covenant_outpoint: null, quote_json: null, expires_at: null, comment: null })));
     expect(db.prepare("SELECT COUNT(*) AS n FROM ff_orders").get()).toEqual({ n: 0 });
     db.close();
   });
@@ -325,6 +325,17 @@ describe("runMigrations", () => {
     const columns = (db.prepare("SELECT name FROM pragma_table_info('settlements')").all() as { name: string }[]).map((c) => c.name);
     expect(columns.filter((c) => c === "expires_at")).toHaveLength(1);
     expect(db.prepare("SELECT version FROM schema_migrations WHERE version = 31").get()).toEqual({ version: 31 });
+    db.close();
+  });
+
+  it("migration 32 adds settlements.comment once, over a column a partial run already added", () => {
+    const db = openDb(":memory:");
+    runMigrations(db, { upToVersion: 31 });
+    db.exec("ALTER TABLE settlements ADD COLUMN comment TEXT");
+    runMigrations(db);
+    const columns = (db.prepare("SELECT name FROM pragma_table_info('settlements')").all() as { name: string }[]).map((c) => c.name);
+    expect(columns.filter((c) => c === "comment")).toHaveLength(1);
+    expect(db.prepare("SELECT version FROM schema_migrations WHERE version = 32").get()).toEqual({ version: 32 });
     db.close();
   });
 

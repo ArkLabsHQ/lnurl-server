@@ -422,6 +422,13 @@ export const MIGRATIONS: Migration[] = [
       if (!hasColumn(db, "settlements", "expires_at")) db.exec("ALTER TABLE settlements ADD COLUMN expires_at INTEGER;");
     },
   },
+  {
+    version: 32,
+    // The payer's LUD-12 comment: an offline receiver only ever reads it from the payments sync.
+    up: (db) => {
+      if (!hasColumn(db, "settlements", "comment")) db.exec("ALTER TABLE settlements ADD COLUMN comment TEXT;");
+    },
+  },
 ];
 
 export const LATEST_MIGRATION = Math.max(...MIGRATIONS.map((m) => m.version));
