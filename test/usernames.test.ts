@@ -25,8 +25,8 @@ describe("randomUsername", () => {
     expect(words.filter((w, i) => words.indexOf(w) !== i)).toEqual([]);
   });
 
-  it("offers tens of thousands of names", () => {
-    expect(ADJECTIVES.length * NOUNS.length).toBeGreaterThan(30_000);
+  it("offers well over a hundred thousand names", () => {
+    expect(ADJECTIVES.length * NOUNS.length).toBeGreaterThan(150_000);
   });
 
   it("keeps the longest name within the default rules even with its fallback suffix", () => {
