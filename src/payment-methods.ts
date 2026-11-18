@@ -10,8 +10,8 @@ export const REGISTERED_OPTION_PREFIX = "registered:";
 const TYPE_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 // Printable ASCII without whitespace: the value is echoed verbatim into public JSON and payer UIs.
 const DESTINATION_PATTERN = /^[\x21-\x7e]+$/;
-// Every rail id plus the types payers act on, so a method never reads as the real thing. Spelled out
-// because rails.ts imports this module; test/payment-methods.test.ts fails when a rail id is missing.
+// Older payers recognize these types on their own. Satora is recognized by exact option id,
+// so existing registered:satora methods can keep their type.
 const RESERVED_TYPES: ReadonlySet<string> = new Set([
   "interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat", "registered",
   "lightning", "eip155", "solana", "tron",

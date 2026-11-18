@@ -758,7 +758,7 @@ export const openApiSpec = {
                           type: "array",
                           description:
                             "LUD-XX: advertised payment rails; present only when a non-lightning rail (e.g. arkade, or a registered method) is offered. " +
-                            "Token options (ids ff-<code>) always state both minSendable and maxSendable. " +
+                            "Satora and FixedFloat options always state both minSendable and maxSendable. " +
                             "Each method the owner registered is one more option, id `registered:<type>`, after all the others, " +
                             "present only while the operator has not disabled the `registered` rail for the address. " +
                             "It states `verifiable: false` and no `caip19Id`, `asset`, `minSendable` or `maxSendable`.",
@@ -766,14 +766,13 @@ export const openApiSpec = {
                             type: "object",
                             properties: {
                               id: { type: "string" },
-                              type: { type: "string", description: "e.g. lightning, arkade, onchain; on a token option the asset's CAIP-2 namespace (eip155, solana, tron); on a registered option the owner's own method type" },
+                              type: { type: "string", description: "e.g. lightning, arkade, onchain, satora; on a token deposit option the asset's CAIP-2 namespace (eip155, solana, tron); on a registered option the owner's own method type" },
                               asset: { type: "string", description: "Token options only: the CAIP-19 asset id, e.g. eip155:42161/erc20:0xfd08…" },
                               unit: { type: "string", description: "Token options only: the `units[]` code the option is quoted in (USDT, USDC)" },
                               provider: {
                                 type: "string",
                                 description:
-                                  "Token options only: the custodian the payer hands tokens to (FixedFloat, or Simulated off mainnet). " +
-                                  "The payer's tokens sit with it until it pays the corridor invoice, and this server cannot refund them.",
+                                  "Swap provider (FixedFloat, Simulated, or Satora). Satora opens a hosted checkout for a direct Arkade payout.",
                               },
                               available: {
                                 type: "boolean",
@@ -787,7 +786,7 @@ export const openApiSpec = {
                                 type: "boolean",
                                 description:
                                   "Whether callback answers for this rail carry a LUD-21 `verify` URL, so a payer that must " +
-                                  "detect settlement can skip a rail without requesting it. Always stated: lightning `true`; " +
+                                  "detect settlement can skip a rail without requesting it. Always stated: lightning and satora `true`; " +
                                   "arkade `true` only while per-payment covenant destinations serve it (the static address " +
                                   "fallback identifies no payment); onchain and registered `false`.",
                               },
@@ -845,7 +844,7 @@ export const openApiSpec = {
           "wallet's SSE session, or a server-created offline reverse swap, or an error when " +
           "offline. LUD-XX: pass `paymentOption` to select an advertised rail — `arkade` " +
           "returns an Arkade destination instead of a bolt11, `onchain` returns the " +
-          "address's registered boarding address, and `registered:<type>` returns the " +
+          "address's registered boarding address, `satora` returns a hosted checkout and a verifiable Arkade destination, and `registered:<type>` returns the " +
           "destination the owner registered under that type. LUD-XX: " +
           "`unit`/`receiveUnit` denominate the amount (requires a configured quote provider); " +
           "the response then includes `paymentQuote`.",
@@ -854,8 +853,8 @@ export const openApiSpec = {
           { name: "username", in: "path", required: true, schema: { type: "string" }, description: "LN address local part" },
           { name: "amount", in: "query", required: true, schema: { type: "number" }, description: "Amount — millisatoshis, or the smallest unit of `unit` when set" },
           { name: "comment", in: "query", required: false, schema: { type: "string" }, description: "Optional payer comment" },
-          { name: "paymentOption", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: selected rail id (`arkade`, `onchain`, `registered:<type>` for a method the owner registered, or a token option such as `ff-usdtarbitrum`); defaults to lightning" },
-          { name: "unit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: denomination unit (e.g. `USD`); `amount` becomes that unit's smallest integer. Refused on token options, which quote their own payment, and on registered options, which are never priced here" },
+          { name: "paymentOption", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: selected rail id (`arkade`, `onchain`, `satora`, `registered:<type>`, or a token option such as `ff-usdtarbitrum`). Defaults to lightning" },
+          { name: "unit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: denomination unit (e.g. `USD`). Refused on token deposit, Satora, and registered options" },
           { name: "receiveUnit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: desired receiver unit; the built-in price-feed provider accepts only `msat`" },
           { name: "receiveAmount", in: "query", required: false, schema: { type: "number" }, description: "LUD-XX: what the receiver nets, in millisats of whole sats; `amount` becomes the payer's ceiling. Offline swap only, where the payRequest has `receiveAmountAllowed`; refused with `unit` or a non-lightning `paymentOption`" },
         ],
@@ -918,7 +917,8 @@ export const openApiSpec = {
                           description:
                             "LUD-XX: wallet-executable payment URI carrying the requested amount. The Arkade destination is in " +
                             "`ark=` rather than the address slot, which the scheme reserves for an onchain address; " +
-                            "`amount` is BTC per BIP21, though every other amount in this API is millisats.",
+                            "`amount` is BTC per BIP21. Satora returns an HTTPS checkout URL with the Arkade `address` " +
+                            "and a whole-sat `targetAmount`.",
                         },
                         verify: {
                           type: "string",
@@ -969,8 +969,9 @@ export const openApiSpec = {
             pattern: "^[a-z][a-z0-9-]{0,31}$",
             description:
               "The method's name, which becomes the option id `registered:<type>`: 1 to 32 lowercase letters, digits or " +
-              "hyphens, starting with a letter. Refused as reserved: every rail id (`interactive-lightning`, `offline-swap`, " +
-              "`arkade`, `covenant`, `onchain`, `fixedfloat`, `registered`) and `lightning`, `eip155`, `solana`, `tron`.",
+              "hyphens, starting with a letter. Reserved: `interactive-lightning`, `offline-swap`, " +
+              "`arkade`, `covenant`, `onchain`, `fixedfloat`, `registered`, `lightning`, `eip155`, `solana`, `tron`. " +
+              "A registered `satora` method keeps its own `registered:satora` option id.",
           },
           destination: {
             type: "string",

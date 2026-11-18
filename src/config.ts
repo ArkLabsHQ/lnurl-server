@@ -105,6 +105,7 @@ export interface AppConfig {
   shutdownTimeoutMs: number;
   offlineReceive: OfflineReceiveConfig;
   fixedFloat?: FixedFloatConfig;
+  satoraEnabled?: boolean;
   /** Units from QUOTE_UNITS; with a DB, more can be added at runtime through the admin API. */
   quotes: QuoteConfig;
 }
@@ -196,6 +197,13 @@ export function loadConfig(env: Env = process.env): AppConfig {
   const adminPort = integer(env, "ADMIN_PORT", 3001, { min: 1, max: 65_535 });
   if (dbPath && adminPort === port) throw new ConfigError("ADMIN_PORT must differ from PORT when DB_PATH is set");
   const fixedFloat = buildFixedFloat(env, dbPath, offlineReceive);
+  const satoraFlag = env.SATORA_ENABLED;
+  if (satoraFlag !== undefined && satoraFlag !== "true" && satoraFlag !== "false") {
+    throw new ConfigError("SATORA_ENABLED must be true or false");
+  }
+  if (satoraFlag === "true" && !offlineReceive.covenantDestinations) {
+    throw new ConfigError("SATORA_ENABLED=true requires OFFLINE_COVENANT_DESTINATIONS=true");
+  }
   const quotes = buildQuotes(env);
 
   return {
@@ -225,6 +233,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
     shutdownTimeoutMs: integer(env, "SHUTDOWN_TIMEOUT_MS", 15_000, { min: 1 }),
     offlineReceive,
     ...(fixedFloat ? { fixedFloat } : {}),
+    ...(satoraFlag === "true" ? { satoraEnabled: true } : {}),
     quotes,
   };
 }

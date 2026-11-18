@@ -225,6 +225,24 @@ describe("loadConfig", () => {
     })).toThrow(/file-backed DB_PATH/);
   });
 
+  it("enables Satora only with an explicit flag and covenant destinations", () => {
+    const withCovenants = {
+      ...base,
+      DB_PATH: "/data/x.db",
+      ALLOW_INSECURE_TOKEN_STORAGE: "1",
+      ARK_SERVER_URL: "https://ark.example",
+      OFFLINE_COVENANT_DESTINATIONS: "true",
+      OFFLINE_EMULATOR_URL: "https://emulator.example",
+    };
+    expect(loadConfig(withCovenants).satoraEnabled).toBeUndefined();
+    expect(loadConfig({ ...withCovenants, SATORA_ENABLED: "false" }).satoraEnabled).toBeUndefined();
+    expect(loadConfig({ ...withCovenants, SATORA_ENABLED: "true" })).toMatchObject({
+      satoraEnabled: true, offlineReceive: { enabled: false, covenantDestinations: true },
+    });
+    expect(() => loadConfig({ ...base, SATORA_ENABLED: "true" })).toThrow(/requires OFFLINE_COVENANT_DESTINATIONS/);
+    expect(() => loadConfig({ ...base, SATORA_ENABLED: "1" })).toThrow(/SATORA_ENABLED must be true or false/);
+  });
+
   it("rejects a non-positive covenant recovery delay rather than building an unspendable leaf", () => {
     const withFlag = (v: string) => ({
       ...base,

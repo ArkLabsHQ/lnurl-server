@@ -280,6 +280,14 @@ With `FIXEDFLOAT_API_KEY` and `FIXEDFLOAT_API_SECRET` set, an address with an Ar
 
 FixedFloat allows 250 request-weight units a minute per key and an order costs 50, so the rail takes at most a handful of orders a minute. So that no single party can hold them all, the callback answers HTTP 429 past `FIXEDFLOAT_ORDERS_PER_IP` token callbacks from one IP, past `FIXEDFLOAT_MAX_OPEN_ORDERS_PER_ADDRESS` unfunded orders for one receiver, and past `FIXEDFLOAT_MAX_OPEN_ORDERS` in all. FixedFloat blocks a key that exceeds its limit, for longer each time, so after an HTTP 429 or five errors in a row every FixedFloat call pauses for two minutes and the options read `available: false`; two invoices FixedFloat cannot route (code 304) close one receiver's token callbacks for ten minutes. Token deposits need a file-backed `DB_PATH` and offline receive (the corridor is what pays the order).
 
+### Stablecoin checkout (Satora, opt-in, mainnet only)
+
+`SATORA_ENABLED=true` adds the `satora` payment option to LN addresses whose Arkade identity uses the supported mainnet operator (`arkade.computer`). It requires `OFFLINE_COVENANT_DESTINATIONS=true`; the server verifies that `ARK_SERVER_URL` uses the same operator signer. The payer can choose Satora or any other option the address advertises.
+
+Request `?amount=<msat>&paymentOption=satora` with an amount in whole sats. The callback returns a unique Arkade `paymentDestination`, an HTTPS `paymentURI` for Satora's hosted checkout, and `verify`, `verifyBatch`, and `expiresAt`. The checkout starts with USDC on Polygon selected, the receiver's exact BTC amount, and the unique destination. LNURL offers up to the default route's 335–20,000,000 sat range, narrowed by server and domain bounds. Satora applies current limits and shows live rates, fees, and available stablecoin networks. The payer funds the swap and handles recovery in Satora. The LNURL server marks `verify` settled when the matching Arkade destination receives at least the requested amount.
+
+Clients can call `satoraPaymentUrl(result, amountSat)` from `@arkade-os/lnurl-client` to validate the hosted URL before opening it. Use `verify` for payment confirmation and `expiresAt` for the LNURL request's tracking window. The token quote or funding window belongs to Satora.
+
 ## Payment quote (LUD-XX)
 
 Optional: denominate amounts in units other than millisatoshis (USD, EUR, USDT, …). Set `QUOTE_UNITS` and each unit is priced from its own JSON price feed (`src/price-feed.ts`, the same feed contract intent-solver's asset markets use): one URL answering the unit's price per **one whole bitcoin**, and an RFC 6901 pointer to that price.
@@ -430,6 +438,7 @@ A holder who lost a code gets a reissued one: the reservation or free-name code 
 | `FIXEDFLOAT_REFRESH_MS` | `300000` | Rates and currency-list refresh interval. |
 | `FIXEDFLOAT_BASE_URL` / `FIXEDFLOAT_RATES_URL` | `https://ff.io/api/v2` / `https://ff.io/rates/fixed.xml` | FixedFloat's API and public rates export. |
 | `FIXEDFLOAT_SIMULATE` | `false` | `true` runs the simulated provider instead; never on `bitcoin`, never with keys. |
+| `SATORA_ENABLED` | `false` | `true` enables [Satora stablecoin checkout](#stablecoin-checkout-satora-opt-in-mainnet-only) for the `arkade.computer` mainnet operator. Requires `OFFLINE_COVENANT_DESTINATIONS=true`. |
 | `QUOTE_UNITS` | — | Comma-separated unit codes to quote ([Payment quote](#payment-quote-lud-xx)). Each needs the three settings below. With `DB_PATH`, more can be added at runtime in the admin UI. |
 | `QUOTE_<CODE>_FEED_URL` | — | JSON price feed answering the unit's price per one whole bitcoin. |
 | `QUOTE_<CODE>_DECIMALS` | — | Decimals of the unit's smallest denomination (`2` for USD cents, `6` for USDT). Required: a wrong guess misprices by a power of ten. |

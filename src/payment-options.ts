@@ -21,7 +21,7 @@ export interface PaymentOption {
   asset?: string;
   /** The units[] code a token option is quoted in. */
   unit?: string;
-  /** The third party the payer hands funds to, on a custodial rail. */
+  /** The swap provider for this option. */
   provider?: string;
 }
 
@@ -98,6 +98,9 @@ export function resolvePaymentOption(
     return address.arkadeAddress
       ? { kind: "destination", paymentOption: "arkade", paymentDestination: address.arkadeAddress }
       : { kind: "error", reason: "Unsupported paymentOption" };
+  }
+  if (id === "satora" && address.arkadeAddress) {
+    return { kind: "destination", paymentOption: "satora", paymentDestination: address.arkadeAddress };
   }
   if (id === "onchain") {
     return address.boardingAddress

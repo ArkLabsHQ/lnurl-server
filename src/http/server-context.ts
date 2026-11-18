@@ -51,6 +51,8 @@ export interface ServerDeps {
   onDestinationIssued?: (destination: string) => void;
   /** Token deposits through a custodial swap provider, paid out over the offline swap rail. */
   fixedFloat?: FixedFloatDeps;
+  satoraEnabled?: boolean;
+  satoraOperatorKey?: string;
   health?: HealthRegistry;
   logger?: Logger;
 }

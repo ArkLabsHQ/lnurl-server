@@ -18,7 +18,7 @@ export interface PaymentOption {
   asset?: string;
   /** The `units[]` code a token option is quoted in. */
   unit?: string;
-  /** The third party the payer hands funds to on this option, e.g. "FixedFloat". */
+  /** The provider the payer uses for this option, e.g. "FixedFloat" or "Satora". */
   provider?: string;
 }
 /**
@@ -165,14 +165,14 @@ export interface DestinationResult {
   paymentDestination?: string;
   /** A memo the payment must carry. A wallet that cannot attach one must not pay. */
   paymentDestinationTag?: string;
-  /** Wallet-executable instruction carrying the amount (BIP21, EIP-681, Solana Pay); none on Tron. */
+  /** Payment instruction carrying the amount, e.g. a wallet URI or a hosted checkout URL. */
   paymentURI?: string;
   /** What the payer actually pays on a rail priced in a token. Its `expiresAt` is the
    *  payer's deadline: a token answer carries no top-level `expiresAt`. */
   paymentQuote?: PaymentQuote;
   /** Unix seconds after which the server stops attributing payments to this destination. */
   expiresAt?: number;
-  /** The third party the payer hands funds to, e.g. "FixedFloat". */
+  /** The provider the payer uses, e.g. "FixedFloat" or "Satora". */
   provider?: string;
   /** Verify URL tracking settlement; absent under the same conditions as the BOLT11 shape. */
   verify?: string;

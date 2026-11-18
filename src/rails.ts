@@ -26,10 +26,11 @@ import type { ServerDeps } from "./http/server-context.js";
 import type { FfRail } from "./rails/fixedfloat/rates.js";
 import { ffPaymentOptions } from "./rails/fixedfloat/options.js";
 import { ffRailCaps } from "./rails/fixedfloat/provider.js";
+import { isSatoraAddress, SATORA_CHECKOUT_MAX_SAT, SATORA_CHECKOUT_MIN_SAT } from "./rails/satora.js";
 import { InvalidRailPolicyError } from "./errors.js";
 
 /** Every receive rail the server knows. The order is the advertise order. */
-export const RAIL_IDS = ["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat", "registered"] as const;
+export const RAIL_IDS = ["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat", "satora", "registered"] as const;
 
 /** A backend that can satisfy a receive on an LN address. */
 export type RailId = (typeof RAIL_IDS)[number];
@@ -97,6 +98,13 @@ export const RAIL_DEFS: Record<RailId, RailDef> = {
     paymentOption: null,
     direction: "token->bolt11->arkade-btc",
   },
+  satora: {
+    id: "satora",
+    label: "Satora",
+    description: "The payer swaps stablecoins to Arkade BTC in Satora's checkout. The payout goes to a per-payment Arkade destination.",
+    paymentOption: "satora",
+    direction: "token->arkade-btc",
+  },
   registered: {
     id: "registered",
     label: "Registered methods",
@@ -148,6 +156,8 @@ export interface ServerRailCaps {
   network?: Network;
   /** Token deposits are configured; absent means not at all. */
   fixedFloat?: FfRailCaps;
+  satoraEnabled?: boolean;
+  satoraOperatorKey?: string;
 }
 
 /** What the token-deposit provider offers right now. */
@@ -236,6 +246,7 @@ export function describeServerRails(caps: ServerRailCaps): ServerRailState[] {
   else if (!caps.offlineSwapCreator) tokens.reason = "token deposits pay through the offline swap rail, which is not configured";
   else if (!caps.discoveryReady) tokens.reason = "offline receive unavailable: " + discoveryReason;
   states.push(tokens);
+  states.push(satoraServerState(caps));
   states.push({
     id: "registered",
     label: RAIL_DEFS.registered.label,
@@ -244,6 +255,16 @@ export function describeServerRails(caps: ServerRailCaps): ServerRailState[] {
     ready: true,
   });
   return states;
+}
+
+function satoraServerState(caps: ServerRailCaps): ServerRailState {
+  const { id, label, description } = RAIL_DEFS.satora;
+  const configured = caps.satoraEnabled === true;
+  const reason = !configured ? "not configured (SATORA_ENABLED=true)"
+    : !caps.covenantDestinations ? "Satora requires per-payment covenant destinations"
+    : caps.network !== "bitcoin" || !caps.satoraOperatorKey ? "Satora requires the supported mainnet Arkade operator"
+    : undefined;
+  return { id, label, description, configured, ready: reason === undefined, ...(reason ? { reason } : {}) };
 }
 
 /** The address fields rail resolution depends on. */
@@ -384,6 +405,19 @@ export function effectiveRails(address: RailAddress, caps: ServerRailCaps): Addr
   else if (!ff.ready) tokens.reason = ff.reason ?? `${ff.provider} is unavailable`;
   else if (!caps.offlineSwapCreator) tokens.reason = "offline receive is not configured";
   else if (!caps.discoveryReady) tokens.reason = "offline receive unavailable: " + discoveryReason;
+  const satoraServer = satoraServerState(caps);
+  const satoraRecipient = hasIdentity && isSatoraAddress(address.arkadeAddress, caps.satoraOperatorKey);
+  const satora: AddressRailState = {
+    id: "satora",
+    label: RAIL_DEFS.satora.label,
+    enabled: !disabled.has("satora"),
+    applicable: satoraRecipient,
+    available: !disabled.has("satora") && satoraServer.ready && covenant.available && satoraRecipient,
+  };
+  if (!satora.enabled) satora.reason = "disabled for this address";
+  else if (!satoraServer.ready) satora.reason = satoraServer.reason;
+  else if (!covenant.available) satora.reason = covenant.reason;
+  else if (!satoraRecipient) satora.reason = "address is not on the Satora Arkade operator";
   // Independent of the Arkade identity and of every backend on purpose: the
   // destinations are the owner's own and never interpreted here, so the rail
   // stands or falls on the list alone.
@@ -397,12 +431,12 @@ export function effectiveRails(address: RailAddress, caps: ServerRailCaps): Addr
   };
   if (!registered.enabled) registered.reason = "disabled for this address";
   else if (!hasMethods) registered.reason = "address has no registered payment methods";
-  return [interactive, offline, arkade, covenant, onchain, tokens, registered];
+  return [interactive, offline, arkade, covenant, onchain, tokens, satora, registered];
 }
 
 /** Rails whose payment lands as a VTXO or a boarding UTXO, so arkd's own floor
  *  binds them regardless of what the operator configured. */
-const VTXO_SETTLED: readonly RailId[] = ["arkade", "covenant", "onchain"];
+const VTXO_SETTLED: readonly RailId[] = ["arkade", "covenant", "onchain", "satora"];
 
 /**
  * Fold what arkd will actually accept into the rails it settles, the way
@@ -463,7 +497,7 @@ function withSolverRange(
  *  range must move the next payRequest. Unknown discovery state (none injected, e.g.
  *  unit scope) assumes ready; the coordinator still fails loudly per request. */
 export function currentRailCaps(wiring: Pick<ServerDeps,
-  "offlineSwapCreator" | "covenantDestinations" | "solverDiscovery" | "arkServerUrl" | "railLimits" | "arkDustSat" | "onchainMinSat" | "fixedFloat" | "network"
+  "offlineSwapCreator" | "covenantDestinations" | "solverDiscovery" | "arkServerUrl" | "railLimits" | "arkDustSat" | "onchainMinSat" | "fixedFloat" | "network" | "satoraEnabled" | "satoraOperatorKey"
 > = {}): ServerRailCaps {
   const discoveryStatus = wiring.solverDiscovery?.status();
   // Dust last: it is the protocol's floor, so it must survive whatever the
@@ -481,6 +515,8 @@ export function currentRailCaps(wiring: Pick<ServerDeps,
     ...(wiring.network ? { network: wiring.network } : {}),
     ...(limits ? { limits } : {}),
     ...(wiring.fixedFloat ? { fixedFloat: ffRailCaps(wiring.fixedFloat) } : {}),
+    satoraEnabled: wiring.satoraEnabled,
+    satoraOperatorKey: wiring.satoraOperatorKey,
   };
 }
 
@@ -532,10 +568,17 @@ export function optionBounds(
   const available = effectiveRails(address, caps).filter((state) => state.available);
   const serving = available.filter((state) => RAIL_DEFS[state.id].paymentOption === optionId);
   if (serving.length === 0) return undefined;
-  const intersected = serving.reduce<Bounds>((acc, state) => {
+  let intersected = serving.reduce<Bounds>((acc, state) => {
     const bounds = railBounds(state.id, caps, base);
     return { min: Math.max(acc.min, bounds.min), max: Math.min(acc.max, bounds.max) };
   }, base);
+  if (optionId === "satora") {
+    const payout = railBounds("covenant", caps, intersected);
+    intersected = {
+      min: Math.max(SATORA_CHECKOUT_MIN_SAT, Math.ceil(payout.min / 1000)) * 1000,
+      max: Math.min(SATORA_CHECKOUT_MAX_SAT, Math.floor(payout.max / 1000)) * 1000,
+    };
+  }
   return intersected.min > intersected.max ? undefined : intersected;
 }
 
@@ -580,13 +623,20 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
   const tokenOptions = caps.fixedFloat && tokenState.offer
     ? ffPaymentOptions(caps.fixedFloat, railBounds("offline-swap", caps, base ?? { min: 1, max: Number.MAX_SAFE_INTEGER }), tokenState.available)
     : [];
+  const satoraReady = states.get("satora")?.available;
+  const satoraBounds = satoraReady && base ? optionBounds("satora", address, caps, base) : undefined;
+  const satoraOptions: PaymentOption[] = satoraReady && (!base || satoraBounds)
+    ? [{ id: "satora", type: "satora", provider: "Satora", verifiable: true,
+      ...(satoraBounds ? { minSendable: satoraBounds.min, maxSendable: satoraBounds.max } : {}) }]
+    : [];
   // Appended after withCaip, never through it: a method typed like a rail would be stamped with that rail's caip19Id.
   const registeredOptions: PaymentOption[] = states.get("registered")?.available
     ? (address.paymentMethods ?? []).map(({ type }) => ({ id: REGISTERED_OPTION_PREFIX + type, type, verifiable: false }))
     : [];
   // paymentOptions exists to name a non-lightning rail; with none to offer the
   // address stays pure LUD-06 even though lightning may still serve it.
-  if (!arkadeReady && !onchainReady && tokenOptions.length === 0 && registeredOptions.length === 0) return [];
+  const extraOptions = [...tokenOptions, ...satoraOptions, ...registeredOptions];
+  if (!arkadeReady && !onchainReady && extraOptions.length === 0) return [];
   const options: PaymentOption[] = [];
   // `available` is emitted only when false: LUD-XX says an absent one means true,
   // so stating it on every healthy option would be noise. `verifiable` is always
@@ -599,7 +649,7 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
   const withCaip = (opts: PaymentOption[]): PaymentOption[] => network === undefined
     ? opts
     : opts.map((option) => isRailType(option.type) ? { ...option, caip19Id: caip19Id(option.type, network) } : option);
-  if (!base) return [...withCaip(options), ...tokenOptions, ...registeredOptions];
+  if (!base) return [...withCaip(options), ...extraOptions];
   // Emitted relative to the pair the payRequest actually advertises, not to the
   // envelope. A client falls back to the top-level pair for an option that
   // publishes nothing, and the top level is the lightning rail's — so an option
@@ -615,5 +665,5 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
       ...(bounds.min !== advertised.min ? { minSendable: bounds.min } : {}),
       ...(bounds.max !== advertised.max ? { maxSendable: bounds.max } : {}),
     };
-  })), ...tokenOptions, ...registeredOptions];
+  })), ...extraOptions];
 }
