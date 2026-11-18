@@ -62,7 +62,7 @@ export interface LnurlPayDestinationResponse {
   paymentQuote?: PaymentQuote;
   /** A memo the deposit must carry. Never sent yet: no advertised token network uses one. */
   paymentDestinationTag?: string;
-  /** The third party the payer hands funds to, on a custodial rail. */
+  /** Swap provider for a token deposit. */
   provider?: string;
 }
 

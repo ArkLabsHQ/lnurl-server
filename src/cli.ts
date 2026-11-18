@@ -82,6 +82,15 @@ async function main(): Promise<void> {
     });
     const settlements = new DbSettlementStore(db, config.verifyTtlMs, undefined, config.destinationWatchMs);
     const off = config.offlineReceive;
+    const { findSatoraFundingReference, hasSatoraOrders, hasPendingSatoraOrders } = await import("./services/satora-store.js");
+    const satoraHasOrders = hasSatoraOrders(db);
+    const runSatora = config.satoraEnabled || hasPendingSatoraOrders(db);
+    if (satoraHasOrders && !config.tokenEncryptionKey) {
+      throw new ConfigError("existing Satora deposits require their original TOKEN_ENCRYPTION_KEY");
+    }
+    if (runSatora && !off.covenantDestinations) {
+      throw new ConfigError("active Satora swaps require covenant destinations");
+    }
     if (off.emulatorUrl) {
       const response = await probeBootEndpoint(`${off.emulatorUrl}/v1/info`, "emulator info endpoint");
       await response.body?.cancel();
@@ -144,7 +153,7 @@ async function main(): Promise<void> {
       arkNetwork = arkInfo.network;
       const { isNetwork } = await import("@arkade-os/solver-discovery");
       if (isNetwork(arkNetwork)) network = arkNetwork;
-      if (config.satoraEnabled) {
+      if (runSatora) {
         const { SATORA_OPERATOR_URL, satoraSignerKey } = await import("./rails/satora.js");
         const localKey = satoraSignerKey(arkInfo.signerPubkey);
         if (network !== "bitcoin" || !localKey) throw new ConfigError("Satora requires the supported mainnet Arkade operator");
@@ -275,6 +284,13 @@ async function main(): Promise<void> {
       const { startContractRetirement } = await import("./workers/covenant-retirement.js");
       runtime.addStop(startContractRetirement(settlements, contracts, 60_000, offlineSwaps).stop);
     }
+    let satora: import("./services/satora.js").SatoraService | undefined;
+    if (runSatora && config.tokenEncryptionKey) {
+      const { createSatoraService } = await import("./services/satora.js");
+      satora = createSatoraService({ db, encryptionKey: config.tokenEncryptionKey, logger });
+      runtime.addStop(satora.start());
+      runtime.addTransport({ close: () => satora!.waitForIdle() });
+    }
     let watchDestination: ((destination: string) => void) | undefined;
     deps = {
       repos,
@@ -292,7 +308,8 @@ async function main(): Promise<void> {
       onchainMinSat: config.onchainMinSendableSats,
       ...(covenantDestinations ? { covenantDestinations } : {}),
       ...(fixedFloat ? { fixedFloat } : {}),
-      ...(satoraOperatorKey ? { satoraEnabled: true, satoraOperatorKey } : {}),
+      ...(config.satoraEnabled && satoraOperatorKey && satora ? { satoraEnabled: true, satoraOperatorKey, satora } : {}),
+      satoraFundingReference: (verifyId) => findSatoraFundingReference(db, verifyId),
       // Late-bound: the watcher is built below, and nothing calls this until the
       // listeners are accepting, which is later still.
       onDestinationIssued: (destination) => watchDestination?.(destination),
@@ -398,7 +415,10 @@ async function main(): Promise<void> {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((err) => {
+  const run = process.argv[2] === "satora"
+    ? import("./satora-cli.js").then(({ runSatoraCommand }) => runSatoraCommand(process.argv.slice(3)))
+    : main();
+  run.catch((err) => {
     console.error(err instanceof ConfigError ? `config: ${err.message}` : err);
     process.exit(1);
   });

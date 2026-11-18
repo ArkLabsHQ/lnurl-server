@@ -204,6 +204,9 @@ export function loadConfig(env: Env = process.env): AppConfig {
   if (satoraFlag === "true" && !offlineReceive.covenantDestinations) {
     throw new ConfigError("SATORA_ENABLED=true requires OFFLINE_COVENANT_DESTINATIONS=true");
   }
+  if (satoraFlag === "true" && !tokenEncryptionKey) {
+    throw new ConfigError("SATORA_ENABLED=true requires TOKEN_ENCRYPTION_KEY to protect deposit keys");
+  }
   const quotes = buildQuotes(env);
 
   return {

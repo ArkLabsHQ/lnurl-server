@@ -26,7 +26,9 @@ import type { ServerDeps } from "./http/server-context.js";
 import type { FfRail } from "./rails/fixedfloat/rates.js";
 import { ffPaymentOptions } from "./rails/fixedfloat/options.js";
 import { ffRailCaps } from "./rails/fixedfloat/provider.js";
-import { isSatoraAddress, SATORA_CHECKOUT_MAX_SAT, SATORA_CHECKOUT_MIN_SAT } from "./rails/satora.js";
+import {
+  isSatoraAddress, SATORA_ASSET, SATORA_CHECKOUT_MAX_SAT, SATORA_CHECKOUT_MIN_SAT, SATORA_PAYMENT_OPTION, SATORA_UNIT,
+} from "./rails/satora.js";
 import { InvalidRailPolicyError } from "./errors.js";
 
 /** Every receive rail the server knows. The order is the advertise order. */
@@ -101,8 +103,8 @@ export const RAIL_DEFS: Record<RailId, RailDef> = {
   satora: {
     id: "satora",
     label: "Satora",
-    description: "The payer swaps Polygon USDC to a per-payment Arkade destination using Satora.",
-    paymentOption: "satora",
+    description: "The server accepts a Polygon USDC deposit and claims the Satora swap to a per-payment Arkade destination.",
+    paymentOption: SATORA_PAYMENT_OPTION,
     direction: "token->arkade-btc",
   },
   registered: {
@@ -497,7 +499,7 @@ function withSolverRange(
  *  range must move the next payRequest. Unknown discovery state (none injected, e.g.
  *  unit scope) assumes ready; the coordinator still fails loudly per request. */
 export function currentRailCaps(wiring: Pick<ServerDeps,
-  "offlineSwapCreator" | "covenantDestinations" | "solverDiscovery" | "arkServerUrl" | "railLimits" | "arkDustSat" | "onchainMinSat" | "fixedFloat" | "network" | "satoraEnabled" | "satoraOperatorKey"
+  "offlineSwapCreator" | "covenantDestinations" | "solverDiscovery" | "arkServerUrl" | "railLimits" | "arkDustSat" | "onchainMinSat" | "fixedFloat" | "network" | "satoraEnabled" | "satoraOperatorKey" | "satora"
 > = {}): ServerRailCaps {
   const discoveryStatus = wiring.solverDiscovery?.status();
   // Dust last: it is the protocol's floor, so it must survive whatever the
@@ -515,7 +517,7 @@ export function currentRailCaps(wiring: Pick<ServerDeps,
     ...(wiring.network ? { network: wiring.network } : {}),
     ...(limits ? { limits } : {}),
     ...(wiring.fixedFloat ? { fixedFloat: ffRailCaps(wiring.fixedFloat) } : {}),
-    satoraEnabled: wiring.satoraEnabled,
+    satoraEnabled: wiring.satoraEnabled === true && wiring.satora !== undefined,
     satoraOperatorKey: wiring.satoraOperatorKey,
   };
 }
@@ -572,7 +574,7 @@ export function optionBounds(
     const bounds = railBounds(state.id, caps, base);
     return { min: Math.max(acc.min, bounds.min), max: Math.min(acc.max, bounds.max) };
   }, base);
-  if (optionId === "satora") {
+  if (optionId === SATORA_PAYMENT_OPTION) {
     const payout = railBounds("covenant", caps, intersected);
     intersected = {
       min: Math.max(SATORA_CHECKOUT_MIN_SAT, Math.ceil(payout.min / 1000)) * 1000,
@@ -623,11 +625,12 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
   const tokenOptions = caps.fixedFloat && tokenState.offer
     ? ffPaymentOptions(caps.fixedFloat, railBounds("offline-swap", caps, base ?? { min: 1, max: Number.MAX_SAFE_INTEGER }), tokenState.available)
     : [];
-  const satoraReady = states.get("satora")?.available;
-  const satoraBounds = satoraReady && base ? optionBounds("satora", address, caps, base) : undefined;
-  const satoraOptions: PaymentOption[] = satoraReady && (!base || satoraBounds)
-    ? [{ id: "satora", type: "satora", provider: "Satora", verifiable: true,
-      ...(satoraBounds ? { minSendable: satoraBounds.min, maxSendable: satoraBounds.max } : {}) }]
+  const satoraBounds = optionBounds(SATORA_PAYMENT_OPTION, address, caps, base ?? { min: 1, max: Number.MAX_SAFE_INTEGER });
+  const satoraOptions: PaymentOption[] = satoraBounds
+    ? [{
+      id: SATORA_PAYMENT_OPTION, type: "eip155", asset: SATORA_ASSET, unit: SATORA_UNIT, provider: "Satora", verifiable: true,
+      minSendable: satoraBounds.min, maxSendable: satoraBounds.max,
+    }]
     : [];
   // Appended after withCaip, never through it: a method typed like a rail would be stamped with that rail's caip19Id.
   const registeredOptions: PaymentOption[] = states.get("registered")?.available

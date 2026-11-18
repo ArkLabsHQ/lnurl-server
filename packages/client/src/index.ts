@@ -275,7 +275,6 @@ export type { LnurlPaymentRepository, LnurlPaymentStore, LnurlPaymentWatermarkSt
 export { formatUnitAmount, parseUnitAmount } from "./units.js";
 export { normalizeTokenQuote, payableTokenUri, requestTokenQuote, tokenOptionAccepts } from "./token-quotes.js";
 export type { TokenQuote } from "./token-quotes.js";
-export { satoraPaymentTarget, type SatoraPaymentTarget } from "./satora.js";
 export type {
   AddressListEntry,
   AmountObject,

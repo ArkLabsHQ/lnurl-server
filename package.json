@@ -33,15 +33,17 @@
     "@arkade-os/swap": "0.1.0-rc.24",
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
+    "@satora/swap": "1.10.2",
     "@scure/base": "^2.4.0",
+    "@scure/bip39": "^2.4.0",
     "@scure/btc-signer": "2.4.1",
     "cors": "^2.8.6",
     "express": "5.2.1",
-    "nostr-tools": "^2.25.2"
+    "nostr-tools": "^2.25.2",
+    "viem": "2.52.2"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
-    "@scure/bip39": "^2.4.0",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/react": "^19.3.0",

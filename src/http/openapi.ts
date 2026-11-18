@@ -330,7 +330,7 @@ export const openApiSpec = {
                           type: "string",
                           nullable: true,
                           description:
-                            "Method-specific reference once settled: the observed Arkade txid, or on a token option the payer's deposit " +
+                            "Method-specific reference once settled: the observed Arkade txid, the Polygon relay funding txid on Satora, or on a FixedFloat token option the payer's deposit " +
                             "txid on the token chain (0x hex on EVM, base58 on Solana, hex on Tron). A token row can settle before the " +
                             "provider reports the deposit; the reference then follows.",
                         },
@@ -766,13 +766,13 @@ export const openApiSpec = {
                             type: "object",
                             properties: {
                               id: { type: "string" },
-                              type: { type: "string", description: "e.g. lightning, arkade, onchain, satora; on a token deposit option the asset's CAIP-2 namespace (eip155, solana, tron); on a registered option the owner's own method type" },
+                              type: { type: "string", description: "e.g. lightning, arkade, onchain; on a token deposit option the asset's CAIP-2 namespace (eip155, solana, tron); on a registered option the owner's own method type" },
                               asset: { type: "string", description: "Token options only: the CAIP-19 asset id, e.g. eip155:42161/erc20:0xfd08…" },
                               unit: { type: "string", description: "Token options only: the `units[]` code the option is quoted in (USDT, USDC)" },
                               provider: {
                                 type: "string",
                                 description:
-                                  "Swap provider (FixedFloat, Simulated, or Satora). Satora quotes and funds the swap in the payer's client.",
+                                  "Swap provider (FixedFloat, Simulated, or Satora). The server accepts the Satora deposit and claims the swap to the receiver's Arkade destination.",
                               },
                               available: {
                                 type: "boolean",
@@ -786,7 +786,7 @@ export const openApiSpec = {
                                 type: "boolean",
                                 description:
                                   "Whether callback answers for this rail carry a LUD-21 `verify` URL, so a payer that must " +
-                                  "detect settlement can skip a rail without requesting it. Always stated: lightning and satora `true`; " +
+                                  "detect settlement can skip a rail without requesting it. Always stated: lightning and token options `true`; " +
                                   "arkade `true` only while per-payment covenant destinations serve it (the static address " +
                                   "fallback identifies no payment); onchain and registered `false`.",
                               },
@@ -844,7 +844,7 @@ export const openApiSpec = {
           "wallet's SSE session, or a server-created offline reverse swap, or an error when " +
           "offline. LUD-XX: pass `paymentOption` to select an advertised rail — `arkade` " +
           "returns an Arkade destination instead of a bolt11, `onchain` returns the " +
-          "address's registered boarding address, `satora` returns a verifiable Arkade destination for the client-side swap, and `registered:<type>` returns the " +
+          "address's registered boarding address, `satora-usdcpolygon` returns a verifiable Polygon USDC deposit, and `registered:<type>` returns the " +
           "destination the owner registered under that type. LUD-XX: " +
           "`unit`/`receiveUnit` denominate the amount (requires a configured quote provider); " +
           "the response then includes `paymentQuote`.",
@@ -853,8 +853,8 @@ export const openApiSpec = {
           { name: "username", in: "path", required: true, schema: { type: "string" }, description: "LN address local part" },
           { name: "amount", in: "query", required: true, schema: { type: "number" }, description: "Amount — millisatoshis, or the smallest unit of `unit` when set" },
           { name: "comment", in: "query", required: false, schema: { type: "string" }, description: "Optional payer comment" },
-          { name: "paymentOption", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: selected rail id (`arkade`, `onchain`, `satora`, `registered:<type>`, or a token option such as `ff-usdtarbitrum`). Defaults to lightning" },
-          { name: "unit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: denomination unit (e.g. `USD`). Refused on token deposit, Satora, and registered options" },
+          { name: "paymentOption", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: selected rail id (`arkade`, `onchain`, `registered:<type>`, or a token option such as `ff-usdtarbitrum` or `satora-usdcpolygon`). Defaults to lightning" },
+          { name: "unit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: denomination unit (e.g. `USD`). Refused on token deposit and registered options" },
           { name: "receiveUnit", in: "query", required: false, schema: { type: "string" }, description: "LUD-XX: desired receiver unit; the built-in price-feed provider accepts only `msat`" },
           { name: "receiveAmount", in: "query", required: false, schema: { type: "number" }, description: "LUD-XX: what the receiver nets, in millisats of whole sats; `amount` becomes the payer's ceiling. Offline swap only, where the payRequest has `receiveAmountAllowed`; refused with `unit` or a non-lightning `paymentOption`" },
         ],
@@ -890,14 +890,14 @@ export const openApiSpec = {
                       properties: {
                         status: { type: "string", enum: ["OK"] },
                         paymentOption: { type: "string" },
-                        paymentDestination: { type: "string", description: "Rail destination, e.g. an Arkade address, or the provider's deposit address on a token option; on a registered method, the destination the owner registered, verbatim" },
+                        paymentDestination: { type: "string", description: "Rail destination, e.g. an Arkade address or a token deposit address. On Satora the server controls the deposit key. On a registered method, this is the destination the owner registered, verbatim" },
                         paymentQuote: {
                           $ref: "#/components/schemas/PaymentQuote",
                           description:
                             "Token options: payment is the deposit in the token's base units (e.g. USDT), requested and receive stay " +
-                            "in msat, and expiresAt is the payer's deadline, the earlier of the provider's and the corridor invoice's.",
+                            "in msat, and expiresAt is the payer's deposit deadline.",
                         },
-                        provider: { type: "string", description: "Token options: the custodian holding the payer's tokens until it pays (FixedFloat, or Simulated)" },
+                        provider: { type: "string", description: "Token options: the swap provider (FixedFloat, Simulated, or Satora)" },
                         paymentDestinationTag: { type: "string", description: "A memo the deposit must carry. Not sent today: no advertised token chain uses one" },
                         expiresAt: {
                           type: "number",
@@ -917,7 +917,7 @@ export const openApiSpec = {
                           description:
                             "LUD-XX: wallet-executable payment URI carrying the requested amount. The Arkade destination is in " +
                             "`ark=` rather than the address slot, which the scheme reserves for an onchain address; " +
-                            "`amount` is BTC per BIP21. Satora's client derives the stablecoin deposit after requesting an Arkade destination.",
+                            "`amount` is BTC per BIP21. Satora returns an EIP-681 token transfer URI with the exact Polygon USDC amount.",
                         },
                         verify: {
                           type: "string",

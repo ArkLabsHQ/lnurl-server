@@ -32,7 +32,13 @@ importers:
       '@noble/hashes':
         specifier: 2.4.0
         version: 2.4.0
+      '@satora/swap':
+        specifier: 1.10.2
+        version: 1.10.2(typescript@5.9.3)
       '@scure/base':
+        specifier: ^2.4.0
+        version: 2.4.0
+      '@scure/bip39':
         specifier: ^2.4.0
         version: 2.4.0
       '@scure/btc-signer':
@@ -47,13 +53,13 @@ importers:
       nostr-tools:
         specifier: ^2.25.2
         version: 2.25.2(typescript@5.9.3)
+      viem:
+        specifier: 2.52.2
+        version: 2.52.2(typescript@5.9.3)
     devDependencies:
       '@playwright/test':
         specifier: ^1.63.0
         version: 1.63.0
-      '@scure/bip39':
-        specifier: ^2.4.0
-        version: 2.4.0
       '@types/cors':
         specifier: ^2.8.19
         version: 2.8.19
@@ -129,9 +135,6 @@ importers:
       '@arkade-os/swap':
         specifier: 0.1.0-rc.24
         version: 0.1.0-rc.24(nostr-tools@2.25.2(typescript@5.9.3))
-      '@satora/swap':
-        specifier: 1.10.2
-        version: 1.10.2(typescript@5.9.3)
       '@scure/base':
         specifier: ^2.4.0
         version: 2.4.0
@@ -147,9 +150,6 @@ importers:
       react-dom:
         specifier: ^19.3.0
         version: 19.3.0(react@19.3.0)
-      viem:
-        specifier: 2.52.2
-        version: 2.52.2(typescript@5.9.3)
     devDependencies:
       '@types/qrcode':
         specifier: ^1.5.6

@@ -282,11 +282,19 @@ FixedFloat allows 250 request-weight units a minute per key and an order costs 5
 
 ### Stablecoin checkout (Satora, opt-in, mainnet only)
 
-`SATORA_ENABLED=true` adds the `satora` payment option to LN addresses whose Arkade identity uses the supported mainnet operator (`arkade.computer`). It requires `OFFLINE_COVENANT_DESTINATIONS=true`; the server verifies that `ARK_SERVER_URL` uses the same operator signer. The payer can choose Satora or any other option the address advertises.
+`SATORA_ENABLED=true` adds the `satora-usdcpolygon` payment option to LN addresses on the `arkade.computer` mainnet operator. It requires file-backed SQLite, `TOKEN_ENCRYPTION_KEY`, and `OFFLINE_COVENANT_DESTINATIONS=true`. The server checks that `ARK_SERVER_URL` uses the same operator signer.
 
-Request `?amount=<msat>&paymentOption=satora` with an amount in whole sats. The callback returns a unique Arkade `paymentDestination` with `verify`, `verifyBatch`, and `expiresAt`. Call `satoraPaymentTarget(result, amountSat)` from `@arkade-os/lnurl-client` to validate the payout before creating a Satora swap. LNURL starts with the default route's 335–20,000,000 sat range and applies the server and domain bounds.
+Request `?amount=<msat>&paymentOption=satora-usdcpolygon` with an amount in whole sats. The callback uses the same token fields as FixedFloat. `paymentDestination` is a unique Polygon deposit address, `paymentURI` encodes the exact USDC transfer, and `paymentQuote` supplies the amount and deadline. The starting range is 335–20,000,000 sats, subject to server and domain limits.
 
-The demo wallet uses the Satora SDK in the payer’s browser to quote Polygon USDC for the exact Arkade payout. It shows the exact amount and a USDC transfer QR for a per-payment deposit address. The payer’s browser retains the swap key, relays the deposit into Satora’s swap contract, and claims the Arkade output. Keep the browser’s checkout data to resume or recover the same payment. Swap funding can use Satora’s gasless relay, while certain refunds and token recoveries require POL. The LNURL server marks `verify` settled when the matching Arkade destination receives at least the requested amount. [Satora funding and recovery](https://docs.satora.io/advanced/state-machine)
+The payer can close checkout after sending. The server holds the deposit key, watches for the exact amount, relays the deposit into Satora’s contract, and claims Arkade BTC into a per-payment covenant that pays the registered receiver. Verification follows the observed Arkade payout and links to the Polygon transaction that funded the swap when available. Keep the SQLite database and its encryption key backed up together. Turning off `SATORA_ENABLED` stops new quotes while existing swaps continue.
+
+For a late, partial, excess or failed deposit, run the recovery commands on the server with the original database and encryption key. Find the order from the last path segment of the payer's `verify` URL. Inspect the order and confirm a Polygon refund address with the payer before requesting recovery. Refunds may need POL at the deposit address, and an HTLC refund may return WBTC.
+
+```sh
+node dist/cli.js satora list
+node dist/cli.js satora inspect <verify-id>
+node dist/cli.js satora recover <verify-id> <polygon-refund-address>
+```
 
 ## Payment quote (LUD-XX)
 
@@ -438,7 +446,7 @@ A holder who lost a code gets a reissued one: the reservation or free-name code 
 | `FIXEDFLOAT_REFRESH_MS` | `300000` | Rates and currency-list refresh interval. |
 | `FIXEDFLOAT_BASE_URL` / `FIXEDFLOAT_RATES_URL` | `https://ff.io/api/v2` / `https://ff.io/rates/fixed.xml` | FixedFloat's API and public rates export. |
 | `FIXEDFLOAT_SIMULATE` | `false` | `true` runs the simulated provider instead; never on `bitcoin`, never with keys. |
-| `SATORA_ENABLED` | `false` | `true` enables [Satora stablecoin checkout](#stablecoin-checkout-satora-opt-in-mainnet-only) for the `arkade.computer` mainnet operator. Requires `OFFLINE_COVENANT_DESTINATIONS=true`. |
+| `SATORA_ENABLED` | `false` | `true` enables [Satora Polygon USDC checkout](#stablecoin-checkout-satora-opt-in-mainnet-only) with encrypted deposit keys and covenant payouts on `arkade.computer`. |
 | `QUOTE_UNITS` | — | Comma-separated unit codes to quote ([Payment quote](#payment-quote-lud-xx)). Each needs the three settings below. With `DB_PATH`, more can be added at runtime in the admin UI. |
 | `QUOTE_<CODE>_FEED_URL` | — | JSON price feed answering the unit's price per one whole bitcoin. |
 | `QUOTE_<CODE>_DECIMALS` | — | Decimals of the unit's smallest denomination (`2` for USD cents, `6` for USDT). Required: a wrong guess misprices by a power of ten. |

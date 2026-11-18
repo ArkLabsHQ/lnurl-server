@@ -17,7 +17,9 @@ import {
 import { applyQuote, type PaymentQuote, type QuotedAmount } from "../../quote-provider.js";
 import { ffOptionBounds, withTokenUnits } from "../../rails/fixedfloat/options.js";
 import { Strikes } from "../../rails/fixedfloat/client.js";
-import { isSatoraAddress } from "../../rails/satora.js";
+import { isValidAddress } from "../../rails/fixedfloat/catalogue.js";
+import { tokenPaymentUri } from "../../rails/fixedfloat/uri.js";
+import { isSatoraAddress, SATORA_ASSET, SATORA_DECIMALS, SATORA_UNIT, SatoraCapacityError } from "../../rails/satora.js";
 import type { DerivedDestination } from "../../covenant/destination.js";
 import type { AddressRow, DomainRow, LnurlPayDestinationResponse, LnurlPayMetadata } from "../../types/index.js";
 import { LnurlError } from "../errors.js";
@@ -37,7 +39,7 @@ const railStatesFor = (address: { arkadeAddress: string | null; claimPublicKey: 
 export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router {
   const {
     config, sessions, store, settings, logger, currentRailCaps,
-    offlineSwapCreator: creator, offlineSwaps, quoteProvider, covenantDestinations, onDestinationIssued, fixedFloat,
+    offlineSwapCreator: creator, offlineSwaps, quoteProvider, covenantDestinations, onDestinationIssued, fixedFloat, satora,
   } = ctx;
   // Tighter per-IP guard on callback branches that cost resources without a live
   // wallet session: each offline-swap hit asks the solver for a fresh quote, and
@@ -146,7 +148,6 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     const railCaps = currentRailCaps();
     const resolved = resolvePaymentOption(paymentOptionId, address, railCaps.fixedFloat?.rails ?? [], railCaps.network);
     if (resolved.kind === "error") throw new LnurlError(resolved.reason);
-    const satora = resolved.kind === "destination" && resolved.paymentOption === "satora";
     // Per-address rail policy: a disabled rail fails loudly instead of serving.
     const railStates = railStatesFor(address, railCaps);
     if (resolved.kind === "destination" && railStates.get(resolved.paymentOption)?.enabled === false) {
@@ -155,13 +156,12 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     if (resolved.kind === "registered" && railStates.get("registered")?.enabled === false) {
       throw new LnurlError(`paymentOption ${resolved.paymentOption} is disabled for this address`);
     }
-    if (satora && !railStates.get("satora")?.available) throw new LnurlError("paymentOption satora is currently unavailable");
 
     // LUD-XX paymentQuote: a unit-denominated request is quoted to a msat amount by the
     // injected provider. Absent unit ⇒ amount stays msat.
     const unit = strParam(req.query.unit);
     const receiveUnit = strParam(req.query.receiveUnit);
-    if (satora && (req.query.unit !== undefined || req.query.receiveUnit !== undefined)) {
+    if (resolved.kind === "satora" && (req.query.unit !== undefined || req.query.receiveUnit !== undefined)) {
       throw new LnurlError("unit is not supported for this paymentOption");
     }
     // LUD-XX receiveAmount: the receiver nets exactly this and `amount` becomes the payer's ceiling.
@@ -227,6 +227,60 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       return;
     }
 
+    if (resolved.kind === "satora") {
+      const { optionId } = resolved;
+      const unavailable = () => new LnurlError(`paymentOption ${optionId} is currently unavailable`);
+      if (!satora || !covenantDestinations || !address.arkadeAddress || !address.claimPublicKey || !railStates.get("satora")?.available) {
+        throw unavailable();
+      }
+      if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) throw new LnurlError("Too many requests", 429);
+      const bounds = optionBounds(optionId, railAddress, railCaps, base);
+      if (!bounds) throw new LnurlError(`paymentOption ${optionId} cannot take any amount right now`);
+      if (amountMsat < bounds.min || amountMsat > bounds.max) throw new LnurlError(`Amount must be between ${bounds.min} and ${bounds.max} millisats`);
+      if (amountMsat % 1000 !== 0) throw new LnurlError("Amount must be a whole number of satoshis");
+      const { arkadeAddress, claimPublicKey } = address;
+      const verifyId = randomBytes(16).toString("hex");
+      let answer: LnurlPayDestinationResponse;
+      try {
+        const order = await satora.create({
+          addressId: address.id, verifyId, amountSat: amountMsat / 1000,
+          deriveRecipient: async () => {
+            const derived = await covenantDestinations.derive({ arkadeAddress, claimPublicKey });
+            if (!isSatoraAddress(derived.address, railCaps.satoraOperatorKey)) throw unavailable();
+            return derived;
+          },
+        });
+        const { depositAddress, sourceAmount, expiresAt } = order;
+        const expiry = new Date(expiresAt);
+        if (!isValidAddress("eip155", depositAddress) || !/^[1-9][0-9]{0,77}$/.test(sourceAmount) || !(expiry.getTime() > Date.now())) {
+          throw unavailable();
+        }
+        const paymentURI = tokenPaymentUri(SATORA_ASSET, depositAddress, sourceAmount, SATORA_DECIMALS);
+        if (!paymentURI) throw unavailable();
+        const msat = { amount: String(amountMsat), unit: "msat" };
+        store.create({
+          paymentHash: verifyId, pr: "", sessionId: address.sessionId ?? `addr:${address.id}`, addressId: address.id,
+          paymentOption: optionId, paymentDestination: depositAddress, covenantScript: order.covenantScript, amountMsat, expiresAt,
+          ...(comment ? { comment } : {}),
+        });
+        satora.activate(order.swapId);
+        const baseUrl = settings.baseUrl();
+        answer = {
+          status: "OK", paymentOption: optionId, paymentDestination: depositAddress, paymentURI, provider: "Satora",
+          paymentQuote: {
+            requested: msat, payment: { amount: sourceAmount, unit: SATORA_UNIT }, receive: msat, expiresAt: expiry.toISOString(),
+          },
+          verify: `${baseUrl}/lnurl/verify/${verifyId}`, verifyBatch: `${baseUrl}${BATCH_PATH}`,
+        };
+      } catch (err) {
+        if (err instanceof SatoraCapacityError) throw new LnurlError("Too many pending Satora payments, try again shortly", 429);
+        logger.warn("satora_quote_failed", { requestId: res.locals.requestId, verifyId });
+        throw unavailable();
+      }
+      res.json(answer);
+      return;
+    }
+
     if (resolved.kind === "registered") {
       if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) throw new LnurlError("Too many requests", 429);
       if (amountMsat < base.min || amountMsat > base.max) throw new LnurlError(`Amount must be between ${base.min} and ${base.max} millisats`);
@@ -239,7 +293,6 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       // Unauthed store-writing branch — same per-IP guard as the offline-swap branch.
       if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) throw new LnurlError("Too many requests", 429);
       const option = optionBounds(resolved.paymentOption, railAddress, railCaps, base);
-      if (satora && !option) throw new LnurlError("paymentOption satora cannot take any amount right now");
       const bounds = option ?? base;
       if (amountMsat < bounds.min || amountMsat > bounds.max) {
         throw new LnurlError(`Amount must be between ${bounds.min} and ${bounds.max} millisats`);
@@ -253,10 +306,9 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       // observes the payment (follow-up). Keyed by an opaque verify id (not a payment hash).
       // No SSE session needed on a destination rail — the record keeps one only for shape.
       const verifyId = randomBytes(16).toString("hex");
-      // A covenant script identifies a specific Arkade or Satora payment.
       let derived: DerivedDestination | undefined;
       if (
-        (resolved.paymentOption === "arkade" || satora) &&
+        resolved.paymentOption === "arkade" &&
         covenantDestinations && railStates.get("covenant")?.available && address.arkadeAddress && address.claimPublicKey
       ) {
         try {
@@ -265,12 +317,8 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
             claimPublicKey: address.claimPublicKey,
           });
         } catch (err) {
-          if (satora) logger.warn("satora_destination_unavailable", { requestId: res.locals.requestId, error: err });
-          else console.warn(`covenant destination: derivation failed, using the static address:`, err);
+          console.warn(`covenant destination: derivation failed, using the static address:`, err);
         }
-      }
-      if (satora && (!derived || !isSatoraAddress(derived.address, railCaps.satoraOperatorKey))) {
-        throw new LnurlError("Satora payment destination is currently unavailable");
       }
       store.create({
         paymentHash: verifyId,
@@ -295,7 +343,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
         status: "OK",
         paymentOption: resolved.paymentOption,
         paymentDestination: destination,
-        ...(!satora && destination ? { paymentURI: destinationUri(resolved.paymentOption, destination, amountMsat) } : {}),
+        ...(destination ? { paymentURI: destinationUri(resolved.paymentOption, destination, amountMsat) } : {}),
         ...(paymentQuote ? { paymentQuote } : {}),
         // Only for rails this server watches. The onchain rail is a static
         // boarding address nothing here observes, so it has no window to end.

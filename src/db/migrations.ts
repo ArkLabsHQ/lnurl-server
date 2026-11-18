@@ -429,6 +429,45 @@ export const MIGRATIONS: Migration[] = [
       if (!hasColumn(db, "settlements", "comment")) db.exec("ALTER TABLE settlements ADD COLUMN comment TEXT;");
     },
   },
+  {
+    version: 33,
+    up: `
+      CREATE TABLE IF NOT EXISTS satora_orders (
+        id               TEXT PRIMARY KEY,
+        verify_id        TEXT NOT NULL UNIQUE,
+        address_id       INTEGER NOT NULL,
+        amount_sat       INTEGER NOT NULL,
+        destination      TEXT,
+        covenant_script  TEXT,
+        mnemonic         BLOB NOT NULL,
+        swap_id          TEXT UNIQUE,
+        sdk_state        BLOB,
+        deposit_address  TEXT UNIQUE,
+        source_amount    TEXT,
+        provider_status  TEXT,
+        observed_balance TEXT,
+        expires_at       INTEGER NOT NULL,
+        active           INTEGER NOT NULL DEFAULT 0,
+        next_poll_at     INTEGER NOT NULL,
+        fund_started     INTEGER NOT NULL DEFAULT 0,
+        funding_tx_id    TEXT,
+        claim_started    INTEGER NOT NULL DEFAULT 0,
+        claim_candidate_tx_id TEXT,
+        claim_tx_id      TEXT,
+        refund_tx_id     TEXT,
+        refund_withdrawn INTEGER NOT NULL DEFAULT 0,
+        recovery_kind    TEXT,
+        recovery_attempt TEXT,
+        recovery_address TEXT,
+        recovery_tx_id   TEXT,
+        recovery_state   TEXT,
+        created_at       INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_satora_open ON satora_orders(expires_at, address_id) WHERE fund_started = 0;
+      CREATE INDEX IF NOT EXISTS idx_satora_poll ON satora_orders(next_poll_at, id) WHERE active = 1;
+      CREATE INDEX IF NOT EXISTS idx_satora_created ON satora_orders(created_at);
+    `,
+  },
 ];
 
 export const LATEST_MIGRATION = Math.max(...MIGRATIONS.map((m) => m.version));
