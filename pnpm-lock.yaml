@@ -11,6 +11,7 @@ overrides:
   qs: ^6.16.1
   '@arkade-os/sdk': 0.5.0-rc.21
   '@satora/swap>@arkade-os/sdk': 0.5.5
+  viem@2.52.2>ws: 8.21.3
 
 importers:
 
@@ -1992,18 +1993,6 @@ packages:
     resolution: {integrity: sha512-pBjfFqb9j2FBz7NPbnd8r2lOYanEw8ACzfKxOtHCgEGqre5QiTax5XHLVgbsiOvST0vmsHAiMtkJPvsZm77PIQ==}
     engines: {node: '>=10'}
 
-  ws@8.20.1:
-    resolution: {integrity: sha512-It4dO0K5v//JtTXuPkfEOaI3uUN87iYPnqo/ZzqCoG3g8uhA66QUMs/SrM0YK7/NAu+r4LMh/9dq2A7k+rHs+w==}
-    engines: {node: '>=10.0.0'}
-    peerDependencies:
-      bufferutil: ^4.0.1
-      utf-8-validate: '>=5.0.2'
-    peerDependenciesMeta:
-      bufferutil:
-        optional: true
-      utf-8-validate:
-        optional: true
-
   ws@8.21.3:
     resolution: {integrity: sha512-201TZ/kPWxoPr/OKWjquZR1SWKXcvxdH+e1xrx89b3YbmzLMFCLfnaG1HFIgWzJOEWZ7MvpK++odZufgYR50Rw==}
     engines: {node: '>=10.0.0'}
@@ -3017,9 +3006,9 @@ snapshots:
     dependencies:
       ws: 8.21.3
 
-  isows@1.0.7(ws@8.20.1):
+  isows@1.0.7(ws@8.21.3):
     dependencies:
-      ws: 8.20.1
+      ws: 8.21.3
 
   joycon@3.1.1: {}
 
@@ -3659,9 +3648,9 @@ snapshots:
       '@scure/bip32': 1.7.0
       '@scure/bip39': 1.6.0
       abitype: 1.2.3(typescript@5.9.3)
-      isows: 1.0.7(ws@8.20.1)
+      isows: 1.0.7(ws@8.21.3)
       ox: 0.14.29(typescript@5.9.3)
-      ws: 8.20.1
+      ws: 8.21.3
     optionalDependencies:
       typescript: 5.9.3
     transitivePeerDependencies:
@@ -3735,8 +3724,6 @@ snapshots:
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
-
-  ws@8.20.1: {}
 
   ws@8.21.3: {}
 
