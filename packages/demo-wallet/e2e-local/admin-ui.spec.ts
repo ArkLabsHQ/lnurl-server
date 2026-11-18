@@ -112,8 +112,9 @@ test("rails: unchecking one in the Addresses tab removes it from the payRequest"
 
   await page.goto(ADMIN_BASE);
   await tab(page, "Rails").click();
-  await expect(rowWith(page, "Arkade destination")).toContainText("Ready");
-  await expect(rowWith(page, "Covenant destinations")).toContainText("Not configured");
+  const railRow = (label: string) => page.getByRole("row").filter({ has: page.getByRole("cell", { name: label, exact: true }) });
+  await expect(railRow("Arkade destination")).toContainText("Ready");
+  await expect(railRow("Covenant destinations")).toContainText("Not configured");
 
   await tab(page, "Addresses").click();
   await search(page).fill(username);
