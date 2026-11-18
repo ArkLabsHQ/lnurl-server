@@ -14,6 +14,7 @@ import type { CovenantDestinationProvider } from "../covenant/destination.js";
 import type { RuntimeSettings } from "../services/settings.js";
 import type { LnurlServiceConfig } from "../types/index.js";
 import type { FixedFloatDeps } from "../rails/fixedfloat/provider.js";
+import type { SatoraCheckout } from "../rails/satora.js";
 
 export interface ServerDeps {
   repos: Repositories;
@@ -51,13 +52,17 @@ export interface ServerDeps {
   onDestinationIssued?: (destination: string) => void;
   /** Token deposits through a custodial swap provider, paid out over the offline swap rail. */
   fixedFloat?: FixedFloatDeps;
+  satora?: SatoraCheckout;
+  satoraFundingReference?: (verifyId: string) => string | undefined;
+  satoraEnabled?: boolean;
+  satoraOperatorKey?: string;
   health?: HealthRegistry;
   logger?: Logger;
 }
 
 /** What every public router shares, resolved once by `createServer`. */
 export interface ServerContext extends Pick<ServerDeps,
-  "addressService" | "registrationLimiter" | "offlineSwapCreator" | "offlineSwaps" | "covenantDestinations" | "quoteProvider" | "onDestinationIssued" | "fixedFloat"
+  "addressService" | "registrationLimiter" | "offlineSwapCreator" | "offlineSwaps" | "covenantDestinations" | "quoteProvider" | "onDestinationIssued" | "fixedFloat" | "satora" | "satoraFundingReference"
 > {
   config: LnurlServiceConfig;
   /** Absent in library mode: no DB, so no Lightning addresses. */

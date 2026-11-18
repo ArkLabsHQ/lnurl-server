@@ -37,10 +37,12 @@ export function ffPaymentOptions(caps: FfRailCaps, corridor: Bounds, available: 
 
 /** units[] for a payRequest: `units` as given, plus each token unit an option names. A
  *  token option whose code `units` already defines with other decimals is dropped. */
-export function withTokenUnits(options: PaymentOption[], units: Unit[]): { options: PaymentOption[]; units: Unit[] } {
+export function withTokenUnits(
+  options: PaymentOption[], units: Unit[], resolveUnit?: (option: PaymentOption) => Unit | undefined,
+): { options: PaymentOption[]; units: Unit[] } {
   const out = [...units];
   const kept = options.filter((option) => {
-    const token = option.unit ? FF_UNITS[option.unit as TokenUnitCode] : undefined;
+    const token = resolveUnit?.(option) ?? (option.unit ? FF_UNITS[option.unit as TokenUnitCode] : undefined);
     if (!token) return true;
     const existing = out.find((u) => u.code.toUpperCase() === token.code);
     if (existing) return existing.decimals === token.decimals;

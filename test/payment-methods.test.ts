@@ -27,7 +27,7 @@ describe("normalizePaymentMethods", () => {
       expect(isReservedMethodType(type)).toBe(true);
       expect(() => normalizePaymentMethods([{ type, destination: "x" }])).toThrow(/reserved/);
     });
-  it.each([...RAIL_IDS])("reserves the rail id %s, so a new rail fails here until it is listed", (id) => {
+  it.each(RAIL_IDS.filter((id) => id !== "satora"))("reserves the rail id %s", (id) => {
     expect(isReservedMethodType(id)).toBe(true);
     expect(() => normalizePaymentMethods([{ type: id, destination: "x" }])).toThrow(/reserved/);
   });
@@ -70,8 +70,8 @@ describe("normalizePaymentMethods", () => {
 
 describe("parsePaymentMethods", () => {
   it("round-trips through serializePaymentMethods", () => {
-    const methods = [{ type: "shielded", destination: "shrol21abc" }];
-    expect(parsePaymentMethods(serializePaymentMethods(methods))).toEqual(methods);
+    const methods = [{ type: "shielded", destination: "shrol21abc" }, { type: "satora", destination: "my-destination" }];
+    expect(parsePaymentMethods(serializePaymentMethods(normalizePaymentMethods(methods)))).toEqual(methods);
   });
   it("drops corrupt entries instead of throwing", () => {
     expect(parsePaymentMethods('[{"type":"a","destination":"x"},{"type":"B"},7,null]'))

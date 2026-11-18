@@ -225,6 +225,50 @@ describe("loadConfig", () => {
     })).toThrow(/file-backed DB_PATH/);
   });
 
+  it("requires encrypted persistence and covenant destinations for Satora swaps", () => {
+    const withCovenants = {
+      ...base,
+      DB_PATH: "/data/x.db",
+      ALLOW_INSECURE_TOKEN_STORAGE: "1",
+      ARK_SERVER_URL: "https://ark.example",
+      OFFLINE_COVENANT_DESTINATIONS: "true",
+      OFFLINE_EMULATOR_URL: "https://emulator.example",
+    };
+    expect(loadConfig(withCovenants).satoraEnabled).toBeUndefined();
+    expect(loadConfig({ ...withCovenants, SATORA_ENABLED: "false" }).satoraEnabled).toBeUndefined();
+    const enabled = { ...withCovenants, TOKEN_ENCRYPTION_KEY: "ab".repeat(32), SATORA_ENABLED: "true" };
+    expect(loadConfig(enabled)).toMatchObject({
+      satoraEnabled: true, offlineReceive: { enabled: false, covenantDestinations: true },
+    });
+    expect(() => loadConfig({ ...withCovenants, SATORA_ENABLED: "true" })).toThrow(/requires TOKEN_ENCRYPTION_KEY/);
+    expect(() => loadConfig({ ...base, SATORA_ENABLED: "true" })).toThrow(/requires OFFLINE_COVENANT_DESTINATIONS/);
+    expect(() => loadConfig({ ...base, SATORA_ENABLED: "1" })).toThrow(/SATORA_ENABLED must be true or false/);
+  });
+
+  it("requires an explicit per-swap budget with the Satora EVM gas key", () => {
+    const key = `0x${"12".repeat(32)}`;
+    expect(loadConfig({ ...base, SATORA_EVM_GAS_PRIVATE_KEY: key, SATORA_EVM_GAS_MAX_WEI: "2500000000000000" }).satoraEvmGas)
+      .toEqual({ key, maxWei: 2_500_000_000_000_000n });
+    expect(() => loadConfig({ ...base, SATORA_EVM_GAS_PRIVATE_KEY: key })).toThrow(/SATORA_EVM_GAS_MAX_WEI/);
+    expect(() => loadConfig({ ...base, SATORA_EVM_GAS_MAX_WEI: "10" })).toThrow(/SATORA_EVM_GAS_PRIVATE_KEY/);
+  });
+
+  it("validates the Satora EVM RPC map and Solana fee payer together", () => {
+    const env = {
+      ...base,
+      SATORA_EVM_RPC_URLS: '{"50":"https://xdc.example/"}',
+      SATORA_SOLANA_RPC_URL: "https://solana.example/",
+      SATORA_SOLANA_GAS_KEY: "ab".repeat(32),
+      SATORA_SOLANA_GAS_MAX_LAMPORTS: "2000000",
+    };
+    expect(loadConfig(env)).toMatchObject({
+      satoraEvmRpcUrls: { "50": "https://xdc.example/" },
+      satoraSolanaGas: { rpcUrl: "https://solana.example/", keySeed: "ab".repeat(32), maxLamports: 2_000_000n },
+    });
+    expect(() => loadConfig({ ...env, SATORA_EVM_RPC_URLS: "[]" })).toThrow(/SATORA_EVM_RPC_URLS/);
+    expect(() => loadConfig({ ...env, SATORA_SOLANA_GAS_KEY: "abc" })).toThrow(/SATORA_SOLANA_GAS_KEY/);
+  });
+
   it("rejects a non-positive covenant recovery delay rather than building an unspendable leaf", () => {
     const withFlag = (v: string) => ({
       ...base,

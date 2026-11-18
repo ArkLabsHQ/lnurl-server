@@ -105,6 +105,10 @@ export interface AppConfig {
   shutdownTimeoutMs: number;
   offlineReceive: OfflineReceiveConfig;
   fixedFloat?: FixedFloatConfig;
+  satoraEnabled?: boolean;
+  satoraEvmGas?: { key: `0x${string}`; maxWei: bigint };
+  satoraEvmRpcUrls?: Readonly<Record<string, string>>;
+  satoraSolanaGas?: { rpcUrl: string; keySeed: string; maxLamports: bigint };
   /** Units from QUOTE_UNITS; with a DB, more can be added at runtime through the admin API. */
   quotes: QuoteConfig;
 }
@@ -196,6 +200,19 @@ export function loadConfig(env: Env = process.env): AppConfig {
   const adminPort = integer(env, "ADMIN_PORT", 3001, { min: 1, max: 65_535 });
   if (dbPath && adminPort === port) throw new ConfigError("ADMIN_PORT must differ from PORT when DB_PATH is set");
   const fixedFloat = buildFixedFloat(env, dbPath, offlineReceive);
+  const satoraFlag = env.SATORA_ENABLED;
+  if (satoraFlag !== undefined && satoraFlag !== "true" && satoraFlag !== "false") {
+    throw new ConfigError("SATORA_ENABLED must be true or false");
+  }
+  if (satoraFlag === "true" && !offlineReceive.covenantDestinations) {
+    throw new ConfigError("SATORA_ENABLED=true requires OFFLINE_COVENANT_DESTINATIONS=true");
+  }
+  if (satoraFlag === "true" && !tokenEncryptionKey) {
+    throw new ConfigError("SATORA_ENABLED=true requires TOKEN_ENCRYPTION_KEY to protect deposit keys");
+  }
+  const satoraEvmGas = buildSatoraEvmGas(env);
+  const satoraEvmRpcUrls = buildSatoraEvmRpcUrls(env.SATORA_EVM_RPC_URLS);
+  const satoraSolanaGas = buildSatoraSolanaGas(env);
   const quotes = buildQuotes(env);
 
   return {
@@ -225,8 +242,53 @@ export function loadConfig(env: Env = process.env): AppConfig {
     shutdownTimeoutMs: integer(env, "SHUTDOWN_TIMEOUT_MS", 15_000, { min: 1 }),
     offlineReceive,
     ...(fixedFloat ? { fixedFloat } : {}),
+    ...(satoraFlag === "true" ? { satoraEnabled: true } : {}),
+    ...(satoraEvmGas ? { satoraEvmGas } : {}),
+    ...(satoraEvmRpcUrls ? { satoraEvmRpcUrls } : {}),
+    ...(satoraSolanaGas ? { satoraSolanaGas } : {}),
     quotes,
   };
+}
+
+function buildSatoraEvmGas(env: Env): AppConfig["satoraEvmGas"] {
+  const key = env.SATORA_EVM_GAS_PRIVATE_KEY;
+  const maxWei = env.SATORA_EVM_GAS_MAX_WEI;
+  if (!key && !maxWei) return undefined;
+  if (!key || !/^0x[0-9a-f]{64}$/i.test(key) || BigInt(key) === 0n) {
+    throw new ConfigError("SATORA_EVM_GAS_PRIVATE_KEY must be a nonzero 32-byte hex key with the 0x prefix");
+  }
+  if (!maxWei || !/^[1-9][0-9]{0,28}$/.test(maxWei)) {
+    throw new ConfigError("SATORA_EVM_GAS_MAX_WEI must be a positive per-swap gas budget in wei");
+  }
+  return { key: key.toLowerCase() as `0x${string}`, maxWei: BigInt(maxWei) };
+}
+
+function buildSatoraEvmRpcUrls(raw: string | undefined): AppConfig["satoraEvmRpcUrls"] {
+  if (!raw) return undefined;
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { throw new ConfigError("SATORA_EVM_RPC_URLS must be a JSON object mapping chain IDs to URLs"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ConfigError("SATORA_EVM_RPC_URLS must be a JSON object mapping chain IDs to URLs");
+  }
+  return Object.fromEntries(Object.entries(value).map(([chain, url]) => {
+    if (!/^[1-9][0-9]*$/.test(chain) || typeof url !== "string") {
+      throw new ConfigError("SATORA_EVM_RPC_URLS entries require a numeric chain ID and an HTTP(S) URL");
+    }
+    return [chain, httpUrl(url, "SATORA_EVM_RPC_URLS")];
+  }));
+}
+
+function buildSatoraSolanaGas(env: Env): AppConfig["satoraSolanaGas"] {
+  const rpcUrl = env.SATORA_SOLANA_RPC_URL;
+  const key = env.SATORA_SOLANA_GAS_KEY;
+  const maxLamports = env.SATORA_SOLANA_GAS_MAX_LAMPORTS;
+  if (!rpcUrl && !key && !maxLamports) return undefined;
+  if (!rpcUrl) throw new ConfigError("SATORA_SOLANA_RPC_URL is required when configuring Solana gas funding");
+  if (!key || !/^[0-9a-f]{64}$/i.test(key)) throw new ConfigError("SATORA_SOLANA_GAS_KEY must be a 32-byte hex seed");
+  if (!maxLamports || !/^[1-9][0-9]{0,14}$/.test(maxLamports)) {
+    throw new ConfigError("SATORA_SOLANA_GAS_MAX_LAMPORTS must be a positive per-swap gas budget in lamports");
+  }
+  return { rpcUrl: httpUrl(rpcUrl, "SATORA_SOLANA_RPC_URL"), keySeed: key.toLowerCase(), maxLamports: BigInt(maxLamports) };
 }
 
 function buildQuotes(env: Env): QuoteConfig {

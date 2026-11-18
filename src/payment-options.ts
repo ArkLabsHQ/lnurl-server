@@ -1,6 +1,7 @@
 import type { Network } from "@arkade-os/solver-discovery";
 import { matchCaip19Id } from "./caip.js";
 import { REGISTERED_OPTION_PREFIX, type PaymentMethod } from "./payment-methods.js";
+import { satoraSource, type SatoraSource } from "./rails/satora-catalogue.js";
 
 // LUD-XX paymentOptions: advertise multiple payment rails on a LUD-06 payRequest
 // and resolve the wallet's selection. The rail registry lives in ./rails.js -
@@ -21,7 +22,7 @@ export interface PaymentOption {
   asset?: string;
   /** The units[] code a token option is quoted in. */
   unit?: string;
-  /** The third party the payer hands funds to, on a custodial rail. */
+  /** The swap provider for this option. */
   provider?: string;
 }
 
@@ -61,6 +62,7 @@ export type ResolvedPaymentOption =
   | { kind: "lightning" }
   | { kind: "destination"; paymentOption: string; paymentDestination: string }
   | { kind: "fixedfloat"; optionId: string; ffCode: string }
+  | { kind: "satora"; source: SatoraSource }
   | { kind: "registered"; paymentOption: string; methodType: string; paymentDestination: string }
   | { kind: "error"; reason: string };
 
@@ -98,6 +100,10 @@ export function resolvePaymentOption(
     return address.arkadeAddress
       ? { kind: "destination", paymentOption: "arkade", paymentDestination: address.arkadeAddress }
       : { kind: "error", reason: "Unsupported paymentOption" };
+  }
+  const satora = satoraSource(id);
+  if (satora && address.arkadeAddress && address.claimPublicKey) {
+    return { kind: "satora", source: satora };
   }
   if (id === "onchain") {
     return address.boardingAddress

@@ -3,6 +3,45 @@ import { openDb } from "../../src/db/connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
 import { DbSettlementStore, MemorySettlementStore } from "../../src/settlement-store.js";
 import { OfflineSwapStore } from "../../src/offline-swap-store.js";
+import { SATORA_PAYMENT_OPTION } from "../../src/rails/satora.js";
+
+it.each([
+  { paymentOption: SATORA_PAYMENT_OPTION, fundingReference: "polygon-funding", fundingExpiresAt: null, cctpBurn: null },
+  { paymentOption: "satora-retired-chain", fundingReference: "legacy-funding", fundingExpiresAt: null, cctpBurn: null },
+  { paymentOption: "satora-usdcbase", fundingReference: null, fundingExpiresAt: 11_000, cctpBurn: null },
+  { paymentOption: "satora-usdcsolana", fundingReference: null, fundingExpiresAt: null, cctpBurn: "{}" },
+])("keeps in-flight $paymentOption covenants verifiable past the normal watch window", ({ paymentOption, fundingReference, fundingExpiresAt, cctpBurn }) => {
+  const db = openDb(":memory:");
+  try {
+    runMigrations(db);
+    let now = 1_000;
+    const store = new DbSettlementStore(db, 5_000, () => now, 5_000);
+    for (const id of ["funded", "abandoned"]) {
+      store.create({ paymentHash: id, pr: "", sessionId: "s", paymentOption,
+        paymentDestination: `polygon-${id}`, covenantScript: `covenant-${id}`, amountMsat: 1_000_000 });
+      db.prepare(`INSERT INTO satora_orders (id, verify_id, address_id, amount_sat, mnemonic, provider_status,
+        expires_at, active, next_poll_at, fund_started, funding_tx_id, created_at, funding_expires_at, cctp_burn)
+        VALUES (?, ?, 1, 1000, X'00', 'pending', 2000, 1, 2000, ?, ?, 1000, ?, ?)`)
+        .run(id, id, +(id === "funded" && fundingExpiresAt === null), id === "funded" ? fundingReference : null,
+          id === "funded" ? fundingExpiresAt : null, id === "funded" ? cctpBurn : null);
+    }
+    now = 10_000;
+    expect(store.get("abandoned")).toBeUndefined();
+    expect(store.pendingByCovenantScript("covenant-abandoned")).toBeUndefined();
+    expect(store.markObserved("abandoned", "too-late")).toBe(false);
+    expect(store.get("funded")).toMatchObject({ settled: false });
+    expect(store.listActiveCovenantScripts()).toEqual(["covenant-funded"]);
+    expect(store.listLapsedCovenantScripts(20_000, { limit: 10 }).map((r) => r.covenantScript)).toEqual(["covenant-abandoned"]);
+    expect(store.pendingByCovenantScript("covenant-funded")?.paymentHash).toBe("funded");
+    expect(store.markObserved("funded", "arkade-observed")).toBe(true);
+    expect(store.get("funded")).toMatchObject({ settled: true, paymentReference: "arkade-observed" });
+    expect(store.markPaidOut("funded", "arkade-swept")).toBe(true);
+    expect(store.listActiveCovenantScripts()).toEqual([]);
+    expect(store.get("funded")).toMatchObject({ payoutReference: "arkade-swept" });
+  } finally {
+    db.close();
+  }
+});
 
 // Both back the same interface, and the no-DB path is production too, so a
 // caller must not be able to tell which one it holds.

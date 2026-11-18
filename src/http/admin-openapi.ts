@@ -266,7 +266,7 @@ export const adminOpenApiSpec = {
                   sessionId: { type: "string", nullable: true },
                   online: { type: "boolean", description: "Whether the bound session is currently connected" },
                   disabledRails: { type: "array", items: { type: "string" }, description: "Rail ids the operator disabled for this address. Disabling `registered` takes every registered method off the payRequest and refuses a callback for one; the methods stay stored." },
-                  rails: { type: "array", items: { type: "object", properties: { id: { type: "string" }, label: { type: "string" }, enabled: { type: "boolean" }, applicable: { type: "boolean", description: "The address has what the rail needs: an Arkade identity (offline-swap, arkade, covenant, fixedfloat), a boarding address (onchain) or a registered method (registered); always true for interactive-lightning. Unlike `available`, it ignores operator policy and whether the server can serve the rail right now." }, available: { type: "boolean" }, reason: { type: "string", description: "Present when disabled or unavailable" } } }, description: "Effective per-address rail states" },
+                  rails: { type: "array", items: { type: "object", properties: { id: { type: "string" }, label: { type: "string" }, enabled: { type: "boolean" }, applicable: { type: "boolean", description: "The address has the destination the rail needs. Satora requires an Arkade identity on the supported mainnet operator." }, available: { type: "boolean" }, reason: { type: "string", description: "Present when disabled or unavailable" } } }, description: "Effective per-address rail states" },
                   createdAt: { type: "integer" },
                 },
               } },

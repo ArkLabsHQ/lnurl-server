@@ -35,7 +35,7 @@ const MUTINY: ServerRailCaps = { ...FULL, network: "mutinynet" };
 
 describe("rail registry", () => {
   it("names every rail exactly once", () => {
-    expect(RAIL_IDS).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat", "registered"]);
+    expect(RAIL_IDS).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat", "satora", "registered"]);
     expect(new Set(RAIL_IDS).size).toBe(RAIL_IDS.length);
   });
 
@@ -84,7 +84,7 @@ describe("describeServerRails", () => {
 });
 
 describe("effectiveRails", () => {
-  it("serves everything when wired with an identity and empty policy", () => {
+  it("serves the wired rails with an identity and empty policy", () => {
     // onchain keys off the boarding address and registered off a method, not the
     // Arkade identity, so "fully wired" needs all three. Added here and not to
     // IDENTITY, which the advertise tests share and would then always offer both.
@@ -92,7 +92,7 @@ describe("effectiveRails", () => {
       { ...IDENTITY, boardingAddress: "tb1qboarding", paymentMethods: [METHOD] },
       { ...FULL, fixedFloat: { provider: "FixedFloat", ready: true, rails: [] } },
     );
-    expect(states.filter((s) => s.available).map((s) => s.id)).toEqual([...RAIL_IDS]);
+    expect(states.filter((s) => s.available).map((s) => s.id)).toEqual(RAIL_IDS.filter((id) => id !== "satora"));
   });
 
   it("offers the registered rail only once a method is registered", () => {

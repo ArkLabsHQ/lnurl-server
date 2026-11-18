@@ -5,13 +5,12 @@ import { LnurlError } from "../errors.js";
 import { COMMENT_ALLOWED, commentParam, msatParam, strParam } from "../params.js";
 import { buildMetadata, requestSessionInvoice } from "../../services/pay-flow.js";
 import type { ServerContext } from "../server-context.js";
-import { BATCH_PATH, createVerifyBatch } from "../../services/verify-batch.js";
+import { BATCH_PATH, createVerifyBatch, publicVerifyItem } from "../../services/verify-batch.js";
 import { verifyBatchRoutes } from "./verify-batch.js";
 import { applyQuote, type PaymentQuote, type QuotedAmount } from "../../quote-provider.js";
-import { revealedPreimage } from "../../settlement-store.js";
 
 /** LUD-06 pay flow for an interactive session's LNURL, plus LUD-21 verify and LUD-XX verifyBatch. */
-export function lnurlPayRoutes({ config, sessions, store, settings, logger, quoteProvider }: ServerContext): Router {
+export function lnurlPayRoutes({ config, sessions, store, settings, logger, quoteProvider, satoraFundingReference }: ServerContext): Router {
   const r = Router();
   // Light per-IP guard for the public verify-polling endpoint.
   const verifyLimiter = new RateLimiter(120, 60_000);
@@ -23,27 +22,11 @@ export function lnurlPayRoutes({ config, sessions, store, settings, logger, quot
     const hash = req.params.paymentHash.toLowerCase();
     const rec = store.get(hash);
     if (!rec) throw new LnurlError(store.lapsed(hash) ? "Expired" : "Not found");
-    // LUD-XX: non-`pr` options report the destination + a method-specific reference
-    // (e.g. a txid, once observed) instead of a preimage/bolt11.
-    if (rec.paymentOption !== "lightning") {
-      res.json({
-        status: "OK",
-        settled: rec.settled,
-        paymentOption: rec.paymentOption,
-        ...(rec.paymentDestination ? { paymentDestination: rec.paymentDestination } : {}),
-        // Deliberately not payoutReference: verify is public, and on the covenant
-        // rail that txid links the per-payment destination to the user's static
-        // address. Owners read it from the authenticated payments sync.
-        paymentReference: rec.paymentReference,
-        verifyBatch: `${settings.baseUrl()}${BATCH_PATH}`,
-      });
-      return;
-    }
-    res.json({ status: "OK", settled: rec.settled, preimage: revealedPreimage(rec), pr: rec.pr, verifyBatch: `${settings.baseUrl()}${BATCH_PATH}` });
+    res.json({ ...publicVerifyItem(rec, satoraFundingReference), verifyBatch: `${settings.baseUrl()}${BATCH_PATH}` });
   });
 
   // Shares the verify route's limiter; before /lnurl/:id, which would take the literal path.
-  r.use(verifyBatchRoutes(createVerifyBatch({ store, logger, ...(config.verifyBatch ? { config: config.verifyBatch } : {}) }), verifyLimiter));
+  r.use(verifyBatchRoutes(createVerifyBatch({ store, logger, satoraFundingReference, ...(config.verifyBatch ? { config: config.verifyBatch } : {}) }), verifyLimiter));
 
   r.get("/lnurl/:id", (req, res) => {
     const { id } = req.params;

@@ -25,13 +25,15 @@ export interface AdminDeps {
   indexer?: Pick<IndexerProvider, "getVtxos">;
   /** Token deposits, when configured: their rail state and their orders. */
   fixedFloat?: Pick<FixedFloatDeps, "provider" | "rates" | "orders" | "client">;
+  network?: ServerRailCaps["network"];
+  satoraOperatorKey?: string;
   quotes?: QuoteUnits;
   logger?: Logger;
 }
 
 /** Server rail capabilities: what this process wired (the operator view of "it all").
  *  Per-address states ride on the addresses list; policy edits go to /addresses/:id/rails. */
-export function adminRailCaps({ config, discovery, fixedFloat }: AdminDeps): ServerRailCaps {
+export function adminRailCaps({ config, discovery, fixedFloat, network, satoraOperatorKey }: AdminDeps): ServerRailCaps {
   const status = discovery?.status();
   return {
     offlineSwapCreator: config.offlineReceive.enabled,
@@ -40,5 +42,8 @@ export function adminRailCaps({ config, discovery, fixedFloat }: AdminDeps): Ser
     ...(config.offlineReceive.arkServerUrl ? { arkServerUrl: config.offlineReceive.arkServerUrl } : {}),
     covenantDestinations: config.offlineReceive.covenantDestinations,
     ...(fixedFloat ? { fixedFloat: ffRailCaps(fixedFloat) } : {}),
+    network,
+    satoraEnabled: config.satoraEnabled,
+    satoraOperatorKey,
   };
 }

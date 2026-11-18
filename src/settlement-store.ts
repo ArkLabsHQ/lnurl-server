@@ -1,6 +1,7 @@
 import type { Db } from "./db/connection.js";
 import { ArkAddress, type Outpoint } from "@arkade-os/sdk";
 import type { QuotedAmount } from "./quote-provider.js";
+import { isSatoraPaymentOption, SATORA_OPTION_PREFIX } from "./rails/satora.js";
 
 const destinationKey = (destination: string): string => {
   try { return Buffer.from(ArkAddress.decode(destination).pkScript).toString("hex"); }
@@ -188,6 +189,14 @@ const lifetimeOf = (option: string | null | undefined, ttlMs: number, watchMs: n
 
 const expiredAt = (r: SettlementRecord, now: number, ttlMs: number, watchMs: number): boolean =>
   !r.settled && (now - r.createdAt >= lifetimeOf(r.paymentOption, ttlMs, watchMs) || (r.expiresAt !== null && now >= r.expiresAt));
+
+const SATORA_WATCH_ORDER = `o.active = 1 AND (
+  COALESCE(o.funding_expires_at, o.expires_at) > ? OR o.claim_tx_id IS NOT NULL OR (
+    (o.funding_tx_id IS NOT NULL OR o.cctp_burn IS NOT NULL OR o.claim_started = 1) AND o.refund_tx_id IS NULL AND o.provider_status NOT IN (
+      'clientrefunded', 'clientrefundedserverfunded', 'clientrefundedserverrefunded', 'clientredeemedandclientrefunded'
+    )
+  )
+)`;
 
 /** In-memory store used in library / no-DB mode. Expiry hides on read; an
  *  opportunistic sweep on create keeps the map bounded under create-only traffic. */
@@ -497,8 +506,20 @@ export class DbSettlementStore implements SettlementStore {
     // the watch window closes, and telling a payer "unknown" about a payment
     // the watcher would still settle is the wrong answer.
     // Expiry only hides it: a delete here let any payer's verify poll erase a record.
-    if (this.now() - row.created_at >= lifetimeOf(row.payment_option, this.ttlMs, this.destinationWatchMs)) return undefined;
+    const now = this.now();
+    if (now - row.created_at >= lifetimeOf(row.payment_option, this.ttlMs, this.destinationWatchMs)) {
+      if (!isSatoraPaymentOption(row.payment_option)) return undefined;
+      if (row.settled
+        ? Boolean(row.payout_reference) && now - (row.updated_at ?? row.created_at) >= this.destinationWatchMs
+        : !this.watchesSatoraOrder(paymentHash, now)) return undefined;
+    }
     return this.toRecord(row);
+  }
+
+  private watchesSatoraOrder(paymentHash: string, now: number): boolean {
+    return Boolean(this.db.prepare(
+      `SELECT 1 FROM satora_orders o WHERE o.verify_id = ? AND ${SATORA_WATCH_ORDER}`,
+    ).get(paymentHash, now));
   }
 
   private toRecord(row: SettlementRow): SettlementRecord {
@@ -567,12 +588,15 @@ export class DbSettlementStore implements SettlementStore {
     // the single row it can return rather than driving the scan.
     const row = this.db
       .prepare(
-        "SELECT payment_hash, payment_destination, amount_msat, created_at, payment_option, covenant_script FROM settlements WHERE covenant_script = ? AND settled = 0 AND payment_option IS NOT NULL AND payment_option != 'lightning' AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL AND created_at > ?",
+        "SELECT payment_hash, payment_destination, amount_msat, created_at, payment_option, covenant_script FROM settlements WHERE covenant_script = ? AND settled = 0 AND payment_option IS NOT NULL AND payment_option != 'lightning' AND payment_destination IS NOT NULL AND amount_msat IS NOT NULL",
       )
-      .get(script, this.now() - this.destinationWatchMs) as unknown as
+      .get(script) as unknown as
       | { payment_hash: string; payment_destination: string; amount_msat: number; created_at: number; payment_option: string; covenant_script: string | null }
       | undefined;
     if (!row) return undefined;
+    const now = this.now();
+    if (row.created_at <= now - this.destinationWatchMs &&
+        (!isSatoraPaymentOption(row.payment_option) || !this.watchesSatoraOrder(row.payment_hash, now))) return undefined;
     return {
       paymentHash: row.payment_hash,
       paymentDestination: row.payment_destination,
@@ -586,19 +610,25 @@ export class DbSettlementStore implements SettlementStore {
   markObserved(paymentHash: string, reference: string): boolean {
     // Idempotent: a second observation must not overwrite the first's reference.
     const at = this.now();
+    const mark = "UPDATE settlements SET settled = 1, payment_reference = ?, settled_at = ?, updated_at = ?," +
+      " payout_reference = CASE WHEN covenant_script IS NULL THEN ? ELSE payout_reference END" +
+      " WHERE payment_hash = ? AND settled = 0";
     const info = this.db
       .prepare(
-        // payout_reference only where the observed payment IS the credit.
-        "UPDATE settlements SET settled = 1, payment_reference = ?, settled_at = ?, updated_at = ?," +
-          " payout_reference = CASE WHEN covenant_script IS NULL THEN ? ELSE payout_reference END" +
-          " WHERE payment_hash = ? AND settled = 0 AND created_at > ?",
+        mark + " AND created_at > ?",
       )
       // Both callers are destination watchers, so this tracks the watch window
       // rather than the verify TTL. Gating it on the shorter one meant the
       // watcher could find a late payment and then fail to record it, which
       // reads as "no payment" from every angle a caller can see.
       .run(reference, at, at, reference, paymentHash, at - this.destinationWatchMs);
-    return info.changes > 0;
+    if (info.changes > 0) return true;
+    const late = this.db.prepare("SELECT payment_option FROM settlements WHERE payment_hash = ? AND settled = 0")
+      .get(paymentHash) as { payment_option: string } | undefined;
+    if (!isSatoraPaymentOption(late?.payment_option)) return false;
+    return this.db.prepare(mark + ` AND EXISTS (
+      SELECT 1 FROM satora_orders o WHERE o.verify_id = settlements.payment_hash AND ${SATORA_WATCH_ORDER}
+    )`).run(reference, at, at, reference, paymentHash, at).changes > 0;
   }
 
   markPaidOut(paymentHash: string, reference: string): boolean {
@@ -628,10 +658,17 @@ export class DbSettlementStore implements SettlementStore {
     // every never-paid destination. Disjoint on `settled`, so no row appears twice.
     const scoped = "SELECT covenant_script FROM settlements WHERE covenant_script IS NOT NULL AND payout_reference IS NULL";
     const settled = this.db.prepare(`${scoped} AND settled = 1`).all() as unknown as { covenant_script: string }[];
+    const now = this.now();
+    const horizon = now - this.destinationWatchMs;
     const open = this.db
       .prepare(`${scoped} AND settled = 0 AND created_at > ?`)
-      .all(this.now() - this.destinationWatchMs) as unknown as { covenant_script: string }[];
-    return [...settled, ...open].map((r) => r.covenant_script);
+      .all(horizon) as unknown as { covenant_script: string }[];
+    const satora = this.db.prepare(`
+      SELECT s.covenant_script FROM satora_orders o JOIN settlements s ON s.payment_hash = o.verify_id
+      WHERE ${SATORA_WATCH_ORDER} AND s.covenant_script IS NOT NULL
+        AND s.payout_reference IS NULL AND s.settled = 0 AND s.created_at <= ?
+    `).all(now, horizon) as unknown as { covenant_script: string }[];
+    return [...settled, ...open, ...satora].map((r) => r.covenant_script);
   }
 
   listLapsedCovenantScripts(tailMs: number, opts: { limit: number; after?: LapsedCovenant }): LapsedCovenant[] {
@@ -640,18 +677,23 @@ export class DbSettlementStore implements SettlementStore {
     // query (the whole tail blocked the loop 216 ms at 200k rows), and the cursor
     // REPLACING the window's lower bound so it stays the single seek term on created_at
     // — as a row value it read as a filter and re-walked the range, 73 ms a page 100k in.
-    const horizon = this.now() - this.destinationWatchMs;
+    const now = this.now();
+    const horizon = now - this.destinationWatchMs;
     const after = opts.after;
     const rows = this.db
       .prepare(
         "SELECT covenant_script, created_at FROM settlements WHERE covenant_script IS NOT NULL" +
           " AND payout_reference IS NULL AND settled = 0" +
+          ` AND (COALESCE(payment_option, '') NOT GLOB ? OR NOT EXISTS (
+            SELECT 1 FROM satora_orders o WHERE o.verify_id = settlements.payment_hash AND ${SATORA_WATCH_ORDER}
+          ))` +
           (after
             ? " AND created_at >= ? AND created_at <= ? AND (created_at > ? OR covenant_script > ?)"
             : " AND created_at > ? AND created_at <= ?") +
           " ORDER BY created_at, covenant_script LIMIT ?",
       )
       .all(
+        `${SATORA_OPTION_PREFIX}*`, now,
         ...(after
           ? [after.createdAt, horizon, after.createdAt, after.covenantScript, opts.limit]
           : [horizon - tailMs, horizon, opts.limit]),

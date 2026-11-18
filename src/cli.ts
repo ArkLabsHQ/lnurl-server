@@ -82,6 +82,15 @@ async function main(): Promise<void> {
     });
     const settlements = new DbSettlementStore(db, config.verifyTtlMs, undefined, config.destinationWatchMs);
     const off = config.offlineReceive;
+    const { findSatoraFundingReference, hasSatoraOrders, hasPendingSatoraOrders } = await import("./services/satora-store.js");
+    const satoraHasOrders = hasSatoraOrders(db);
+    const runSatora = config.satoraEnabled || hasPendingSatoraOrders(db);
+    if (satoraHasOrders && !config.tokenEncryptionKey) {
+      throw new ConfigError("existing Satora deposits require their original TOKEN_ENCRYPTION_KEY");
+    }
+    if (runSatora && !off.covenantDestinations) {
+      throw new ConfigError("active Satora swaps require covenant destinations");
+    }
     if (off.emulatorUrl) {
       const response = await probeBootEndpoint(`${off.emulatorUrl}/v1/info`, "emulator info endpoint");
       await response.body?.cancel();
@@ -130,6 +139,7 @@ async function main(): Promise<void> {
     let arkUnilateralExitDelay: number | undefined;
     let arkNetwork: unknown;
     let network: import("@arkade-os/solver-discovery").Network | undefined;
+    let satoraOperatorKey: string | undefined;
     // Read for any rail arkd backs, not just the swap one: the arkade and covenant
     // rails face the same dust floor, and a covenant-only deployment never enters
     // the branch below. A dust change is an operator reconfiguring arkd rather
@@ -139,10 +149,23 @@ async function main(): Promise<void> {
       // Bounded: an unreachable arkd that accepts the connection and never answers
       // would otherwise hang boot forever, with no listener and nothing in the log.
       const infoResponse = await probeBootEndpoint(`${off.arkServerUrl}/v1/info`, "Arkade info endpoint");
-      const arkInfo = await infoResponse.json() as { network?: unknown; dust?: unknown; unilateralExitDelay?: unknown };
+      const arkInfo = await infoResponse.json() as { network?: unknown; dust?: unknown; unilateralExitDelay?: unknown; signerPubkey?: unknown };
       arkNetwork = arkInfo.network;
       const { isNetwork } = await import("@arkade-os/solver-discovery");
       if (isNetwork(arkNetwork)) network = arkNetwork;
+      if (runSatora) {
+        const { SATORA_OPERATOR_URL, satoraSignerKey } = await import("./rails/satora.js");
+        const localKey = satoraSignerKey(arkInfo.signerPubkey);
+        if (network !== "bitcoin" || !localKey) throw new ConfigError("Satora requires the supported mainnet Arkade operator");
+        if (off.arkServerUrl !== SATORA_OPERATOR_URL) {
+          const response = await probeBootEndpoint(`${SATORA_OPERATOR_URL}/v1/info`, "Satora Arkade operator info endpoint");
+          const supported = await response.json() as { network?: unknown; signerPubkey?: unknown };
+          if (supported.network !== "bitcoin" || satoraSignerKey(supported.signerPubkey) !== localKey) {
+            throw new ConfigError("Satora requires ARK_SERVER_URL to use the arkade.computer operator signer");
+          }
+        }
+        satoraOperatorKey = localKey;
+      }
       const dust = Number(arkInfo.dust);
       if (Number.isSafeInteger(dust) && dust > 0) arkDustSat = dust;
       const exitDelay = Number(arkInfo.unilateralExitDelay);
@@ -261,6 +284,21 @@ async function main(): Promise<void> {
       const { startContractRetirement } = await import("./workers/covenant-retirement.js");
       runtime.addStop(startContractRetirement(settlements, contracts, 60_000, offlineSwaps).stop);
     }
+    let satora: import("./services/satora.js").SatoraService | undefined;
+    if (runSatora && config.tokenEncryptionKey) {
+      const { configureSatoraEvmRpc } = await import("./rails/satora-evm.js");
+      configureSatoraEvmRpc(config.satoraEvmRpcUrls);
+      const { createSatoraService } = await import("./services/satora.js");
+      const gas = config.satoraEvmGas
+        ? (await import("./services/satora-gas.js")).createSatoraGasSponsor(db, config.satoraEvmGas.key, config.satoraEvmGas.maxWei)
+        : {};
+      const solanaSponsor = config.satoraSolanaGas
+        ? (await import("./rails/satora-solana.js")).createSatoraSolanaSponsor(db, config.satoraSolanaGas)
+        : undefined;
+      satora = createSatoraService({ db, encryptionKey: config.tokenEncryptionKey, logger, ...gas, solanaSponsor });
+      runtime.addStop(satora.start());
+      runtime.addTransport({ close: () => satora!.waitForIdle() });
+    }
     let watchDestination: ((destination: string) => void) | undefined;
     deps = {
       repos,
@@ -278,6 +316,8 @@ async function main(): Promise<void> {
       onchainMinSat: config.onchainMinSendableSats,
       ...(covenantDestinations ? { covenantDestinations } : {}),
       ...(fixedFloat ? { fixedFloat } : {}),
+      ...(config.satoraEnabled && satoraOperatorKey && satora ? { satoraEnabled: true, satoraOperatorKey, satora } : {}),
+      satoraFundingReference: (verifyId) => findSatoraFundingReference(db, verifyId),
       // Late-bound: the watcher is built below, and nothing calls this until the
       // listeners are accepting, which is later still.
       onDestinationIssued: (destination) => watchDestination?.(destination),
@@ -316,7 +356,7 @@ async function main(): Promise<void> {
     const adminIndexer = off.arkServerUrl
       ? new (await import("@arkade-os/sdk")).RestIndexerProvider(off.arkServerUrl)
       : undefined;
-    const adminServer = createAdminServer({ repos, addressService, sessions, settings, config, settlements, discovery: solverDiscovery, ...(adminIndexer ? { indexer: adminIndexer } : {}), ...(fixedFloat ? { fixedFloat } : {}), quotes: quoteUnits, logger }).listen(config.adminPort, config.adminBind, () => {
+    const adminServer = createAdminServer({ repos, addressService, sessions, settings, config, settlements, discovery: solverDiscovery, ...(adminIndexer ? { indexer: adminIndexer } : {}), ...(fixedFloat ? { fixedFloat } : {}), network, satoraOperatorKey, quotes: quoteUnits, logger }).listen(config.adminPort, config.adminBind, () => {
       console.log(`admin server on http://${config.adminBind}:${config.adminPort} (front with a proxy)`);
     });
     runtime.addServer(adminServer);
@@ -383,7 +423,10 @@ async function main(): Promise<void> {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((err) => {
+  const run = process.argv[2] === "satora"
+    ? import("./satora-cli.js").then(({ runSatoraCommand }) => runSatoraCommand(process.argv.slice(3)))
+    : main();
+  run.catch((err) => {
     console.error(err instanceof ConfigError ? `config: ${err.message}` : err);
     process.exit(1);
   });

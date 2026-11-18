@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { Logger } from "../logger.js";
+import { isSatoraPaymentOption } from "../rails/satora.js";
 import { revealedPreimage, type SettlementStore, type SettlementRecord } from "../settlement-store.js";
 
 export const BATCH_PATH = "/lnurl/verifyBatch";
@@ -65,17 +66,24 @@ interface DestinationItem {
   paymentReference: string | null;
 }
 
-function itemShape(rec: SettlementRecord): VerifyBatchItem {
+export function publicVerifyItem(rec: SettlementRecord, satoraFundingReference?: (verifyId: string) => string | undefined): VerifyBatchItem {
   if (rec.paymentOption !== "lightning") {
+    const reference = isSatoraPaymentOption(rec.paymentOption)
+      ? (rec.settled ? satoraFundingReference?.(rec.paymentHash) ?? null : null)
+      : rec.paymentReference;
     return {
       status: "OK",
       settled: rec.settled,
       paymentOption: rec.paymentOption,
       ...(rec.paymentDestination ? { paymentDestination: rec.paymentDestination } : {}),
-      paymentReference: rec.paymentReference,
+      paymentReference: reference,
     };
   }
   return { status: "OK", settled: rec.settled, preimage: revealedPreimage(rec), pr: rec.pr };
+}
+
+function streamComplete(item: VerifyBatchItem): boolean {
+  return item.settled && !("paymentOption" in item && isSatoraPaymentOption(item.paymentOption) && !item.paymentReference);
 }
 
 const UNKNOWN: { status: "ERROR"; reason: "unknown verify url" } = { status: "ERROR", reason: "unknown verify url" };
@@ -129,9 +137,11 @@ export function createVerifyBatch(deps: {
   store: SettlementStore;
   logger: Pick<Logger, "info" | "warn" | "error">;
   config?: Partial<VerifyBatchConfig>;
+  satoraFundingReference?: (verifyId: string) => string | undefined;
 }): VerifyBatch {
   const config: VerifyBatchConfig = { ...DEFAULT_VERIFY_BATCH_CONFIG, ...deps.config };
-  const { store, logger } = deps;
+  const { store, logger, satoraFundingReference } = deps;
+  const itemShape = (rec: SettlementRecord) => publicVerifyItem(rec, satoraFundingReference);
   const sessions = new Map<string, BatchSession>();
   let timer: NodeJS.Timeout | undefined;
 
@@ -160,9 +170,9 @@ export function createVerifyBatch(deps: {
   const track = (url: string): { tracked: Tracked; item: VerifyBatchItem | typeof UNKNOWN } => {
     const key = verifyKeyOf(url);
     const rec = key ? store.get(key) : undefined;
-    return rec
-      ? { tracked: { key: key!, lastSeen: rec.settled ? "settled" : "pending" }, item: itemShape(rec) }
-      : { tracked: { key: "", lastSeen: "unknown" }, item: UNKNOWN };
+    if (!rec) return { tracked: { key: "", lastSeen: "unknown" }, item: UNKNOWN };
+    const item = itemShape(rec);
+    return { tracked: { key: key!, lastSeen: streamComplete(item) ? "settled" : "pending" }, item };
   };
 
   function flushQueue(s: BatchSession): void {
@@ -228,8 +238,10 @@ export function createVerifyBatch(deps: {
           continue;
         }
         if (rec.settled) {
+          const item = itemShape(rec);
+          if (!streamComplete(item)) continue;
           t.lastSeen = "settled";
-          if (!writeFrame(s, frame({ verify: url, ...itemShape(rec) }))) {
+          if (!writeFrame(s, frame({ verify: url, ...item }))) {
             closeSession(s, "transport closed");
             break;
           }

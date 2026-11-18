@@ -82,6 +82,8 @@ describe("chainName", () => {
   it("names a known chain and echoes an unknown chain id", () => {
     const [option] = tokenOptions(payRequest([{ id: "x", type: "eip155", asset: ARB_USDT, unit: "USDT" }]));
     expect(chainName(option!.asset.chainId)).toBe("Arbitrum One");
+    expect(chainName("eip155:130")).toBe("Unichain");
+    expect(chainName("eip155:999")).toBe("HyperEVM");
     expect(chainName("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp")).toBe("Solana");
     expect(chainName("tron:0x2b6653dc")).toBe("Tron");
     expect(chainName("eip155:999999")).toBe("eip155:999999");

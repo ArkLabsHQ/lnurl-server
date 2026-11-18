@@ -14,9 +14,13 @@ import {
   type Bounds,
   type ServerRailCaps,
 } from "../../rails.js";
-import { applyQuote, type PaymentQuote, type QuotedAmount } from "../../quote-provider.js";
+import { applyQuote, type PaymentQuote, type QuotedAmount, type Unit } from "../../quote-provider.js";
 import { ffOptionBounds, withTokenUnits } from "../../rails/fixedfloat/options.js";
 import { Strikes } from "../../rails/fixedfloat/client.js";
+import { isValidAddress } from "../../rails/fixedfloat/catalogue.js";
+import { tokenPaymentUri } from "../../rails/fixedfloat/uri.js";
+import { isSatoraAddress, SatoraCapacityError } from "../../rails/satora.js";
+import { satoraSource } from "../../rails/satora-catalogue.js";
 import type { DerivedDestination } from "../../covenant/destination.js";
 import type { AddressRow, DomainRow, LnurlPayDestinationResponse, LnurlPayMetadata } from "../../types/index.js";
 import { LnurlError } from "../errors.js";
@@ -28,6 +32,17 @@ import { BATCH_PATH } from "../../services/verify-batch.js";
 
 const DEFAULT_DESTINATION_WATCH_MS = 604_800_000;
 
+const SATORA_UNIT_NAMES: Partial<Record<string, string>> = {
+  USDC: "USD Coin", USDT: "Tether USD", EURC: "Euro Coin", EURE: "Monerium EUR emoney", USAT: "Tether USAT", USDT0: "USDT0",
+};
+
+function satoraUnit(optionId: string): Unit | undefined {
+  const source = satoraSource(optionId);
+  if (!source) return undefined;
+  const name = SATORA_UNIT_NAMES[source.unit];
+  return { code: source.unit, decimals: source.decimals, ...(name ? { name } : {}) };
+}
+
 const railStatesFor = (address: { arkadeAddress: string | null; claimPublicKey: string | null; disabledRails: readonly unknown[]; paymentMethods?: readonly PaymentMethod[] }, caps: ServerRailCaps): Map<string, AddressRailState> =>
   new Map(effectiveRails(address, caps).map((s) => [s.id, s]));
 
@@ -36,7 +51,7 @@ const railStatesFor = (address: { arkadeAddress: string | null; claimPublicKey: 
 export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router {
   const {
     config, sessions, store, settings, logger, currentRailCaps,
-    offlineSwapCreator: creator, offlineSwaps, quoteProvider, covenantDestinations, onDestinationIssued, fixedFloat,
+    offlineSwapCreator: creator, offlineSwaps, quoteProvider, covenantDestinations, onDestinationIssued, fixedFloat, satora,
   } = ctx;
   // Tighter per-IP guard on callback branches that cost resources without a live
   // wallet session: each offline-swap hit asks the solver for a fresh quote, and
@@ -78,7 +93,9 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
   const payRequest = (res: Response, domain: DomainRow, address: AddressRow, callback: string): void => {
     const { railAddress, base } = envelope(domain, address);
     const railCaps = currentRailCaps();
-    const { options, units } = withTokenUnits(advertisedRailOptions(railAddress, railCaps, base), quoteProvider?.units() ?? []);
+    const { options, units } = withTokenUnits(
+      advertisedRailOptions(railAddress, railCaps, base), quoteProvider?.units() ?? [], (option) => satoraUnit(option.id),
+    );
     const advertised = advertisedBounds(railAddress, railCaps, base);
     res.json({
       tag: "payRequest",
@@ -158,6 +175,9 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     // injected provider. Absent unit ⇒ amount stays msat.
     const unit = strParam(req.query.unit);
     const receiveUnit = strParam(req.query.receiveUnit);
+    if (resolved.kind === "satora" && (req.query.unit !== undefined || req.query.receiveUnit !== undefined)) {
+      throw new LnurlError("unit is not supported for this paymentOption");
+    }
     // LUD-XX receiveAmount: the receiver nets exactly this and `amount` becomes the payer's ceiling.
     // Only the offline swap can price it; refusing beats a relay invoicing plain `amount`.
     const receiveAmountMsat = req.query.receiveAmount === undefined ? undefined : msatParam(req.query.receiveAmount) ?? 0;
@@ -221,6 +241,65 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       return;
     }
 
+    if (resolved.kind === "satora") {
+      const { source } = resolved;
+      const optionId = source.id;
+      const unavailable = () => new LnurlError(`paymentOption ${optionId} is currently unavailable`);
+      if (!satora || !covenantDestinations || !address.arkadeAddress || !address.claimPublicKey || !railStates.get("satora")?.available) {
+        throw unavailable();
+      }
+      const unit = quoteProvider?.units().find(({ code }) => code.toUpperCase() === source.unit);
+      if (unit && unit.decimals !== source.decimals) throw unavailable();
+      if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) throw new LnurlError("Too many requests", 429);
+      const bounds = optionBounds(optionId, railAddress, railCaps, base);
+      if (!bounds) throw new LnurlError(`paymentOption ${optionId} cannot take any amount right now`);
+      if (amountMsat < bounds.min || amountMsat > bounds.max) throw new LnurlError(`Amount must be between ${bounds.min} and ${bounds.max} millisats`);
+      if (amountMsat % 1000 !== 0) throw new LnurlError("Amount must be a whole number of satoshis");
+      const { arkadeAddress, claimPublicKey } = address;
+      const verifyId = randomBytes(16).toString("hex");
+      let answer: LnurlPayDestinationResponse;
+      try {
+        const order = await satora.create({
+          optionId, addressId: address.id, verifyId, amountSat: amountMsat / 1000,
+          deriveRecipient: async () => {
+            const derived = await covenantDestinations.derive({ arkadeAddress, claimPublicKey });
+            if (!isSatoraAddress(derived.address, railCaps.satoraOperatorKey)) throw unavailable();
+            return derived;
+          },
+        });
+        const { depositAddress, sourceAmount, expiresAt } = order;
+        const expiry = new Date(expiresAt);
+        const maxTokenAmount = 1n << (source.type === "solana" ? 64n : 256n);
+        if (!isValidAddress(source.type, depositAddress) || !/^[1-9][0-9]{0,77}$/.test(sourceAmount) ||
+            BigInt(sourceAmount) >= maxTokenAmount || !(expiry.getTime() > Date.now())) {
+          throw unavailable();
+        }
+        const paymentURI = tokenPaymentUri(source.asset, depositAddress, sourceAmount, source.decimals);
+        if (!paymentURI) throw unavailable();
+        const msat = { amount: String(amountMsat), unit: "msat" };
+        store.create({
+          paymentHash: verifyId, pr: "", sessionId: address.sessionId ?? `addr:${address.id}`, addressId: address.id,
+          paymentOption: optionId, paymentDestination: depositAddress, covenantScript: order.covenantScript, amountMsat, expiresAt,
+          ...(comment ? { comment } : {}),
+        });
+        satora.activate(order.swapId);
+        const baseUrl = settings.baseUrl();
+        answer = {
+          status: "OK", paymentOption: optionId, paymentDestination: depositAddress, paymentURI, provider: "Satora",
+          paymentQuote: {
+            requested: msat, payment: { amount: sourceAmount, unit: source.unit }, receive: msat, expiresAt: expiry.toISOString(),
+          },
+          verify: `${baseUrl}/lnurl/verify/${verifyId}`, verifyBatch: `${baseUrl}${BATCH_PATH}`,
+        };
+      } catch (err) {
+        if (err instanceof SatoraCapacityError) throw new LnurlError("Too many pending Satora payments, try again shortly", 429);
+        logger.warn("satora_quote_failed", { requestId: res.locals.requestId, verifyId });
+        throw unavailable();
+      }
+      res.json(answer);
+      return;
+    }
+
     if (resolved.kind === "registered") {
       if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) throw new LnurlError("Too many requests", 429);
       if (amountMsat < base.min || amountMsat > base.max) throw new LnurlError(`Amount must be between ${base.min} and ${base.max} millisats`);
@@ -232,7 +311,8 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     if (resolved.kind === "destination") {
       // Unauthed store-writing branch — same per-IP guard as the offline-swap branch.
       if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) throw new LnurlError("Too many requests", 429);
-      const bounds = optionBounds(resolved.paymentOption, railAddress, railCaps, base) ?? base;
+      const option = optionBounds(resolved.paymentOption, railAddress, railCaps, base);
+      const bounds = option ?? base;
       if (amountMsat < bounds.min || amountMsat > bounds.max) {
         throw new LnurlError(`Amount must be between ${bounds.min} and ${bounds.max} millisats`);
       }
@@ -245,13 +325,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       // observes the payment (follow-up). Keyed by an opaque verify id (not a payment hash).
       // No SSE session needed on a destination rail — the record keeps one only for shape.
       const verifyId = randomBytes(16).toString("hex");
-      // The script identifies the payment outright. On failure fall back to the
-      // static address: ambiguous, but being paid beats refusing.
       let derived: DerivedDestination | undefined;
-      // Only the arkade rail: a covenant address is an Arkade destination, so
-      // deriving one for any other destination rail replaces that rail's own
-      // address with one on the wrong chain. The onchain rail pays a boarding
-      // address and must keep it.
       if (
         resolved.paymentOption === "arkade" &&
         covenantDestinations && railStates.get("covenant")?.available && address.arkadeAddress && address.claimPublicKey
