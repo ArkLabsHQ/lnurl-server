@@ -211,7 +211,12 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
       pinned.set(swapId, transport);
     }
     if (!transport) throw new Error(`no pinned solver transport for swap ${swapId}`);
-    return (await transport.status(swapId))?.state;
+    try {
+      return (await transport.status(swapId))?.state;
+    } catch (error) {
+      if (recovery && pinned.get(swapId) === transport) await release(swapId);
+      throw error;
+    }
   };
 
   /** The lockup rebuilt from its persisted recovery row — no emulator or network, so operator

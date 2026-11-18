@@ -1,4 +1,4 @@
-import { ArkAddress, CSVMultisigTapscript, MultisigTapscript, SingleKey, Transaction, VtxoScript } from "@arkade-os/sdk";
+import { ArkAddress, ConditionWitness, CSVMultisigTapscript, getArkPsbtFields, MultisigTapscript, SingleKey, Transaction, VtxoScript } from "@arkade-os/sdk";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { ripemd160 } from "@noble/hashes/legacy.js";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -205,7 +205,9 @@ describe("Satora's server signer", () => {
     expect(arkade.getPendingTxs).not.toHaveBeenCalled();
 
     const pending = await arkade.submitTx.mock.results[0].value;
-    sdk.getSwap.mockResolvedValue({ ...originalSwap, status: "clientredeeming" });
+    arkade.getVtxos.mockResolvedValue({ vtxos: [{
+      txid, vout: 0, value: amountSat, isSpent: true, spentBy: "56".repeat(32), arkTxId: candidate,
+    }] });
     arkade.getPendingTxs.mockResolvedValueOnce([{ ...pending, arkTxid: "34".repeat(32) }]);
     const previousFinalizations = arkade.finalizeTx.mock.calls.length;
     await expect(continueSatoraClaim(intent, candidate)).rejects.toThrow("Could not finalize");
@@ -213,5 +215,11 @@ describe("Satora's server signer", () => {
     arkade.getPendingTxs.mockResolvedValueOnce([pending]);
     await expect(continueSatoraClaim(intent, candidate)).resolves.toBe(candidate);
     expect(arkade.finalizeTx).toHaveBeenCalledTimes(previousFinalizations + 1);
+    expect(arkade.submitTx).toHaveBeenCalledTimes(2);
+    const proof = Transaction.fromPSBT(base64.decode(arkade.getPendingTxs.mock.calls[1][0].proof));
+    for (let input = 0; input < proof.inputsLength; input++) {
+      expect(proof.getInput(input).tapScriptSig).toHaveLength(1);
+      expect(getArkPsbtFields(proof, input, ConditionWitness)).toEqual([[preimage]]);
+    }
   });
 });

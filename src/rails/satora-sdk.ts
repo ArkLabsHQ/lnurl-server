@@ -295,30 +295,33 @@ export async function continueSatoraClaim(intent: SatoraIntent, expectedTxId: st
   if (!/^[a-f0-9]{64}$/.test(expectedTxId)) throw new Error("Invalid Satora Arkade claim transaction");
   const { snapshot, stored, originalSwap } = await getOwnedSwap(intent);
   if (snapshot.claimTxId === expectedTxId) return expectedTxId;
-  if (snapshot.status === "serverfunded") {
+  if ((snapshot.status !== "serverfunded" && snapshot.status !== "clientredeeming") ||
+      !claimWindowOpen(originalSwap.vhtlc_refund_locktime)) {
+    throw new Error("Satora has no pending Arkade claim to finalize");
+  }
+  const { vhtlc, signer } = await sdkCall("Could not derive the original Satora lockup", () => claimTerms(stored, originalSwap));
+  const script = vhtlc.pkScript;
+  const { vtxos } = await arkadeIndexer.getVtxos({ scripts: [hex.encode(script)] });
+  const accepted = vtxos.filter((vtxo) => vtxo.isSpent && vtxo.spentBy && vtxo.arkTxId === expectedTxId);
+  const amount = accepted.reduce((sum, vtxo) => sum + BigInt(vtxo.value), 0n);
+  if (amount < BigInt(intent.amountSat) && snapshot.status === "serverfunded") {
     return submitArkadeClaim(intent, stored, originalSwap, async (txid) => {
       if (txid !== expectedTxId) throw new Error("The Arkade claim no longer matches the reserved transaction");
     });
   }
-  if (snapshot.status !== "clientredeeming" || !claimWindowOpen(originalSwap.vhtlc_refund_locktime)) {
-    throw new Error("Satora has no pending Arkade claim to finalize");
-  }
+  if (amount < BigInt(intent.amountSat)) throw new Error("The indexer has not observed the reserved Arkade claim");
   return sdkCall("Could not finalize the pending Satora Arkade claim", async () => {
-    const { vhtlc, signer } = await claimTerms(stored, originalSwap);
-    const script = vhtlc.pkScript;
     const tapLeafScript = vhtlc.claim();
-    const { vtxos } = await arkadeIndexer.getVtxos({ scripts: [hex.encode(script)] });
-    if (vtxos.length === 0) throw new Error("The Arkade lockup has no known VTXOs");
     const message: Intent.GetPendingTxMessage = { type: "get-pending-tx", expire_at: Math.floor(Date.now() / 1000) + 120 };
-    const proof = Intent.create(message, vtxos.map((vtxo) => ({
+    const proof = Intent.create(message, accepted.map((vtxo) => ({
       txid: hex.decode(vtxo.txid),
       index: vtxo.vout,
       witnessUtxo: { script, amount: BigInt(vtxo.value) },
       tapLeafScript: [tapLeafScript],
       sighashType: SigHash.ALL,
     })));
-    vtxos.forEach((_, i) => setArkPsbtField(proof, i + 1, VtxoTaprootTree, vhtlc.encode()));
-    const signedProof = await signer.sign(proof, vtxos.map((_, i) => i + 1));
+    accepted.forEach((_, i) => setArkPsbtField(proof, i + 1, VtxoTaprootTree, vhtlc.encode()));
+    const signedProof = await signer.sign(proof);
     const pending = (await arkadeProvider.getPendingTxs({ message, proof: base64.encode(signedProof.toPSBT()) }))
       .find((tx) => tx.arkTxid === expectedTxId);
     if (!pending) throw new Error("The reserved Arkade claim is not pending");
