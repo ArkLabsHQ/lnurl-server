@@ -5,19 +5,25 @@ import { DbSettlementStore, MemorySettlementStore } from "../../src/settlement-s
 import { OfflineSwapStore } from "../../src/offline-swap-store.js";
 import { SATORA_PAYMENT_OPTION } from "../../src/rails/satora.js";
 
-it("keeps a funded Satora covenant verifiable past the normal watch window", () => {
+it.each([
+  { paymentOption: SATORA_PAYMENT_OPTION, fundingReference: "polygon-funding", fundingExpiresAt: null, cctpBurn: null },
+  { paymentOption: "satora-retired-chain", fundingReference: "legacy-funding", fundingExpiresAt: null, cctpBurn: null },
+  { paymentOption: "satora-usdcbase", fundingReference: null, fundingExpiresAt: 11_000, cctpBurn: null },
+  { paymentOption: "satora-usdcsolana", fundingReference: null, fundingExpiresAt: null, cctpBurn: "{}" },
+])("keeps in-flight $paymentOption covenants verifiable past the normal watch window", ({ paymentOption, fundingReference, fundingExpiresAt, cctpBurn }) => {
   const db = openDb(":memory:");
   try {
     runMigrations(db);
     let now = 1_000;
     const store = new DbSettlementStore(db, 5_000, () => now, 5_000);
     for (const id of ["funded", "abandoned"]) {
-      store.create({ paymentHash: id, pr: "", sessionId: "s", paymentOption: SATORA_PAYMENT_OPTION,
+      store.create({ paymentHash: id, pr: "", sessionId: "s", paymentOption,
         paymentDestination: `polygon-${id}`, covenantScript: `covenant-${id}`, amountMsat: 1_000_000 });
       db.prepare(`INSERT INTO satora_orders (id, verify_id, address_id, amount_sat, mnemonic, provider_status,
-        expires_at, active, next_poll_at, fund_started, funding_tx_id, created_at)
-        VALUES (?, ?, 1, 1000, X'00', 'pending', 2000, 1, 2000, ?, ?, 1000)`)
-        .run(id, id, +(id === "funded"), id === "funded" ? "polygon-funding" : null);
+        expires_at, active, next_poll_at, fund_started, funding_tx_id, created_at, funding_expires_at, cctp_burn)
+        VALUES (?, ?, 1, 1000, X'00', 'pending', 2000, 1, 2000, ?, ?, 1000, ?, ?)`)
+        .run(id, id, +(id === "funded" && fundingExpiresAt === null), id === "funded" ? fundingReference : null,
+          id === "funded" ? fundingExpiresAt : null, id === "funded" ? cctpBurn : null);
     }
     now = 10_000;
     expect(store.get("abandoned")).toBeUndefined();

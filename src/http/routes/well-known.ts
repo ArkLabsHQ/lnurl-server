@@ -14,12 +14,13 @@ import {
   type Bounds,
   type ServerRailCaps,
 } from "../../rails.js";
-import { applyQuote, type PaymentQuote, type QuotedAmount } from "../../quote-provider.js";
+import { applyQuote, type PaymentQuote, type QuotedAmount, type Unit } from "../../quote-provider.js";
 import { ffOptionBounds, withTokenUnits } from "../../rails/fixedfloat/options.js";
 import { Strikes } from "../../rails/fixedfloat/client.js";
 import { isValidAddress } from "../../rails/fixedfloat/catalogue.js";
 import { tokenPaymentUri } from "../../rails/fixedfloat/uri.js";
-import { isSatoraAddress, SATORA_ASSET, SATORA_DECIMALS, SATORA_UNIT, SatoraCapacityError } from "../../rails/satora.js";
+import { isSatoraAddress, SatoraCapacityError } from "../../rails/satora.js";
+import { satoraSource } from "../../rails/satora-catalogue.js";
 import type { DerivedDestination } from "../../covenant/destination.js";
 import type { AddressRow, DomainRow, LnurlPayDestinationResponse, LnurlPayMetadata } from "../../types/index.js";
 import { LnurlError } from "../errors.js";
@@ -30,6 +31,17 @@ import { isNameless } from "../../services/addresses.js";
 import { BATCH_PATH } from "../../services/verify-batch.js";
 
 const DEFAULT_DESTINATION_WATCH_MS = 604_800_000;
+
+const SATORA_UNIT_NAMES: Partial<Record<string, string>> = {
+  USDC: "USD Coin", USDT: "Tether USD", EURC: "Euro Coin", EURE: "Monerium EUR emoney", USAT: "Tether USAT", USDT0: "USDT0",
+};
+
+function satoraUnit(optionId: string): Unit | undefined {
+  const source = satoraSource(optionId);
+  if (!source) return undefined;
+  const name = SATORA_UNIT_NAMES[source.unit];
+  return { code: source.unit, decimals: source.decimals, ...(name ? { name } : {}) };
+}
 
 const railStatesFor = (address: { arkadeAddress: string | null; claimPublicKey: string | null; disabledRails: readonly unknown[]; paymentMethods?: readonly PaymentMethod[] }, caps: ServerRailCaps): Map<string, AddressRailState> =>
   new Map(effectiveRails(address, caps).map((s) => [s.id, s]));
@@ -81,7 +93,9 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
   const payRequest = (res: Response, domain: DomainRow, address: AddressRow, callback: string): void => {
     const { railAddress, base } = envelope(domain, address);
     const railCaps = currentRailCaps();
-    const { options, units } = withTokenUnits(advertisedRailOptions(railAddress, railCaps, base), quoteProvider?.units() ?? []);
+    const { options, units } = withTokenUnits(
+      advertisedRailOptions(railAddress, railCaps, base), quoteProvider?.units() ?? [], (option) => satoraUnit(option.id),
+    );
     const advertised = advertisedBounds(railAddress, railCaps, base);
     res.json({
       tag: "payRequest",
@@ -228,11 +242,14 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     }
 
     if (resolved.kind === "satora") {
-      const { optionId } = resolved;
+      const { source } = resolved;
+      const optionId = source.id;
       const unavailable = () => new LnurlError(`paymentOption ${optionId} is currently unavailable`);
       if (!satora || !covenantDestinations || !address.arkadeAddress || !address.claimPublicKey || !railStates.get("satora")?.available) {
         throw unavailable();
       }
+      const unit = quoteProvider?.units().find(({ code }) => code.toUpperCase() === source.unit);
+      if (unit && unit.decimals !== source.decimals) throw unavailable();
       if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) throw new LnurlError("Too many requests", 429);
       const bounds = optionBounds(optionId, railAddress, railCaps, base);
       if (!bounds) throw new LnurlError(`paymentOption ${optionId} cannot take any amount right now`);
@@ -243,7 +260,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       let answer: LnurlPayDestinationResponse;
       try {
         const order = await satora.create({
-          addressId: address.id, verifyId, amountSat: amountMsat / 1000,
+          optionId, addressId: address.id, verifyId, amountSat: amountMsat / 1000,
           deriveRecipient: async () => {
             const derived = await covenantDestinations.derive({ arkadeAddress, claimPublicKey });
             if (!isSatoraAddress(derived.address, railCaps.satoraOperatorKey)) throw unavailable();
@@ -252,10 +269,12 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
         });
         const { depositAddress, sourceAmount, expiresAt } = order;
         const expiry = new Date(expiresAt);
-        if (!isValidAddress("eip155", depositAddress) || !/^[1-9][0-9]{0,77}$/.test(sourceAmount) || !(expiry.getTime() > Date.now())) {
+        const maxTokenAmount = 1n << (source.type === "solana" ? 64n : 256n);
+        if (!isValidAddress(source.type, depositAddress) || !/^[1-9][0-9]{0,77}$/.test(sourceAmount) ||
+            BigInt(sourceAmount) >= maxTokenAmount || !(expiry.getTime() > Date.now())) {
           throw unavailable();
         }
-        const paymentURI = tokenPaymentUri(SATORA_ASSET, depositAddress, sourceAmount, SATORA_DECIMALS);
+        const paymentURI = tokenPaymentUri(source.asset, depositAddress, sourceAmount, source.decimals);
         if (!paymentURI) throw unavailable();
         const msat = { amount: String(amountMsat), unit: "msat" };
         store.create({
@@ -268,7 +287,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
         answer = {
           status: "OK", paymentOption: optionId, paymentDestination: depositAddress, paymentURI, provider: "Satora",
           paymentQuote: {
-            requested: msat, payment: { amount: sourceAmount, unit: SATORA_UNIT }, receive: msat, expiresAt: expiry.toISOString(),
+            requested: msat, payment: { amount: sourceAmount, unit: source.unit }, receive: msat, expiresAt: expiry.toISOString(),
           },
           verify: `${baseUrl}/lnurl/verify/${verifyId}`, verifyBatch: `${baseUrl}${BATCH_PATH}`,
         };

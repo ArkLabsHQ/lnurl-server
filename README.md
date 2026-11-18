@@ -282,19 +282,32 @@ FixedFloat allows 250 request-weight units a minute per key and an order costs 5
 
 ### Stablecoin checkout (Satora, opt-in, mainnet only)
 
-`SATORA_ENABLED=true` adds the `satora-usdcpolygon` payment option to LN addresses on the `arkade.computer` mainnet operator. It requires file-backed SQLite, `TOKEN_ENCRYPTION_KEY`, and `OFFLINE_COVENANT_DESTINATIONS=true`. The server checks that `ARK_SERVER_URL` uses the same operator signer.
+`SATORA_ENABLED=true` adds stablecoin checkout to LN addresses on the `arkade.computer` mainnet operator. It requires file-backed SQLite, `TOKEN_ENCRYPTION_KEY`, and `OFFLINE_COVENANT_DESTINATIONS=true`. The server checks that `ARK_SERVER_URL` uses the same operator signer.
 
-Request `?amount=<msat>&paymentOption=satora-usdcpolygon` with an amount in whole sats. The callback uses the same token fields as FixedFloat. `paymentDestination` is a unique Polygon deposit address, `paymentURI` encodes the exact USDC transfer, and `paymentQuote` supplies the amount and deadline. The starting range is 335–20,000,000 sats, subject to server and domain limits.
+| Source network | Stablecoins |
+| --- | --- |
+| Polygon | USDC, USDT0 |
+| Arbitrum | USDC, USDT0, EURe |
+| Ethereum | USDC, USDT, EURC, USAT |
+| Avalanche, Base, HyperEVM, Ink, Linea, Monad, Optimism, Sei, Sonic, Unichain, World Chain, XDC | Native USDC via Circle CCTP |
+| Solana | Native USDC via Circle CCTP |
 
-The payer can close checkout after sending. The server holds the deposit key, watches for the exact amount, relays the deposit into Satora’s contract, and claims Arkade BTC into a per-payment covenant that pays the registered receiver. Verification follows the observed Arkade payout and links to the Polygon transaction that funded the swap when available. Keep the SQLite database and its encryption key backed up together. Turning off `SATORA_ENABLED` stops new quotes while existing swaps continue.
+The server offers Ethereum USDT and the EVM CCTP routes when an EVM gas wallet and per-swap budget are configured. Fund that wallet with the native gas token on each network you want to serve. XDC also needs an RPC override for chain ID `50` that serves finalized block reads. Solana needs a separate SOL fee wallet and a mainnet RPC. Checkout checks the relevant fee wallet's balance before exposing a deposit address.
 
-For a late, partial, excess or failed deposit, run the recovery commands on the server with the original database and encryption key. Find the order from the last path segment of the payer's `verify` URL. Inspect the order and confirm a Polygon refund address with the payer before requesting recovery. Refunds may need POL at the deposit address, and an HTLC refund may return WBTC.
+Select an advertised option such as `?amount=<msat>&paymentOption=satora-usdcpolygon` with an amount in whole sats. The callback uses the same token fields as FixedFloat. `paymentDestination` is a unique deposit address, `paymentURI` encodes the exact transfer, and `paymentQuote` supplies the amount and deadline. The starting range is 335–20,000,000 sats, subject to the server, domain, and provider limits.
+
+After the payer sends, the server uses the encrypted per-payment key to complete the swap and claim BTC into a covenant that pays the registered Arkade receiver. Verification follows the observed Arkade payout and reports the funding transaction on the deposit network when available. Keep the SQLite database and its encryption key backed up together. Turning off `SATORA_ENABLED` stops new quotes while existing swaps continue. Keep the original Arkade operator configured until the pending covenants have paid out.
+
+For a late, partial, excess or failed deposit, find the order from the last path segment of the payer's `verify` URL. Inspect it before requesting recovery. Confirm the refund address with the payer on the deposit network before a bridge burn, or on Arbitrum after a CCTP burn or settlement-side refund. An HTLC refund can return the asset that was locked on the settlement chain.
 
 ```sh
 node dist/cli.js satora list
 node dist/cli.js satora inspect <verify-id>
-node dist/cli.js satora recover <verify-id> <polygon-refund-address>
+node dist/cli.js satora recover <verify-id> <refund-address>
+node dist/cli.js satora reconcile <verify-id> <arbitrum-tx-hash>
 ```
+
+Use `reconcile` when an Arbitrum recovery transfer completed but its submission response was lost. The command checks the finalized transfer against the bound recipient.
 
 ## Payment quote (LUD-XX)
 
@@ -446,7 +459,13 @@ A holder who lost a code gets a reissued one: the reservation or free-name code 
 | `FIXEDFLOAT_REFRESH_MS` | `300000` | Rates and currency-list refresh interval. |
 | `FIXEDFLOAT_BASE_URL` / `FIXEDFLOAT_RATES_URL` | `https://ff.io/api/v2` / `https://ff.io/rates/fixed.xml` | FixedFloat's API and public rates export. |
 | `FIXEDFLOAT_SIMULATE` | `false` | `true` runs the simulated provider instead; never on `bitcoin`, never with keys. |
-| `SATORA_ENABLED` | `false` | `true` enables [Satora Polygon USDC checkout](#stablecoin-checkout-satora-opt-in-mainnet-only) with encrypted deposit keys and covenant payouts on `arkade.computer`. |
+| `SATORA_ENABLED` | `false` | `true` enables [Satora stablecoin checkout](#stablecoin-checkout-satora-opt-in-mainnet-only) with encrypted deposit keys and covenant payouts on `arkade.computer`. |
+| `SATORA_EVM_GAS_PRIVATE_KEY` | — | Dedicated 32-byte EVM fee wallet key in `0x`-prefixed hex for Ethereum USDT and Circle CCTP source transactions. |
+| `SATORA_EVM_GAS_MAX_WEI` | — | Maximum per-order top-up and its EVM execution gas in native wei. Chains may bill a separate data fee. |
+| `SATORA_EVM_RPC_URLS` | — | JSON object of EVM chain ID to RPC URL overrides, such as `{"50":"https://xdc-rpc.example.com"}`. |
+| `SATORA_SOLANA_RPC_URL` | — | Mainnet Solana RPC for USDC deposit observation, CCTP burns, and pre-burn refunds. |
+| `SATORA_SOLANA_GAS_KEY` | — | Dedicated Solana fee wallet's 32-byte Ed25519 seed in hex. |
+| `SATORA_SOLANA_GAS_MAX_LAMPORTS` | — | Per-order Solana gas sponsorship budget in lamports. |
 | `QUOTE_UNITS` | — | Comma-separated unit codes to quote ([Payment quote](#payment-quote-lud-xx)). Each needs the three settings below. With `DB_PATH`, more can be added at runtime in the admin UI. |
 | `QUOTE_<CODE>_FEED_URL` | — | JSON price feed answering the unit's price per one whole bitcoin. |
 | `QUOTE_<CODE>_DECIMALS` | — | Decimals of the unit's smallest denomination (`2` for USD cents, `6` for USDT). Required: a wrong guess misprices by a power of ten. |

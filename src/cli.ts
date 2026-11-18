@@ -286,8 +286,16 @@ async function main(): Promise<void> {
     }
     let satora: import("./services/satora.js").SatoraService | undefined;
     if (runSatora && config.tokenEncryptionKey) {
+      const { configureSatoraEvmRpc } = await import("./rails/satora-evm.js");
+      configureSatoraEvmRpc(config.satoraEvmRpcUrls);
       const { createSatoraService } = await import("./services/satora.js");
-      satora = createSatoraService({ db, encryptionKey: config.tokenEncryptionKey, logger });
+      const gas = config.satoraEvmGas
+        ? (await import("./services/satora-gas.js")).createSatoraGasSponsor(db, config.satoraEvmGas.key, config.satoraEvmGas.maxWei)
+        : {};
+      const solanaSponsor = config.satoraSolanaGas
+        ? (await import("./rails/satora-solana.js")).createSatoraSolanaSponsor(db, config.satoraSolanaGas)
+        : undefined;
+      satora = createSatoraService({ db, encryptionKey: config.tokenEncryptionKey, logger, ...gas, solanaSponsor });
       runtime.addStop(satora.start());
       runtime.addTransport({ close: () => satora!.waitForIdle() });
     }

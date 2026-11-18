@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
-- **Satora stablecoin checkout** — optional mainnet receive rail for Polygon USDC. Checkout shows the exact amount and a deposit QR. The server holds an encrypted per-payment key and completes the swap to the registered Arkade receiver after the payer sends.
+- **Satora stablecoin checkout** — the payer can send supported stablecoins from multiple networks and the registered receiver gets Arkade BTC. Checkout shows an exact quote and deposit QR. The server holds the encrypted per-payment key and completes the swap after the payer sends.
 - **`@arkade-os/lnurl-client` 0.9.1: `owned({ handle })` picks the address a wallet uses** — `owned()` returns the active address with that handle when the identity owns one, and otherwise falls back as before, to the session address first. A wallet holding several addresses can keep the one its user chose as primary across restarts.
 - **Setting up an address domain** — `docs/domains.md` lists the payer paths a domain must route to the server with `Host` intact, what stays on `BASE_URL`, and the setup for a domain used only for addresses, one that already serves a site, and one on Cloudflare Pages.
 - **Reissue a lost claim code** — a reserved name's code, and a free-name code nobody has used, can be replaced from the admin UI (**Reissue code** on the address, **Reissue** under Claim codes) or the admin API (`POST /admin/api/addresses/:id/claim-code`, `POST /admin/api/claim-codes/:id/reissue`). The new code is shown once and the old one stops working. Before, a reserved name had to be deleted and reserved again, which freed the name in between and dropped its rail policy.

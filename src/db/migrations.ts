@@ -468,6 +468,49 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_satora_created ON satora_orders(created_at);
     `,
   },
+  {
+    version: 34,
+    up: (db) => {
+      if (!hasColumn(db, "satora_orders", "payment_option")) {
+        db.exec("ALTER TABLE satora_orders ADD COLUMN payment_option TEXT NOT NULL DEFAULT 'satora-usdcpolygon';");
+      }
+      if (!hasColumn(db, "satora_orders", "funding_expires_at")) {
+        db.exec("ALTER TABLE satora_orders ADD COLUMN funding_expires_at INTEGER;");
+      }
+      if (!hasColumn(db, "satora_orders", "cctp_burn")) {
+        db.exec("ALTER TABLE satora_orders ADD COLUMN cctp_burn BLOB;");
+      }
+      if (!hasColumn(db, "satora_orders", "bridge_recovery_address")) {
+        db.exec("ALTER TABLE satora_orders ADD COLUMN bridge_recovery_address TEXT;");
+      }
+      if (!hasColumn(db, "satora_orders", "recovery_lease_until")) {
+        db.exec("ALTER TABLE satora_orders ADD COLUMN recovery_lease_until INTEGER;");
+      }
+    },
+  },
+  {
+    version: 35,
+    up: `
+      CREATE TABLE IF NOT EXISTS satora_gas_topups (
+        swap_id TEXT PRIMARY KEY,
+        chain TEXT NOT NULL,
+        sender TEXT NOT NULL,
+        recipient TEXT NOT NULL,
+        nonce INTEGER NOT NULL,
+        hash TEXT NOT NULL,
+        raw_tx TEXT NOT NULL,
+        UNIQUE (chain, sender, nonce)
+      );
+      CREATE TABLE IF NOT EXISTS satora_solana_topups (
+        swap_id TEXT PRIMARY KEY,
+        sender TEXT NOT NULL,
+        recipient TEXT NOT NULL,
+        signature TEXT NOT NULL,
+        raw_tx TEXT NOT NULL,
+        last_valid_height INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 export const LATEST_MIGRATION = Math.max(...MIGRATIONS.map((m) => m.version));

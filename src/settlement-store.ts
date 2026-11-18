@@ -1,7 +1,7 @@
 import type { Db } from "./db/connection.js";
 import { ArkAddress, type Outpoint } from "@arkade-os/sdk";
 import type { QuotedAmount } from "./quote-provider.js";
-import { SATORA_PAYMENT_OPTION } from "./rails/satora.js";
+import { isSatoraPaymentOption, SATORA_OPTION_PREFIX } from "./rails/satora.js";
 
 const destinationKey = (destination: string): string => {
   try { return Buffer.from(ArkAddress.decode(destination).pkScript).toString("hex"); }
@@ -191,8 +191,8 @@ const expiredAt = (r: SettlementRecord, now: number, ttlMs: number, watchMs: num
   !r.settled && (now - r.createdAt >= lifetimeOf(r.paymentOption, ttlMs, watchMs) || (r.expiresAt !== null && now >= r.expiresAt));
 
 const SATORA_WATCH_ORDER = `o.active = 1 AND (
-  o.expires_at > ? OR o.claim_tx_id IS NOT NULL OR (
-    (o.funding_tx_id IS NOT NULL OR o.claim_started = 1) AND o.refund_tx_id IS NULL AND o.provider_status NOT IN (
+  COALESCE(o.funding_expires_at, o.expires_at) > ? OR o.claim_tx_id IS NOT NULL OR (
+    (o.funding_tx_id IS NOT NULL OR o.cctp_burn IS NOT NULL OR o.claim_started = 1) AND o.refund_tx_id IS NULL AND o.provider_status NOT IN (
       'clientrefunded', 'clientrefundedserverfunded', 'clientrefundedserverrefunded', 'clientredeemedandclientrefunded'
     )
   )
@@ -508,7 +508,7 @@ export class DbSettlementStore implements SettlementStore {
     // Expiry only hides it: a delete here let any payer's verify poll erase a record.
     const now = this.now();
     if (now - row.created_at >= lifetimeOf(row.payment_option, this.ttlMs, this.destinationWatchMs)) {
-      if (row.payment_option !== SATORA_PAYMENT_OPTION) return undefined;
+      if (!isSatoraPaymentOption(row.payment_option)) return undefined;
       if (row.settled
         ? Boolean(row.payout_reference) && now - (row.updated_at ?? row.created_at) >= this.destinationWatchMs
         : !this.watchesSatoraOrder(paymentHash, now)) return undefined;
@@ -596,7 +596,7 @@ export class DbSettlementStore implements SettlementStore {
     if (!row) return undefined;
     const now = this.now();
     if (row.created_at <= now - this.destinationWatchMs &&
-        (row.payment_option !== SATORA_PAYMENT_OPTION || !this.watchesSatoraOrder(row.payment_hash, now))) return undefined;
+        (!isSatoraPaymentOption(row.payment_option) || !this.watchesSatoraOrder(row.payment_hash, now))) return undefined;
     return {
       paymentHash: row.payment_hash,
       paymentDestination: row.payment_destination,
@@ -625,7 +625,7 @@ export class DbSettlementStore implements SettlementStore {
     if (info.changes > 0) return true;
     const late = this.db.prepare("SELECT payment_option FROM settlements WHERE payment_hash = ? AND settled = 0")
       .get(paymentHash) as { payment_option: string } | undefined;
-    if (late?.payment_option !== SATORA_PAYMENT_OPTION) return false;
+    if (!isSatoraPaymentOption(late?.payment_option)) return false;
     return this.db.prepare(mark + ` AND EXISTS (
       SELECT 1 FROM satora_orders o WHERE o.verify_id = settlements.payment_hash AND ${SATORA_WATCH_ORDER}
     )`).run(reference, at, at, reference, paymentHash, at).changes > 0;
@@ -684,7 +684,7 @@ export class DbSettlementStore implements SettlementStore {
       .prepare(
         "SELECT covenant_script, created_at FROM settlements WHERE covenant_script IS NOT NULL" +
           " AND payout_reference IS NULL AND settled = 0" +
-          ` AND (payment_option IS NOT ? OR NOT EXISTS (
+          ` AND (COALESCE(payment_option, '') NOT GLOB ? OR NOT EXISTS (
             SELECT 1 FROM satora_orders o WHERE o.verify_id = settlements.payment_hash AND ${SATORA_WATCH_ORDER}
           ))` +
           (after
@@ -693,7 +693,7 @@ export class DbSettlementStore implements SettlementStore {
           " ORDER BY created_at, covenant_script LIMIT ?",
       )
       .all(
-        SATORA_PAYMENT_OPTION, now,
+        `${SATORA_OPTION_PREFIX}*`, now,
         ...(after
           ? [after.createdAt, horizon, after.createdAt, after.covenantScript, opts.limit]
           : [horizon - tailMs, horizon, opts.limit]),

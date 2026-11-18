@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { Logger } from "../logger.js";
-import { SATORA_PAYMENT_OPTION } from "../rails/satora.js";
+import { isSatoraPaymentOption } from "../rails/satora.js";
 import { revealedPreimage, type SettlementStore, type SettlementRecord } from "../settlement-store.js";
 
 export const BATCH_PATH = "/lnurl/verifyBatch";
@@ -68,7 +68,7 @@ interface DestinationItem {
 
 export function publicVerifyItem(rec: SettlementRecord, satoraFundingReference?: (verifyId: string) => string | undefined): VerifyBatchItem {
   if (rec.paymentOption !== "lightning") {
-    const reference = rec.paymentOption === SATORA_PAYMENT_OPTION
+    const reference = isSatoraPaymentOption(rec.paymentOption)
       ? (rec.settled ? satoraFundingReference?.(rec.paymentHash) ?? null : null)
       : rec.paymentReference;
     return {
@@ -83,7 +83,7 @@ export function publicVerifyItem(rec: SettlementRecord, satoraFundingReference?:
 }
 
 function streamComplete(item: VerifyBatchItem): boolean {
-  return item.settled && !("paymentOption" in item && item.paymentOption === SATORA_PAYMENT_OPTION && !item.paymentReference);
+  return item.settled && !("paymentOption" in item && isSatoraPaymentOption(item.paymentOption) && !item.paymentReference);
 }
 
 const UNKNOWN: { status: "ERROR"; reason: "unknown verify url" } = { status: "ERROR", reason: "unknown verify url" };

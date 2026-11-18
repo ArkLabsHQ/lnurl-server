@@ -3,15 +3,14 @@ import { hex } from "@scure/base";
 
 export const SATORA_OPERATOR_URL = "https://arkade.computer";
 export const SATORA_PAYMENT_OPTION = "satora-usdcpolygon";
-export const SATORA_POLYGON_USDC = "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359";
-export const SATORA_ASSET = `eip155:137/erc20:${SATORA_POLYGON_USDC}`;
-export const SATORA_UNIT = "USDC";
-export const SATORA_DECIMALS = 6;
+export const SATORA_OPTION_PREFIX = "satora-";
 export const SATORA_CHECKOUT_MIN_SAT = 335;
 export const SATORA_CHECKOUT_MAX_SAT = 20_000_000;
 
 export interface SatoraCheckout {
+  isAvailable?(optionId: string): boolean;
   create(input: {
+    optionId: string;
     addressId: number;
     verifyId: string;
     amountSat: number;
@@ -27,6 +26,9 @@ export interface SatoraCheckout {
 }
 
 export class SatoraCapacityError extends Error {}
+
+export const isSatoraPaymentOption = (optionId: string | null | undefined): boolean =>
+  optionId?.startsWith(SATORA_OPTION_PREFIX) === true;
 
 export function satoraSignerKey(signer: unknown): string | undefined {
   if (typeof signer !== "string" || !/^(?:0[23])?[\da-f]{64}$/i.test(signer)) return undefined;

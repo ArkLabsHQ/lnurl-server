@@ -330,8 +330,8 @@ export const openApiSpec = {
                           type: "string",
                           nullable: true,
                           description:
-                            "Method-specific reference once settled: the observed Arkade txid, the Polygon relay funding txid on Satora, or on a FixedFloat token option the payer's deposit " +
-                            "txid on the token chain (0x hex on EVM, base58 on Solana, hex on Tron). A token row can settle before the " +
+                            "Method-specific reference once settled: the observed Arkade txid, the Satora funding transaction on the deposit chain, " +
+                            "or the payer's FixedFloat deposit txid on the token chain (0x hex on EVM, base58 on Solana, hex on Tron). A token row can settle before the " +
                             "provider reports the deposit; the reference then follows.",
                         },
                       },
@@ -844,7 +844,7 @@ export const openApiSpec = {
           "wallet's SSE session, or a server-created offline reverse swap, or an error when " +
           "offline. LUD-XX: pass `paymentOption` to select an advertised rail — `arkade` " +
           "returns an Arkade destination instead of a bolt11, `onchain` returns the " +
-          "address's registered boarding address, `satora-usdcpolygon` returns a verifiable Polygon USDC deposit, and `registered:<type>` returns the " +
+          "address's registered boarding address, a `satora-*` option returns a verifiable deposit for its advertised token and chain, and `registered:<type>` returns the " +
           "destination the owner registered under that type. LUD-XX: " +
           "`unit`/`receiveUnit` denominate the amount (requires a configured quote provider); " +
           "the response then includes `paymentQuote`.",
@@ -917,7 +917,7 @@ export const openApiSpec = {
                           description:
                             "LUD-XX: wallet-executable payment URI carrying the requested amount. The Arkade destination is in " +
                             "`ark=` rather than the address slot, which the scheme reserves for an onchain address; " +
-                            "`amount` is BTC per BIP21. Satora returns an EIP-681 token transfer URI with the exact Polygon USDC amount.",
+                            "`amount` is BTC per BIP21. Satora returns EIP-681 on EVM chains or Solana Pay on Solana, with the exact quoted token amount.",
                         },
                         verify: {
                           type: "string",

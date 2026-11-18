@@ -37,6 +37,7 @@
     "@scure/base": "^2.4.0",
     "@scure/bip39": "^2.4.0",
     "@scure/btc-signer": "2.4.1",
+    "@solana/web3.js": "3.2.1",
     "cors": "^2.8.6",
     "express": "5.2.1",
     "nostr-tools": "2.24.1",

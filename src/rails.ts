@@ -26,9 +26,8 @@ import type { ServerDeps } from "./http/server-context.js";
 import type { FfRail } from "./rails/fixedfloat/rates.js";
 import { ffPaymentOptions } from "./rails/fixedfloat/options.js";
 import { ffRailCaps } from "./rails/fixedfloat/provider.js";
-import {
-  isSatoraAddress, SATORA_ASSET, SATORA_CHECKOUT_MAX_SAT, SATORA_CHECKOUT_MIN_SAT, SATORA_PAYMENT_OPTION, SATORA_UNIT,
-} from "./rails/satora.js";
+import { isSatoraAddress, SATORA_CHECKOUT_MAX_SAT, SATORA_CHECKOUT_MIN_SAT } from "./rails/satora.js";
+import { SATORA_SOURCES, satoraSource } from "./rails/satora-catalogue.js";
 import { InvalidRailPolicyError } from "./errors.js";
 
 /** Every receive rail the server knows. The order is the advertise order. */
@@ -103,8 +102,8 @@ export const RAIL_DEFS: Record<RailId, RailDef> = {
   satora: {
     id: "satora",
     label: "Satora",
-    description: "The server accepts a Polygon USDC deposit and claims the Satora swap to a per-payment Arkade destination.",
-    paymentOption: SATORA_PAYMENT_OPTION,
+    description: "The server accepts a stablecoin deposit and claims the Satora swap to a per-payment Arkade destination. One payment option per token network.",
+    paymentOption: null,
     direction: "token->arkade-btc",
   },
   registered: {
@@ -160,6 +159,7 @@ export interface ServerRailCaps {
   fixedFloat?: FfRailCaps;
   satoraEnabled?: boolean;
   satoraOperatorKey?: string;
+  satoraOptionAvailable?: (optionId: string) => boolean;
 }
 
 /** What the token-deposit provider offers right now. */
@@ -262,9 +262,11 @@ export function describeServerRails(caps: ServerRailCaps): ServerRailState[] {
 function satoraServerState(caps: ServerRailCaps): ServerRailState {
   const { id, label, description } = RAIL_DEFS.satora;
   const configured = caps.satoraEnabled === true;
+  const isAvailable = caps.satoraOptionAvailable;
   const reason = !configured ? "not configured (SATORA_ENABLED=true)"
     : !caps.covenantDestinations ? "Satora requires per-payment covenant destinations"
     : caps.network !== "bitcoin" || !caps.satoraOperatorKey ? "Satora requires the supported mainnet Arkade operator"
+    : isAvailable && !SATORA_SOURCES.some(({ id }) => isAvailable(id)) ? "no Satora funding routes are available"
     : undefined;
   return { id, label, description, configured, ready: reason === undefined, ...(reason ? { reason } : {}) };
 }
@@ -502,6 +504,7 @@ export function currentRailCaps(wiring: Pick<ServerDeps,
   "offlineSwapCreator" | "covenantDestinations" | "solverDiscovery" | "arkServerUrl" | "railLimits" | "arkDustSat" | "onchainMinSat" | "fixedFloat" | "network" | "satoraEnabled" | "satoraOperatorKey" | "satora"
 > = {}): ServerRailCaps {
   const discoveryStatus = wiring.solverDiscovery?.status();
+  const satoraOptionAvailable = wiring.satora?.isAvailable?.bind(wiring.satora);
   // Dust last: it is the protocol's floor, so it must survive whatever the
   // operator and the solver narrowed to, not be averaged with them.
   const limits = withVtxoFloors(withSolverRange(wiring.railLimits, discoveryStatus?.receiveBounds), {
@@ -519,6 +522,7 @@ export function currentRailCaps(wiring: Pick<ServerDeps,
     ...(wiring.fixedFloat ? { fixedFloat: ffRailCaps(wiring.fixedFloat) } : {}),
     satoraEnabled: wiring.satoraEnabled === true && wiring.satora !== undefined,
     satoraOperatorKey: wiring.satoraOperatorKey,
+    ...(satoraOptionAvailable ? { satoraOptionAvailable } : {}),
   };
 }
 
@@ -538,6 +542,13 @@ export function railBounds(rail: RailId, caps: ServerRailCaps, base: Bounds): Bo
     min: Math.max(base.min, limits.minSendable ?? base.min),
     max: Math.min(base.max, limits.maxSendable ?? base.max),
   };
+}
+
+function satoraOptionBounds(caps: ServerRailCaps, base: Bounds): Bounds | undefined {
+  const payout = railBounds("covenant", caps, railBounds("satora", caps, base));
+  const min = Math.max(SATORA_CHECKOUT_MIN_SAT, Math.ceil(payout.min / 1000)) * 1000;
+  const max = Math.min(SATORA_CHECKOUT_MAX_SAT, Math.floor(payout.max / 1000)) * 1000;
+  return min <= max ? { min, max } : undefined;
 }
 
 /**
@@ -568,19 +579,16 @@ export function optionBounds(
   base: Bounds,
 ): Bounds | undefined {
   const available = effectiveRails(address, caps).filter((state) => state.available);
+  if (satoraSource(optionId)) {
+    if (caps.satoraOptionAvailable?.(optionId) === false) return undefined;
+    return available.some((state) => state.id === "satora") ? satoraOptionBounds(caps, base) : undefined;
+  }
   const serving = available.filter((state) => RAIL_DEFS[state.id].paymentOption === optionId);
   if (serving.length === 0) return undefined;
-  let intersected = serving.reduce<Bounds>((acc, state) => {
+  const intersected = serving.reduce<Bounds>((acc, state) => {
     const bounds = railBounds(state.id, caps, base);
     return { min: Math.max(acc.min, bounds.min), max: Math.min(acc.max, bounds.max) };
   }, base);
-  if (optionId === SATORA_PAYMENT_OPTION) {
-    const payout = railBounds("covenant", caps, intersected);
-    intersected = {
-      min: Math.max(SATORA_CHECKOUT_MIN_SAT, Math.ceil(payout.min / 1000)) * 1000,
-      max: Math.min(SATORA_CHECKOUT_MAX_SAT, Math.floor(payout.max / 1000)) * 1000,
-    };
-  }
   return intersected.min > intersected.max ? undefined : intersected;
 }
 
@@ -625,12 +633,14 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
   const tokenOptions = caps.fixedFloat && tokenState.offer
     ? ffPaymentOptions(caps.fixedFloat, railBounds("offline-swap", caps, base ?? { min: 1, max: Number.MAX_SAFE_INTEGER }), tokenState.available)
     : [];
-  const satoraBounds = optionBounds(SATORA_PAYMENT_OPTION, address, caps, base ?? { min: 1, max: Number.MAX_SAFE_INTEGER });
+  const satoraBounds = states.get("satora")?.available
+    ? satoraOptionBounds(caps, base ?? { min: 1, max: Number.MAX_SAFE_INTEGER })
+    : undefined;
   const satoraOptions: PaymentOption[] = satoraBounds
-    ? [{
-      id: SATORA_PAYMENT_OPTION, type: "eip155", asset: SATORA_ASSET, unit: SATORA_UNIT, provider: "Satora", verifiable: true,
+    ? SATORA_SOURCES.filter(({ id }) => caps.satoraOptionAvailable?.(id) !== false).map(({ id, type, asset, unit }) => ({
+      id, type, asset, unit, provider: "Satora", verifiable: true,
       minSendable: satoraBounds.min, maxSendable: satoraBounds.max,
-    }]
+    }))
     : [];
   // Appended after withCaip, never through it: a method typed like a rail would be stamped with that rail's caip19Id.
   const registeredOptions: PaymentOption[] = states.get("registered")?.available

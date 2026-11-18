@@ -1,6 +1,7 @@
 import { MultisigTapscript, VtxoScript, type IContractManager } from "@arkade-os/sdk";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
-import { hex } from "@scure/base";
+import { Asset, getCctpBridgeTokens } from "@satora/swap";
+import { base58, hex } from "@scure/base";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { COVENANT_CONTRACT_TYPE } from "../src/covenant/contract.js";
@@ -10,6 +11,7 @@ import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
 import { createServer, type ServerDeps } from "../src/http/server.js";
 import { SATORA_PAYMENT_OPTION as OPTION, SatoraCapacityError, type SatoraCheckout } from "../src/rails/satora.js";
+import { SATORA_SOURCES, satoraSource } from "../src/rails/satora-catalogue.js";
 import { createVerifyBatch } from "../src/services/verify-batch.js";
 import { DbSettlementStore } from "../src/settlement-store.js";
 import { catchUp } from "../src/workers/covenant-watcher.js";
@@ -23,6 +25,7 @@ const TOKEN = "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359";
 const SOURCE_AMOUNT = "109747023";
 const FUNDING_TXID = `0x${"d".repeat(64)}`;
 const depositFor = (nonce: number) => `0x${nonce.toString(16).padStart(40, "b")}`;
+const solanaDepositFor = (nonce: number) => base58.encode(new Uint8Array(32).fill(nonce));
 const xonly = (fill: number) => secp256k1.getPublicKey(new Uint8Array(32).fill(fill), true).subarray(1);
 const serverPubkey = xonly(3);
 const userPubkey = xonly(4);
@@ -55,17 +58,19 @@ afterEach(() => db.close());
 function setup(overrides: Partial<ServerDeps> = {}) {
   let nonce = 0;
   let orders = 0;
-  const verifyIds = new Map<string, string>();
+  const ordersBySwapId = new Map<string, { verifyId: string; optionId: string }>();
   const derive = vi.fn(async () => destinationFor(++nonce));
-  const create = vi.fn<SatoraCheckout["create"]>(async ({ verifyId, deriveRecipient }) => {
+  const create = vi.fn<SatoraCheckout["create"]>(async ({ optionId, verifyId, deriveRecipient }) => {
     const recipient = await deriveRecipient();
     const sequence = ++orders;
     const swapId = `private-swap-${sequence}`;
-    verifyIds.set(swapId, verifyId);
-    return { swapId, depositAddress: depositFor(sequence), sourceAmount: SOURCE_AMOUNT, expiresAt: Date.now() + 300_000, covenantScript: recipient.script };
+    const depositAddress = satoraSource(optionId)?.type === "solana" ? solanaDepositFor(sequence) : depositFor(sequence);
+    ordersBySwapId.set(swapId, { verifyId, optionId });
+    return { swapId, depositAddress, sourceAmount: SOURCE_AMOUNT, expiresAt: Date.now() + 300_000, covenantScript: recipient.script };
   });
   const activate = vi.fn<SatoraCheckout["activate"]>((id) => {
-    expect(store.get(verifyIds.get(id)!)).toMatchObject({ paymentOption: OPTION });
+    const { verifyId, optionId } = ordersBySwapId.get(id)!;
+    expect(store.get(verifyId)).toMatchObject({ paymentOption: optionId });
   });
   const app = createServer({
     port: 0, baseUrl: `https://${DOMAIN}`, minSendable: 1000, maxSendable: 150_000_000,
@@ -97,7 +102,20 @@ function observe(script: string, value: number, txid: string) {
   return catchUp(store, contracts);
 }
 
-describe("Satora's direct Arkade rail", () => {
+describe("Satora's Arkade rail", () => {
+  it("uses every native CCTP USDC contract from the pinned SDK", () => {
+    const compare = (a: { chain: string }, b: { chain: string }) => a.chain.localeCompare(b.chain);
+    const expected = getCctpBridgeTokens().map(({ chain, token_id }) => ({
+      chain, token: chain === "Solana" ? token_id : token_id.toLowerCase(),
+    })).sort(compare);
+    const actual = SATORA_SOURCES.filter(({ mode }) => mode === "cctp").map(({ chain, token }) => ({
+      chain, token: chain === "Solana" ? token : token.toLowerCase(),
+    })).sort(compare);
+    expect(actual).toEqual(expected);
+    expect(satoraSource(OPTION)?.token.toLowerCase()).toBe(Asset.USDC_POLYGON.tokenId.toLowerCase());
+    expect(satoraSource("satora-usdcarbitrum")?.token.toLowerCase()).toBe(Asset.USDC_ARBITRUM.tokenId.toLowerCase());
+  });
+
   it("issues a token quote and credits only the matching funded Arkade covenant", async () => {
     const polygonReferences = new Map<string, string>();
     const satoraFundingReference = (verifyId: string) => polygonReferences.get(verifyId);
@@ -132,7 +150,7 @@ describe("Satora's direct Arkade rail", () => {
     const verifyPath = new URL(first.verify).pathname;
     const verifyId = verifyPath.split("/").at(-1)!;
     polygonReferences.set(verifyId, FUNDING_TXID);
-    expect(create).toHaveBeenNthCalledWith(1, expect.objectContaining({ verifyId, addressId, amountSat: AMOUNT_SAT }));
+    expect(create).toHaveBeenNthCalledWith(1, expect.objectContaining({ optionId: OPTION, verifyId, addressId, amountSat: AMOUNT_SAT }));
     const firstRecord = store.get(verifyId);
     expect(firstRecord).toMatchObject({
       paymentDestination: first.paymentDestination, amountMsat: AMOUNT_MSAT, comment: "Satora payment",
@@ -194,6 +212,67 @@ describe("Satora's direct Arkade rail", () => {
       destination: depositFor(1), amount: "109.747023", baseUnits: SOURCE_AMOUNT,
       value: `ethereum:${TOKEN}@137/transfer?address=${depositFor(1)}&uint256=${SOURCE_AMOUNT}`,
     });
+  });
+
+  it.each(SATORA_SOURCES)("quotes the exact asset for $id", async (source) => {
+    const { client, create } = setup();
+    const pay = await client.resolve(`alice@${DOMAIN}`);
+    const token = tokenOptions(pay).find(({ id }) => id === source.id);
+    expect(token).toMatchObject({ provider: "Satora", asset: { id: source.asset }, unit: { code: source.unit, decimals: source.decimals } });
+    const result = await client.requestInvoice(pay, { amountSat: AMOUNT_SAT, paymentOption: source.id });
+    if (result.kind !== "destination") throw new Error("expected token destination");
+    const destination = source.type === "solana" ? solanaDepositFor(1) : depositFor(1);
+    const quote = normalizeTokenQuote(token!, result);
+    expect(quote).toMatchObject({ destination, baseUnits: SOURCE_AMOUNT });
+    expect(quote!.value).toBe(source.type === "solana"
+      ? `solana:${destination}?amount=109.747023&spl-token=${source.token}`
+      : `ethereum:${source.token}@${source.chain}/transfer?address=${destination}&uint256=${SOURCE_AMOUNT}`);
+    expect(create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ optionId: source.id, amountSat: AMOUNT_SAT }));
+  });
+
+  it("refuses unknown source IDs before allocating a deposit", async () => {
+    const { derive, quote } = setup();
+    expect((await quote(AMOUNT_MSAT, { paymentOption: "satora-usdcunknown" })).body).toEqual({
+      status: "ERROR", reason: "Unsupported paymentOption",
+    });
+    expect(derive).not.toHaveBeenCalled();
+  });
+
+  it("does not offer or allocate a route whose funding path is unavailable", async () => {
+    const create = vi.fn<SatoraCheckout["create"]>();
+    const disabled = SATORA_SOURCES.find(({ id }) => id !== OPTION)!;
+    const { derive, options, quote } = setup({ satora: { isAvailable: (optionId) => optionId !== disabled.id, create, activate: vi.fn() } });
+    const ids = (await options())?.map(({ id }) => id);
+    expect(ids).toContain(OPTION);
+    expect(ids).not.toContain(disabled.id);
+    expect((await quote(AMOUNT_MSAT, { paymentOption: disabled.id })).body.status).toBe("ERROR");
+    expect(derive).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("refuses a Satora option when a configured quote unit has different decimals", async () => {
+    const optionId = "satora-eurearbitrum";
+    const { create, options, quote } = setup({ quoteProvider: {
+      units: () => [{ code: "EURE", decimals: 2 }], quote: vi.fn(),
+    } });
+    const ids = (await options())?.map(({ id }) => id);
+    expect(ids).toContain(OPTION);
+    expect(ids).not.toContain(optionId);
+    expect((await quote(AMOUNT_MSAT, { paymentOption: optionId })).body.status).toBe("ERROR");
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("verifies settlement with a source-chain funding reference for an additional option", async () => {
+    const source = SATORA_SOURCES.find(({ id, type }) => id !== OPTION && type === "eip155")!;
+    const { get, quote } = setup({ satoraFundingReference: () => FUNDING_TXID });
+    const { body: { verify, verifyBatch } } = await quote(AMOUNT_MSAT, { paymentOption: source.id });
+    const verifyPath = new URL(verify).pathname;
+    const verifyId = verifyPath.split("/").at(-1)!;
+    expect(store.markObserved(verifyId, "arkade-txid")).toBe(true);
+    const { body } = await get(verifyPath);
+    expect(body).toMatchObject({ settled: true, paymentOption: source.id, paymentReference: FUNDING_TXID });
+    const batch = await get(new URL(verifyBatch).pathname).query({ verify });
+    expect(batch.body.results[verify]).toMatchObject({ settled: true, paymentOption: source.id, paymentReference: FUNDING_TXID });
   });
 
   it.each<{ name: string; overrides: Partial<ServerDeps> }>([
