@@ -295,7 +295,9 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
         status: "OK",
         paymentOption: resolved.paymentOption,
         paymentDestination: destination,
-        paymentURI: satora ? satoraCheckoutUrl(destination, amountMsat / 1000) : destinationUri(resolved.paymentOption, destination, amountMsat),
+        ...(destination ? {
+          paymentURI: satora ? satoraCheckoutUrl(destination, amountMsat / 1000) : destinationUri(resolved.paymentOption, destination, amountMsat),
+        } : {}),
         ...(paymentQuote ? { paymentQuote } : {}),
         // Only for rails this server watches. The onchain rail is a static
         // boarding address nothing here observes, so it has no window to end.
