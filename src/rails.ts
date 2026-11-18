@@ -101,7 +101,7 @@ export const RAIL_DEFS: Record<RailId, RailDef> = {
   satora: {
     id: "satora",
     label: "Satora",
-    description: "The payer swaps stablecoins to Arkade BTC in Satora's checkout. The payout goes to a per-payment Arkade destination.",
+    description: "The payer swaps Polygon USDC to a per-payment Arkade destination using Satora.",
     paymentOption: "satora",
     direction: "token->arkade-btc",
   },

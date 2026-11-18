@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
 
@@ -37,6 +38,7 @@ function localRegistry(): Plugin {
 export default defineConfig({
   base,
   plugins: [react(), ...(registryFile ? [localRegistry()] : [])],
+  resolve: { alias: [{ find: /^crypto$/, replacement: fileURLToPath(new URL("./src/satora-webcrypto.ts", import.meta.url)) }] },
   server: { port: 5173, ...(proxy ? { proxy } : {}) },
   ...(proxy ? { preview: { proxy } } : {}),
 });

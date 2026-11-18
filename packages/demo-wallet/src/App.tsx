@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArkAddress, type PaymentOption, type RouteQuote, type WalletBalance } from "@arkade-os/sdk";
-import type { DestinationResult, DomainCapabilities, InvoiceResult, PayRequest, Unit } from "@arkade-os/lnurl-client";
-import { isLnAddress, isValidLnUrl, parseUnitAmount, satoraPaymentUrl, tokenOptions } from "@arkade-os/lnurl-client";
+import type { DomainCapabilities, InvoiceResult, PayRequest, Unit } from "@arkade-os/lnurl-client";
+import { isLnAddress, isValidLnUrl, parseUnitAmount, tokenOptions } from "@arkade-os/lnurl-client";
 import type { ClaimOptions, Receiver, SentPayment } from "@arkade-os/lnurl-client/arkade";
 import { lnurlActivityResolver, lnurlQuoteMeta, lnurlRailLimits, quotedLabel, sentActivityResolver } from "@arkade-os/lnurl-client/arkade";
 import { EXPLORER, LNURL_DOMAIN, USERNAME_KEY } from "./config.js";
@@ -21,6 +21,7 @@ import { forgetStoredPayments } from "@arkade-os/lnurl-client";
 import { forgetSent, recordSent, sentPayments } from "./sent-store.js";
 import { CopyableQr, ReceiveQr } from "./Qr.js";
 import { receivePaymentValue } from "./receive-payment.js";
+import { SatoraCheckout, type SatoraDraft } from "./SatoraCheckout.js";
 
 type Tab = "Receive" | "Send" | "Activity" | "Settings";
 const TABS: Tab[] = ["Receive", "Send", "Activity", "Settings"];
@@ -262,6 +263,7 @@ function Wallet({ wallet, receiver: shown, onRenamed, onRestored, onReset }: {
 }) {
   const [tab, setTab] = useState<Tab>("Receive");
   const [balance, setBalance] = useState<WalletBalance | null>(null);
+  const [satoraDraft, setSatoraDraft] = useState<SatoraDraft>();
   const view = balanceView(balance);
 
   const [boarding, setBoarding] = useState<BoardingState>({ status: "idle" });
@@ -340,8 +342,10 @@ function Wallet({ wallet, receiver: shown, onRenamed, onRestored, onReset }: {
         ))}
       </nav>
 
-      {tab === "Receive" && <Receive key={shown.handle} receiver={shown} onRenamed={onRenamed} />}
-      {tab === "Send" && <Send wallet={wallet} onSent={refresh} />}
+      {tab === "Receive" && <Receive key={shown.handle} receiver={shown} onRenamed={onRenamed} onSatoraQuote={setSatoraDraft} />}
+      {tab === "Send" && <Send wallet={wallet} onSent={refresh} onSatoraQuote={setSatoraDraft} />}
+      <SatoraCheckout draft={satoraDraft} visible={tab === "Receive" || tab === "Send"}
+        onQuoteUsed={(used) => setSatoraDraft((current) => current === used ? undefined : current)} />
       {tab === "Activity" && <Activity receiver={shown} wallet={wallet} />}
       {tab === "Settings" && (
         <>
@@ -378,7 +382,9 @@ function watchLine(states: WatchStates): string {
   return `watching ${invoices(pending)} on ${connections === 1 ? "one connection" : `${connections} connections`}`;
 }
 
-function Receive({ receiver: shown, onRenamed }: { receiver: Receiver; onRenamed: (r: Receiver) => void }) {
+function Receive({ receiver: shown, onRenamed, onSatoraQuote }: {
+  receiver: Receiver; onRenamed: (r: Receiver) => void; onSatoraQuote: (draft: SatoraDraft) => void;
+}) {
   const { lightningAddress } = shown;
   const [payRequest, setPayRequest] = useState<PayRequest | null>(null);
   const [amount, setAmount] = useState(1000);
@@ -413,6 +419,10 @@ function Receive({ receiver: shown, onRenamed }: { receiver: Receiver; onRenamed
   };
 
   const request = async (optionId: string) => {
+    if (optionId === "satora" && payRequest) {
+      onSatoraQuote({ request: payRequest, amountSat: amount, label: "Fund your wallet" });
+      return;
+    }
     setBusy(optionId); setErr("");
     try {
       const value = await payer.requestInvoice(payRequest!, {
@@ -486,6 +496,11 @@ function Receive({ receiver: shown, onRenamed }: { receiver: Receiver; onRenamed
 
         {options.map((option) => {
           const bounds = lnurlRailLimits({ ...payRequest!, paymentOptions: [option] })[0];
+          const satora = option.id === "satora" && option.type === "satora";
+          const outOfBounds = bounds !== undefined && (amount < bounds.min || amount > bounds.max);
+          const noSatoraQuote = satora && (!Number.isSafeInteger(amount * 1000) || !Number.isSafeInteger(amount)
+            || amount * 1000 < (option.minSendable ?? payRequest!.minSendable)
+            || amount * 1000 > (option.maxSendable ?? payRequest!.maxSendable));
           const range = bounds
             ? `${bounds.min}–${bounds.max} sats`
             : option.minSendable !== undefined && option.maxSendable !== undefined
@@ -494,10 +509,10 @@ function Receive({ receiver: shown, onRenamed }: { receiver: Receiver; onRenamed
           return (
             <div key={option.id}
               style={{ display: "flex", gap: 12, alignItems: "center", padding: "8px 0", borderTop: "1px solid #eee", fontSize: 13 }}>
-              <span style={{ width: 90 }}>{option.id}</span>
+              <span style={{ width: 90 }}>{satora ? "Satora" : option.id}</span>
               <span style={{ color: "#666", flex: 1 }}>{range}</span>
-              <button style={btn} disabled={busy !== "" || option.available === false || (bounds !== undefined && (amount < bounds.min || amount > bounds.max))} onClick={() => void request(option.id)}>
-                {busy === option.id ? "Requesting…" : `Request ${amount} sats`}
+              <button style={btn} disabled={busy !== "" || option.available === false || outOfBounds || noSatoraQuote} onClick={() => void request(option.id)}>
+                {satora ? "Fund with USDC" : busy === option.id ? "Requesting…" : `Request ${amount} sats`}
               </button>
             </div>
           );
@@ -584,10 +599,9 @@ interface SatoraOffer {
   target: string;
   amount: number;
   request: PayRequest;
-  checkout?: { url: string; answer: DestinationResult & { verify: string }; status?: string; settled?: boolean };
 }
 
-function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
+function Send({ wallet, onSent, onSatoraQuote }: { wallet: DemoWallet; onSent: () => void; onSatoraQuote: (draft: SatoraDraft) => void }) {
   const router = useMemo(() => createRouter(wallet), [wallet]);
   const [target, setTarget] = useState("");
   const [amount, setAmount] = useState(1000);
@@ -622,7 +636,6 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
   const inUnit = units.find((u) => u.code === unit);
   const unitAmount = inUnit ? parseUnitAmount(unitText, inUnit.decimals) : undefined;
   const satora = !inUnit && satoraOffer?.target === target.trim() && satoraOffer.amount === amount ? satoraOffer : undefined;
-  const checkout = satora?.checkout;
 
   const findRoutes = async () => {
     setBusy(true); setStatus(""); setOptions(null); setQuoted(undefined); setSatoraOffer(undefined);
@@ -636,39 +649,13 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
         router.options(inUnit ? { raw, unitAmount: { unit: inUnit.code, amount: unitAmount! } } : { raw, amount }, { priority: RAIL_PRIORITY }),
         external,
       ]);
-      const hosted = request?.paymentOptions?.find((o) => o.id === "satora" && o.type === "satora" && o.available !== false && o.asset === undefined);
-      const accepts = request && hosted && msats >= (hosted.minSendable ?? request.minSendable) && msats <= (hosted.maxSendable ?? request.maxSendable);
+      const offered = request?.paymentOptions?.find((o) => o.id === "satora" && o.type === "satora" && o.available !== false && o.asset === undefined);
+      const accepts = request && offered && msats >= (offered.minSendable ?? request.minSendable) && msats <= (offered.maxSendable ?? request.maxSendable);
       setOptions(found);
       if (accepts) setSatoraOffer({ target: raw, amount, request });
       else if (!found.length) setStatus("no rail can pay that target at this amount");
     } catch (e) { setStatus(`routing failed: ${(e as Error).message}`); }
     finally { setBusy(false); }
-  };
-
-  const quoteSatora = async (offer: SatoraOffer) => {
-    setBusy(true); setStatus("");
-    try {
-      const answer = await payer.requestInvoice(offer.request, { amountSat: offer.amount, paymentOption: "satora" });
-      const url = satoraPaymentUrl(answer, offer.amount);
-      if (answer.kind !== "destination" || !answer.verify) throw new Error("The callback returned no settlement confirmation URL");
-      const checkout = { url, answer: { ...answer, verify: answer.verify } };
-      setSatoraOffer((current) => current === offer ? { ...offer, checkout } : current);
-    } catch (e) { setStatus(`Satora checkout failed: ${(e as Error).message}`); }
-    finally { setBusy(false); }
-  };
-
-  const trackSatora = (answer: DestinationResult & { verify: string }) => {
-    const setCheckoutStatus = (status: string, settled = false) => setSatoraOffer((current) =>
-      current?.checkout?.answer === answer ? { ...current, checkout: { ...current.checkout, status, settled } } : current);
-    setCheckoutStatus("Awaiting Arkade settlement…");
-    pendingConfirmations.add({
-      verifyUrl: answer.verify,
-      verifyBatch: answer.verifyBatch,
-      expect: answer,
-      timeoutMs: 15 * 60_000,
-      onSettled: () => setCheckoutStatus("Receiver confirmed settlement", true),
-      onError: (error) => setCheckoutStatus(`Settlement unconfirmed: ${error.message}`),
-    });
   };
 
   // Quoted only on click: a quote asks the callback for an invoice, so pricing
@@ -787,25 +774,10 @@ function Send({ wallet, onSent }: { wallet: DemoWallet; onSent: () => void }) {
         );
       })}
       {satora && (
-        <div style={{ borderLeft: "4px solid #16834b", paddingLeft: 12, marginBottom: 8 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <span style={mono}>Satora · stablecoins on mainnet</span>
-            {checkout
-              ? !checkout.settled && <a href={checkout.url} target="_blank" rel="noopener noreferrer" style={{ marginLeft: "auto" }}
-                  onClick={(event) => {
-                    const { expiresAt } = checkout.answer;
-                    if (expiresAt !== undefined && Date.now() >= expiresAt * 1000) {
-                      event.preventDefault();
-                      setSatoraOffer({ ...satora, checkout: undefined });
-                      setStatus("Satora checkout expired. Get a new checkout.");
-                    } else {
-                      trackSatora(checkout.answer);
-                    }
-                  }}>Open Satora</a>
-              : <button style={{ ...btn, marginLeft: "auto" }} disabled={busy} onClick={() => void quoteSatora(satora)}>Get checkout</button>}
-          </div>
-          {checkout && !checkout.settled && <p style={mono}>Keep the prefilled Arkade address and amount in Satora.</p>}
-          {checkout?.status && <p style={mono}>{checkout.status}</p>}
+        <div style={{ borderLeft: "4px solid #16834b", paddingLeft: 12, marginBottom: 8, display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={mono}>Satora · USDC on Polygon</span>
+          <button style={{ ...btn, marginLeft: "auto" }} disabled={busy}
+            onClick={() => onSatoraQuote({ request: satora.request, amountSat: satora.amount, label: `Send to ${satora.target}` })}>Quote USDC</button>
         </div>
       )}
       {status && <p style={{ ...mono, color: status.includes("failed") ? "crimson" : "#16834b" }}>{status}</p>}

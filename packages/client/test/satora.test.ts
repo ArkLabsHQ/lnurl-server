@@ -1,40 +1,55 @@
 import { bech32m } from "@scure/base";
 import { describe, expect, it } from "vitest";
-import { satoraPaymentUrl, type DestinationResult } from "../src/index.js";
+import { satoraPaymentTarget, type DestinationResult } from "../src/index.js";
 
-const recipient = bech32m.encode("ark", bech32m.toWords(new Uint8Array(65)), 120);
-const checkout = `https://app.satora.io/polygon:USDC/arkade:BTC?targetAmount=125000&address=${recipient}`;
+function address(prefix: string, version = 0): string {
+  const bytes = new Uint8Array(65);
+  bytes[0] = version;
+  return bech32m.encode(prefix, bech32m.toWords(bytes), 120);
+}
+
+const recipient = address("ark");
 const answer: DestinationResult = {
-  kind: "destination", paymentOption: "satora", paymentDestination: recipient, paymentURI: checkout,
+  kind: "destination", paymentOption: "satora", paymentDestination: recipient,
+  verify: "https://lnurl.example.com/lnurl/verify/payout",
+  verifyBatch: "https://lnurl.example.com/lnurl/verifyBatch",
+  expiresAt: 1,
 };
 
-describe("Satora checkout", () => {
-  it("returns the hosted checkout for the requested Arkade payment", () => {
-    expect(satoraPaymentUrl(answer, 125_000)).toBe(checkout);
+describe("Satora payment target", () => {
+  it("returns the payout and verification data, including expiry for recovery", () => {
+    expect(satoraPaymentTarget(answer, 125_000)).toEqual({
+      destination: recipient, amountSat: 125_000,
+      verify: answer.verify, verifyBatch: answer.verifyBatch, expiresAt: 1,
+    });
+  });
+
+  it.each([address("tark"), address("ark", 1), `${recipient}wrong`])("rejects an unsupported destination %s", (paymentDestination) => {
+    expect(() => satoraPaymentTarget({ ...answer, paymentDestination }, 125_000)).toThrow(/invalid mainnet Arkade destination/);
+  });
+
+  it.each([0, 125_000.5, Number.MAX_SAFE_INTEGER])("rejects an unsupported amount %s", (amountSat) => {
+    expect(() => satoraPaymentTarget(answer, amountSat)).toThrow(/positive whole number of satoshis/);
   });
 
   it.each([
-    checkout.replace("app.satora.io", "app.satora.io.example"),
-    checkout.replace("https:", "http:"),
-    checkout.replace("arkade:BTC", "bitcoin:BTC"),
-    checkout.replace("125000", "124999"),
-    checkout.replace(`address=${recipient}`, "address=elsewhere"),
-    `${checkout}&address=elsewhere`,
-    `${checkout}&sourceAmount=1`,
-    `${checkout}#other`,
-    "not a URL",
-  ])("rejects checkout %s", (paymentURI) => {
-    expect(() => satoraPaymentUrl({ ...answer, paymentURI }, 125_000)).toThrow(/does not match/);
+    undefined, "/lnurl/verify/payout", "http://lnurl.example.com/verify",
+    "https://user:pass@lnurl.example.com/verify", "https://lnurl.example.com/verify#anchor",
+  ])("rejects an invalid verification endpoint %s", (verify) => {
+    expect(() => satoraPaymentTarget({ ...answer, verify }, 125_000)).toThrow(/invalid Satora verification URL/);
   });
 
-  it("rejects a checkout without a mainnet Arkade address or a whole-sat amount", () => {
-    const testnet = bech32m.encode("tark", bech32m.toWords(new Uint8Array(65)), 120);
-    expect(() => satoraPaymentUrl({ ...answer, paymentDestination: testnet, paymentURI: checkout.replace(recipient, testnet) }, 125_000))
-      .toThrow(/does not match/);
-    expect(() => satoraPaymentUrl(answer, 125_000.5)).toThrow(/does not match/);
+  it("allows a loopback endpoint for local testing", () => {
+    const verify = "http://127.0.0.1:3000/lnurl/verify/payout";
+    expect(satoraPaymentTarget({ ...answer, verify }, 125_000).verify).toBe(verify);
+  });
+
+  it("rejects a malformed optional verification endpoint or expiry", () => {
+    expect(() => satoraPaymentTarget({ ...answer, verifyBatch: "not a URL" }, 125_000)).toThrow(/invalid Satora verification URL/);
+    expect(() => satoraPaymentTarget({ ...answer, expiresAt: -1 }, 125_000)).toThrow(/invalid Satora expiry/);
   });
 
   it("refuses a callback that answered for a different rail", () => {
-    expect(() => satoraPaymentUrl({ ...answer, paymentOption: "arkade" }, 125_000)).toThrow(/no Satora checkout/);
+    expect(() => satoraPaymentTarget({ ...answer, paymentOption: "arkade" }, 125_000)).toThrow(/no Satora payment target/);
   });
 });

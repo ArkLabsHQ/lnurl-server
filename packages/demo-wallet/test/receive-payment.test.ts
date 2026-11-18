@@ -26,6 +26,12 @@ describe("receive payment values", () => {
       .toThrow(/memo/);
   });
 
+  it("does not present an Arkade payout endpoint as Satora's funding address", () => {
+    expect(() => receivePaymentValue(request, "satora", {
+      kind: "destination", paymentOption: "satora", paymentDestination: "ark1payout",
+    })).toThrow(/Satora payment flow/);
+  });
+
   it("keeps Bitcoin destinations and invoices in their existing form", () => {
     expect(receivePaymentValue(request, "onchain", { kind: "destination", paymentOption: "onchain", paymentDestination: "btc-address" }))
       .toBe("btc-address");

@@ -165,7 +165,7 @@ export interface DestinationResult {
   paymentDestination?: string;
   /** A memo the payment must carry. A wallet that cannot attach one must not pay. */
   paymentDestinationTag?: string;
-  /** Payment instruction carrying the amount, e.g. a wallet URI or a hosted checkout URL. */
+  /** A wallet payment URI carrying the amount. */
   paymentURI?: string;
   /** What the payer actually pays on a rail priced in a token. Its `expiresAt` is the
    *  payer's deadline: a token answer carries no top-level `expiresAt`. */

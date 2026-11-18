@@ -74,7 +74,7 @@ function observe(script: string, value: number, txid: string) {
 }
 
 describe("Satora's direct Arkade rail", () => {
-  it("prefills the unique Arkade payout and credits only the matching funded request", async () => {
+  it("issues a unique Arkade payout and credits only the matching funded request", async () => {
     const { get, quote, options } = setup();
     const advertised = await options();
     expect(advertised?.find(({ id }) => id === "satora")).toEqual({
@@ -91,12 +91,8 @@ describe("Satora's direct Arkade rail", () => {
     expect(first.paymentDestination).not.toBe(staticAddress);
     expect(second.paymentDestination).not.toBe(first.paymentDestination);
     expect(second.verify).not.toBe(first.verify);
-    const checkout = new URL(first.paymentURI);
-    expect(checkout.origin).toBe("https://app.satora.io");
-    expect(checkout.pathname).toBe("/polygon:USDC/arkade:BTC");
-    expect(Object.fromEntries(checkout.searchParams)).toEqual({
-      targetAmount: String(AMOUNT_SAT), address: first.paymentDestination,
-    });
+    expect(first).not.toHaveProperty("paymentURI");
+    expect(first).not.toHaveProperty("paymentQuote");
 
     const verifyPath = new URL(first.verify).pathname;
     const firstRecord = store.get(verifyPath.split("/").at(-1)!);
@@ -128,7 +124,7 @@ describe("Satora's direct Arkade rail", () => {
     expect(derive).not.toHaveBeenCalled();
   });
 
-  it("offers the same checkout to a receiver's flagged session LNURL", async () => {
+  it("offers the same payout flow to a receiver's flagged session LNURL", async () => {
     const { domainId } = repos.addresses.getById(addressId)!;
     const receiver = repos.addresses.create({
       domainId, username: "bob", status: "active", sessionId: "session-bob", sessionLnurl: true,
@@ -175,11 +171,11 @@ describe("Satora's direct Arkade rail", () => {
     expect(store.listRecent(10)).toEqual([]);
   });
 
-  it("does not issue a payment link if the derived destination uses another operator", async () => {
+  it("refuses a derived destination from another operator", async () => {
     const { quote } = setup({ covenantDestinations: { derive: async () => destinationFor(1, xonly(6)) } });
     const { body } = await quote();
     expect(body).toMatchObject({ status: "ERROR" });
-    expect(body.paymentURI).toBeUndefined();
+    expect(body.paymentDestination).toBeUndefined();
     expect(store.listRecent(10)).toEqual([]);
   });
 });

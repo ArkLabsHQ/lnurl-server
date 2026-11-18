@@ -17,7 +17,7 @@ import {
 import { applyQuote, type PaymentQuote, type QuotedAmount } from "../../quote-provider.js";
 import { ffOptionBounds, withTokenUnits } from "../../rails/fixedfloat/options.js";
 import { Strikes } from "../../rails/fixedfloat/client.js";
-import { isSatoraAddress, satoraCheckoutUrl } from "../../rails/satora.js";
+import { isSatoraAddress } from "../../rails/satora.js";
 import type { DerivedDestination } from "../../covenant/destination.js";
 import type { AddressRow, DomainRow, LnurlPayDestinationResponse, LnurlPayMetadata } from "../../types/index.js";
 import { LnurlError } from "../errors.js";
@@ -295,9 +295,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
         status: "OK",
         paymentOption: resolved.paymentOption,
         paymentDestination: destination,
-        ...(destination ? {
-          paymentURI: satora ? satoraCheckoutUrl(destination, amountMsat / 1000) : destinationUri(resolved.paymentOption, destination, amountMsat),
-        } : {}),
+        ...(!satora && destination ? { paymentURI: destinationUri(resolved.paymentOption, destination, amountMsat) } : {}),
         ...(paymentQuote ? { paymentQuote } : {}),
         // Only for rails this server watches. The onchain rail is a static
         // boarding address nothing here observes, so it has no window to end.

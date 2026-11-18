@@ -772,7 +772,7 @@ export const openApiSpec = {
                               provider: {
                                 type: "string",
                                 description:
-                                  "Swap provider (FixedFloat, Simulated, or Satora). Satora opens a hosted checkout for a direct Arkade payout.",
+                                  "Swap provider (FixedFloat, Simulated, or Satora). Satora quotes and funds the swap in the payer's client.",
                               },
                               available: {
                                 type: "boolean",
@@ -844,7 +844,7 @@ export const openApiSpec = {
           "wallet's SSE session, or a server-created offline reverse swap, or an error when " +
           "offline. LUD-XX: pass `paymentOption` to select an advertised rail — `arkade` " +
           "returns an Arkade destination instead of a bolt11, `onchain` returns the " +
-          "address's registered boarding address, `satora` returns a hosted checkout and a verifiable Arkade destination, and `registered:<type>` returns the " +
+          "address's registered boarding address, `satora` returns a verifiable Arkade destination for the client-side swap, and `registered:<type>` returns the " +
           "destination the owner registered under that type. LUD-XX: " +
           "`unit`/`receiveUnit` denominate the amount (requires a configured quote provider); " +
           "the response then includes `paymentQuote`.",
@@ -917,8 +917,7 @@ export const openApiSpec = {
                           description:
                             "LUD-XX: wallet-executable payment URI carrying the requested amount. The Arkade destination is in " +
                             "`ark=` rather than the address slot, which the scheme reserves for an onchain address; " +
-                            "`amount` is BTC per BIP21. Satora returns an HTTPS checkout URL with the Arkade `address` " +
-                            "and a whole-sat `targetAmount`.",
+                            "`amount` is BTC per BIP21. Satora's client derives the stablecoin deposit after requesting an Arkade destination.",
                         },
                         verify: {
                           type: "string",

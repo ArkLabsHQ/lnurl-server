@@ -2,7 +2,7 @@ import { ArkAddress } from "@arkade-os/sdk";
 import { hex } from "@scure/base";
 
 export const SATORA_OPERATOR_URL = "https://arkade.computer";
-// Initial Polygon USDC → Arkade route envelope. The hosted quote applies live limits.
+// Initial Polygon USDC → Arkade route envelope. The payer applies Satora's live limits.
 export const SATORA_CHECKOUT_MIN_SAT = 335;
 export const SATORA_CHECKOUT_MAX_SAT = 20_000_000;
 
@@ -19,11 +19,4 @@ export function isSatoraAddress(address: string | null, operatorKey: string | un
   } catch {
     return false;
   }
-}
-
-export function satoraCheckoutUrl(address: string, amountSat: number): string {
-  const url = new URL("https://app.satora.io/polygon:USDC/arkade:BTC");
-  url.searchParams.set("targetAmount", String(amountSat));
-  url.searchParams.set("address", address);
-  return url.href;
 }
