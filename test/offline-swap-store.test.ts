@@ -116,6 +116,42 @@ describe("OfflineSwapStore", () => {
     db.close();
   });
 
+  it("counts completed payouts in retained history by solver public key", () => {
+    const db = openDb(":memory:");
+    runMigrations(db);
+    let t = 1_000;
+    const store = new OfflineSwapStore(db, 60_000, () => t);
+    const settlements = new DbSettlementStore(db, 60_000, () => t);
+    const primary = "ab".repeat(32);
+    const secondary = "cd".repeat(32);
+    const swap = (hash: string, solverPubkey: string) => store.createAccepted({
+      paymentHash: hash, pr: "lnbc1", sessionId: "offline:1", preimage: "bb".repeat(32), amountMsat: 1_000,
+      recovery: { version: 1, solverName: "same display name", solverPubkey, relays: ["wss://relay.example"], rfqId: `rfq-${hash}`, lockupAddress: "tark1", expectedAmount: 1, script: {} },
+    });
+    const markPayout = (hash: string) => settlements.markPaidOut(hash, `ark-tx-${hash}`);
+    const complete = (hash: string, solverPubkey: string) => {
+      swap(hash, solverPubkey);
+      store.markSettled(hash, "cc".repeat(32));
+      markPayout(hash);
+    };
+    complete("expired", primary);
+    t = 30_000;
+    complete("first", primary);
+    complete("second", primary.toUpperCase());
+    complete("third", secondary);
+    swap("pending", primary);
+    markPayout("pending");
+    swap("unrecorded", secondary);
+    store.markSettled("unrecorded", "cc".repeat(32));
+    settlements.create({ paymentHash: "relay", pr: "lnbc1", sessionId: "s" });
+    store.markSettled("relay", "cc".repeat(32));
+    markPayout("relay");
+    t = 61_000;
+
+    expect(store.solverUsage()).toEqual(new Map([[primary, 2], [secondary, 1]]));
+    db.close();
+  });
+
   it.each(["https://relay.example", "not a URL"])("rejects a persisted non-Nostr relay: %s", (relay) => {
     const db = openDb(":memory:");
     runMigrations(db);

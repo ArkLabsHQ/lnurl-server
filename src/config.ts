@@ -33,9 +33,16 @@ export interface FixedFloatConfig {
   maxOpenOrders: number;
 }
 
+export interface OfflineSolverRoutingConfig {
+  mode: "manual" | "usage" | "cost";
+  priority?: string[];
+  preferFirst?: string;
+}
+
 interface OfflineReceiveCommon {
   registryUrls?: string[];
   cardsFile?: string;
+  solverRouting?: OfflineSolverRoutingConfig;
   nostrSecretKey?: string;
   /** Put RFQs to the solver's HTTP ingress instead of the nostr relay its card
    *  advertises. A solver listens on one or the other, never both: the regtest
@@ -313,11 +320,32 @@ export function assertFixedFloatNetwork(ff: FixedFloatConfig | undefined, networ
   }
 }
 
+function buildOfflineSolverRouting(env: Env): OfflineSolverRoutingConfig | undefined {
+  const rawMode = env.SOLVER_ROUTING_MODE?.trim();
+  const priority = (env.SOLVER_ROUTING_PRIORITY ?? "").split(",").map((key) => key.trim().toLowerCase()).filter(Boolean);
+  const preferFirst = env.SOLVER_ROUTING_PREFER_FIRST?.trim().toLowerCase();
+  if (!rawMode && !priority.length && !preferFirst) return undefined;
+
+  const mode = rawMode || "manual";
+  if (mode !== "manual" && mode !== "usage" && mode !== "cost") {
+    throw new ConfigError("SOLVER_ROUTING_MODE must be manual, usage, or cost");
+  }
+  const discoveryKey = /^[0-9a-f]{64}$/;
+  if (priority.some((key) => !discoveryKey.test(key))) {
+    throw new ConfigError("SOLVER_ROUTING_PRIORITY must be a comma-separated list of 64-character hex discovery public keys");
+  }
+  if (preferFirst && !discoveryKey.test(preferFirst)) {
+    throw new ConfigError("SOLVER_ROUTING_PREFER_FIRST must be a 64-character hex discovery public key");
+  }
+  return { mode, ...(priority.length ? { priority: [...new Set(priority)] } : {}), ...(preferFirst ? { preferFirst } : {}) };
+}
+
 function buildOfflineReceive(env: Env): OfflineReceiveConfig {
   const registryUrls = env.SOLVER_REGISTRY_URLS === undefined
     ? undefined
     : csvHttpUrls(env.SOLVER_REGISTRY_URLS, "SOLVER_REGISTRY_URLS");
   const cardsFile = env.SOLVER_CARDS_FILE?.trim() || undefined;
+  const solverRouting = buildOfflineSolverRouting(env);
   const nostrSecretKey = env.NOSTR_SECRET_KEY || undefined;
   if (nostrSecretKey && !/^[0-9a-f]{64}$/i.test(nostrSecretKey)) {
     throw new ConfigError("NOSTR_SECRET_KEY must be 64-char hex");
@@ -371,6 +399,7 @@ function buildOfflineReceive(env: Env): OfflineReceiveConfig {
     ...(covenantRenewalMnemonic ? { covenantRenewalMnemonic } : {}),
     pollIntervalMs: integer(env, "OFFLINE_POLL_INTERVAL_MS", 15_000, { min: 1 }),
     ...(cardsFile ? { cardsFile } : {}),
+    ...(solverRouting ? { solverRouting } : {}),
     ...(nostrSecretKey ? { nostrSecretKey } : {}),
     ...(rfqHttpUrl ? { rfqHttpUrl } : {}),
   };

@@ -178,6 +178,9 @@ async function main(): Promise<void> {
       const { httpTransport } = await import("@arkade-os/swap/protocol");
       offlineSwapCreator = await createOfflineSwapCoordinator({
         discovery,
+        ...(off.solverRouting && !off.rfqHttpUrl ? {
+          routing: { ...off.solverRouting, usage: offlineSwaps.solverUsage.bind(offlineSwaps) },
+        } : {}),
         nostrSecretKey: off.nostrSecretKey,
         ...(off.rfqHttpUrl ? { transportFactory: () => httpTransport(off.rfqHttpUrl!) } : {}),
         emulatorUrl: off.emulatorUrl,

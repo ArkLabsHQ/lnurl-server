@@ -20,6 +20,20 @@ Paste a card in the admin UI's Solvers tab. The response distinguishes `persiste
 
 A solver can also be listed by pointer — a signed card with its name, `discovery_pubkey` and relays but no markets — and its markets then come from the signed card it publishes over Nostr, read from those relays on every refresh and used only while its signature verifies and it is under two hours old. Registry indexes list solvers this way; to allow a solver the registry does not list, paste its signed pointer (`cli card --pointer` on intent-solver) in the Solvers tab. A full card that names a key and relays is read the same way and falls back to its own markets. The server needs outbound WebSocket access to those relays; when they cannot be read, discovery keeps what it has and reports a warning. Off regtest, a relay on a private, loopback, link-local or CGNAT IP literal, or on `localhost`, is never dialled, not for the card and not for an RFQ, and is reported as a warning. A hostname that resolves to a private address is not caught.
 
+### Offline receive solver routing
+
+Configure the order for new server-issued Lightning invoices with `SOLVER_ROUTING_MODE`.
+
+- `manual` tries the eligible keys in `SOLVER_ROUTING_PRIORITY` in order, followed by the remaining candidates in discovery order. Leave the list empty to use discovery order throughout.
+- `usage` sorts by the number of completed receives issued within `VERIFY_TTL_MS` (24 hours by default). Ties use the configured priority followed by discovery order.
+- `cost` compares advertised BTC-to-BTC fees for the requested amount. The callback still verifies each solver's actual terms. Ties use the configured priority followed by discovery order.
+
+Use each card's `discovery_pubkey` as a 64-character hex key in the comma-separated priority list. Set `SOLVER_ROUTING_PREFER_FIRST` to try one eligible key before the configured order. Add or update the provider's card through the admin UI, a startup card file, or the registry. A configured key participates when its card is discoverable and supports the payment.
+
+If a provider cannot supply a valid quote, the server tries the next eligible candidate. Once the server issues an invoice, settlement and recovery use the recorded provider, including after a restart.
+
+These settings order directed quotes over Nostr. `SOLVER_RFQ_HTTP_URL` sends quotes to one fixed endpoint and uses discovery order for its compatibility cards.
+
 ## Receive rails
 
 `GET /admin/api/rails` shows what the process wired (interactive lightning, offline swap, arkade destination, covenant destinations, onchain boarding address, token deposits, registered methods). Each LN address adds its own policy: the admin UI Addresses tab (Rails) or `PATCH /admin/api/addresses/{id}/rails` with `{ "disabledRails": [...] }` disables rails for one address. The payRequest advertises only the surviving rails; a disabled or unavailable rail answers its callbacks with an explicit LNURL error instead of stalling.

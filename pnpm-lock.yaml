@@ -19,8 +19,8 @@ importers:
         specifier: 0.5.0-rc.25
         version: 0.5.0-rc.25
       '@arkade-os/solver-discovery':
-        specifier: 0.3.0
-        version: 0.3.0
+        specifier: 0.4.0
+        version: 0.4.0
       '@arkade-os/swap':
         specifier: 0.1.0-rc.28
         version: 0.1.0-rc.28(nostr-tools@2.24.1(typescript@5.9.3))
@@ -184,6 +184,10 @@ packages:
 
   '@arkade-os/solver-discovery@0.3.0':
     resolution: {integrity: sha512-FMAhWG3vZrKIlCP1U8E5iAgB6O1wc6O1CMk+HlQ4xUf066p/S8PuRgmHtkHcL1YrGsdWhKfP/SSFwgLIbGTQjg==}
+    engines: {node: '>=20.19'}
+
+  '@arkade-os/solver-discovery@0.4.0':
+    resolution: {integrity: sha512-oIKsS4lt8yXbUDKzo2uLd4cbZZLEN6/iGQlaOaW72mA7dvtLCznylVEpUTvpdIggQIIRd6DpvFzN/DlJXecBRg==}
     engines: {node: '>=20.19'}
 
   '@arkade-os/swap@0.1.0-rc.28':
@@ -1810,6 +1814,11 @@ snapshots:
       - utf-8-validate
 
   '@arkade-os/solver-discovery@0.3.0':
+    dependencies:
+      '@noble/curves': 2.4.0
+      '@noble/hashes': 2.4.0
+
+  '@arkade-os/solver-discovery@0.4.0':
     dependencies:
       '@noble/curves': 2.4.0
       '@noble/hashes': 2.4.0

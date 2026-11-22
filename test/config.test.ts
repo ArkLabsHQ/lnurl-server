@@ -264,6 +264,38 @@ describe("loadConfig", () => {
 });
 
 describe("offline receive config", () => {
+  it("keeps the existing routing when no preferences are configured", () => {
+    expect(loadConfig({ ...base }).offlineReceive.solverRouting).toBeUndefined();
+  });
+
+  it("defaults a configured priority to manual order and normalizes discovery keys", () => {
+    const first = "ab".repeat(32);
+    const second = "cd".repeat(32);
+    const cfg = loadConfig({
+      ...base,
+      ARK_SERVER_URL: "https://ark.example",
+      OFFLINE_EMULATOR_URL: "https://emulator.example",
+      SOLVER_ROUTING_PRIORITY: ` ${first.toUpperCase()}, ${second}, ${first} `,
+      SOLVER_ROUTING_PREFER_FIRST: ` ${second.toUpperCase()} `,
+    });
+    expect(cfg.offlineReceive.enabled).toBe(true);
+    expect(cfg.offlineReceive.solverRouting).toEqual({ mode: "manual", priority: [first, second], preferFirst: second });
+  });
+
+  it.each(["manual", "cost", "usage"])("parses the %s mode without enabling offline receive", (mode) => {
+    const { offlineReceive } = loadConfig({ ...base, SOLVER_ROUTING_MODE: mode });
+    expect(offlineReceive.solverRouting).toEqual({ mode });
+    expect(offlineReceive.enabled).toBe(false);
+  });
+
+  it.each([
+    ["SOLVER_ROUTING_MODE", "random"],
+    ["SOLVER_ROUTING_PRIORITY", `${"ab".repeat(32)},Harbor`],
+    ["SOLVER_ROUTING_PREFER_FIRST", "03" + "ab".repeat(32)],
+  ])("rejects invalid %s values at startup", (name, value) => {
+    expect(() => loadConfig({ ...base, [name]: value })).toThrow(new RegExp(name));
+  });
+
   const base = { NODE_ENV: "test", DB_PATH: "unused-test.sqlite", ALLOW_INSECURE_TOKEN_STORAGE: "1" } as Record<string, string>;
 
   // An emulator is also the covenant rail's co-signer, so it cannot on its own

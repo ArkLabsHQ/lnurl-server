@@ -227,7 +227,9 @@ export class DiscoveryService {
    */
   selectLightningReceive(amountSat: number, emulatorPubkey: Uint8Array, amountSide: "from" | "to" = "from"): SolverCandidate[] {
     if (!Number.isSafeInteger(amountSat) || amountSat <= 0) return [];
-    return (this.snapshot?.candidates ?? []).filter((candidate) => {
+    const snapshot = this.snapshot;
+    if (!snapshot || snapshot.expiresAt <= this.now()) return [];
+    return snapshot.candidates.filter((candidate) => {
       const receive = sideLimits(candidate.market, "base");
       const payer = sideLimits(candidate.market, "quote");
       if (!receive || !payer) return false;

@@ -33,7 +33,9 @@ import { invoiceFactsFromBolt11 } from "../bolt11.js";
 import { MalformedRecordError, RailRefusedError, SolverQuoteError, UpstreamError } from "../errors.js";
 import { checkedPreimage, randomEntropy, type EntropyProvider } from "../covenant/entropy.js";
 import { createLogger, type Logger } from "../logger.js";
+import type { OfflineSolverRoutingConfig } from "../config.js";
 import type { DiscoveryService, SolverCandidate } from "./solver-discovery.js";
+import { rankReceiveSolvers } from "./solver-routing.js";
 import { observeLockupPayout, type SelfClaimer, type SelfClaimOutcome } from "../covenant/self-claim.js";
 import { deserializeSelfClaim } from "../covenant/self-claim-codec.js";
 
@@ -43,6 +45,7 @@ export interface OfflineSwapParams {
   amountSide?: "from" | "to";
   /** Required payer ceiling for net-targeted invoices, in sats. */
   maxPayAmountSat?: number;
+  minPayAmountSat?: number;
   /** Receiver's Arkade address — the covenant claim is constrained to pay it. */
   receiveAddress: string;
   /** Receiver's compressed claim public key (hex); its x-only part is the covenant's receiver. */
@@ -103,6 +106,7 @@ export interface OfflineSwapCreator {
 
 export interface IntentSwapSettings {
   discovery: Pick<DiscoveryService, "selectLightningReceive">;
+  routing?: OfflineSolverRoutingConfig & { usage?: () => ReadonlyMap<string, number> };
   /** 32-byte hex Nostr identity for the transport; ephemeral per boot when unset. */
   nostrSecretKey?: string;
   /** Emulator base URL — the source of the covenant's emulator key. */
@@ -123,6 +127,7 @@ export interface IntentSwapSettings {
 /** Operator + claim facts a swap derivation needs. Refetched on a TTL so an
  *  operator/emulator rekey is picked up without a restart. */
 interface CorridorContext {
+  network: string;
   emulatorPubkey: Uint8Array; // x-only — the covenant's emulator co-signer
   serverPubkey: Uint8Array; // x-only operator signer key
   claimDelay: number;
@@ -245,6 +250,7 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
         const [emulatorKey, info] = await Promise.all([fetchEmulatorKey(settings.emulatorUrl), infoP]);
         const network = getNetwork(info.network as NetworkName);
         return {
+          network: info.network,
           emulatorPubkey: toXOnly(emulatorKey, "emulator signer key"),
           serverPubkey: toXOnly(hex.decode(info.signerPubkey), "ark signer key"),
           claimDelay: unilateralClaimDelay(Number(info.unilateralExitDelay)),
@@ -272,20 +278,32 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
         throw new Error(`receiveAddress prefix ${payout.hrp} does not match operator network (${ctx.hrp})`);
       }
       const amountSide = params.amountSide ?? "from";
-      const maxPayAmountSat = params.maxPayAmountSat;
+      const { maxPayAmountSat, minPayAmountSat } = params;
       if (amountSide === "to" && (maxPayAmountSat === undefined || !Number.isSafeInteger(maxPayAmountSat) || maxPayAmountSat < params.amountSat)) {
         throw new Error("A maximum payer amount at least equal to the receive amount is required");
       }
-      if (amountSide !== "to" && maxPayAmountSat !== undefined) {
-        throw new Error("A maximum payer amount is only supported with amountSide 'to'");
+      if (amountSide !== "to" && (maxPayAmountSat !== undefined || minPayAmountSat !== undefined)) {
+        throw new Error("Payer bounds are only supported with amountSide 'to'");
       }
-      const candidates = settings.discovery.selectLightningReceive(params.amountSat, ctx.emulatorPubkey, amountSide);
-      if (!candidates.length) throw new RailRefusedError(`no solver card supports a ${params.amountSat} sat lightning receive`);
+      if (minPayAmountSat !== undefined && (!Number.isSafeInteger(minPayAmountSat) || minPayAmountSat < 0 ||
+          (maxPayAmountSat !== undefined && minPayAmountSat > maxPayAmountSat))) {
+        throw new Error("The minimum payer amount must fit the payer bounds");
+      }
+      const eligible = settings.discovery.selectLightningReceive(params.amountSat, ctx.emulatorPubkey, amountSide);
+      if (!eligible.length) throw new RailRefusedError(`no solver card supports a ${params.amountSat} sat lightning receive`);
+      const routing = settings.routing;
+      let usage: ReadonlyMap<string, number> | undefined;
+      if (routing?.mode === "usage") {
+        try { usage = routing.usage?.(); }
+        catch (error) { logger.warn("solver_routing_usage_unavailable", { error }); }
+      }
+      const candidates = routing ? await rankReceiveSolvers(eligible, ctx.network, routing, params.amountSat, amountSide, usage) : eligible;
       const failures: string[] = [];
 
       for (const candidate of candidates) {
-        const transport = transportFor(candidate);
+        let transport: RfqTransport | undefined;
         try {
+          transport = transportFor(candidate);
           const preimage = checkedPreimage(settings.entropy ?? randomEntropy);
           const paymentHash = paymentHashOf(preimage);
           const rfqId = hex.encode(crypto.getRandomValues(new Uint8Array(32)));
@@ -305,6 +323,7 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
           }
           if (toAmount > fromAmount) throw new SolverQuoteError("solver quote pays out more than it takes in");
           if (maxPayAmountSat !== undefined && fromAmount > maxPayAmountSat) throw new SolverQuoteError("solver quote exceeds the maximum payer amount");
+          if (minPayAmountSat !== undefined && fromAmount < minPayAmountSat) throw new SolverQuoteError("solver quote is below the minimum payer amount");
           const payer = sideLimits(candidate.market, "quote");
           if (amountSide === "to" && (!payer || BigInt(fromAmount) < payer.min || BigInt(fromAmount) > payer.max)) {
             throw new SolverQuoteError("solver quote exceeds its advertised payer bounds");
@@ -319,7 +338,12 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
             claimDelay: ctx.claimDelay,
             hrp: ctx.hrp,
           });
-          const { payDeadline } = verifyReceiveInvoice({ invoice: derived.invoice, decode: invoiceFactsFromBolt11, paymentHash, quote });
+          const { payDeadline } = verifyReceiveInvoice({
+            invoice: derived.invoice,
+            decode: (invoice) => invoiceFactsFromBolt11(invoice, amountSide === "to"),
+            paymentHash,
+            quote,
+          });
           verifyReceiveWindow({ quote, quoteId: rfqId, payDeadline, now: Math.floor(Date.now() / 1000) });
           if (settings.contracts) {
             // Before the invoice leaves, so nothing funds a lockup with no row — but
@@ -352,7 +376,7 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
             },
           };
         } catch (error) {
-          await transport.close().catch(() => {});
+          await transport?.close().catch(() => {});
           failures.push(`${candidate.name}: ${error instanceof Error ? error.message : "failed"}`);
         }
       }
