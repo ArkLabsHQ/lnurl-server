@@ -337,6 +337,33 @@ describe("createOfflineSwapCoordinator", () => {
     await restarted.close?.();
   });
 
+  it("retries a failed status read with a new transport to the persisted solver", async () => {
+    const swap = await creator.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
+    const error = new Error("no relay accepted the RFQ message");
+    const failedStatus = vi.fn().mockRejectedValue(error);
+    const close = vi.fn(async () => {});
+    const discover = vi.fn(() => []);
+    const transportFactory = vi.fn()
+      .mockReturnValueOnce({ ...httpTransport(solver.baseUrl), status: failedStatus, close })
+      .mockImplementation(() => httpTransport(solver.baseUrl));
+    const restarted = await createOfflineSwapCoordinator(swapSettings({
+      discovery: { selectLightningReceive: discover },
+      transportFactory,
+    }));
+    try {
+      await expect(restarted.status!(swap.swapId, swap.recovery)).rejects.toBe(error);
+      expect(close).toHaveBeenCalledTimes(1);
+      solver.statuses.set(swap.swapId, "expired");
+      await expect(restarted.status!(swap.swapId, swap.recovery)).resolves.toBe("expired");
+      const endpoint = { name: swap.recovery.solverName, discoveryPubkey: swap.recovery.solverPubkey, relays: swap.recovery.relays };
+      expect(transportFactory.mock.calls).toEqual([[endpoint], [endpoint]]);
+      expect(failedStatus).toHaveBeenCalledWith(swap.swapId);
+      expect(discover).not.toHaveBeenCalled();
+    } finally {
+      await restarted.close?.();
+    }
+  });
+
   it("closes a terminal swap transport once and removes it from the pinned set", async () => {
     const close = vi.fn(async () => {});
     const bounded = await createOfflineSwapCoordinator(swapSettings({
