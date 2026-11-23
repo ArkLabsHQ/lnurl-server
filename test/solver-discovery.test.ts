@@ -258,6 +258,21 @@ describe("DiscoveryService", () => {
     expired.stop();
   });
 
+  it("stops selecting an expired snapshot even when discovery has not refreshed", async () => {
+    let now = 1_000_000;
+    const service = new DiscoveryService({
+      network: "bitcoin", registryUrls: [registryUrl], cardStore: new CardStore(), cacheStore: new CacheStore(),
+      transportCards: null, now: () => now, refreshIntervalMs: 0,
+      fetchImpl: async () => response(registryIndex(solverCard("registry", 30), 1_000)),
+    });
+    await service.start();
+    expect(service.selectLightningReceive(10_000, EMULATOR)).toHaveLength(1);
+    now += 7 * 86_400_000 + 1;
+    expect(service.status().ready).toBe(false);
+    expect(service.selectLightningReceive(10_000, EMULATOR)).toEqual([]);
+    service.stop();
+  });
+
   it("does not replace the last known-good cache with an invalid HTTP 200 body", async () => {
     const cache = new CacheStore();
     const goodBody = JSON.stringify(registryIndex(solverCard("registry", 30), 1_000));

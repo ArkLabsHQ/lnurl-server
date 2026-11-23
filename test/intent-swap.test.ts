@@ -48,13 +48,13 @@ interface FakeSolver {
   baseUrl: string;
   requests: Record<string, any>[];
   statuses: Map<string, string>;
-  mode: { wrongHash?: boolean; fromAmountDelta?: number; toAmountDelta?: number; bogusLockup?: boolean; amountsAsStrings?: boolean; expired?: boolean; refundSoon?: boolean; invoiceExpirySeconds?: number };
+  mode: { wrongHash?: boolean; fromAmountDelta?: number; toAmountDelta?: number; bogusLockup?: boolean; amountsAsStrings?: boolean; expired?: boolean; refundSoon?: boolean; invoiceExpirySeconds?: number; fractionalInvoice?: boolean };
   /** Unix seconds the last quote was stamped at. */
   issuedAt?: number;
   close: () => Promise<void>;
 }
 
-async function startFakeSolver(): Promise<FakeSolver> {
+async function startFakeSolver(netFeeSat = 1): Promise<FakeSolver> {
   const requests: Record<string, any>[] = [];
   const statuses = new Map<string, string>();
   const mode: FakeSolver["mode"] = {};
@@ -69,10 +69,10 @@ async function startFakeSolver(): Promise<FakeSolver> {
       const validUntil = mode.expired ? now - 1 : now + 600;
       const refundLocktime = mode.refundSoon ? validUntil + 1_799 : now + 7200;
       const paymentHash = mode.wrongHash ? "ff".repeat(32) : r.profile.payment_hash;
-      const from = r.amount_side === "to" ? r.amount + 1 : r.amount;
+      const from = r.amount_side === "to" ? r.amount + netFeeSat : r.amount;
       const to = r.amount_side === "to" ? r.amount : r.amount - 1;
       const invoice = buildInvoice(paymentHash, {
-        amountHrp: `${from * 10000}p`,
+        amountHrp: `${from * 10000 + (mode.fractionalInvoice ? 10 : 0)}p`,
         timestamp: now,
         ...(mode.invoiceExpirySeconds ? { expirySeconds: mode.invoiceExpirySeconds } : {}),
       });
@@ -191,18 +191,44 @@ afterAll(async () => {
 });
 
 describe("createOfflineSwapCoordinator", () => {
-  it("fails over before invoice acceptance and pins the successful solver", async () => {
+  it("uses discovery order when solver ranking fails", async () => {
+    const error = new Error("ranking unavailable");
+    const backup = candidate("backup");
+    Object.defineProperty(backup.market, "base_asset", { get: () => { throw error; } });
     const attempts: string[] = [];
-    const candidates = ["unavailable", "registry"].map((name): SolverCandidate => ({
+    const warn = vi.fn();
+    const coordinated = await createOfflineSwapCoordinator(swapSettings({
+      discovery: { selectLightningReceive: () => [candidate(), backup] },
+      routing: { mode: "cost" },
+      logger: { info: vi.fn(), warn, error: vi.fn() },
+      transportFactory: (target) => {
+        attempts.push(target.name);
+        return httpTransport(solver.baseUrl);
+      },
+    }));
+    try {
+      const swap = await coordinated.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
+      expect(attempts).toEqual(["registry"]);
+      expect(swap.recovery.solverName).toBe("registry");
+      expect(warn).toHaveBeenCalledWith("solver_routing_ranking_failed", { error });
+    } finally {
+      await coordinated.close?.();
+    }
+  });
+
+  it.each(["transport setup", "quote request"])("fails over after a %s failure and pins the successful solver", async (failure) => {
+    const attempts: string[] = [];
+    const preferredPubkey = "aa".repeat(32);
+    const candidates = ["registry", "unavailable"].map((name): SolverCandidate => ({
       name,
-      discoveryPubkey: solverPub.slice(2),
+      discoveryPubkey: name === "unavailable" ? preferredPubkey : solverPub.slice(2),
       relays: ["wss://relay.invalid"],
       source: `manual:${name}`,
       sourceType: "local",
       market: {
         ...solverCard("registry", 30, "mutinynet").markets[0]!,
         solver: name,
-        discovery_pubkey: solverPub.slice(2),
+        discovery_pubkey: name === "unavailable" ? preferredPubkey : solverPub.slice(2),
         transports: { nostr: { relays: ["wss://relay.invalid"] } },
         source: `manual:${name}`,
         sourceType: "local",
@@ -210,23 +236,28 @@ describe("createOfflineSwapCoordinator", () => {
     }));
     const failover = await createOfflineSwapCoordinator({
       discovery: { selectLightningReceive: () => candidates },
+      routing: { mode: "cost", preferFirst: preferredPubkey },
       emulatorUrl: emulator.baseUrl,
       arkServerUrl: operator.baseUrl,
-      transportFactory: (candidate) => ({
-        requestQuote: async (request) => {
-          attempts.push(candidate.name);
-          if (candidate.name === "unavailable") throw new Error("timeout");
-          const transport = (await import("@arkade-os/swap/protocol")).httpTransport(solver.baseUrl);
-          try { return await transport.requestQuote(request); } finally { await transport.close(); }
-        },
-        status: async () => null,
-        close: async () => {},
-      }),
+      transportFactory: (candidate) => {
+        attempts.push(candidate.name);
+        if (candidate.name === "unavailable" && failure === "transport setup") throw new Error("invalid transport key");
+        return {
+          requestQuote: async (request) => {
+            if (candidate.name === "unavailable") throw new Error("timeout");
+            const transport = (await import("@arkade-os/swap/protocol")).httpTransport(solver.baseUrl);
+            try { return await transport.requestQuote(request); } finally { await transport.close(); }
+          },
+          status: async () => null,
+          close: async () => {},
+        };
+      },
     });
 
     const swap = await failover.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
     expect(attempts).toEqual(["unavailable", "registry"]);
     expect(swap.recovery).toMatchObject({ version: 1, solverName: "registry", solverPubkey: solverPub.slice(2), rfqId: swap.swapId });
+    await failover.close?.();
   });
 
   it("quotes a corridor receive and returns the solver's hold invoice", async () => {
@@ -404,6 +435,34 @@ describe("createOfflineSwapCoordinator", () => {
     expect(solver.requests.at(-1)).toMatchObject({ amount: 1000, amount_side: "to" });
     expect(swap.recovery.expectedAmount).toBe(1000);
     expect(invoiceFactsFromBolt11(swap.invoice).amountSats).toBe(1001);
+  });
+
+  it.each([
+    { invalidInvoice: "below the payer floor", minPayAmountSat: 1_005, fractionalInvoice: false },
+    { invalidInvoice: "fractional", minPayAmountSat: 1_000, fractionalInvoice: true },
+  ])("tries another quote when the preferred solver's invoice is $invalidInvoice", async ({ minPayAmountSat, fractionalInvoice }) => {
+    const other = await startFakeSolver(8);
+    const preferred = candidate("preferred");
+    const backup = candidate("backup");
+    const coordinated = await createOfflineSwapCoordinator(swapSettings({
+      discovery: { selectLightningReceive: () => [preferred, backup] },
+      routing: { mode: "cost", preferFirst: preferred.discoveryPubkey },
+      transportFactory: (target) => httpTransport(target.name === "preferred" ? solver.baseUrl : other.baseUrl),
+    }));
+    solver.mode.fractionalInvoice = fractionalInvoice;
+    try {
+      const swap = await coordinated.create({
+        amountSat: 1_000, amountSide: "to", minPayAmountSat, maxPayAmountSat: 1_020,
+        receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY,
+      });
+      expect(invoiceFactsFromBolt11(swap.invoice).amountSats).toBe(1_008);
+      expect(swap.recovery.solverName).toBe("backup");
+      expect(swap.recovery.expectedAmount).toBe(1_000);
+    } finally {
+      solver.mode.fractionalInvoice = undefined;
+      await coordinated.close?.();
+      await other.close();
+    }
   });
 
   it("rejects an excessive payer amount and a net quote that changes the receive amount", async () => {

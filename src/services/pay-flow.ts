@@ -125,7 +125,11 @@ export async function createOfflineSwapInvoice(args: {
     // Caller guarantees whole satoshis (rejected at the route otherwise).
     swap = await creator.create(receiveAmountMsat === undefined
       ? { amountSat: amountMsat / 1000, receiveAddress, claimPublicKey }
-      : { amountSat: receiveAmountMsat / 1000, amountSide: "to", maxPayAmountSat: amountMsat / 1000, receiveAddress, claimPublicKey });
+      : {
+        amountSat: receiveAmountMsat / 1000, amountSide: "to", maxPayAmountSat: amountMsat / 1000,
+        ...(minPayAmountMsat === undefined ? {} : { minPayAmountSat: Math.ceil(minPayAmountMsat / 1000) }),
+        receiveAddress, claimPublicKey,
+      });
     const payerMsat = receiveAmountMsat === undefined ? amountMsat : invoiceFactsFromBolt11(swap.invoice, true).amountSats * 1000;
     if (receiveAmountMsat !== undefined && (!Number.isSafeInteger(payerMsat) || payerMsat < Math.max(receiveAmountMsat, minPayAmountMsat ?? 0) ||
         payerMsat > amountMsat || swap.recovery.expectedAmount * 1000 !== receiveAmountMsat)) {

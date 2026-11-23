@@ -132,6 +132,16 @@ export class OfflineSwapStore {
     return rows.map((row) => ({ paymentHash: row.payment_hash, preimage: row.preimage, recovery: recoveryOf(row) }));
   }
 
+  solverUsage(): ReadonlyMap<string, number> {
+    const rows = this.db.prepare(
+      `SELECT lower(o.solver_pubkey) AS solver_pubkey, COUNT(*) AS uses
+       FROM offline_swaps o JOIN settlements s ON s.payment_hash = o.payment_hash
+       WHERE o.created_at > ? AND s.settled = 1 AND s.payout_reference <> ''
+       GROUP BY lower(o.solver_pubkey)`,
+    ).all(this.now() - this.ttlMs) as unknown as { solver_pubkey: string; uses: number }[];
+    return new Map(rows.map((row) => [row.solver_pubkey, row.uses]));
+  }
+
   /** Lockup pkScripts still worked: unsettled and inside {@link listPending}'s window, so
    *  retirement never outlives a claim attempt. `swap_id IS NOT NULL` is implied by the
    *  join, but stated so idx_settlements_pending_swaps_created serves the range. */
