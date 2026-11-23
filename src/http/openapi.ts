@@ -1,7 +1,41 @@
 import { VERSION } from "../version.js";
+import { MAX_ARKADE_ASSETS } from "../arkade-assets.js";
 
 const HANDLE_PARAM =
   "Handle: the username, or the session id while nameless. A row that had a session LNURL still answers to its session id after an upgrade, while it is active.";
+
+const assetAtomicAmount = { type: "string", pattern: "^[1-9][0-9]{0,19}$", description: "Positive uint64 in the asset's base units" };
+const assetPayment = {
+  summary: "Request native Arkade asset payment instructions",
+  description: "Use the advertised `assetCallback`. Request `receipt: true` to require a unique covenant destination and verify URL. Availability is checked at the callback.",
+  tags: ["LN Address"],
+  requestBody: {
+    required: true,
+    content: { "application/json": { schema: {
+      type: "object", required: ["assetId", "amount"], properties: {
+        assetId: { $ref: "#/components/schemas/ArkadeAssetId" },
+        amount: assetAtomicAmount,
+        receipt: { type: "boolean", enum: [true] },
+      },
+    } } },
+  },
+  responses: {
+    "200": { description: "Native asset payment instructions or an LNURL error", content: { "application/json": { schema: {
+      type: "object", properties: {
+        status: { type: "string", enum: ["OK", "ERROR"] },
+        reason: { type: "string" },
+        paymentOption: { type: "string" },
+        paymentDestination: { type: "string" },
+        network: { type: "string" },
+        assetId: { $ref: "#/components/schemas/ArkadeAssetId" },
+        assetAmount: assetAtomicAmount,
+        verify: { type: "string", format: "uri" },
+        expiresAt: { type: "integer", description: "Receipt funding deadline in Unix seconds" },
+      },
+    } } } },
+    "429": { description: "Request or receipt derivation capacity exceeded" },
+  },
+};
 
 export const openApiSpec = {
   openapi: "3.0.3",
@@ -326,6 +360,8 @@ export const openApiSpec = {
                         settled: { type: "boolean" },
                         paymentOption: { type: "string" },
                         paymentDestination: { type: "string" },
+                        assetId: { $ref: "#/components/schemas/ArkadeAssetId" },
+                        assetAmount: assetAtomicAmount,
                         paymentReference: {
                           type: "string",
                           nullable: true,
@@ -518,6 +554,7 @@ export const openApiSpec = {
                   claimPublicKey: { type: "string", nullable: true, description: "Bound claim key; null when arkadeAddress is" },
                   boardingAddress: { type: "string", nullable: true, description: "Bound onchain destination; null when none is registered" },
                   paymentMethods: { type: "array", items: { $ref: "#/components/schemas/PaymentMethod" }, description: "Methods registered on this address; empty when none" },
+                  arkadeAssets: { type: "array", items: { $ref: "#/components/schemas/ArkadeAssetId" }, description: "Arkade assets registered on this address. Empty when none." },
                 } }] } },
               },
             },
@@ -664,6 +701,13 @@ export const openApiSpec = {
                       "no two with the same `type`. A list with an invalid entry refuses the whole call with 400 and " +
                       "stores nothing.",
                   },
+                  arkadeAssets: {
+                    type: "array",
+                    maxItems: MAX_ARKADE_ASSETS,
+                    uniqueItems: true,
+                    items: { $ref: "#/components/schemas/ArkadeAssetId" },
+                    description: "Assets accepted at the registered Arkade address. Omit to preserve the current list or pass [] to clear it.",
+                  },
                   domain: { type: "string", description: "Target domain (defaults to the Host header)" },
                 },
                 required: ["arkadeAddress", "claimPublicKey"],
@@ -690,6 +734,7 @@ export const openApiSpec = {
           "A payment the payer denominated in a LUD-XX unit carries `quote: { amount, unit, decimals }` " +
           "(amount in the unit's smallest denomination) beside its `amountMsat`; otherwise `quote` is null. " +
           "`comment` is the payer's LUD-12 comment, on every rail that keeps a record; otherwise null. " +
+          "Native Arkade asset receipt rows include `assetId` and `assetAmount` in base units. " +
           "`expiresAt` is the deadline the payer was given, in Unix ms, when the rail states one; otherwise null.",
         tags: ["LN Address"],
         security: [{ bearerAuth: [] }],
@@ -767,6 +812,9 @@ export const openApiSpec = {
                             properties: {
                               id: { type: "string" },
                               type: { type: "string", description: "e.g. lightning, arkade, onchain; on a token option the asset's CAIP-2 namespace (eip155, solana, tron); on a registered option the owner's own method type" },
+                              caip19Id: { type: "string", description: "Network-qualified asset identity, when defined for this option." },
+                              assetId: { $ref: "#/components/schemas/ArkadeAssetId" },
+                              assetCallback: { type: "string", format: "uri", description: "Same-origin POST endpoint for an arkade-asset payment." },
                               asset: { type: "string", description: "Token options only: the CAIP-19 asset id, e.g. eip155:42161/erc20:0xfd08…" },
                               unit: { type: "string", description: "Token options only: the `units[]` code the option is quoted in (USDT, USDC)" },
                               provider: {
@@ -789,7 +837,8 @@ export const openApiSpec = {
                                   "Whether callback answers for this rail carry a LUD-21 `verify` URL, so a payer that must " +
                                   "detect settlement can skip a rail without requesting it. Always stated: lightning `true`; " +
                                   "arkade `true` only while per-payment covenant destinations serve it (the static address " +
-                                  "fallback identifies no payment); onchain and registered `false`.",
+                                  "fallback identifies no payment); onchain and registered `false`. On an arkade-asset option, " +
+                                  "true means the asset callback can issue a per-payment receipt when requested.",
                               },
                               minSendable: {
                                 type: "number",
@@ -835,6 +884,18 @@ export const openApiSpec = {
             },
           },
         },
+      },
+    },
+    "/.well-known/lnurlp/{username}/callback/arkade-asset": {
+      post: {
+        ...assetPayment,
+        parameters: [{ name: "username", in: "path", required: true, schema: { type: "string" } }],
+      },
+    },
+    "/lnurl/{id}/callback/arkade-asset": {
+      post: {
+        ...assetPayment,
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
       },
     },
     "/.well-known/lnurlp/{username}/callback": {
@@ -969,8 +1030,8 @@ export const openApiSpec = {
             pattern: "^[a-z][a-z0-9-]{0,31}$",
             description:
               "The method's name, which becomes the option id `registered:<type>`: 1 to 32 lowercase letters, digits or " +
-              "hyphens, starting with a letter. Refused as reserved: every rail id (`interactive-lightning`, `offline-swap`, " +
-              "`arkade`, `covenant`, `onchain`, `fixedfloat`, `registered`) and `lightning`, `eip155`, `solana`, `tron`.",
+              "hyphens, starting with a letter. Reserved types are `interactive-lightning`, `offline-swap`, `arkade`, " +
+              "`covenant`, `onchain`, `fixedfloat`, `registered`, `lightning`, `eip155`, `solana` and `tron`.",
           },
           destination: {
             type: "string",
@@ -984,6 +1045,13 @@ export const openApiSpec = {
         },
         required: ["type", "destination"],
         additionalProperties: false,
+      },
+      ArkadeAssetId: {
+        type: "string",
+        minLength: 68,
+        maxLength: 68,
+        pattern: "^[0-9a-f]{68}$",
+        description: "Canonical Arkade asset ID in lowercase hex.",
       },
       AmountObject: {
         type: "object",

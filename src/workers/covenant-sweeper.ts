@@ -148,7 +148,8 @@ export function createCovenantSweeper(opts: {
           if (params.version === COVENANT_V3 && opts.settlements) {
             try {
               await reconcileCovenantForwarding(opts.settlements, contract.script, params.staticAddress, vtxos, indexer);
-              if (opts.settlements.findByCovenantScript(contract.script)?.payoutReference) continue;
+              const receipt = opts.settlements.findByCovenantScript(contract.script);
+              if (receipt?.payoutReference && !receipt.arkadeAssetAmount) continue;
             } catch (err) {
               console.warn(`covenant forwarding reconciliation failed for ${contract.script.slice(0, 16)}…:`, err);
               continue;

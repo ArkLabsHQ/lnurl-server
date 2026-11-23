@@ -27,9 +27,10 @@ import type { FfRail } from "./rails/fixedfloat/rates.js";
 import { ffPaymentOptions } from "./rails/fixedfloat/options.js";
 import { ffRailCaps } from "./rails/fixedfloat/provider.js";
 import { InvalidRailPolicyError } from "./errors.js";
+import { arkadeAssetOptionId, matchesArkadeAssetDestination } from "./arkade-assets.js";
 
 /** Every receive rail the server knows. The order is the advertise order. */
-export const RAIL_IDS = ["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat", "registered"] as const;
+export const RAIL_IDS = ["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat", "registered", "arkade-asset"] as const;
 
 /** A backend that can satisfy a receive on an LN address. */
 export type RailId = (typeof RAIL_IDS)[number];
@@ -107,6 +108,13 @@ export const RAIL_DEFS: Record<RailId, RailDef> = {
     paymentOption: null,
     direction: null,
   },
+  "arkade-asset": {
+    id: "arkade-asset",
+    label: "Arkade assets",
+    description: "The payer sends an asset the wallet accepts directly over Arkade.",
+    paymentOption: null,
+    direction: null,
+  },
 };
 
 
@@ -146,6 +154,8 @@ export interface ServerRailCaps {
   /** A covenant destination provider is wired. */
   covenantDestinations: boolean;
   network?: Network;
+  arkadeSigner?: string;
+  nativeAssetReceipts?: boolean;
   /** Token deposits are configured; absent means not at all. */
   fixedFloat?: FfRailCaps;
 }
@@ -243,6 +253,14 @@ export function describeServerRails(caps: ServerRailCaps): ServerRailState[] {
     configured: true,
     ready: true,
   });
+  states.push({
+    id: "arkade-asset",
+    label: RAIL_DEFS["arkade-asset"].label,
+    description: RAIL_DEFS["arkade-asset"].description,
+    configured: Boolean(caps.network),
+    ready: Boolean(caps.network),
+    ...(!caps.network ? { reason: "Arkade network is not configured" } : {}),
+  });
   return states;
 }
 
@@ -256,6 +274,7 @@ export interface RailAddress {
   disabledRails: readonly unknown[];
   /** Methods the owner registered; the registered rail is offered only when there is one. */
   paymentMethods?: readonly PaymentMethod[];
+  arkadeAssets?: readonly string[];
 }
 
 /** Per-address state of one rail: operator policy x server capability x identity. */
@@ -397,7 +416,21 @@ export function effectiveRails(address: RailAddress, caps: ServerRailCaps): Addr
   };
   if (!registered.enabled) registered.reason = "disabled for this address";
   else if (!hasMethods) registered.reason = "address has no registered payment methods";
-  return [interactive, offline, arkade, covenant, onchain, tokens, registered];
+  const hasAssets = Boolean(address.arkadeAddress && address.arkadeAssets?.length);
+  const destinationMatches = hasAssets && Boolean(caps.network &&
+    matchesArkadeAssetDestination(address.arkadeAddress!, caps.network, caps.arkadeSigner));
+  const assets: AddressRailState = {
+    id: "arkade-asset",
+    label: RAIL_DEFS["arkade-asset"].label,
+    enabled: !disabled.has("arkade-asset"),
+    applicable: hasAssets,
+    available: !disabled.has("arkade-asset") && destinationMatches,
+  };
+  if (!assets.enabled) assets.reason = "disabled for this address";
+  else if (!hasAssets) assets.reason = "address has no registered Arkade assets";
+  else if (!caps.network) assets.reason = "Arkade network is not configured";
+  else if (!destinationMatches) assets.reason = "destination is on a different Arkade network or operator";
+  return [interactive, offline, arkade, covenant, onchain, tokens, registered, assets];
 }
 
 /** Rails whose payment lands as a VTXO or a boarding UTXO, so arkd's own floor
@@ -463,7 +496,7 @@ function withSolverRange(
  *  range must move the next payRequest. Unknown discovery state (none injected, e.g.
  *  unit scope) assumes ready; the coordinator still fails loudly per request. */
 export function currentRailCaps(wiring: Pick<ServerDeps,
-  "offlineSwapCreator" | "covenantDestinations" | "solverDiscovery" | "arkServerUrl" | "railLimits" | "arkDustSat" | "onchainMinSat" | "fixedFloat" | "network"
+  "offlineSwapCreator" | "covenantDestinations" | "solverDiscovery" | "arkServerUrl" | "railLimits" | "arkDustSat" | "onchainMinSat" | "fixedFloat" | "network" | "arkadeSigner"
 > = {}): ServerRailCaps {
   const discoveryStatus = wiring.solverDiscovery?.status();
   // Dust last: it is the protocol's floor, so it must survive whatever the
@@ -478,7 +511,9 @@ export function currentRailCaps(wiring: Pick<ServerDeps,
     ...(discoveryStatus?.reason ? { discoveryReason: discoveryStatus.reason } : {}),
     ...(wiring.arkServerUrl ? { arkServerUrl: wiring.arkServerUrl } : {}),
     covenantDestinations: Boolean(wiring.covenantDestinations),
+    nativeAssetReceipts: wiring.covenantDestinations?.assetReceipts === true,
     ...(wiring.network ? { network: wiring.network } : {}),
+    ...(wiring.arkadeSigner ? { arkadeSigner: wiring.arkadeSigner } : {}),
     ...(limits ? { limits } : {}),
     ...(wiring.fixedFloat ? { fixedFloat: ffRailCaps(wiring.fixedFloat) } : {}),
   };
@@ -551,7 +586,7 @@ export function advertisedBounds(address: RailAddress, caps: ServerRailCaps, bas
 
 /** Options advertised in the LUD-06 payRequest for an address. When `base` is
  *  supplied each option carries the bounds it can actually be honoured at. */
-export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCaps, base?: Bounds): PaymentOption[] {
+export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCaps, base?: Bounds, assetCallback?: string): PaymentOption[] {
   // Without server caps (unit scope) keep the historical rule: an Arkade
   // identity offers both options, otherwise the address stays pure LUD-06.
   if (!caps) {
@@ -584,9 +619,18 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
   const registeredOptions: PaymentOption[] = states.get("registered")?.available
     ? (address.paymentMethods ?? []).map(({ type }) => ({ id: REGISTERED_OPTION_PREFIX + type, type, verifiable: false }))
     : [];
+  const network = caps.network;
+  const assetOptions: PaymentOption[] = network && assetCallback && states.get("arkade-asset")?.available
+    ? (address.arkadeAssets ?? []).map((assetId) => ({
+      id: arkadeAssetOptionId(assetId), type: "arkade-asset", assetId, assetCallback,
+      caip19Id: `arkade:${network}/asset:${assetId}`,
+      verifiable: caps.nativeAssetReceipts === true && states.get("covenant")?.available === true,
+    }))
+    : [];
+  const additionalOptions = [...tokenOptions, ...registeredOptions, ...assetOptions];
   // paymentOptions exists to name a non-lightning rail; with none to offer the
   // address stays pure LUD-06 even though lightning may still serve it.
-  if (!arkadeReady && !onchainReady && tokenOptions.length === 0 && registeredOptions.length === 0) return [];
+  if (!arkadeReady && !onchainReady && additionalOptions.length === 0) return [];
   const options: PaymentOption[] = [];
   // `available` is emitted only when false: LUD-XX says an absent one means true,
   // so stating it on every healthy option would be noise. `verifiable` is always
@@ -595,11 +639,10 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
   if (lightning.offer) options.push({ id: "lightning", type: "lightning", verifiable: true, ...(lightning.available ? {} : { available: false }) });
   if (arkadeReady) options.push({ id: "arkade", type: "arkade", verifiable: arkadeVerifiable, ...(arkadeState.available ? {} : { available: false }) });
   if (onchainReady) options.push({ id: "onchain", type: "onchain", verifiable: false, ...(onchainState.available ? {} : { available: false }) });
-  const network = caps.network;
   const withCaip = (opts: PaymentOption[]): PaymentOption[] => network === undefined
     ? opts
     : opts.map((option) => isRailType(option.type) ? { ...option, caip19Id: caip19Id(option.type, network) } : option);
-  if (!base) return [...withCaip(options), ...tokenOptions, ...registeredOptions];
+  if (!base) return [...withCaip(options), ...additionalOptions];
   // Emitted relative to the pair the payRequest actually advertises, not to the
   // envelope. A client falls back to the top-level pair for an option that
   // publishes nothing, and the top level is the lightning rail's — so an option
@@ -615,5 +658,5 @@ export function advertisedRailOptions(address: RailAddress, caps?: ServerRailCap
       ...(bounds.min !== advertised.min ? { minSendable: bounds.min } : {}),
       ...(bounds.max !== advertised.max ? { maxSendable: bounds.max } : {}),
     };
-  })), ...tokenOptions, ...registeredOptions];
+  })), ...additionalOptions];
 }

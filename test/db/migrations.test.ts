@@ -165,8 +165,7 @@ describe("runMigrations", () => {
 
   it("blocks migration 9 while legacy offline swaps remain unsettled", () => {
     const db = openDb(":memory:");
-    runMigrations(db);
-    db.exec("DROP TABLE ff_orders; DROP TABLE offline_swaps; ALTER TABLE addresses DROP COLUMN disabled_rails; ALTER TABLE addresses DROP COLUMN boarding_address; DROP INDEX IF EXISTS idx_settlements_address_updated; ALTER TABLE settlements DROP COLUMN updated_at; DROP INDEX IF EXISTS idx_settlements_address; ALTER TABLE settlements DROP COLUMN address_id; DROP INDEX IF EXISTS idx_settlements_active_covenants; DROP INDEX IF EXISTS idx_settlements_reference; DROP INDEX IF EXISTS idx_settlements_pending_swaps_created; ALTER TABLE settlements DROP COLUMN payout_reference; DELETE FROM schema_migrations WHERE version >= 9;");
+    runMigrations(db, { upToVersion: 8 });
     db.prepare("INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, created_at) VALUES ('aa', 'lnbc1', 'offline:1', 0, 'bb', 'legacy-rfq', ?)").run(Date.now());
     expect(() => runMigrations(db)).toThrow(/upgrade blocked.*1 unsettled legacy offline swap/i);
     db.close();
@@ -174,8 +173,7 @@ describe("runMigrations", () => {
 
   it("allows migration 9 after legacy offline swaps expire", () => {
     const db = openDb(":memory:");
-    runMigrations(db);
-    db.exec("DROP TABLE ff_orders; DROP TABLE offline_swaps; ALTER TABLE addresses DROP COLUMN disabled_rails; ALTER TABLE addresses DROP COLUMN boarding_address; DROP INDEX IF EXISTS idx_settlements_address_updated; ALTER TABLE settlements DROP COLUMN updated_at; DROP INDEX IF EXISTS idx_settlements_address; ALTER TABLE settlements DROP COLUMN address_id; DROP INDEX IF EXISTS idx_settlements_active_covenants; DROP INDEX IF EXISTS idx_settlements_reference; DROP INDEX IF EXISTS idx_settlements_pending_swaps_created; ALTER TABLE settlements DROP COLUMN payout_reference; DROP INDEX IF EXISTS uq_addresses_session_lnurl; ALTER TABLE addresses DROP COLUMN session_lnurl; ALTER TABLE addresses DROP COLUMN payment_methods; DELETE FROM schema_migrations WHERE version >= 9;");
+    runMigrations(db, { upToVersion: 8 });
     db.prepare("INSERT INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, created_at) VALUES ('aa', 'lnbc1', 'offline:1', 0, 'bb', 'legacy-rfq', 8000)").run();
 
     expect(() => runMigrations(db, { legacySwapTtlMs: 1000, now: () => 10_000 })).not.toThrow();
@@ -295,7 +293,7 @@ describe("runMigrations", () => {
     db.prepare("INSERT INTO settlements (payment_hash, pr, session_id, settled, payment_option, created_at, updated_at) VALUES ('aa', 'lnbc1', 's', 1, 'lightning', 1000, 2000)").run();
     const before = db.prepare("SELECT * FROM settlements").all();
     runMigrations(db);
-    expect(db.prepare("SELECT * FROM settlements").all()).toEqual(before.map((row) => ({ ...row, covenant_outpoint: null, quote_json: null, expires_at: null, comment: null })));
+    expect(db.prepare("SELECT * FROM settlements").all()).toEqual(before.map((row) => ({ ...row, covenant_outpoint: null, quote_json: null, expires_at: null, comment: null, arkade_asset_amount: null })));
     expect(db.prepare("SELECT COUNT(*) AS n FROM ff_orders").get()).toEqual({ n: 0 });
     db.close();
   });
@@ -305,6 +303,18 @@ describe("runMigrations", () => {
     runMigrations(db);
     const cols = db.prepare("SELECT name, dflt_value AS d FROM pragma_table_info('addresses')").all() as { name: string; d: string }[];
     expect(cols.find((c) => c.name === "disabled_rails")?.d).toBe("'[]'");
+    db.close();
+  });
+
+  it("defaults existing addresses to an empty Arkade asset list when upgrading from version 32", () => {
+    const db = openDb(":memory:");
+    runMigrations(db, { upToVersion: 32 });
+    const repos = createRepositories(db);
+    const domain = repos.domains.create({ domain: "domain.com", allocationModes: ["self"] });
+    const { id } = repos.addresses.create({ domainId: domain.id, username: "alice", status: "active" });
+    runMigrations(db);
+    expect(db.prepare("SELECT arkade_assets AS assets FROM addresses WHERE id = ?").get(id)).toEqual({ assets: "[]" });
+    expect(repos.addresses.getById(id)?.arkadeAssets).toEqual([]);
     db.close();
   });
 

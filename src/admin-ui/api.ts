@@ -99,6 +99,8 @@ export interface SettlementRow {
   paymentReference: string | null;
   address: { id: number; lightningAddress: string } | null;
   amountMsat: number | null;
+  assetId?: string;
+  assetAmount?: string;
   quote: Quote | null;
   hasPreimage: boolean;
   createdAt: number;

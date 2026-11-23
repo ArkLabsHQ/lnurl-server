@@ -189,6 +189,28 @@ describe("registerArkadeIdentity", () => {
   it("sends an empty list as given", async () => {
     expect((await bindBody({ methods: [] })).methods).toEqual([]);
   });
+
+  it("checks owner readback for updates and clears, and flags an older server ignoring the field", async () => {
+    const asset = "ab".repeat(34);
+    const binding = { token: "tok", handle: "alice", arkadeAddress: "ark1qqq", claimPublicKey: "02" + "ab".repeat(32) };
+    let readback: string[] | undefined;
+    let posted: unknown;
+    const fetchImpl = async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/arkade")) {
+        posted = JSON.parse(String(init?.body)).arkadeAssets;
+        return json({ ok: true });
+      }
+      expect((init?.headers as Record<string, string>).Authorization).toBe("Bearer tok");
+      return json([{ ...binding, domain: "x", status: "active", arkadeAssets: readback }]);
+    };
+    for (const arkadeAssets of [[asset], []]) {
+      readback = arkadeAssets;
+      await expect(registerArkadeIdentity("https://x", { ...binding, arkadeAssets }, fetchImpl)).resolves.toBeUndefined();
+      expect(posted).toEqual(arkadeAssets);
+    }
+    readback = undefined;
+    await expect(registerArkadeIdentity("https://x", { ...binding, arkadeAssets: [] }, fetchImpl)).rejects.toThrow(/did not confirm/);
+  });
 });
 describe("listPayments", () => {
   const bolt11Row = {

@@ -653,6 +653,8 @@ export const adminOpenApiSpec = {
               paymentReference: { type: "string", nullable: true, description: "Observed Arkade txid once settled by observation; on a token deposit, the payer's deposit txid on the token chain" },
               payoutReference: { type: "string", nullable: true, description: "Arkade txid that credited the recipient's own address; differs from paymentReference on the covenant and swap rails" },
               amountMsat: { type: "integer", nullable: true },
+              assetId: { type: "string", description: "Canonical native Arkade asset ID, when applicable" },
+              assetAmount: { type: "string", description: "Native Arkade asset quantity in base units, when applicable" },
               quote: {
                 type: "object", nullable: true, description: "What the payer asked to pay in a LUD-XX unit, when the callback was quoted",
                 properties: { amount: { type: "string", description: "In the unit's smallest denomination" }, unit: { type: "string" }, decimals: { type: "integer" } },

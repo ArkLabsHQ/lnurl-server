@@ -36,6 +36,7 @@ export interface ServerDeps {
   /** Arkade indexer base URL (settlement observation for the arkade rail). */
   arkServerUrl?: string;
   network?: Network;
+  arkadeSigner?: string;
   /** Per-rail amount bounds, narrowing the server/domain pair for the rails that
    *  cannot carry it. Absent leaves every rail on the server/domain bounds. */
   railLimits?: ServerRailCaps["limits"];

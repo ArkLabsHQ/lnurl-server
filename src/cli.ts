@@ -129,6 +129,7 @@ async function main(): Promise<void> {
     let arkDustSat: number | undefined;
     let arkUnilateralExitDelay: number | undefined;
     let arkNetwork: unknown;
+    let arkadeSigner: string | undefined;
     let network: import("@arkade-os/solver-discovery").Network | undefined;
     // Read for any rail arkd backs, not just the swap one: the arkade and covenant
     // rails face the same dust floor, and a covenant-only deployment never enters
@@ -139,8 +140,9 @@ async function main(): Promise<void> {
       // Bounded: an unreachable arkd that accepts the connection and never answers
       // would otherwise hang boot forever, with no listener and nothing in the log.
       const infoResponse = await probeBootEndpoint(`${off.arkServerUrl}/v1/info`, "Arkade info endpoint");
-      const arkInfo = await infoResponse.json() as { network?: unknown; dust?: unknown; unilateralExitDelay?: unknown };
+      const arkInfo = await infoResponse.json() as { network?: unknown; signerPubkey?: unknown; dust?: unknown; unilateralExitDelay?: unknown };
       arkNetwork = arkInfo.network;
+      if (typeof arkInfo.signerPubkey === "string") arkadeSigner = arkInfo.signerPubkey;
       const { isNetwork } = await import("@arkade-os/solver-discovery");
       if (isNetwork(arkNetwork)) network = arkNetwork;
       const dust = Number(arkInfo.dust);
@@ -275,6 +277,7 @@ async function main(): Promise<void> {
       ...(config.offlineReceive.arkServerUrl ? { arkServerUrl: config.offlineReceive.arkServerUrl } : {}),
       ...(arkDustSat ? { arkDustSat } : {}),
       ...(network ? { network } : {}),
+      ...(arkadeSigner ? { arkadeSigner } : {}),
       onchainMinSat: config.onchainMinSendableSats,
       ...(covenantDestinations ? { covenantDestinations } : {}),
       ...(fixedFloat ? { fixedFloat } : {}),
@@ -316,7 +319,7 @@ async function main(): Promise<void> {
     const adminIndexer = off.arkServerUrl
       ? new (await import("@arkade-os/sdk")).RestIndexerProvider(off.arkServerUrl)
       : undefined;
-    const adminServer = createAdminServer({ repos, addressService, sessions, settings, config, settlements, discovery: solverDiscovery, ...(adminIndexer ? { indexer: adminIndexer } : {}), ...(fixedFloat ? { fixedFloat } : {}), quotes: quoteUnits, logger }).listen(config.adminPort, config.adminBind, () => {
+    const adminServer = createAdminServer({ repos, addressService, sessions, settings, config, settlements, discovery: solverDiscovery, network, arkadeSigner, ...(adminIndexer ? { indexer: adminIndexer } : {}), ...(fixedFloat ? { fixedFloat } : {}), quotes: quoteUnits, logger }).listen(config.adminPort, config.adminBind, () => {
       console.log(`admin server on http://${config.adminBind}:${config.adminPort} (front with a proxy)`);
     });
     runtime.addServer(adminServer);

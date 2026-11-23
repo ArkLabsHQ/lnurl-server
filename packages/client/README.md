@@ -145,6 +145,22 @@ for (const option of tokenOptions(payRequest)) {
 
 `chainName(option.asset.chainId)` names the network as the plugin does ("Arbitrum One", "Tron"), or returns the CAIP-2 id for a chain it does not know.
 
+### Native Arkade assets
+
+`arkadeAssetOptions(payRequest)` lists the exact asset IDs the receiver accepts directly on Arkade. These options use asset units independent of the LUD-06 millisatoshi bounds. Pass a `bigint` or a canonical integer string in the asset's smallest denomination.
+
+```ts
+import { arkadeAssetOptions, createLnurlClient } from "@arkade-os/lnurl-client";
+
+const client = createLnurlClient();
+const request = await client.resolve("alice@example.com");
+const selected = arkadeAssetOptions(request).find((option) => option.assetId === assetId);
+if (!selected) throw new Error("Receiver does not accept this asset");
+const payment = await client.requestArkadeAssetPayment(request, { assetId, amount: 12_500_000n });
+```
+
+The payer wallet checks the destination against its Arkade network and operator, then sends the exact asset and amount. For an attributable receipt, check `selected.verifiable`, pass `receipt: true`, pay before `expiresAt`, then poll `payment.verify` with `{ expect: payment }`.
+
 ## Receiver
 
 Receiver and management calls need `baseUrl`. `deriveSessionToken` turns a wallet private key and a domain into a stable session token; opening a session with the same token reconnects the same session id.
@@ -267,7 +283,9 @@ await client.registerArkadeIdentity({
 
 `methods` registers destinations of your own kind beside those rails. Each `{ type, destination }` is advertised to payers as a `registered:<type>` payment option and answered with the destination exactly as given: the server never interprets, watches or verifies one, so nothing here can say whether a payment to it arrived, and this package has no payer for one — `requestInvoice` hands the destination back as a `destination` result and `lnurlRails` leaves the option alone. It follows `boardingAddress`'s omit rule with one addition: omit `methods` and the registered list is left alone, pass a list and it replaces the stored one whole, pass `[]` and every method is withdrawn.
 
-The server refuses a malformed list with a 400 before it changes anything: at most 8 entries, each `type` once, a `type` of 1–32 lowercase letters, digits or hyphens starting with a letter (never a rail id: `interactive-lightning`, `offline-swap`, `arkade`, `covenant`, `onchain`, `fixedfloat`, `registered`; nor `lightning`, `eip155`, `solana` or `tron`, which payers also act on), and a `destination` of 1–512 printable ASCII characters with no whitespace. `listAddresses` reports the stored list as `paymentMethods`. A method is public — anyone who resolves the address learns its `type`, and every payer is handed the same `destination` — so register one only with the user's consent. A server older than this release ignores `methods` and lists no `paymentMethods`: nothing is advertised there, and `arkadeLnurl({ methods })` re-binds on every explicit `owned({ refresh: true })`.
+`arkadeAssets` registers canonical native asset IDs on the bound Arkade address. Omit the field to preserve the list or pass `[]` to withdraw all its native asset options. The client reads the owner's record back to confirm the server applied the change. With a wallet receiver, use `await receiver.setArkadeAssets(assetIds)` to update one alias, or pass `arkadeAssets` to `arkadeLnurl` to apply the same list during claim and refresh.
+
+The server accepts up to 8 methods with unique types and returns 400 for a malformed list. Each `type` starts with a lowercase letter and consists of 1–32 lowercase letters, digits or hyphens. The reserved types are `interactive-lightning`, `offline-swap`, `arkade`, `covenant`, `onchain`, `fixedfloat`, `registered`, `lightning`, `eip155`, `solana` and `tron`. A `destination` consists of 1–512 printable ASCII characters without whitespace. `listAddresses` reports the stored list as `paymentMethods`. A method is public — anyone who resolves the address learns its `type`, and every payer is handed the same `destination` — so register one only with the user's consent. A server older than this release ignores `methods` and lists no `paymentMethods`: nothing is advertised there, and `arkadeLnurl({ methods })` re-binds on every explicit `owned({ refresh: true })`.
 
 ### With the Arkade SDK
 

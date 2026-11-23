@@ -164,7 +164,7 @@ describe("OpenAPI specs vs rail and payment-method behaviour", () => {
     expect(method.properties.destination).toMatchObject({ minLength: 1, maxLength: MAX_DESTINATION_LENGTH });
 
     const typePattern = new RegExp(method.properties.type.pattern);
-    for (const type of ["a", "shielded", "silent-payments", "a".repeat(32), "", "A", "1a", "-a", "a_b", "a b", "a".repeat(33)]) {
+    for (const type of ["a", "shielded", "silent-payments", "arkade-asset", "a".repeat(32), "", "A", "1a", "-a", "a_b", "a b", "a".repeat(33)]) {
       expect(typePattern.test(type), `type ${JSON.stringify(type)}`).toBe(accepts({ type, destination: "x" }));
     }
     const destinationPattern = new RegExp(method.properties.destination.pattern);
@@ -172,7 +172,7 @@ describe("OpenAPI specs vs rail and payment-method behaviour", () => {
       const documentedAccepts = destination.length <= MAX_DESTINATION_LENGTH && destinationPattern.test(destination);
       expect(documentedAccepts, `destination ${JSON.stringify(destination)}`).toBe(accepts({ type: "ok", destination }));
     }
-    for (const reserved of [...RAIL_IDS, "lightning", "eip155", "solana", "tron"]) {
+    for (const reserved of [...RAIL_IDS.filter((id) => id !== "arkade-asset"), "lightning", "eip155", "solana", "tron"]) {
       expect(isReservedMethodType(reserved)).toBe(true);
       expect(method.properties.type.description).toContain(`\`${reserved}\``);
     }

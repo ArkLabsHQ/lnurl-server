@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import express from "express";
 import request from "supertest";
 import { randomBytes } from "node:crypto";
+import { ArkAddress } from "@arkade-os/sdk";
 import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createRepositories, type Repositories } from "../src/db/repositories/index.js";
@@ -40,7 +41,7 @@ beforeEach(() => {
     refresh: async () => {},
   };
   app = express(); app.use(express.json());
-  app.use("/admin/api", createAdminApi({ repos, addressService: svc, sessions, settings, config, settlements, discovery }));
+  app.use("/admin/api", createAdminApi({ repos, addressService: svc, sessions, settings, config, settlements, discovery, network: "bitcoin" }));
   domainId = repos.domains.create({ domain: "domain.com", allocationModes: ["self"] }).id;
 });
 
@@ -49,7 +50,7 @@ describe("admin rails", () => {
     const res = await request(app).get("/admin/api/rails");
     expect(res.status).toBe(200);
     const byId = new Map(res.body.rails.map((r: { id: string }) => [r.id, r]));
-    expect([...byId.keys()]).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat", "registered"]);
+    expect([...byId.keys()]).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat", "registered", "arkade-asset"]);
     expect(byId.get("interactive-lightning")).toMatchObject({ configured: true, ready: true });
     expect(byId.get("offline-swap")).toMatchObject({ configured: true, ready: true });
     expect(byId.get("arkade")).toMatchObject({ configured: true, ready: true });
@@ -57,6 +58,19 @@ describe("admin rails", () => {
     // Needs no server config; a per-address boarding address decides it.
     expect(byId.get("onchain")).toMatchObject({ configured: true, ready: true });
     expect(byId.get("registered")).toMatchObject({ configured: true, ready: true });
+    expect(byId.get("arkade-asset")).toMatchObject({ configured: true, ready: true });
+  });
+
+  it("shows and disables the asset rail for an address with registered assets", async () => {
+    const a = repos.addresses.create({ domainId, username: "native", status: "active" });
+    const arkadeAddress = new ArkAddress(new Uint8Array(32).fill(1), new Uint8Array(32).fill(2), "ark").encode();
+    repos.addresses.setOfflineReceive(a.id, arkadeAddress, CLAIMPK, { arkadeAssets: ["12".repeat(34)] });
+    const assetRail = (rails: { id: string }[]) => rails.find((rail) => rail.id === "arkade-asset");
+    const listed = await request(app).get("/admin/api/addresses");
+    expect(assetRail(listed.body.addresses[0].rails)).toMatchObject({ enabled: true, applicable: true, available: true });
+    const patched = await request(app).patch(`/admin/api/addresses/${a.id}/rails`).send({ disabledRails: ["arkade-asset"] });
+    expect(patched.status).toBe(200);
+    expect(assetRail(patched.body.rails)).toMatchObject({ enabled: false, available: false });
   });
 
   it("shows effective per-address rails on the addresses list", async () => {

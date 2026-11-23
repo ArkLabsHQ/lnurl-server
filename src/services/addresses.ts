@@ -181,19 +181,12 @@ export class AddressService {
     domain: DomainRow,
     handle: string,
     token: string,
-    cfg: { arkadeAddress: string; claimPublicKey: string; boardingAddress?: string; methods?: PaymentMethod[] },
+    cfg: { arkadeAddress: string; claimPublicKey: string; boardingAddress?: string; methods?: PaymentMethod[]; arkadeAssets?: string[] },
   ): boolean {
     const a = this.ownedByHandle(domain, handle, token);
     if (!a || a.status !== "active") return false;
-    this.repos.addresses.setOfflineReceive(a.id, cfg.arkadeAddress, cfg.claimPublicKey);
-    // Only when named: a caller re-registering its identity without one should
-    // not silently withdraw an onchain rail it registered earlier.
-    if (cfg.boardingAddress !== undefined) {
-      this.repos.addresses.setBoardingAddress(a.id, cfg.boardingAddress);
-    }
-    if (cfg.methods !== undefined) {
-      this.repos.addresses.setPaymentMethods(a.id, cfg.methods);
-    }
+    const { arkadeAddress, claimPublicKey, ...options } = cfg;
+    this.repos.addresses.setOfflineReceive(a.id, arkadeAddress, claimPublicKey, options);
     return true;
   }
 

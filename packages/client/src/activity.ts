@@ -2,6 +2,7 @@ import type { ActivityResolver, ArkTransaction } from "@arkade-os/sdk";
 import type { StoredPayment } from "./sync.js";
 import type { QuotedAmount, VerifyExpectation } from "./types.js";
 import { formatUnitAmount } from "./units.js";
+import { ARKADE_ASSET_OPTION_PREFIX } from "./arkade-asset-payment.js";
 
 /** "5.00 USD": how a quoted amount reads in an activity row. */
 export const quotedLabel = (q: QuotedAmount): string => `${formatUnitAmount(q.amount, q.decimals)} ${q.unit}`;
@@ -17,7 +18,7 @@ export const LNURL_ACTIVITY_KIND = "lnurl";
 export const SENT_ACTIVITY_KIND = "lnurl-send";
 
 export const railOf = (p: StoredPayment): string =>
-  p.kind === "bolt11" ? "lightning" : p.paymentOption ?? "destination";
+  p.kind === "bolt11" ? "lightning" : p.paymentOption?.startsWith(ARKADE_ASSET_OPTION_PREFIX) ? "arkade-asset" : p.paymentOption ?? "destination";
 
 export function absorbedPaymentKey(activityId: string): string | undefined {
   return activityId.startsWith(LNURL_GROUP_PREFIX) ? activityId.slice(LNURL_GROUP_PREFIX.length) : undefined;
@@ -118,6 +119,7 @@ export function lnurlActivityResolver(payments: () => StoredPayment[] | Promise<
           lightningAddress: payment.lightningAddress,
           identifier: payment.identifier,
           verified: payment.settled,
+          ...(payment.assetId && payment.assetAmount ? { assetId: payment.assetId, assetAmount: payment.assetAmount } : {}),
           ...(payment.quote ? { requested: quotedLabel(payment.quote) } : {}),
           ...(payment.comment ? { comment: payment.comment } : {}),
         },

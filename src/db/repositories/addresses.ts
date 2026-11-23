@@ -3,6 +3,7 @@ import type { EncryptedToken } from "../../crypto.js";
 import type { AddressRow, AddressStatus, CreateAddressParams } from "../../types/index.js";
 import { parseDisabledRails, serializeDisabledRails, type RailId } from "../../rails.js";
 import { parsePaymentMethods, serializePaymentMethods, type PaymentMethod } from "../../payment-methods.js";
+import { parseArkadeAssets } from "../../arkade-assets.js";
 
 interface AddressRecord {
   id: number;
@@ -20,6 +21,7 @@ interface AddressRecord {
   boarding_address: string | null;
   disabled_rails: string | null;
   payment_methods: string | null;
+  arkade_assets: string | null;
   session_lnurl: number;
   created_at: number;
   updated_at: number;
@@ -48,6 +50,7 @@ function rowToAddress(r: AddressRecord): AddressRow {
     boardingAddress: r.boarding_address,
     disabledRails: parseDisabledRails(r.disabled_rails),
     paymentMethods: parsePaymentMethods(r.payment_methods),
+    arkadeAssets: parseArkadeAssets(r.arkade_assets),
     sessionLnurl: r.session_lnurl === 1,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -130,10 +133,19 @@ export class AddressesRepo {
     this.db.prepare("UPDATE addresses SET status = ?, updated_at = ? WHERE id = ?").run(status, Date.now(), id);
   }
 
-  setOfflineReceive(id: number, arkadeAddress: string, claimPublicKey: string): void {
+  setOfflineReceive(id: number, arkadeAddress: string, claimPublicKey: string, opts: {
+    boardingAddress?: string;
+    methods?: readonly PaymentMethod[];
+    arkadeAssets?: readonly string[];
+  } = {}): void {
     this.db
-      .prepare("UPDATE addresses SET arkade_address = ?, claim_public_key = ?, updated_at = ? WHERE id = ?")
-      .run(arkadeAddress, claimPublicKey, Date.now(), id);
+      .prepare(`UPDATE addresses SET arkade_address = ?, claim_public_key = ?,
+        boarding_address = COALESCE(?, boarding_address),
+        payment_methods = COALESCE(?, payment_methods),
+        arkade_assets = COALESCE(?, arkade_assets), updated_at = ? WHERE id = ?`)
+      .run(arkadeAddress, claimPublicKey, opts.boardingAddress ?? null,
+        opts.methods ? serializePaymentMethods(opts.methods) : null,
+        opts.arkadeAssets ? JSON.stringify(opts.arkadeAssets) : null, Date.now(), id);
   }
 
   /** The onchain rail's destination. Separate from setOfflineReceive because the

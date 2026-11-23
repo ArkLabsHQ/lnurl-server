@@ -95,11 +95,13 @@ function settleAtScript(
   store: SettlementStore,
   script: string,
   records: { paymentHash: string; amountMsat: number; createdAt: number }[],
-  vtxos: { txid: string; vout: number; value: number; createdAt: Date }[],
+  vtxos: { txid: string; vout: number; value: number; createdAt: Date; assets?: readonly unknown[] }[],
 ): number {
   let settled = 0;
   const oldest = Math.min(...records.map((r) => r.createdAt));
   const arrivals = vtxos
+    // Native asset transfers carry sats too, including at the same receive address.
+    .filter((v) => !v.assets?.length)
     .filter((v) => v.createdAt.getTime() >= oldest - SETTLEMENT_SKEW_MS)
     // One transaction may pay several scripts, but cannot pay the same record twice.
     .filter((v) => !store.isReferenceUsed(v.txid, script))

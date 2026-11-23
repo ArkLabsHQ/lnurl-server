@@ -8,7 +8,7 @@ import { createLnurlClient, type LnurlClient } from "./index.js";
 import { PAY_REQUEST_TTL_MS, type LnurlPaymentRequest } from "./rail.js";
 import { deriveSessionId } from "./token.js";
 import { syncPayments, type PaymentSyncStore, type StoredPayment } from "./sync.js";
-import type { AddressListEntry, DomainCapabilities, PaymentMethod } from "./addresses.js";
+import { sameArkadeAssets, type AddressListEntry, type DomainCapabilities, type PaymentMethod, type RegisterArkadeIdentityRequest } from "./addresses.js";
 import type { PayRequest, PaymentPage, UnitAmount } from "./types.js";
 import { arkadePaymentRouter } from "./sdk-adapter.js";
 
@@ -51,6 +51,8 @@ export interface ArkadeLnurlConfig {
   /** Replaces the registered list on every bind and is kept in step by `owned({ refresh })`. Omitted,
    *  the server's list is never touched; `[]` withdraws every method. */
   methods?: PaymentMethod[];
+  /** Native assets to bind during claim or refresh. Omit to preserve the registered list. */
+  arkadeAssets?: string[];
 }
 
 /** A claim code alone claims the reserved name it unlocks. Beside a username it claims that name: the
@@ -74,6 +76,8 @@ export interface Receiver {
    *  One fetch answers every call for 30 s, or until a write through this facade
    *  (`claim`, `upgrade`); `resolve(lnurl)` always asks the server. */
   payRequest(): Promise<PayRequest>;
+  /** Select native assets for this receiver. Pass `[]` to withdraw all of them. */
+  setArkadeAssets(assetIds: string[]): Promise<void>;
   payments(opts?: { since?: number; limit?: number }): Promise<PaymentPage>;
   /** Stops fetching and writing once `signal` aborts. */
   sync(opts?: { signal?: AbortSignal }): Promise<{ synced: number; failures: unknown[] }>;
@@ -140,14 +144,15 @@ const sameMethods = (listed: PaymentMethod[] | null | undefined, wanted: Payment
   return have.length === want.length && have.every((key, i) => key === want[i]);
 };
 
-// No local boarding address or methods is no mismatch (the server keeps its own); an older server lists none: never bound.
+// Omitted fields preserve the server's values. Older servers may omit optional fields from their readback.
 const isBoundTo = (
   a: AddressListEntry,
-  to: { arkadeAddress: string; claimPublicKey: string; boardingAddress?: string; methods?: PaymentMethod[] },
+  to: RegisterArkadeIdentityRequest,
 ) =>
   a.arkadeAddress === to.arkadeAddress && a.claimPublicKey === to.claimPublicKey
   && (to.boardingAddress === undefined || a.boardingAddress === to.boardingAddress)
-  && (to.methods === undefined || sameMethods(a.paymentMethods, to.methods));
+  && (to.methods === undefined || sameMethods(a.paymentMethods, to.methods))
+  && (to.arkadeAssets === undefined || sameArkadeAssets(a.arkadeAssets, to.arkadeAssets));
 
 export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
   const { wallet, baseUrl } = opts;
@@ -155,10 +160,13 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
   const identity = wallet ? wallet.identity : opts.identity;
   const ordered = <T>(action: () => Promise<T>) =>
     oneAtATime(identity, `${baseUrl.replace(/\/+$/, "")}|${domain.toLowerCase()}`, action);
-  const destinations = async (): Promise<{ arkadeAddress: string; boardingAddress?: string; methods?: PaymentMethod[] }> => {
-    const methods = opts.methods !== undefined ? { methods: opts.methods } : {};
-    if (wallet) return { arkadeAddress: await wallet.getAddress(), boardingAddress: await wallet.getBoardingAddress(), ...methods };
-    return { arkadeAddress: opts.arkadeAddress, ...(opts.boardingAddress ? { boardingAddress: opts.boardingAddress } : {}), ...methods };
+  const destinations = async (): Promise<Pick<RegisterArkadeIdentityRequest, "arkadeAddress" | "boardingAddress" | "methods" | "arkadeAssets">> => {
+    const rails = {
+      ...(opts.methods !== undefined ? { methods: opts.methods } : {}),
+      ...(opts.arkadeAssets !== undefined ? { arkadeAssets: opts.arkadeAssets } : {}),
+    };
+    if (wallet) return { arkadeAddress: await wallet.getAddress(), boardingAddress: await wallet.getBoardingAddress(), ...rails };
+    return { arkadeAddress: opts.arkadeAddress, ...(opts.boardingAddress ? { boardingAddress: opts.boardingAddress } : {}), ...rails };
   };
   const client = opts.client ?? createLnurlClient({ baseUrl });
   // A client per target, never this one: a client is pinned to one baseUrl, so
@@ -213,6 +221,16 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
         entry.pr.catch(() => { if (memo === entry) memo = undefined; });
         return entry.pr;
       },
+      setArkadeAssets: (assetIds) => ordered(async () => {
+        const address = (await onDomain(held)).find((a) => a.handle === handle && a.status === "active");
+        if (!address || !Array.isArray(address.arkadeAssets)) {
+          throw new LnurlError("This receiver does not support native Arkade asset registration");
+        }
+        const arkadeAddress = wallet ? await wallet.getAddress() : opts.arkadeAddress;
+        const binding = await arkadeIdentityRequest({ identity, token: held, handle, domain, arkadeAddress, arkadeAssets: assetIds });
+        if (isBoundTo(address, binding)) return;
+        await client.registerArkadeIdentity(binding).finally(wrote);
+      }),
       payments: (listOpts) => client.listPayments(held, handle, { domain, ...listOpts }),
       sync: async (syncOpts) => syncPayments(
         [{ baseUrl, token: held, handle, domain }],
