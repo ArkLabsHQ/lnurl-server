@@ -13,6 +13,29 @@ describe("price math", () => {
     for (const text of ["62500.50", "0.05", "7"]) expect(formatPrice(priceFrom(text))).toBe(text);
   });
 
+  it("takes 36 digits each side of the point and refuses a 37th on either side", () => {
+    const digits = "9".repeat(36);
+    expect(priceFrom(`${digits}.${digits}`).scale).toBe(36);
+    expect(() => priceFrom(`1.${digits}1`)).toThrow(/at most 36 digits/);
+    expect(() => priceFrom(`${digits}1.5`)).toThrow(/at most 36 digits/);
+    expect(() => priceFrom("x".repeat(74))).toThrow(/at most 36 digits/);
+    expect(() => priceFrom("x".repeat(73))).toThrow(/plain decimal/);
+  });
+
+  it("quotes a megabyte feed value in its error by length, and a bigint without throwing", () => {
+    for (const value of ["1".repeat(1_000_000), "x".repeat(1_000_000), { price: "x".repeat(1_000_000) }]) {
+      let message = "";
+      try {
+        priceFrom(value);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toMatch(/\(1000\d{3} characters\)/);
+      expect(message.length).toBeLessThan(200);
+    }
+    expect(() => priceFrom(42n)).toThrow(/must be a number or a numeric string/);
+  });
+
   it("walks an RFC 6901 pointer, escapes and arrays included", () => {
     expect(resolvePrice({ "a/b": [{ "~x": "3.5" }] }, "/a~1b/0/~0x")).toEqual({ mantissa: 35n, scale: 1 });
     expect(resolvePrice("42", "")).toEqual({ mantissa: 42n, scale: 0 });
