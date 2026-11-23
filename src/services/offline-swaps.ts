@@ -297,7 +297,12 @@ export async function createOfflineSwapCoordinator(settings: IntentSwapSettings)
         try { usage = routing.usage?.(); }
         catch (error) { logger.warn("solver_routing_usage_unavailable", { error }); }
       }
-      const candidates = routing ? await rankReceiveSolvers(eligible, ctx.network, routing, params.amountSat, amountSide, usage) : eligible;
+      const candidates = routing
+        ? await rankReceiveSolvers(eligible, ctx.network, routing, params.amountSat, amountSide, usage).catch((error) => {
+          logger.warn("solver_routing_ranking_failed", { error });
+          return eligible;
+        })
+        : eligible;
       const failures: string[] = [];
 
       for (const candidate of candidates) {

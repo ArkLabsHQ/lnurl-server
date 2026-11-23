@@ -191,6 +191,31 @@ afterAll(async () => {
 });
 
 describe("createOfflineSwapCoordinator", () => {
+  it("uses discovery order when solver ranking fails", async () => {
+    const error = new Error("ranking unavailable");
+    const backup = candidate("backup");
+    Object.defineProperty(backup.market, "base_asset", { get: () => { throw error; } });
+    const attempts: string[] = [];
+    const warn = vi.fn();
+    const coordinated = await createOfflineSwapCoordinator(swapSettings({
+      discovery: { selectLightningReceive: () => [candidate(), backup] },
+      routing: { mode: "cost" },
+      logger: { info: vi.fn(), warn, error: vi.fn() },
+      transportFactory: (target) => {
+        attempts.push(target.name);
+        return httpTransport(solver.baseUrl);
+      },
+    }));
+    try {
+      const swap = await coordinated.create({ amountSat: 50, receiveAddress: RECEIVE, claimPublicKey: CLAIM_PUBKEY });
+      expect(attempts).toEqual(["registry"]);
+      expect(swap.recovery.solverName).toBe("registry");
+      expect(warn).toHaveBeenCalledWith("solver_routing_ranking_failed", { error });
+    } finally {
+      await coordinated.close?.();
+    }
+  });
+
   it.each(["transport setup", "quote request"])("fails over after a %s failure and pins the successful solver", async (failure) => {
     const attempts: string[] = [];
     const preferredPubkey = "aa".repeat(32);
