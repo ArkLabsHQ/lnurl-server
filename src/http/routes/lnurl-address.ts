@@ -1,7 +1,9 @@
 import { Router } from "express";
 import { ArkAddress } from "@arkade-os/sdk";
+import { matchesArkadeAssetDestination, normalizeArkadeAssets } from "../../arkade-assets.js";
 import { encodeLnurl } from "../../lnurl.js";
 import { normalizePaymentMethods, type PaymentMethod } from "../../payment-methods.js";
+import { arkadeAssetReceiptTerms } from "../../settlement-store.js";
 import { isNameless } from "../../services/addresses.js";
 import { isValidToken } from "../../session-token.js";
 import type { AddressRow, DomainRow } from "../../types/index.js";
@@ -28,7 +30,7 @@ function addressView(domain: DomainRow, a: AddressRow, proto: string) {
 }
 
 /** The owner's API for their Lightning addresses, authed by the session token. */
-export function lnurlAddressRoutes({ repos, addressService, registrationLimiter: limiter, store }: ServerContext): Router {
+export function lnurlAddressRoutes({ repos, addressService, registrationLimiter: limiter, store, currentRailCaps }: ServerContext): Router {
   const r = Router();
 
   // Must be mounted before /lnurl/:id, or "address" is captured as a session id.
@@ -43,6 +45,7 @@ export function lnurlAddressRoutes({ repos, addressService, registrationLimiter:
         ...addressView(domain, a, req.protocol), createdAt: a.createdAt,
         arkadeAddress: a.arkadeAddress, claimPublicKey: a.claimPublicKey, boardingAddress: a.boardingAddress,
         paymentMethods: a.paymentMethods,
+        arkadeAssets: a.arkadeAssets,
       };
     });
     res.json(list);
@@ -115,8 +118,8 @@ export function lnurlAddressRoutes({ repos, addressService, registrationLimiter:
     if (!domain) throw new NotFound("Unknown domain");
     const token = bearerToken(req);
     if (!isValidToken(token)) throw new Unauthorized();
-    const { arkadeAddress, claimPublicKey, boardingAddress, methods: rawMethods } = (req.body ?? {}) as
-      { arkadeAddress?: string; claimPublicKey?: string; boardingAddress?: string; methods?: unknown };
+    const { arkadeAddress, claimPublicKey, boardingAddress, methods: rawMethods, arkadeAssets: rawAssets } = (req.body ?? {}) as
+      { arkadeAddress?: string; claimPublicKey?: string; boardingAddress?: string; methods?: unknown; arkadeAssets?: unknown };
     // Compressed 33-byte key (02/03 prefix) — the covenant's receiver role.
     if (!arkadeAddress || typeof arkadeAddress !== "string" || !claimPublicKey || !/^0[23][0-9a-f]{64}$/i.test(claimPublicKey)) {
       throw new BadRequest("arkadeAddress and a compressed-hex claimPublicKey (02/03 + 64 hex) are required");
@@ -141,11 +144,24 @@ export function lnurlAddressRoutes({ repos, addressService, registrationLimiter:
         throw new BadRequest((err as Error).message);
       }
     }
+    let arkadeAssets: string[] | undefined;
+    if (rawAssets !== undefined) {
+      try {
+        arkadeAssets = normalizeArkadeAssets(rawAssets);
+      } catch (err) {
+        throw new BadRequest((err as Error).message);
+      }
+      const { network, arkadeSigner } = currentRailCaps();
+      if (arkadeAssets.length > 0 && (!network || !matchesArkadeAssetDestination(arkadeAddress, network, arkadeSigner))) {
+        throw new BadRequest("Arkade asset receive requires an address on this server's Arkade network and operator");
+      }
+    }
     const ok = addressService.setOfflineReceive(domain, req.params.handle, token, {
       arkadeAddress,
       claimPublicKey,
       ...(boardingAddress !== undefined ? { boardingAddress } : {}),
       ...(methods !== undefined ? { methods } : {}),
+      ...(arkadeAssets !== undefined ? { arkadeAssets } : {}),
     });
     if (!ok) throw new NotFound("Address not found or not owned by this token");
     res.json({ ok: true });
@@ -174,7 +190,7 @@ export function lnurlAddressRoutes({ repos, addressService, registrationLimiter:
         lightningAddress: nameless ? null : `${address.username}@${domain.domain}`,
         handle: nameless ? address.sessionId! : address.username,
       },
-      payments,
+      payments: payments.map((row) => ({ ...row, ...arkadeAssetReceiptTerms(row) })),
       nextSince: last ? last.updatedAt : (since ?? 0),
     });
   });

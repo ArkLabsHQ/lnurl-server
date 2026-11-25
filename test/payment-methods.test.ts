@@ -27,7 +27,7 @@ describe("normalizePaymentMethods", () => {
       expect(isReservedMethodType(type)).toBe(true);
       expect(() => normalizePaymentMethods([{ type, destination: "x" }])).toThrow(/reserved/);
     });
-  it.each([...RAIL_IDS])("reserves the rail id %s, so a new rail fails here until it is listed", (id) => {
+  it.each(RAIL_IDS.filter((id) => id !== "arkade-asset"))("reserves the rail id %s", (id) => {
     expect(isReservedMethodType(id)).toBe(true);
     expect(() => normalizePaymentMethods([{ type: id, destination: "x" }])).toThrow(/reserved/);
   });

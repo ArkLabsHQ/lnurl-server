@@ -53,6 +53,7 @@ export interface AddressRow {
   disabledRails: RailId[];
   /** Payment methods the owner registered; empty when none. */
   paymentMethods: PaymentMethod[];
+  arkadeAssets: string[];
   /** Also served at /lnurl/<sessionId>; survives a rename. */
   sessionLnurl: boolean;
   createdAt: number;

@@ -130,6 +130,7 @@ export interface DerivedDestination {
 }
 
 export interface CovenantDestinationProvider {
+  readonly assetReceipts?: true;
   derive(address: { arkadeAddress: string; claimPublicKey: string }): Promise<DerivedDestination>;
 }
 
@@ -206,6 +207,7 @@ export function createCovenantDestinationProvider(opts: {
   };
 
   return {
+    ...(opts.contracts ? { assetReceipts: true as const } : {}),
     async derive(address) {
       const { serverPubkey, emulatorPubkey } = await context();
       const preimage = checkedPreimage(opts.entropy ?? randomEntropy);

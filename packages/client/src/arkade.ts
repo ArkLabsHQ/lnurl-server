@@ -9,7 +9,7 @@
  */
 import { ArkAddress } from "@arkade-os/sdk";
 import { hex } from "@scure/base";
-import type { PaymentMethod } from "./addresses.js";
+import type { PaymentMethod, RegisterArkadeIdentityRequest } from "./addresses.js";
 import { LnurlError } from "./errors.js";
 import { deriveSessionTokenWithSigner } from "./token.js";
 
@@ -111,7 +111,7 @@ export async function claimPublicKeyOf(identity: ArkadeSigner): Promise<string> 
  *
  * An optional `boardingAddress` registers the onchain rail in the same call,
  * unchecked: it is a Bitcoin address on a network this helper cannot know.
- * Optional `methods` ride along likewise, left to the server to validate.
+ * Optional `methods` and `arkadeAssets` ride along in the same bind.
  *
  * @param params - The identity, its Arkade address, the owning token and handle.
  * @returns The request body to hand to `registerArkadeIdentity`.
@@ -123,16 +123,9 @@ export async function arkadeIdentityRequest(params: {
   handle: string;
   boardingAddress?: string;
   methods?: PaymentMethod[];
+  arkadeAssets?: string[];
   domain?: string;
-}): Promise<{
-  token: string;
-  handle: string;
-  arkadeAddress: string;
-  claimPublicKey: string;
-  boardingAddress?: string;
-  methods?: PaymentMethod[];
-  domain?: string;
-}> {
+}): Promise<RegisterArkadeIdentityRequest> {
   if (!isArkadeAddress(params.arkadeAddress)) {
     throw new LnurlError(`not a valid Arkade address: ${params.arkadeAddress}`);
   }
@@ -143,6 +136,7 @@ export async function arkadeIdentityRequest(params: {
     claimPublicKey: await claimPublicKeyOf(params.identity),
     ...(params.boardingAddress !== undefined ? { boardingAddress: params.boardingAddress } : {}),
     ...(params.methods !== undefined ? { methods: params.methods } : {}),
+    ...(params.arkadeAssets !== undefined ? { arkadeAssets: params.arkadeAssets } : {}),
     ...(params.domain !== undefined ? { domain: params.domain } : {}),
   };
 }

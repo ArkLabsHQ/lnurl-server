@@ -4,7 +4,9 @@ import { ago, explorerLink, listText, num, plural, sats, sentence, unitAmount, w
 import { Alert, Badge, Copyable, Empty, Field, LoadError, Loading, Page, href, navigate, useAction, useConfirm, useDebounced, useLoad } from "../ui.js";
 
 const OPTION_LABELS: Record<string, string> = { lightning: "Lightning", arkade: "Arkade", onchain: "Onchain" };
-const optionLabel = (id: string) => OPTION_LABELS[id] ?? id;
+const optionLabel = (id: string) => id.startsWith("arkade-asset:")
+  ? `Arkade asset ${id.slice(13, 21)}…${id.slice(-4)}`
+  : OPTION_LABELS[id] ?? id;
 const LIST_LIMIT = 200;
 const SCOPED_LIMIT = 1000;
 const SWEEP_MAX = 200; // RECONCILE_MAX in src/services/reconcile.ts
@@ -91,7 +93,9 @@ export function Settlements({ query: q }: { query: URLSearchParams }) {
                   </td>
                   <td>{optionLabel(s.paymentOption)}{s.swapId && <span className="sub">offline swap</span>}</td>
                   <td className="num nowrap">
-                    {s.amountMsat != null ? <span title={`${num(s.amountMsat)} msat`}>{sats(s.amountMsat)}</span> : "—"}
+                    {s.assetAmount
+                      ? <span title={s.assetId}>{s.assetAmount} base units</span>
+                      : s.amountMsat != null ? <span title={`${num(s.amountMsat)} msat`}>{sats(s.amountMsat)}</span> : "—"}
                     {s.quote && <span className="sub">quoted {unitAmount(s.quote)}</span>}
                   </td>
                   <td>

@@ -1,6 +1,7 @@
 import type { Db } from "./db/connection.js";
 import { ArkAddress, type Outpoint } from "@arkade-os/sdk";
 import type { QuotedAmount } from "./quote-provider.js";
+import { ARKADE_ASSET_OPTION_PREFIX } from "./arkade-assets.js";
 
 const destinationKey = (destination: string): string => {
   try { return Buffer.from(ArkAddress.decode(destination).pkScript).toString("hex"); }
@@ -42,6 +43,7 @@ export interface SettlementRecord {
   /** The agreed amount. Recorded so a future Arkade watcher can correlate the observed
    *  payment against it — without it an under-payment would flip settled just the same. */
   amountMsat: number | null;
+  arkadeAssetAmount?: string;
   /** Set on destination records with a per-payment covenant address; null for the
    *  static-address shape and for lightning. @see covenant/destination.ts */
   covenantScript: string | null;
@@ -56,6 +58,11 @@ export interface SettlementRecord {
   updatedAt: number;
   /** Unix ms the payer was told to pay by (a BOLT11's expiry, a token quote's), when the rail states one. */
   expiresAt: number | null;
+}
+
+export function arkadeAssetReceiptTerms(record: SettlementRecord): { assetId: string; assetAmount: string } | undefined {
+  if (!record.arkadeAssetAmount || !record.paymentOption.startsWith(ARKADE_ASSET_OPTION_PREFIX)) return undefined;
+  return { assetId: record.paymentOption.slice(ARKADE_ASSET_OPTION_PREFIX.length), assetAmount: record.arkadeAssetAmount };
 }
 
 /** A pending offline-receive swap awaiting solver settlement, for the poller. */
@@ -98,6 +105,7 @@ export interface NewSettlement {
   paymentOption?: string;
   paymentDestination?: string;
   amountMsat?: number;
+  arkadeAssetAmount?: string;
   covenantScript?: string;
   quote?: QuotedAmount;
   comment?: string;
@@ -107,6 +115,8 @@ export interface NewSettlement {
 
 export interface SettlementStore {
   setCovenantOutpoint(paymentHash: string, outpoint: Outpoint, expected: Outpoint | null): boolean;
+  markArkadeAssetFunded(paymentHash: string, funding: Outpoint, fundedAt: number): boolean;
+  markArkadeAssetPaidOut(paymentHash: string, funding: Outpoint, payoutTxid: string): boolean;
   /** Record a new invoice. Idempotent: a repeated paymentHash is ignored (never resets settled).
    *  Offline swaps pass `preimage` + `swapId` up front (held privately until settled). */
   create(rec: NewSettlement): void;
@@ -170,8 +180,9 @@ function quoteOf(raw: string | null): QuotedAmount | null {
   }
 }
 
+const hasAssetFunding = (r: SettlementRecord): boolean => Boolean(r.arkadeAssetAmount && r.covenantOutpoint);
 /** Money arrived at its covenant and no sweep is recorded: expiry must never reclaim it. */
-const owesSweep = (r: SettlementRecord): boolean => Boolean(r.covenantScript && r.settled && !r.payoutReference);
+const owesSweep = (r: SettlementRecord): boolean => Boolean(r.covenantScript && (r.settled || hasAssetFunding(r)) && !r.payoutReference);
 
 /** The preimage public `verify`/`verifyBatch` may publish — proof the receive arrived. A swap
  *  needs an observed payout behind it: P is what pays the solver reporting it settled. */
@@ -203,6 +214,9 @@ export class MemorySettlementStore implements SettlementStore {
 
   create(rec: NewSettlement): void {
     if (++this.calls % 1000 === 0) this.sweep();
+    if (rec.arkadeAssetAmount && (this.map.has(rec.paymentHash) || (rec.covenantScript && this.findByCovenantScript(rec.covenantScript)))) {
+      throw new Error("Arkade asset receipt destination is already in use");
+    }
     if (this.map.has(rec.paymentHash)) return;
     const at = this.now();
     this.map.set(rec.paymentHash, {
@@ -217,6 +231,7 @@ export class MemorySettlementStore implements SettlementStore {
       paymentReference: null,
       payoutReference: null,
       amountMsat: rec.amountMsat ?? null,
+      ...(rec.arkadeAssetAmount ? { arkadeAssetAmount: rec.arkadeAssetAmount } : {}),
       covenantScript: rec.covenantScript ?? null,
       quote: rec.quote ?? null,
       comment: rec.comment ?? null,
@@ -230,7 +245,7 @@ export class MemorySettlementStore implements SettlementStore {
 
   markSettled(paymentHash: string, preimage: string): boolean {
     const r = this.get(paymentHash);
-    if (!r || r.settled) return false; // idempotent: a settled record never re-flips
+    if (!r || r.settled || r.arkadeAssetAmount) return false;
     r.settled = true;
     r.preimage = preimage;
     r.settledAt = this.now();
@@ -242,7 +257,7 @@ export class MemorySettlementStore implements SettlementStore {
     const r = this.map.get(paymentHash);
     if (!r) return undefined;
     // Same rule as the DB store: hidden past its window, never deleted by a read.
-    return this.now() - r.createdAt >= lifetimeOf(r.paymentOption, this.ttlMs, this.destinationWatchMs) ? undefined : r;
+    return !hasAssetFunding(r) && this.now() - r.createdAt >= lifetimeOf(r.paymentOption, this.ttlMs, this.destinationWatchMs) ? undefined : r;
   }
 
   listPendingSwaps(): PendingSwap[] {
@@ -305,7 +320,7 @@ export class MemorySettlementStore implements SettlementStore {
 
   markObserved(paymentHash: string, reference: string): boolean {
     const r = this.get(paymentHash);
-    if (!r || r.settled) return false; // idempotent: never overwrite a settlement's reference
+    if (!r || r.settled || r.arkadeAssetAmount) return false;
     r.settled = true;
     r.paymentReference = reference;
     // Derived from the record, so no caller can pass the wrong answer in.
@@ -319,9 +334,31 @@ export class MemorySettlementStore implements SettlementStore {
     // Straight from the map, matching the DB store's unwindowed UPDATE: through `get` a
     // sweep landing after the window was dropped, leaving the record active for good.
     const r = this.map.get(paymentHash);
-    if (!r || r.payoutReference) return false;
+    if (!r || r.payoutReference || r.arkadeAssetAmount) return false;
     r.payoutReference = reference;
     r.updatedAt = this.now();
+    return true;
+  }
+
+  markArkadeAssetFunded(paymentHash: string, funding: Outpoint, fundedAt: number): boolean {
+    const row = this.map.get(paymentHash);
+    if (!row?.arkadeAssetAmount || row.covenantOutpoint || !row.expiresAt || fundedAt > row.expiresAt) return false;
+    encodeOutpoint(funding);
+    row.covenantOutpoint = { ...funding };
+    row.updatedAt = this.now();
+    return true;
+  }
+
+  markArkadeAssetPaidOut(paymentHash: string, funding: Outpoint, payoutTxid: string): boolean {
+    const row = this.map.get(paymentHash);
+    if (!row || !hasAssetFunding(row) || row.settled) return false;
+    encodeOutpoint(funding);
+    row.covenantOutpoint = { ...funding };
+    row.paymentReference = funding.txid;
+    row.payoutReference = payoutTxid;
+    row.settled = true;
+    row.settledAt = this.now();
+    row.updatedAt = row.settledAt;
     return true;
   }
 
@@ -340,11 +377,16 @@ export class MemorySettlementStore implements SettlementStore {
 
   listActiveCovenantScripts(): string[] {
     // Walks the map, not `get`, which expires a settled record whose money is still there.
-    const horizon = this.now() - this.destinationWatchMs;
+    const now = this.now();
+    const horizon = now - this.destinationWatchMs;
     const out: string[] = [];
     for (const r of this.map.values()) {
-      if (!r.covenantScript || r.payoutReference) continue;
-      if (r.settled || r.createdAt > horizon) out.push(r.covenantScript);
+      if (!r.covenantScript) continue;
+      if (r.payoutReference) {
+        if (r.arkadeAssetAmount && r.expiresAt !== null && r.expiresAt > now) out.push(r.covenantScript);
+        continue;
+      }
+      if (r.settled || hasAssetFunding(r) || r.createdAt > horizon) out.push(r.covenantScript);
     }
     return out;
   }
@@ -354,7 +396,7 @@ export class MemorySettlementStore implements SettlementStore {
     const horizon = this.now() - this.destinationWatchMs;
     const out: LapsedCovenant[] = [];
     for (const r of this.map.values()) {
-      if (!r.covenantScript || r.payoutReference || r.settled) continue;
+      if (!r.covenantScript || r.payoutReference || r.settled || hasAssetFunding(r)) continue;
       if (r.createdAt > horizon || r.createdAt <= horizon - tailMs) continue;
       out.push({ covenantScript: r.covenantScript, createdAt: r.createdAt });
     }
@@ -418,6 +460,7 @@ interface SettlementRow {
   payout_reference: string | null;
   covenant_outpoint: string | null;
   amount_msat: number | null;
+  arkade_asset_amount: string | null;
   covenant_script: string | null;
   quote_json: string | null;
   comment: string | null;
@@ -443,7 +486,7 @@ export class DbSettlementStore implements SettlementStore {
     const at = this.now();
     const info = this.db
       .prepare(
-        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, covenant_script, quote_json, comment, address_id, created_at, settled_at, updated_at, expires_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+        "INSERT OR IGNORE INTO settlements (payment_hash, pr, session_id, settled, preimage, swap_id, payment_option, payment_destination, amount_msat, arkade_asset_amount, covenant_script, quote_json, comment, address_id, created_at, settled_at, updated_at, expires_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
       )
       .run(
         rec.paymentHash,
@@ -454,6 +497,7 @@ export class DbSettlementStore implements SettlementStore {
         rec.paymentOption ?? "lightning",
         rec.paymentDestination ?? null,
         rec.amountMsat ?? null,
+        rec.arkadeAssetAmount ?? null,
         rec.covenantScript ?? null,
         rec.quote ? JSON.stringify(rec.quote) : null,
         rec.comment ?? null,
@@ -481,7 +525,7 @@ export class DbSettlementStore implements SettlementStore {
     const at = this.now();
     const info = this.db
       .prepare(
-        "UPDATE settlements SET settled = 1, preimage = ?, settled_at = ?, updated_at = ? WHERE payment_hash = ? AND settled = 0 AND created_at > ?",
+        "UPDATE settlements SET settled = 1, preimage = ?, settled_at = ?, updated_at = ? WHERE payment_hash = ? AND settled = 0 AND arkade_asset_amount IS NULL AND created_at > ?",
       )
       .run(preimage, at, at, paymentHash, at - this.ttlMs);
     return info.changes > 0;
@@ -497,7 +541,7 @@ export class DbSettlementStore implements SettlementStore {
     // the watch window closes, and telling a payer "unknown" about a payment
     // the watcher would still settle is the wrong answer.
     // Expiry only hides it: a delete here let any payer's verify poll erase a record.
-    if (this.now() - row.created_at >= lifetimeOf(row.payment_option, this.ttlMs, this.destinationWatchMs)) return undefined;
+    if (!(row.arkade_asset_amount && row.covenant_outpoint) && this.now() - row.created_at >= lifetimeOf(row.payment_option, this.ttlMs, this.destinationWatchMs)) return undefined;
     return this.toRecord(row);
   }
 
@@ -515,6 +559,7 @@ export class DbSettlementStore implements SettlementStore {
       payoutReference: row.payout_reference ?? null,
       covenantOutpoint: row.covenant_outpoint ? JSON.parse(row.covenant_outpoint) as Outpoint : null,
       amountMsat: row.amount_msat ?? null,
+      ...(row.arkade_asset_amount ? { arkadeAssetAmount: row.arkade_asset_amount } : {}),
       covenantScript: row.covenant_script ?? null,
       quote: quoteOf(row.quote_json),
       comment: row.comment ?? null,
@@ -591,7 +636,7 @@ export class DbSettlementStore implements SettlementStore {
         // payout_reference only where the observed payment IS the credit.
         "UPDATE settlements SET settled = 1, payment_reference = ?, settled_at = ?, updated_at = ?," +
           " payout_reference = CASE WHEN covenant_script IS NULL THEN ? ELSE payout_reference END" +
-          " WHERE payment_hash = ? AND settled = 0 AND created_at > ?",
+          " WHERE payment_hash = ? AND settled = 0 AND arkade_asset_amount IS NULL AND created_at > ?",
       )
       // Both callers are destination watchers, so this tracks the watch window
       // rather than the verify TTL. Gating it on the shorter one meant the
@@ -603,9 +648,24 @@ export class DbSettlementStore implements SettlementStore {
 
   markPaidOut(paymentHash: string, reference: string): boolean {
     const info = this.db
-      .prepare("UPDATE settlements SET payout_reference = ?, updated_at = ? WHERE payment_hash = ? AND payout_reference IS NULL")
+      .prepare("UPDATE settlements SET payout_reference = ?, updated_at = ? WHERE payment_hash = ? AND payout_reference IS NULL AND arkade_asset_amount IS NULL")
       .run(reference, this.now(), paymentHash);
     return info.changes > 0;
+  }
+
+  markArkadeAssetFunded(paymentHash: string, funding: Outpoint, fundedAt: number): boolean {
+    return this.db.prepare(
+      "UPDATE settlements SET covenant_outpoint = ?, updated_at = ? WHERE payment_hash = ?" +
+      " AND arkade_asset_amount IS NOT NULL AND covenant_outpoint IS NULL AND settled = 0 AND expires_at >= ?",
+    ).run(encodeOutpoint(funding), this.now(), paymentHash, fundedAt).changes > 0;
+  }
+
+  markArkadeAssetPaidOut(paymentHash: string, funding: Outpoint, payoutTxid: string): boolean {
+    const at = this.now();
+    return this.db.prepare(
+      "UPDATE settlements SET settled = 1, payment_reference = ?, payout_reference = ?, covenant_outpoint = ?, settled_at = ?, updated_at = ?" +
+      " WHERE payment_hash = ? AND arkade_asset_amount IS NOT NULL AND covenant_outpoint IS NOT NULL AND settled = 0 AND payout_reference IS NULL",
+    ).run(funding.txid, payoutTxid, encodeOutpoint(funding), at, at, paymentHash).changes > 0;
   }
 
   findByCovenantScript(script: string): SettlementRecord | undefined {
@@ -623,15 +683,24 @@ export class DbSettlementStore implements SettlementStore {
   }
 
   listActiveCovenantScripts(): string[] {
-    // Two reads, not one `settled = 1 OR created_at > ?`: without the settled equality
-    // SQLite cannot drive the range off (settled, created_at), and the OR form scanned
-    // every never-paid destination. Disjoint on `settled`, so no row appears twice.
+    // Separate reads keep each range on its partial index. The native scopes also
+    // retain old funded receipts and watch paid destinations until their deadline.
     const scoped = "SELECT covenant_script FROM settlements WHERE covenant_script IS NOT NULL AND payout_reference IS NULL";
+    const now = this.now();
+    const horizon = now - this.destinationWatchMs;
     const settled = this.db.prepare(`${scoped} AND settled = 1`).all() as unknown as { covenant_script: string }[];
     const open = this.db
       .prepare(`${scoped} AND settled = 0 AND created_at > ?`)
-      .all(this.now() - this.destinationWatchMs) as unknown as { covenant_script: string }[];
-    return [...settled, ...open].map((r) => r.covenant_script);
+      .all(horizon) as unknown as { covenant_script: string }[];
+    const assetFunded = this.db.prepare(
+      "SELECT covenant_script FROM settlements INDEXED BY idx_settlements_funded_arkade_assets" +
+      " WHERE arkade_asset_amount IS NOT NULL AND covenant_outpoint IS NOT NULL AND payout_reference IS NULL AND created_at <= ?",
+    ).all(horizon) as unknown as { covenant_script: string }[];
+    const assetPaid = this.db.prepare(
+      "SELECT covenant_script FROM settlements INDEXED BY idx_settlements_paid_arkade_assets" +
+      " WHERE arkade_asset_amount IS NOT NULL AND payout_reference IS NOT NULL AND created_at > ? AND expires_at > ?",
+    ).all(horizon, now) as unknown as { covenant_script: string }[];
+    return [...settled, ...open, ...assetFunded, ...assetPaid].map((r) => r.covenant_script);
   }
 
   listLapsedCovenantScripts(tailMs: number, opts: { limit: number; after?: LapsedCovenant }): LapsedCovenant[] {
@@ -646,6 +715,7 @@ export class DbSettlementStore implements SettlementStore {
       .prepare(
         "SELECT covenant_script, created_at FROM settlements WHERE covenant_script IS NOT NULL" +
           " AND payout_reference IS NULL AND settled = 0" +
+          " AND (arkade_asset_amount IS NULL OR covenant_outpoint IS NULL)" +
           (after
             ? " AND created_at >= ? AND created_at <= ? AND (created_at > ? OR covenant_script > ?)"
             : " AND created_at > ? AND created_at <= ?") +

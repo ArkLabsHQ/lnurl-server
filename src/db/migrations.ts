@@ -429,6 +429,21 @@ export const MIGRATIONS: Migration[] = [
       if (!hasColumn(db, "settlements", "comment")) db.exec("ALTER TABLE settlements ADD COLUMN comment TEXT;");
     },
   },
+  {
+    version: 37,
+    // Satora's release branch already uses versions 33 through 36.
+    up: `ALTER TABLE addresses ADD COLUMN arkade_assets TEXT NOT NULL DEFAULT '[]';`,
+  },
+  {
+    version: 38,
+    up: `
+      ALTER TABLE settlements ADD COLUMN arkade_asset_amount TEXT;
+      CREATE INDEX idx_settlements_funded_arkade_assets ON settlements(created_at, covenant_script)
+        WHERE arkade_asset_amount IS NOT NULL AND covenant_outpoint IS NOT NULL AND payout_reference IS NULL;
+      CREATE INDEX idx_settlements_paid_arkade_assets ON settlements(created_at, covenant_script)
+        WHERE arkade_asset_amount IS NOT NULL AND payout_reference IS NOT NULL;
+    `,
+  },
 ];
 
 export const LATEST_MIGRATION = Math.max(...MIGRATIONS.map((m) => m.version));

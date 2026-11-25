@@ -20,6 +20,10 @@ export interface PaymentOption {
   unit?: string;
   /** The third party the payer hands funds to on this option, e.g. "FixedFloat". */
   provider?: string;
+  /** Canonical asset accepted by a native Arkade payment option. */
+  assetId?: string;
+  /** Callback for native Arkade instructions, using atomic asset units. */
+  assetCallback?: string;
 }
 /**
  * A unit the receiver prices in on the lightning rail (fiat or asset alongside
@@ -204,6 +208,9 @@ export interface DestinationVerifyStatus {
   paymentDestination?: string;
   /** Server-assigned payment reference, when the server reports one. */
   paymentReference?: string;
+  /** Native Arkade receipt terms, in canonical asset ID and atomic units. */
+  assetId?: string;
+  assetAmount?: string;
 }
 /**
  * Tuning for `pollVerify`: how often to re-poll, how long to wait overall,
@@ -223,7 +230,9 @@ export interface PollVerifyOptions {
   expect?: VerifyExpectation;
 }
 /** The invoice, or the rail and destination, a verify answer must be about. */
-export type VerifyExpectation = Pick<Bolt11Result, "pr"> | Pick<DestinationResult, "paymentOption" | "paymentDestination">;
+export type VerifyExpectation = Pick<Bolt11Result, "pr"> | (
+  Pick<DestinationResult, "paymentOption" | "paymentDestination"> & Pick<DestinationVerifyStatus, "assetId" | "assetAmount">
+);
 
 /**
  * One page of address payment activity: what was paid to one address, who it
@@ -300,6 +309,9 @@ export interface DestinationActivity {
   settled: boolean;
   /** Agreed amount in millisats, when recorded. */
   amountMsat: number | null;
+  /** Native Arkade receipt terms, in canonical asset ID and atomic units. */
+  assetId?: string;
+  assetAmount?: string;
   /** Creation timestamp in milliseconds. */
   createdAt: number;
   /** Settlement timestamp in milliseconds, null while pending. */

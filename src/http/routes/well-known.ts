@@ -3,7 +3,6 @@ import { randomBytes } from "node:crypto";
 import type { Repositories } from "../../db/repositories/index.js";
 import { RateLimiter } from "../../rate-limit.js";
 import { resolvePaymentOption } from "../../payment-options.js";
-import type { PaymentMethod } from "../../payment-methods.js";
 import {
   advertisedBounds,
   advertisedRailOptions,
@@ -12,6 +11,7 @@ import {
   railBounds,
   type AddressRailState,
   type Bounds,
+  type RailAddress,
   type ServerRailCaps,
 } from "../../rails.js";
 import { applyQuote, type PaymentQuote, type QuotedAmount } from "../../quote-provider.js";
@@ -25,11 +25,18 @@ import { buildMetadata, createFixedFloatDestination, createOfflineSwapInvoice, d
 import type { ServerContext } from "../server-context.js";
 import { isNameless } from "../../services/addresses.js";
 import { BATCH_PATH } from "../../services/verify-batch.js";
+import { arkadeAssetOptionId, isArkadeAssetId } from "../../arkade-assets.js";
 
 const DEFAULT_DESTINATION_WATCH_MS = 604_800_000;
 
-const railStatesFor = (address: { arkadeAddress: string | null; claimPublicKey: string | null; disabledRails: readonly unknown[]; paymentMethods?: readonly PaymentMethod[] }, caps: ServerRailCaps): Map<string, AddressRailState> =>
+const railStatesFor = (address: RailAddress, caps: ServerRailCaps): Map<string, AddressRailState> =>
   new Map(effectiveRails(address, caps).map((s) => [s.id, s]));
+
+function assetOriginOf(req: Request, domain: DomainRow): string {
+  const origin = originOf(req, domain);
+  const port = Number(req.get("host")?.match(/:(\d{1,5})$/)?.[1]);
+  return port > 0 && port <= 65535 ? `${origin}:${port}` : origin;
+}
 
 /** LUD-16 `user@domain`, and a flagged address at its session LNURL: the pay request and its
  *  callback, across every rail an address has. */
@@ -43,6 +50,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
   // each destination hit writes a store record.
   const addressCallbackLimiter = new RateLimiter(config.callbackRateLimitPerMin ?? 30, 60_000);
   let offlineQuotes = 0;
+  let assetReceipts = 0;
   // Each token callback spends one of a handful of provider orders a minute, so one IP or
   // one receiver must not be able to hold them all.
   const tokenIpLimiter = fixedFloat ? new RateLimiter(fixedFloat.ordersPerIp, fixedFloat.ipWindowSeconds * 1000) : undefined;
@@ -71,18 +79,19 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
   };
 
   const envelope = (domain: DomainRow, address: AddressRow) => ({
-    railAddress: { arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, boardingAddress: address.boardingAddress, disabledRails: address.disabledRails, paymentMethods: address.paymentMethods },
+    railAddress: { arkadeAddress: address.arkadeAddress, claimPublicKey: address.claimPublicKey, boardingAddress: address.boardingAddress, disabledRails: address.disabledRails, paymentMethods: address.paymentMethods, arkadeAssets: address.arkadeAssets },
     base: { min: domain.minSendable ?? settings.minSendable(), max: domain.maxSendable ?? settings.maxSendable() } as Bounds,
   });
 
-  const payRequest = (res: Response, domain: DomainRow, address: AddressRow, callback: string): void => {
+  const payRequest = (req: Request, res: Response, domain: DomainRow, address: AddressRow, callbackPath: string): void => {
     const { railAddress, base } = envelope(domain, address);
     const railCaps = currentRailCaps();
-    const { options, units } = withTokenUnits(advertisedRailOptions(railAddress, railCaps, base), quoteProvider?.units() ?? []);
+    const assetCallback = `${assetOriginOf(req, domain)}${callbackPath}/arkade-asset`;
+    const { options, units } = withTokenUnits(advertisedRailOptions(railAddress, railCaps, base, assetCallback), quoteProvider?.units() ?? []);
     const advertised = advertisedBounds(railAddress, railCaps, base);
     res.json({
       tag: "payRequest",
-      callback,
+      callback: `${originOf(req, domain)}${callbackPath}`,
       minSendable: advertised.min,
       maxSendable: advertised.max,
       metadata: buildMetadata(isNameless(address) ? undefined : `${address.username}@${domain.domain}`),
@@ -91,6 +100,64 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
       ...(units.length ? { units } : {}),
       ...(railStatesFor(railAddress, railCaps).get("offline-swap")?.available ? { receiveAmountAllowed: true } : {}),
     } satisfies LnurlPayMetadata);
+  };
+
+  const assetCallback = async (req: Request, res: Response, domain: DomainRow, address: AddressRow): Promise<void> => {
+    if (!addressCallbackLimiter.allow(req.ip ?? "unknown")) throw new LnurlError("Too many requests", 429);
+    const { assetId, amount, receipt } = (req.body ?? {}) as { assetId?: unknown; amount?: unknown; receipt?: unknown };
+    if (!isArkadeAssetId(assetId)) throw new LnurlError("Invalid Arkade asset ID");
+    if (typeof amount !== "string" || !/^[1-9][0-9]{0,19}$/.test(amount) || amount.trim() !== amount || BigInt(amount) > 0xffffffffffffffffn) {
+      throw new LnurlError("Asset amount must be a positive uint64 string in base units");
+    }
+    if (receipt !== undefined && receipt !== true) throw new LnurlError("receipt must be true when supplied");
+
+    const caps = currentRailCaps();
+    const rails = railStatesFor(address, caps);
+    const destination = address.arkadeAddress;
+    if (!caps.network || !destination || !rails.get("arkade-asset")?.available || !address.arkadeAssets?.includes(assetId)) {
+      throw new LnurlError("This Arkade asset is unavailable for this address");
+    }
+    const payment = {
+      status: "OK",
+      paymentOption: arkadeAssetOptionId(assetId),
+      paymentDestination: destination,
+      network: caps.network,
+      assetId,
+      assetAmount: amount,
+    };
+    if (!receipt) {
+      res.json(payment);
+      return;
+    }
+    if (!covenantDestinations?.assetReceipts || !rails.get("covenant")?.available || !address.claimPublicKey) {
+      throw new LnurlError("Arkade asset receipts are unavailable for this address");
+    }
+    if (assetReceipts >= (config.maxConcurrentOfflineQuotes ?? 20)) throw new LnurlError("Asset receipt capacity reached", 429);
+    assetReceipts++;
+    try {
+      const derived = await covenantDestinations.derive({ arkadeAddress: destination, claimPublicKey: address.claimPublicKey });
+      const verifyId = randomBytes(16).toString("hex");
+      const expiresAt = Math.floor((Date.now() + (config.destinationWatchMs ?? DEFAULT_DESTINATION_WATCH_MS)) / 1000);
+      store.create({
+        paymentHash: verifyId,
+        pr: "",
+        sessionId: address.sessionId ?? `addr:${address.id}`,
+        addressId: address.id,
+        paymentOption: payment.paymentOption,
+        paymentDestination: derived.address,
+        arkadeAssetAmount: amount,
+        covenantScript: derived.script,
+        expiresAt: expiresAt * 1000,
+      });
+      res.json({
+        ...payment,
+        paymentDestination: derived.address,
+        expiresAt,
+        verify: `${assetOriginOf(req, domain)}/lnurl/verify/${verifyId}`,
+      });
+    } finally {
+      assetReceipts--;
+    }
   };
 
   const offlineInvoice = async (req: Request, res: Response, domain: DomainRow, address: AddressRow, amountMsat: number,
@@ -335,7 +402,7 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
 
   r.get("/.well-known/lnurlp/:username", (req, res) => {
     const { domain, username, address } = activeAddress(req.get("host"), req.params.username);
-    payRequest(res, domain, address, `${originOf(req, domain)}/.well-known/lnurlp/${username}/callback`);
+    payRequest(req, res, domain, address, `/.well-known/lnurlp/${username}/callback`);
   });
 
   r.get("/.well-known/lnurlp/:username/callback", async (req, res) => {
@@ -343,17 +410,28 @@ export function wellKnownRoutes(ctx: ServerContext, repos: Repositories): Router
     await payCallback(req, res, domain, address);
   });
 
+  r.post("/.well-known/lnurlp/:username/callback/arkade-asset", async (req, res) => {
+    const { domain, address } = activeAddress(req.get("host"), req.params.username);
+    await assetCallback(req, res, domain, address);
+  });
+
   // Mounted before the session routes; any id that is not a flagged address falls through to them.
   r.get("/lnurl/:id", (req, res, next) => {
     const flagged = sessionLnurlRow(req, req.params.id);
     if (!flagged) return next();
-    payRequest(res, flagged.domain, flagged.address, `${originOf(req, flagged.domain)}/lnurl/${req.params.id}/callback`);
+    payRequest(req, res, flagged.domain, flagged.address, `/lnurl/${req.params.id}/callback`);
   });
 
   r.get("/lnurl/:id/callback", async (req, res, next) => {
     const flagged = sessionLnurlRow(req, req.params.id);
     if (!flagged) return next();
     await payCallback(req, res, flagged.domain, flagged.address);
+  });
+
+  r.post("/lnurl/:id/callback/arkade-asset", async (req, res) => {
+    const flagged = sessionLnurlRow(req, req.params.id);
+    if (!flagged) throw new LnurlError("Unknown LN address");
+    await assetCallback(req, res, flagged.domain, flagged.address);
   });
 
   return r;

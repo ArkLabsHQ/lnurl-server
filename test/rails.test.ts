@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { ArkAddress } from "@arkade-os/sdk";
 import {
   RAIL_IDS,
   advertisedRailOptions,
@@ -35,7 +36,7 @@ const MUTINY: ServerRailCaps = { ...FULL, network: "mutinynet" };
 
 describe("rail registry", () => {
   it("names every rail exactly once", () => {
-    expect(RAIL_IDS).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat", "registered"]);
+    expect(RAIL_IDS).toEqual(["interactive-lightning", "offline-swap", "arkade", "covenant", "onchain", "fixedfloat", "registered", "arkade-asset"]);
     expect(new Set(RAIL_IDS).size).toBe(RAIL_IDS.length);
   });
 
@@ -85,12 +86,10 @@ describe("describeServerRails", () => {
 
 describe("effectiveRails", () => {
   it("serves everything when wired with an identity and empty policy", () => {
-    // onchain keys off the boarding address and registered off a method, not the
-    // Arkade identity, so "fully wired" needs all three. Added here and not to
-    // IDENTITY, which the advertise tests share and would then always offer both.
+    const arkadeAddress = new ArkAddress(new Uint8Array(32).fill(1), new Uint8Array(32).fill(2), "tark").encode();
     const states = effectiveRails(
-      { ...IDENTITY, boardingAddress: "tb1qboarding", paymentMethods: [METHOD] },
-      { ...FULL, fixedFloat: { provider: "FixedFloat", ready: true, rails: [] } },
+      { ...IDENTITY, arkadeAddress, boardingAddress: "tb1qboarding", paymentMethods: [METHOD], arkadeAssets: ["12".repeat(34)] },
+      { ...MUTINY, fixedFloat: { provider: "FixedFloat", ready: true, rails: [] } },
     );
     expect(states.filter((s) => s.available).map((s) => s.id)).toEqual([...RAIL_IDS]);
   });
@@ -148,6 +147,22 @@ describe("effectiveRails", () => {
 });
 
 describe("advertisedRailOptions", () => {
+  it("advertises native assets to their exact IDs under the asset rail policy", () => {
+    const assetId = "12".repeat(34);
+    const assetCallback = "https://pay.example/lnurl/asset/alice";
+    const arkadeAddress = new ArkAddress(new Uint8Array(32).fill(171), new Uint8Array(32).fill(2), "tark").encode();
+    const address = { ...IDENTITY, arkadeAddress, arkadeAssets: [assetId, "34".repeat(34)] };
+    const caps = { ...MUTINY, arkadeSigner: "ab".repeat(32), nativeAssetReceipts: true };
+    const assets = (a = address, c = caps) => advertisedRailOptions(a, c, BASE, assetCallback).filter((option) => option.type === "arkade-asset");
+    expect(assets().map((option) => option.assetId)).toEqual(address.arkadeAssets);
+    expect(assets()[0]).toEqual({ id: `arkade-asset:${assetId}`, type: "arkade-asset", assetId, assetCallback, caip19Id: `arkade:mutinynet/asset:${assetId}`, verifiable: true });
+    expect(assets(address, { ...caps, arkadeSigner: "03" + "AB".repeat(32) })).toEqual(assets());
+    expect(assets({ ...address, disabledRails: ["covenant"] })[0]?.verifiable).toBe(false);
+    expect(assets({ ...address, disabledRails: ["arkade-asset"] })).toEqual([]);
+    expect(assets(address, { ...caps, network: "bitcoin" })).toEqual([]);
+    expect(assets(address, { ...caps, arkadeSigner: "02".repeat(32) })).toEqual([]);
+  });
+
   it("keeps the historical identity-only rule without server caps", () => {
     expect(advertisedRailOptions(IDENTITY)).toEqual([
       { id: "lightning", type: "lightning" },

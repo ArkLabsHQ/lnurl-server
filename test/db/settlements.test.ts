@@ -331,8 +331,9 @@ describe("DbSettlementStore", () => {
   // Each was once a table scan on a path run every worker pass. Planned from the SQL
   // the call prepares, since a pasted copy can drift from it unnoticed.
   type Stores = { settlements: DbSettlementStore; swaps: OfflineSwapStore };
-  describe.each<[string, (s: Stores) => unknown, string]>([
-    ["the covenant scope, both halves", (s) => s.settlements.listActiveCovenantScripts(), "idx_settlements_active_covenants"],
+  describe.each<[string, (s: Stores) => unknown, string | string[]]>([
+    ["the covenant scope, including native asset funding and payout", (s) => s.settlements.listActiveCovenantScripts(),
+      ["idx_settlements_active_covenants", "idx_settlements_active_covenants", "idx_settlements_funded_arkade_assets", "idx_settlements_paid_arkade_assets"]],
     ["the lapsed tail page the late sweep reads", (s) => s.settlements.listLapsedCovenantScripts(2_592_000_000, { limit: 256 }), "idx_settlements_active_covenants"],
     ["the same page resumed from a cursor", (s) => s.settlements.listLapsedCovenantScripts(2_592_000_000, { limit: 256, after: { createdAt: 1000, covenantScript: "0014aa" } }), "idx_settlements_active_covenants"],
     ["the reference check every observed payment makes", (s) => s.settlements.isReferenceUsed("tx-a"), "idx_settlements_reference"],
@@ -343,7 +344,7 @@ describe("DbSettlementStore", () => {
     ["the live pending list the admin page and dashboard poll", (s) => s.settlements.listRecent(200, { settled: false, expired: false }), "idx_settlements_unsettled_created"],
     ["the missed-payout read every poller pass makes", (s) => s.swaps.listUnrecordedPayouts(), "idx_offline_swaps_created"],
   ])("%s", (_name, call, index) => {
-    it(`is served by ${index}`, () => {
+    it("uses indexed searches", () => {
       const db = openDb(":memory:");
       runMigrations(db);
       const stores = { settlements: new DbSettlementStore(db, 60_000), swaps: new OfflineSwapStore(db, 60_000) };
@@ -356,9 +357,10 @@ describe("DbSettlementStore", () => {
         db.prepare = prepare;
       }
       expect(seen).not.toHaveLength(0);
-      for (const sql of seen) {
+      if (Array.isArray(index)) expect(seen).toHaveLength(index.length);
+      for (const [i, sql] of seen.entries()) {
         const plan = (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[]).map((r) => r.detail).join(" | ");
-        expect(plan).toContain(index);
+        expect(plan).toContain(typeof index === "string" ? index : index[i]);
         // The `OR` form named its index while scanning behind it.
         expect(plan).not.toContain("SCAN");
       }

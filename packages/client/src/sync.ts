@@ -25,6 +25,9 @@ export interface StoredPayment {
   settled: boolean;
   /** Agreed amount in millisats, when recorded. */
   amountMsat: number | null;
+  /** Native Arkade receipt terms, in canonical asset ID and atomic units. */
+  assetId?: string;
+  assetAmount?: string;
   /** Creation timestamp in milliseconds. */
   createdAt: number;
   /** Settlement timestamp in milliseconds, null while pending. */
@@ -124,6 +127,7 @@ const toStored = (
     preimage: entry.kind === "bolt11" ? entry.preimage : null,
     paymentOption: entry.kind === "destination" ? entry.paymentOption : null,
     covenantScript: entry.kind === "destination" ? entry.covenantScript : null,
+    ...(entry.kind === "destination" && entry.assetId && entry.assetAmount ? { assetId: entry.assetId, assetAmount: entry.assetAmount } : {}),
     ...(entry.quote ? { quote: entry.quote } : {}),
     ...(entry.comment ? { comment: entry.comment } : {}),
   };

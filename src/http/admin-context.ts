@@ -1,4 +1,5 @@
 import type { IndexerProvider } from "@arkade-os/sdk";
+import type { Network } from "@arkade-os/solver-discovery";
 import type { Repositories } from "../db/repositories/index.js";
 import type { AddressService } from "../services/addresses.js";
 import type { SessionManager } from "../services/sessions.js";
@@ -17,6 +18,8 @@ export interface AdminDeps {
   sessions: SessionManager;
   settings: SettingsService;
   config: AppConfig;
+  network?: Network;
+  arkadeSigner?: string;
   /** Settlement records view (offline swaps, destination payments, relay invoices). */
   settlements?: SettlementStore;
   discovery?: Pick<DiscoveryService, "status" | "refresh">;
@@ -31,7 +34,7 @@ export interface AdminDeps {
 
 /** Server rail capabilities: what this process wired (the operator view of "it all").
  *  Per-address states ride on the addresses list; policy edits go to /addresses/:id/rails. */
-export function adminRailCaps({ config, discovery, fixedFloat }: AdminDeps): ServerRailCaps {
+export function adminRailCaps({ config, discovery, fixedFloat, network, arkadeSigner }: AdminDeps): ServerRailCaps {
   const status = discovery?.status();
   return {
     offlineSwapCreator: config.offlineReceive.enabled,
@@ -39,6 +42,8 @@ export function adminRailCaps({ config, discovery, fixedFloat }: AdminDeps): Ser
     ...(status?.reason ? { discoveryReason: status.reason } : {}),
     ...(config.offlineReceive.arkServerUrl ? { arkServerUrl: config.offlineReceive.arkServerUrl } : {}),
     covenantDestinations: config.offlineReceive.covenantDestinations,
+    ...(network ? { network } : {}),
+    ...(arkadeSigner ? { arkadeSigner } : {}),
     ...(fixedFloat ? { fixedFloat: ffRailCaps(fixedFloat) } : {}),
   };
 }

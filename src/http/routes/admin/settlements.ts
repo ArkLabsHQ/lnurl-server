@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { arkadeAssetReceiptTerms } from "../../../settlement-store.js";
 import { ServiceUnavailable } from "../../errors.js";
 import type { AdminDeps } from "../../admin-context.js";
 
@@ -61,6 +62,7 @@ export function adminSettlementRoutes({ repos, settlements, fixedFloat }: AdminD
         paymentReference: x.paymentReference,
         payoutReference: x.payoutReference,
         amountMsat: x.amountMsat,
+        ...arkadeAssetReceiptTerms(x),
         quote: x.quote,
         hasPreimage: x.preimage !== null,
         createdAt: x.createdAt,

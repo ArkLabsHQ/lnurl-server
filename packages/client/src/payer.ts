@@ -7,6 +7,7 @@ import { payableTokenUri } from "./token-quotes.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { hex } from "@scure/base";
 import { amountMsatOf, paymentHashOf } from "./bolt11.js";
+import { ARKADE_ASSET_OPTION_PREFIX, isArkadeAssetAmount, isArkadeAssetId } from "./arkade-asset-payment.js";
 
 function preimageOpens(preimage: string, pr: string): boolean {
   const hash = paymentHashOf(pr);
@@ -102,6 +103,9 @@ export async function requestInvoice(
   const selected = opts.paymentOption
     ? payRequest.paymentOptions?.find((option) => option.id === opts.paymentOption)
     : undefined;
+  if (selected?.type === "arkade-asset" || opts.paymentOption?.startsWith(ARKADE_ASSET_OPTION_PREFIX)) {
+    throw new LnurlError("Use requestArkadeAssetPayment to pay in atomic Arkade asset units");
+  }
   const token = selected?.asset !== undefined ? tokenOptions(payRequest).find((o) => o.id === selected.id) : undefined;
   if (selected?.asset !== undefined && !token) throw new LnurlError(`paymentOption ${selected.id} is not a token this client can pay`);
   const min = selected?.minSendable ?? payRequest.minSendable;
@@ -205,12 +209,20 @@ export function parseVerifyStatus(body: Record<string, unknown>): VerifyStatus {
   if (typeof body.paymentOption !== "string") {
     throw new LnurlTransportError("Verify response is neither a bolt11 nor a destination status");
   }
+  if (body.paymentOption.startsWith(ARKADE_ASSET_OPTION_PREFIX)) {
+    if (!isArkadeAssetId(body.assetId) || body.paymentOption !== `${ARKADE_ASSET_OPTION_PREFIX}${body.assetId}` ||
+        !isArkadeAssetAmount(body.assetAmount) || typeof body.paymentDestination !== "string" || !body.paymentDestination) {
+      throw new LnurlTransportError("Verify response lacks native Arkade asset receipt terms");
+    }
+  }
   return {
     kind: "destination",
     settled: body.settled === true,
     paymentOption: body.paymentOption,
     ...(typeof body.paymentDestination === "string" ? { paymentDestination: body.paymentDestination } : {}),
     ...(typeof body.paymentReference === "string" ? { paymentReference: body.paymentReference } : {}),
+    ...(isArkadeAssetId(body.assetId) ? { assetId: body.assetId } : {}),
+    ...(isArkadeAssetAmount(body.assetAmount) ? { assetAmount: body.assetAmount } : {}),
   };
 }
 
@@ -223,6 +235,10 @@ export function verifyStatusIsFor(status: VerifyStatus, expected: VerifyExpectat
   if ("pr" in expected) {
     const hash = paymentHashOf(expected.pr);
     return status.kind === "bolt11" && hash !== null && paymentHashOf(status.pr) === hash;
+  }
+  if (expected.assetId !== undefined || expected.assetAmount !== undefined) {
+    return status.kind === "destination" && status.paymentOption === expected.paymentOption &&
+      status.paymentDestination === expected.paymentDestination && status.assetId === expected.assetId && status.assetAmount === expected.assetAmount;
   }
   return status.kind === "destination" && status.paymentOption === expected.paymentOption &&
     (status.paymentDestination === undefined || expected.paymentDestination === undefined || status.paymentDestination === expected.paymentDestination);
@@ -271,10 +287,12 @@ export async function pollVerify(
   const intervalMs = opts?.intervalMs ?? 1000;
   const timeoutMs = opts?.timeoutMs ?? 120000;
   const deadline = Date.now() + timeoutMs;
+  const expect = opts?.expect;
+  const nativeAsset = expect && !("pr" in expect) && expect.paymentOption.startsWith(ARKADE_ASSET_OPTION_PREFIX);
   let lastSnapshot: VerifyStatus | undefined;
   for (;;) {
     if (opts?.signal?.aborted) throw opts.signal.reason ?? new LnurlError("Aborted");
-    const body = await lnurlFetch<Record<string, unknown>>(verifyUrl, undefined, fetchImpl);
+    const body = await lnurlFetch<Record<string, unknown>>(verifyUrl, nativeAsset ? { redirect: "error", signal: opts?.signal } : undefined, fetchImpl);
     const status = parseVerifyStatus(body);
     if (opts?.expect && !verifyStatusIsFor(status, opts.expect)) throw new LnurlError("Verify answered about a different payment");
     lastSnapshot = status;

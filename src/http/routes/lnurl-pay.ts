@@ -8,7 +8,7 @@ import type { ServerContext } from "../server-context.js";
 import { BATCH_PATH, createVerifyBatch } from "../../services/verify-batch.js";
 import { verifyBatchRoutes } from "./verify-batch.js";
 import { applyQuote, type PaymentQuote, type QuotedAmount } from "../../quote-provider.js";
-import { revealedPreimage } from "../../settlement-store.js";
+import { arkadeAssetReceiptTerms, revealedPreimage } from "../../settlement-store.js";
 
 /** LUD-06 pay flow for an interactive session's LNURL, plus LUD-21 verify and LUD-XX verifyBatch. */
 export function lnurlPayRoutes({ config, sessions, store, settings, logger, quoteProvider }: ServerContext): Router {
@@ -35,6 +35,7 @@ export function lnurlPayRoutes({ config, sessions, store, settings, logger, quot
         // rail that txid links the per-payment destination to the user's static
         // address. Owners read it from the authenticated payments sync.
         paymentReference: rec.paymentReference,
+        ...arkadeAssetReceiptTerms(rec),
         verifyBatch: `${settings.baseUrl()}${BATCH_PATH}`,
       });
       return;

@@ -1,6 +1,7 @@
 import { LnurlError, LnurlTransportError, LnurlTimeoutError } from "./errors.js";
 import type { FetchImpl } from "./http.js";
 import { resolve, requestInvoice, pollVerify, verifyStatusIsFor } from "./payer.js";
+import { arkadeAssetOptions, requestArkadeAssetPayment, type ArkadeAssetPayment, type RequestArkadeAssetPaymentOptions } from "./arkade-asset-payment.js";
 import { batchVerify, openVerifyBatchStream } from "./verify-batch.js";
 import type {
   BatchVerifyOptions,
@@ -102,6 +103,8 @@ export interface LnurlClient {
    * @returns A BOLT11 invoice or a destination to pay on the selected rail.
    */
   requestInvoice(payRequest: PayRequest, opts: RequestInvoiceOptions): Promise<InvoiceResult>;
+  /** Asks for direct native Arkade asset payment instructions in atomic units. */
+  requestArkadeAssetPayment(payRequest: PayRequest, opts: RequestArkadeAssetPaymentOptions): Promise<ArkadeAssetPayment>;
   /**
    * Polls a verify URL until the payment settles, the deadline passes, or the
    * caller aborts.
@@ -212,6 +215,7 @@ export function createLnurlClient(opts?: LnurlClientOptions): LnurlClient {
   return {
     resolve: (input) => resolve(input, fetchImpl),
     requestInvoice: (payRequest, reqOpts) => requestInvoice(payRequest, reqOpts, fetchImpl),
+    requestArkadeAssetPayment: (payRequest, reqOpts) => requestArkadeAssetPayment(payRequest, reqOpts, fetchImpl),
     pollVerify: (verifyUrl, pollOpts) => pollVerify(verifyUrl, pollOpts, fetchImpl),
     batchVerify: (verifyBatchUrl, verifyUrls, opts) => batchVerify(verifyBatchUrl, verifyUrls, opts, opts?.fetchImpl ?? fetchImpl),
     openSession: async (sessionOpts, handlers) =>
@@ -237,6 +241,7 @@ export function createLnurlClient(opts?: LnurlClientOptions): LnurlClient {
 
 /** Lower-level functions, also reachable through `createLnurlClient`; documented at their definition sites. */
 export {
+  arkadeAssetOptions,
   deriveSessionId,
   deriveSessionToken,
   deriveSessionTokenWithSigner,
@@ -254,6 +259,7 @@ export {
   pollVerify,
   registerAddress,
   registerArkadeIdentity,
+  requestArkadeAssetPayment,
   requestInvoice,
   resolve,
   revokeAddress,
@@ -266,6 +272,7 @@ export {
   isTokenAddress,
   verifyStatusIsFor,
 };
+export type { ArkadeAssetOption, ArkadeAssetPayment, RequestArkadeAssetPaymentOptions } from "./arkade-asset-payment.js";
 export { browserPaymentStore, forgetStoredPayments, storedPayments } from "./stores.js";
 export { CONFIRMATION_TIMEOUT_MS, createPendingConfirmations } from "./confirmations.js";
 export type { PendingConfirmations, ReceiverConfirmation } from "./confirmations.js";

@@ -1,6 +1,8 @@
 import { apiFetch, type FetchImpl } from "./http.js";
 import type { Bolt11Activity, DestinationActivity, PaymentActivity, PaymentPage, QuotedAmount } from "./types.js";
 import { LnurlError } from "./errors.js";
+import { isArkadeAssetAmount, isArkadeAssetId } from "./arkade-asset-payment.js";
+import { deriveSessionId } from "./token.js";
 
 /**
  * What registering a LUD-16 lightning address needs. `token` owns the
@@ -68,6 +70,8 @@ export interface AddressListEntry {
   boardingAddress?: string | null;
   /** Methods registered on this address; an older server omits it. */
   paymentMethods?: PaymentMethod[] | null;
+  /** Native Arkade assets selected for this address. Omitted by older servers. */
+  arkadeAssets?: string[];
 }
 
 /** What a domain allows, discoverable before calling any of its routes. */
@@ -98,6 +102,14 @@ export interface RegisterArkadeIdentityRequest {
   boardingAddress?: string;
   /** Replaces the registered methods whole; omit it to leave them alone, `[]` withdraws them all. */
   methods?: PaymentMethod[];
+  /** Replaces the native asset list. Omit it to preserve the list or pass `[]` to clear it. */
+  arkadeAssets?: string[];
+}
+
+export function sameArkadeAssets(listed: unknown, wanted: readonly string[]): boolean {
+  return Array.isArray(listed) && listed.length === wanted.length && new Set(listed).size === wanted.length &&
+    new Set(wanted).size === wanted.length &&
+    wanted.every((assetId) => listed.includes(assetId));
 }
 
 function rootOf(baseUrl: string): string {
@@ -196,6 +208,8 @@ interface AddressPaymentRow {
   payoutReference: string | null;
   settled: boolean;
   amountMsat: number | null;
+  assetId?: string | null;
+  assetAmount?: string | null;
   createdAt: number;
   settledAt: number | null;
   /** Absent from a server older than the quote history. */
@@ -234,6 +248,7 @@ function toActivity(row: AddressPaymentRow): PaymentActivity {
     payoutReference: row.payoutReference ?? null,
     settled: row.settled,
     amountMsat: row.amountMsat,
+    ...(isArkadeAssetId(row.assetId) && isArkadeAssetAmount(row.assetAmount) ? { assetId: row.assetId, assetAmount: row.assetAmount } : {}),
     createdAt: row.createdAt,
     settledAt: row.settledAt,
     ...(row.quote ? { quote: row.quote } : {}),
@@ -316,6 +331,7 @@ const COMPRESSED_KEY = /^0[23][0-9a-f]{64}$/i;
  * address on the operator's network, which this package cannot know — and
  * omitting it sends no field, read server-side as "leave the onchain rail".
  * `methods` is validated server-side and sent whenever defined, `[]` included.
+ * When changing native assets, read back the owner's record to confirm the server applied the change.
  *
  * @param baseUrl - Server root, e.g. `https://lnurl.example.com`.
  * @param req - Token, handle, Arkade address, claim key, optional boarding address, methods and domain.
@@ -332,13 +348,31 @@ export async function registerArkadeIdentity(
   if (!COMPRESSED_KEY.test(req.claimPublicKey)) {
     throw new LnurlError("claimPublicKey must be a compressed 33-byte public key (02/03 prefix plus 64 hex chars)");
   }
-  const body: Record<string, string | PaymentMethod[]> = { arkadeAddress: req.arkadeAddress, claimPublicKey: req.claimPublicKey };
+  const assets = req.arkadeAssets;
+  if (assets !== undefined && (!Array.isArray(assets) || assets.length > 16 ||
+      Array.from(assets).some((assetId) => !isArkadeAssetId(assetId)) || new Set(assets).size !== assets.length)) {
+    throw new LnurlError("arkadeAssets must contain at most 16 distinct canonical Arkade asset IDs");
+  }
+  const arkadeAssets = assets?.slice();
+  const body: Record<string, string | string[] | PaymentMethod[]> = { arkadeAddress: req.arkadeAddress, claimPublicKey: req.claimPublicKey };
   if (req.boardingAddress !== undefined) body["boardingAddress"] = req.boardingAddress;
   if (req.methods !== undefined) body["methods"] = req.methods;
+  if (arkadeAssets !== undefined) body["arkadeAssets"] = arkadeAssets;
   if (req.domain !== undefined) body["domain"] = req.domain;
   await apiFetch<unknown>(`${rootOf(baseUrl)}/lnurl/address/${encodeURIComponent(req.handle)}/arkade`, {
     method: "POST",
     headers: { "content-type": "application/json", Authorization: `Bearer ${req.token}` },
     body: JSON.stringify(body),
   }, fetchImpl);
+  if (arkadeAssets !== undefined) {
+    const domain = (req.domain ?? new URL(baseUrl).hostname).toLowerCase();
+    const handle = req.handle.toLowerCase();
+    const entries = await listAddresses(baseUrl, req.token, fetchImpl);
+    const address = entries.find((a) => a.domain.toLowerCase() === domain && a.status === "active" &&
+      (a.handle === handle || (a.sessionLnurl !== null && handle === deriveSessionId(req.token))));
+    if (!address || address.arkadeAddress !== req.arkadeAddress || address.claimPublicKey?.toLowerCase() !== req.claimPublicKey.toLowerCase() ||
+        !sameArkadeAssets(address.arkadeAssets, arkadeAssets)) {
+      throw new LnurlError("The server did not confirm the registered Arkade assets");
+    }
+  }
 }

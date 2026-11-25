@@ -345,6 +345,21 @@ describe("arkadeLnurl", () => {
     expect(emptied.registerArkadeIdentity).toHaveBeenCalledWith(expect.objectContaining({ methods: [] }));
   });
 
+  it("sets native assets on one owned receiver and preserves its other rail settings", async () => {
+    const makeRow = (handle: string) => ({
+      domain: "lnurl.example.com", handle, status: "active", sessionLnurl: null, arkadeAssets: [],
+    });
+    const client = fakeClient({ listAddresses: vi.fn(async () => [makeRow("alice"), makeRow("bob")] as never) });
+    const lnurl = arkadeLnurl({ wallet: fakeWallet(), baseUrl: "https://lnurl.example.com", client, methods: [METHOD] });
+    const receiver = await lnurl.owned({ handle: "bob" });
+    const arkadeAssets = ["ab".repeat(34)];
+    await receiver!.setArkadeAssets(arkadeAssets);
+    expect(client.registerArkadeIdentity).toHaveBeenCalledTimes(1);
+    expect(client.registerArkadeIdentity).toHaveBeenCalledWith(expect.objectContaining({ handle: "bob", arkadeAssets }));
+    expect(client.registerArkadeIdentity).not.toHaveBeenCalledWith(expect.objectContaining({ methods: expect.anything() }));
+    expect(client.registerArkadeIdentity).not.toHaveBeenCalledWith(expect.objectContaining({ boardingAddress: expect.anything() }));
+  });
+
   it("says a wallet is needed before it fails somewhere obscure", () => {
     const lnurl = arkadeLnurl({
       identity: fakeWallet().identity,

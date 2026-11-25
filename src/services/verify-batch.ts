@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { Logger } from "../logger.js";
-import { revealedPreimage, type SettlementStore, type SettlementRecord } from "../settlement-store.js";
+import { arkadeAssetReceiptTerms, revealedPreimage, type SettlementStore, type SettlementRecord } from "../settlement-store.js";
 
 export const BATCH_PATH = "/lnurl/verifyBatch";
 
@@ -73,6 +73,7 @@ function itemShape(rec: SettlementRecord): VerifyBatchItem {
       paymentOption: rec.paymentOption,
       ...(rec.paymentDestination ? { paymentDestination: rec.paymentDestination } : {}),
       paymentReference: rec.paymentReference,
+      ...arkadeAssetReceiptTerms(rec),
     };
   }
   return { status: "OK", settled: rec.settled, preimage: revealedPreimage(rec), pr: rec.pr };

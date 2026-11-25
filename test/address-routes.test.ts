@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import http from "node:http";
 import { randomBytes } from "node:crypto";
+import { ArkAddress } from "@arkade-os/sdk";
 import { createServer } from "../src/http/server.js";
 import { openDb, type Db } from "../src/db/connection.js";
 import { runMigrations } from "../src/db/migrations.js";
@@ -19,7 +20,7 @@ function start() {
   return new Promise<typeof ctx>((resolve) => {
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address() as { port: number };
-      server.on("request", createServer({ ...CONFIG, baseUrl: `http://127.0.0.1:${port}` }, { repos, addressService: svc, registrationLimiter: new RateLimiter(100, 60_000) }));
+      server.on("request", createServer({ ...CONFIG, baseUrl: `http://127.0.0.1:${port}` }, { repos, addressService: svc, network: "mutinynet", arkadeSigner: "01".repeat(32), registrationLimiter: new RateLimiter(100, 60_000) }));
       resolve({ baseUrl: `http://127.0.0.1:${port}`, close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }) });
     });
   });
@@ -92,6 +93,28 @@ describe("address routes", () => {
     const rows = (await req("GET", `${ctx.baseUrl}/lnurl/address`, { bearer: TOKEN })).body as unknown as Record<string, unknown>[];
     expect(rows.find((a) => a.handle === "bound")).toMatchObject(destination);
     expect(rows.find((a) => a.handle === "unbound")).toMatchObject({ arkadeAddress: null, claimPublicKey: null, boardingAddress: null });
+  });
+
+  it("registers and withdraws a wallet's native asset options without losing them on old bind requests", async () => {
+    await req("POST", `${ctx.baseUrl}/lnurl/address`, { host: "domain.com", body: { username: "assets", token: TOKEN } });
+    const assetId = "12".repeat(34);
+    const dest = (signer: number, hrp = "tark") => new ArkAddress(new Uint8Array(32).fill(signer), new Uint8Array(32).fill(2), hrp).encode();
+    const identity = { arkadeAddress: dest(1), claimPublicKey: "02" + "ab".repeat(32) };
+    const list = async () => (await req("GET", `${ctx.baseUrl}/lnurl/address`, { bearer: TOKEN })).body[0] as { arkadeAssets: string[] };
+    const bind = (body: Record<string, unknown>, bearer = TOKEN) => req("POST", `${ctx.baseUrl}/lnurl/address/assets/arkade`, { host: "domain.com", bearer, body: { ...identity, ...body } });
+    expect((await list()).arkadeAssets).toEqual([]);
+    expect((await bind({ arkadeAssets: [assetId] }, "cd".repeat(32))).status).toBe(404);
+    expect((await bind({ arkadeAssets: [assetId], arkadeAddress: dest(3) })).status).toBe(400);
+    expect((await bind({ arkadeAssets: [assetId], arkadeAddress: dest(1, "ark") })).status).toBe(400);
+    expect((await bind({ arkadeAssets: [assetId] })).status).toBe(200);
+    const oversized = Array.from({ length: 17 }, (_, index) => index.toString(16).padStart(68, "0"));
+    for (const arkadeAssets of [[assetId, assetId], ["a".repeat(67) + "\n"], ["AB".repeat(34)], "[]", oversized]) {
+      expect((await bind({ arkadeAssets })).status).toBe(400);
+    }
+    expect((await bind({})).status).toBe(200);
+    expect((await list()).arkadeAssets).toEqual([assetId]);
+    expect((await bind({ arkadeAssets: [] })).status).toBe(200);
+    expect((await list()).arkadeAssets).toEqual([]);
   });
 
   it("DELETE revokes the owner's address", async () => {
