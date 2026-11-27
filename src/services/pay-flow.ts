@@ -136,9 +136,11 @@ export async function createOfflineSwapInvoice(args: {
       throw new Error("Solver invoice does not satisfy the receive amount and payer bounds");
     }
     const msat = (value: number) => ({ amount: String(value), unit: "msat" });
-    const resultQuote = receiveAmountMsat === undefined ? paymentQuote : {
-      requested: msat(receiveAmountMsat), payment: msat(payerMsat), receive: msat(receiveAmountMsat),
-      fees: [{ name: "solver", amount: msat(payerMsat - receiveAmountMsat) }],
+    // The solver's payout is what the receiver nets: a plain amount pays its fee, a receiveAmount adds it on top.
+    const receiveMsat = swap.recovery.expectedAmount * 1000;
+    const resultQuote = receiveAmountMsat === undefined && paymentQuote ? paymentQuote : {
+      requested: msat(receiveAmountMsat ?? amountMsat), payment: msat(payerMsat), receive: msat(receiveMsat),
+      fees: [{ name: "solver", amount: msat(payerMsat - receiveMsat) }],
     };
     const expiresAt = swap.invoiceExpiresAt === undefined ? invoiceDeadline(swap.invoice) : swap.invoiceExpiresAt * 1000;
     const accepted = {

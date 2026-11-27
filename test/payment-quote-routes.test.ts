@@ -189,7 +189,7 @@ describe("LUD-XX paymentQuote", () => {
       // Express parses unit[]=USD as an array — treated as absent, plain msat flow
       const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000&unit[]=USD`, "domain.com");
       expect(cb.pr).toBe("lnbc1quoted");
-      expect(cb.paymentQuote).toBeUndefined();
+      expect(cb.paymentQuote).toMatchObject({ requested: { amount: "50000", unit: "msat" } });
     } finally { await ctx.close(); }
   });
 
@@ -337,13 +337,13 @@ describe("LUD-XX paymentQuote", () => {
     }
   });
 
-  it("leaves a plain msat request unchanged (no paymentQuote)", async () => {
+  it("quotes a plain msat request in msat, with no unit applied", async () => {
     addr("alice");
     const ctx = await start({ repos, quoteProvider: usd, offlineSwapCreator: fakeCreator });
     try {
       const cb = await getJson(`${ctx.baseUrl}/.well-known/lnurlp/alice/callback?amount=50000`, "domain.com");
       expect(lastCreate?.amountSat).toBe(50); // 50000 msat -> 50 sat
-      expect(cb.paymentQuote).toBeUndefined();
+      expect(cb.paymentQuote).toMatchObject({ requested: { amount: "50000", unit: "msat" } });
       expect(cb.pr).toBe("lnbc1quoted");
     } finally { await ctx.close(); }
   });

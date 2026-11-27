@@ -1061,7 +1061,7 @@ export const openApiSpec = {
       },
       PaymentQuote: {
         type: "object",
-        description: "LUD-XX quote: on a unit-denominated lightning request, or on every token-option answer",
+        description: "LUD-XX quote: on a unit-denominated lightning request, on every token-option answer, and on an offline-swap invoice, whose `receive` is what the receiver nets after the solver's fee",
         properties: {
           id: { type: "string", description: "On a token option, the provider's order id" },
           expiresAt: { type: "string", description: "ISO 8601" },

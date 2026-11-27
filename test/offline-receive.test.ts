@@ -39,6 +39,8 @@ class FakeCreator implements OfflineSwapCreator {
   settledIds = new Set<string>();
   release = vi.fn(async (_swapId: string) => {});
   invoiceExpiresAt?: number;
+  /** The solver's fee on a plain amount, which the receiver nets less of. */
+  feeSat = 0;
   constructor(private hashHex: string) {}
   async create(params: OfflineSwapParams): Promise<OfflineSwapResult> {
     this.created.push(params);
@@ -56,7 +58,7 @@ class FakeCreator implements OfflineSwapCreator {
         relays: ["wss://relay.invalid"],
         rfqId: "swap-1",
         lockupAddress: RECEIVE,
-        expectedAmount: params.amountSat,
+        expectedAmount: params.amountSat - this.feeSat,
         script: {},
       },
     };
@@ -158,6 +160,21 @@ describe("offline receive", () => {
     expect(v.body).toMatchObject({ status: "OK", settled: false, preimage: null });
     // No stated pay deadline, so the invoice's own: timestamp 0 plus BOLT11's default 3600 s.
     expect(settlements.listRecent(1)[0]!.expiresAt).toBe(3_600_000);
+  });
+
+  it("quotes the solver's fee on a plain amount, out of what the receiver nets", async () => {
+    const creator = new FakeCreator("9d" + "00".repeat(31));
+    creator.feeSat = 1;
+    repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
+    ctx = await start(repos, creator, new MemorySettlementStore(60_000));
+    const res = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=50000`, "GET", "domain.com");
+    expect(res.body.pr).toBe(buildInvoice("9d" + "00".repeat(31)));
+    expect(res.body.paymentQuote).toEqual({
+      requested: { amount: "50000", unit: "msat" },
+      payment: { amount: "50000", unit: "msat" },
+      receive: { amount: "49000", unit: "msat" },
+      fees: [{ name: "solver", amount: { amount: "1000", unit: "msat" } }],
+    });
   });
 
   it("records the solver's pay deadline when it states one", async () => {
