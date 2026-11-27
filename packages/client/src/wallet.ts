@@ -17,8 +17,17 @@ export { arkadePaymentRouter } from "./sdk-adapter.js";
 export interface LnurlWallet {
   readonly identity: ArkadeSigner;
   getAddress(): Promise<string>;
+  /** The address to bind: the wallet's own, under its current receive key. Without
+   *  it the facade binds `getAddress()`. An SDK 0.5.15+ wallet's `getAddress()` can
+   *  answer the Executor's renewal contract for that key instead, which changes. */
+  getOwnAddress?(): Promise<string>;
   getBoardingAddress(): Promise<string>;
 }
+
+/** A method call, never a detached function: SDK wallets use `this`. A throw from
+ *  `getOwnAddress` surfaces; falling back to `getAddress()` there would bind the twin. */
+const ownAddress = async (wallet: LnurlWallet): Promise<string> =>
+  (await wallet.getOwnAddress?.()) ?? wallet.getAddress();
 
 export interface LnurlPaymentRouter {
   use(rail: PaymentRail): this;
@@ -165,7 +174,7 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
       ...(opts.methods !== undefined ? { methods: opts.methods } : {}),
       ...(opts.arkadeAssets !== undefined ? { arkadeAssets: opts.arkadeAssets } : {}),
     };
-    if (wallet) return { arkadeAddress: await wallet.getAddress(), boardingAddress: await wallet.getBoardingAddress(), ...rails };
+    if (wallet) return { arkadeAddress: await ownAddress(wallet), boardingAddress: await wallet.getBoardingAddress(), ...rails };
     return { arkadeAddress: opts.arkadeAddress, ...(opts.boardingAddress ? { boardingAddress: opts.boardingAddress } : {}), ...rails };
   };
   const client = opts.client ?? createLnurlClient({ baseUrl });
@@ -226,7 +235,7 @@ export function arkadeLnurl(opts: ArkadeLnurlOptions): ArkadeLnurl {
         if (!address || !Array.isArray(address.arkadeAssets)) {
           throw new LnurlError("This receiver does not support native Arkade asset registration");
         }
-        const arkadeAddress = wallet ? await wallet.getAddress() : opts.arkadeAddress;
+        const arkadeAddress = wallet ? await ownAddress(wallet) : opts.arkadeAddress;
         const binding = await arkadeIdentityRequest({ identity, token: held, handle, domain, arkadeAddress, arkadeAssets: assetIds });
         if (isBoundTo(address, binding)) return;
         await client.registerArkadeIdentity(binding).finally(wrote);
