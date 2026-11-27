@@ -503,6 +503,73 @@ describe("arkadeLnurl receiver discovery", () => {
     expect(client.registerArkadeIdentity).toHaveBeenCalledWith(expect.not.objectContaining({ boardingAddress: expect.anything() }));
   });
 
+  // The twin: what an SDK 0.5.15+ wallet's getAddress() answers once renewal is registered.
+  const TWIN = "tark1qqcpq7yq3e8hhsx6ml3fud93m7827qggaurtzu3zwsr4a0qs0gf858t79qp09kwef5q27wqrep4teavv3j6fk2wpdd3674z306qy00sr5h9h6y";
+  /** `this`-bound, as the SDK's wallets are. */
+  const withOwnAddress = (getOwnAddress?: () => Promise<string>) => ({
+    ...fakeWallet(),
+    own: ARKADE_ADDRESS,
+    getAddress: async () => TWIN,
+    getOwnAddress: getOwnAddress ?? async function (this: { own: string }) { return this.own; },
+  });
+
+  it("owned({ refresh }) binds the wallet's own address, not what getAddress() answers", async () => {
+    const client = fakeClient({
+      listAddresses: vi.fn(async () => [
+        row("current", boundTo(ARKADE_ADDRESS)),
+        row("twinned", boundTo(TWIN)),
+        row("unbound", boundTo(null)),
+      ]) as never,
+    });
+
+    await arkadeLnurl({ wallet: withOwnAddress(), baseUrl: BASE, client }).owned({ refresh: true });
+
+    expect(rebound(client)).toEqual(["twinned", "unbound"]);
+    for (const [request] of vi.mocked(client.registerArkadeIdentity).mock.calls) {
+      expect(request.arkadeAddress).toBe(ARKADE_ADDRESS);
+    }
+  });
+
+  it("claim() binds the wallet's own address", async () => {
+    const client = fakeClient();
+    await arkadeLnurl({ wallet: withOwnAddress(), baseUrl: BASE, client }).claim({ username: "alice" });
+    expect(client.registerArkadeIdentity).toHaveBeenCalledWith(expect.objectContaining({ arkadeAddress: ARKADE_ADDRESS }));
+  });
+
+  it("owned({ refresh }) binds getAddress() when the wallet has no getOwnAddress", async () => {
+    const client = fakeClient({ listAddresses: vi.fn(async () => [row("moved", boundTo("tark1old"))]) as never });
+    const { getOwnAddress: _unused, ...plain } = withOwnAddress();
+
+    await arkadeLnurl({ wallet: plain, baseUrl: BASE, client }).owned({ refresh: true });
+
+    expect(client.registerArkadeIdentity).toHaveBeenCalledWith(expect.objectContaining({ arkadeAddress: TWIN }));
+  });
+
+  it("setArkadeAssets binds the wallet's own address", async () => {
+    const client = fakeClient({
+      listAddresses: vi.fn(async () => [row("alice", { ...boundTo(TWIN), arkadeAssets: [] })]) as never,
+    });
+    const receiver = await arkadeLnurl({ wallet: withOwnAddress(), baseUrl: BASE, client }).owned();
+
+    await receiver!.setArkadeAssets(["ab".repeat(34)]);
+
+    expect(client.registerArkadeIdentity).toHaveBeenCalledTimes(1);
+    expect(client.registerArkadeIdentity).toHaveBeenCalledWith(expect.objectContaining({ handle: "alice", arkadeAddress: ARKADE_ADDRESS }));
+  });
+
+  it("surfaces a getOwnAddress failure instead of falling back to getAddress()", async () => {
+    const failure = new Error("receive key unavailable");
+    const client = fakeClient({
+      listAddresses: vi.fn(async () => [row("alice", { ...boundTo(TWIN), arkadeAssets: [] })]) as never,
+    });
+    const lnurl = arkadeLnurl({ wallet: withOwnAddress(async () => { throw failure; }), baseUrl: BASE, client });
+
+    await expect(lnurl.owned({ refresh: true })).rejects.toBe(failure);
+    await expect(lnurl.claim({ username: "bob" })).rejects.toBe(failure);
+    await expect((await lnurl.owned())!.setArkadeAssets(["ab".repeat(34)])).rejects.toBe(failure);
+    expect(client.registerArkadeIdentity).not.toHaveBeenCalled();
+  });
+
   const refreshed = async (extra: Record<string, unknown>, methods?: PaymentMethod[]) => {
     const client = fakeClient({ listAddresses: vi.fn(async () => [row("alice", { ...boundTo(ARKADE_ADDRESS), ...extra })]) as never });
     await arkadeLnurl({ wallet: fakeWallet(), baseUrl: BASE, client, ...(methods ? { methods } : {}) }).owned({ refresh: true });
