@@ -177,6 +177,16 @@ describe("offline receive", () => {
     });
   });
 
+  it("refuses a plain amount whose solver payout exceeds it", async () => {
+    const creator = new FakeCreator("9e" + "00".repeat(31));
+    creator.feeSat = -1;
+    repos.addresses.setOfflineReceive(addressId, RECEIVE, CLAIM_PUBKEY);
+    ctx = await start(repos, creator, new MemorySettlementStore(60_000));
+    const res = await req(`${ctx.baseUrl}/.well-known/lnurlp/off/callback?amount=50000`, "GET", "domain.com");
+    expect(res.body).toMatchObject({ status: "ERROR", reason: "Unable to create offline invoice" });
+    expect(creator.release).toHaveBeenCalledExactlyOnceWith("swap-1");
+  });
+
   it("records the solver's pay deadline when it states one", async () => {
     const hash = "9b" + "00".repeat(31);
     const creator = new FakeCreator(hash);

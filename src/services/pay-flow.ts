@@ -138,6 +138,7 @@ export async function createOfflineSwapInvoice(args: {
     const msat = (value: number) => ({ amount: String(value), unit: "msat" });
     // The solver's payout is what the receiver nets: a plain amount pays its fee, a receiveAmount adds it on top.
     const receiveMsat = swap.recovery.expectedAmount * 1000;
+    if (receiveMsat > payerMsat) throw new Error("Solver payout exceeds the invoice amount");
     const resultQuote = receiveAmountMsat === undefined && paymentQuote ? paymentQuote : {
       requested: msat(receiveAmountMsat ?? amountMsat), payment: msat(payerMsat), receive: msat(receiveMsat),
       fees: [{ name: "solver", amount: msat(payerMsat - receiveMsat) }],
